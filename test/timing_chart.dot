@@ -1,0 +1,259 @@
+digraph TimingChart {
+    rankdir=LR;
+    node [shape=plaintext];
+
+    graph [fontname="monospace", fontsize=10];
+    node [fontname="monospace", fontsize=9];
+
+    title [label=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0">
+        <TR><TD COLSPAN="2"><B>Unsandbox Language Execution Times</B></TD></TR>
+        <TR><TD COLSPAN="2">Fibonacci(10) benchmark across 39 languages</TD></TR>
+    </TABLE>>];
+
+    chart [label=<
+    <TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" CELLPADDING="4">
+        <TR>
+            <TD ALIGN="LEFT"><B>Language</B></TD>
+            <TD ALIGN="LEFT"><B>Time (ms)</B></TD>
+            <TD ALIGN="LEFT" WIDTH="400"><B>Bar Chart</B></TD>
+            <TD ALIGN="LEFT"><B>Status</B></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>c</B></TD>
+            <TD ALIGN="RIGHT">4727</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="147" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>clj</B></TD>
+            <TD ALIGN="RIGHT">5400</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="168" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>cob</B></TD>
+            <TD ALIGN="RIGHT">5419</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="169" HEIGHT="12" BGCOLOR="#F44336"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#F44336">✗ FAIL</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>cpp</B></TD>
+            <TD ALIGN="RIGHT">5167</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="161" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>cr</B></TD>
+            <TD ALIGN="RIGHT">6945</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="216" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>cs</B></TD>
+            <TD ALIGN="RIGHT">5063</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="158" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>d</B></TD>
+            <TD ALIGN="RIGHT">6228</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="194" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>dart</B></TD>
+            <TD ALIGN="RIGHT">4751</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="148" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>erl</B></TD>
+            <TD ALIGN="RIGHT">4416</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="137" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>ex</B></TD>
+            <TD ALIGN="RIGHT">5366</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="167" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>f90</B></TD>
+            <TD ALIGN="RIGHT">4890</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="152" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>forth</B></TD>
+            <TD ALIGN="RIGHT">4265</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="133" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>fs</B></TD>
+            <TD ALIGN="RIGHT">7016</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="219" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>go</B></TD>
+            <TD ALIGN="RIGHT">11784</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="368" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>groovy</B></TD>
+            <TD ALIGN="RIGHT">5662</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="176" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>hs</B></TD>
+            <TD ALIGN="RIGHT">7762</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="242" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>java</B></TD>
+            <TD ALIGN="RIGHT">5583</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="174" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>jl</B></TD>
+            <TD ALIGN="RIGHT">5135</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="160" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>js</B></TD>
+            <TD ALIGN="RIGHT">4402</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="137" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>kt</B></TD>
+            <TD ALIGN="RIGHT">11305</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="353" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>lisp</B></TD>
+            <TD ALIGN="RIGHT">4364</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="136" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>lua</B></TD>
+            <TD ALIGN="RIGHT">4102</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="128" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>m</B></TD>
+            <TD ALIGN="RIGHT">4536</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="141" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>ml</B></TD>
+            <TD ALIGN="RIGHT">4537</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="141" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>nim</B></TD>
+            <TD ALIGN="RIGHT">5447</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="170" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>php</B></TD>
+            <TD ALIGN="RIGHT">4021</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="125" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>pl</B></TD>
+            <TD ALIGN="RIGHT">1692</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="52" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>pro</B></TD>
+            <TD ALIGN="RIGHT">4493</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="140" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>py</B></TD>
+            <TD ALIGN="RIGHT">4260</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="133" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>r</B></TD>
+            <TD ALIGN="RIGHT">4554</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="142" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>raku</B></TD>
+            <TD ALIGN="RIGHT">4623</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="144" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>rb</B></TD>
+            <TD ALIGN="RIGHT">4236</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="132" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>rs</B></TD>
+            <TD ALIGN="RIGHT">6598</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="206" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>scm</B></TD>
+            <TD ALIGN="RIGHT">3951</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="123" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>sh</B></TD>
+            <TD ALIGN="RIGHT">4805</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="150" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>tcl</B></TD>
+            <TD ALIGN="RIGHT">4249</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="132" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>ts</B></TD>
+            <TD ALIGN="RIGHT">4874</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="152" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>v</B></TD>
+            <TD ALIGN="RIGHT">4643</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="145" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+        <TR>
+            <TD ALIGN="LEFT"><B>zig</B></TD>
+            <TD ALIGN="RIGHT">12806</TD>
+            <TD ALIGN="LEFT"><TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0"><TR><TD WIDTH="400" HEIGHT="12" BGCOLOR="#4CAF50"></TD></TR></TABLE></TD>
+            <TD ALIGN="LEFT"><FONT COLOR="#4CAF50">✓ PASS</FONT></TD>
+        </TR>
+    </TABLE>
+    >];
+
+    title -> chart [style=invis];
+}

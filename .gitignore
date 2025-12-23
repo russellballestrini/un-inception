@@ -1,0 +1,30 @@
+# Compiled binaries
+*.o
+*.exe
+*.out
+*.class
+*.beam
+/un
+
+# Build directories
+_build/
+deps/
+node_modules/
+target/
+zig-cache/
+zig-out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+*.log
+/output/

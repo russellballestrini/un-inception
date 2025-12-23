@@ -1,0 +1,580 @@
+# PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+#
+# This is free public domain software for the public good of a permacomputer hosted
+# at permacomputer.com - an always-on computer by the people, for the people. One
+# which is durable, easy to repair, and distributed like tap water for machine
+# learning intelligence.
+#
+# The permacomputer is community-owned infrastructure optimized around four values:
+#
+#   TRUTH    - Source code must be open source & freely distributed
+#   FREEDOM  - Voluntary participation without corporate control
+#   HARMONY  - Systems operating with minimal waste that self-renew
+#   LOVE     - Individual rights protected while fostering cooperation
+#
+# This software contributes to that vision by enabling code execution across 42+
+# programming languages through a unified interface, accessible to all. Code is
+# seeds to sprout on any abandoned technology.
+#
+# Learn more: https://www.permacomputer.com
+#
+# Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+# software, either in source code form or as a compiled binary, for any purpose,
+# commercial or non-commercial, and by any means.
+#
+# NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+#
+# That said, our permacomputer's digital membrane stratum continuously runs unit,
+# integration, and functional tests on all of it's own software - with our
+# permacomputer monitoring itself, repairing itself, with minimal human in the
+# loop guidance. Our agents do their best.
+#
+# Copyright 2025 TimeHexOn & foxhop & russell@unturf
+# https://www.timehexon.com
+# https://www.foxhop.net
+# https://www.unturf.com/software
+
+#!/usr/bin/env lua
+-- un.lua - Unsandbox CLI Client (Lua Implementation)
+--
+-- Full-featured CLI matching un.c capabilities:
+-- - Execute code with env vars, input files, artifacts
+-- - Interactive sessions with shell/REPL support
+-- - Persistent services with domains and ports
+--
+-- Usage:
+--   un.lua [options] <source_file>
+--   un.lua session [options]
+--   un.lua service [options]
+--
+-- Requires: UNSANDBOX_API_KEY environment variable
+-- Note: Uses curl for HTTP requests (requires curl to be installed)
+
+local json = require("cjson")
+
+local API_BASE = "https://api.unsandbox.com"
+local BLUE = "\27[34m"
+local RED = "\27[31m"
+local GREEN = "\27[32m"
+local YELLOW = "\27[33m"
+local RESET = "\27[0m"
+
+local EXT_MAP = {
+    [".py"] = "python", [".js"] = "javascript", [".ts"] = "typescript",
+    [".rb"] = "ruby", [".php"] = "php", [".pl"] = "perl", [".lua"] = "lua",
+    [".sh"] = "bash", [".go"] = "go", [".rs"] = "rust", [".c"] = "c",
+    [".cpp"] = "cpp", [".cc"] = "cpp", [".cxx"] = "cpp",
+    [".java"] = "java", [".kt"] = "kotlin", [".cs"] = "csharp", [".fs"] = "fsharp",
+    [".hs"] = "haskell", [".ml"] = "ocaml", [".clj"] = "clojure", [".scm"] = "scheme",
+    [".lisp"] = "commonlisp", [".erl"] = "erlang", [".ex"] = "elixir", [".exs"] = "elixir",
+    [".jl"] = "julia", [".r"] = "r", [".R"] = "r", [".cr"] = "crystal",
+    [".d"] = "d", [".nim"] = "nim", [".zig"] = "zig", [".v"] = "v",
+    [".dart"] = "dart", [".groovy"] = "groovy", [".scala"] = "scala",
+    [".f90"] = "fortran", [".f95"] = "fortran", [".cob"] = "cobol",
+    [".pro"] = "prolog", [".forth"] = "forth", [".4th"] = "forth",
+    [".tcl"] = "tcl", [".raku"] = "raku", [".m"] = "objc"
+}
+
+local function get_api_key(args_key)
+    local key = args_key or os.getenv("UNSANDBOX_API_KEY")
+    if not key then
+        io.stderr:write(RED .. "Error: UNSANDBOX_API_KEY not set" .. RESET .. "\n")
+        os.exit(1)
+    end
+    return key
+end
+
+local function detect_language(filename)
+    local ext = filename:match("%.([^.]+)$")
+    if ext then
+        local lang = EXT_MAP["." .. ext:lower()]
+        if lang then return lang end
+    end
+
+    local file = io.open(filename, "r")
+    if file then
+        local first_line = file:read("*line")
+        file:close()
+        if first_line and first_line:match("^#!") then
+            if first_line:match("python") then return "python" end
+            if first_line:match("node") then return "javascript" end
+            if first_line:match("ruby") then return "ruby" end
+            if first_line:match("perl") then return "perl" end
+            if first_line:match("bash") or first_line:match("/sh") then return "bash" end
+            if first_line:match("lua") then return "lua" end
+            if first_line:match("php") then return "php" end
+        end
+    end
+
+    io.stderr:write(RED .. "Error: Cannot detect language for " .. filename .. RESET .. "\n")
+    os.exit(1)
+end
+
+local function shell_escape(str)
+    return "'" .. str:gsub("'", "'\\''") .. "'"
+end
+
+local function api_request(endpoint, method, data, api_key)
+    method = method or "GET"
+    local url = API_BASE .. endpoint
+    local tmpfile = os.tmpname()
+
+    local cmd = "curl -s -X " .. method .. " " .. shell_escape(url) ..
+                " -H 'Authorization: Bearer " .. api_key .. "'" ..
+                " -H 'Content-Type: application/json'"
+
+    if data then
+        local payload = json.encode(data)
+        local data_file = os.tmpname()
+        local f = io.open(data_file, "w")
+        f:write(payload)
+        f:close()
+        cmd = cmd .. " -d @" .. shell_escape(data_file)
+    end
+
+    cmd = cmd .. " -w '\\n%{http_code}' -o " .. shell_escape(tmpfile)
+
+    local handle = io.popen(cmd)
+    local http_code = handle:read("*a"):match("(%d+)$")
+    handle:close()
+
+    local file = io.open(tmpfile, "r")
+    local response = file:read("*all")
+    file:close()
+    os.remove(tmpfile)
+
+    if data then
+        os.remove(data_file)
+    end
+
+    if not http_code or tonumber(http_code) < 200 or tonumber(http_code) >= 300 then
+        io.stderr:write(RED .. "Error: HTTP " .. (http_code or "000") .. " - " .. response .. RESET .. "\n")
+        os.exit(1)
+    end
+
+    return json.decode(response)
+end
+
+local function read_file(filename)
+    local file, err = io.open(filename, "rb")
+    if not file then
+        io.stderr:write(RED .. "Error: File not found: " .. filename .. RESET .. "\n")
+        os.exit(1)
+    end
+    local content = file:read("*all")
+    file:close()
+    return content
+end
+
+local function base64_encode(data)
+    local b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    return ((data:gsub('.', function(x)
+        local r,b='',x:byte()
+        for i=8,1,-1 do r=r..(b%2^i-b%2^(i-1)>0 and '1' or '0') end
+        return r;
+    end)..'0000'):gsub('%d%d%d?%d?%d?%d?', function(x)
+        if (#x < 6) then return '' end
+        local c=0
+        for i=1,6 do c=c+(x:sub(i,i)=='1' and 2^(6-i) or 0) end
+        return b64:sub(c+1,c+1)
+    end)..({ '', '==', '=' })[#data%3+1])
+end
+
+local function base64_decode(data)
+    local b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    data = string.gsub(data, '[^'..b64..'=]', '')
+    return (data:gsub('.', function(x)
+        if (x == '=') then return '' end
+        local r,f='',(b64:find(x)-1)
+        for i=6,1,-1 do r=r..(f%2^i-f%2^(i-1)>0 and '1' or '0') end
+        return r;
+    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+        if (#x ~= 8) then return '' end
+        local c=0
+        for i=1,8 do c=c+(x:sub(i,i)=='1' and 2^(8-i) or 0) end
+        return string.char(c)
+    end))
+end
+
+local function cmd_execute(options)
+    local api_key = get_api_key(options.api_key)
+    local code = read_file(options.source_file)
+    local language = detect_language(options.source_file)
+
+    local payload = { language = language, code = code }
+
+    if options.env and #options.env > 0 then
+        local env_vars = {}
+        for _, e in ipairs(options.env) do
+            local k, v = e:match("^([^=]+)=(.*)$")
+            if k and v then
+                env_vars[k] = v
+            end
+        end
+        if next(env_vars) then
+            payload.env = env_vars
+        end
+    end
+
+    if options.files and #options.files > 0 then
+        local input_files = {}
+        for _, filepath in ipairs(options.files) do
+            local content = read_file(filepath)
+            table.insert(input_files, {
+                filename = filepath:match("([^/]+)$"),
+                content_base64 = base64_encode(content)
+            })
+        end
+        payload.input_files = input_files
+    end
+
+    if options.artifacts then payload.return_artifacts = true end
+    if options.network then payload.network = options.network end
+    if options.vcpu then payload.vcpu = options.vcpu end
+
+    local result = api_request("/execute", "POST", payload, api_key)
+
+    if result.stdout then
+        io.write(BLUE .. result.stdout .. RESET)
+    end
+    if result.stderr then
+        io.stderr:write(RED .. result.stderr .. RESET)
+    end
+
+    if options.artifacts and result.artifacts then
+        local out_dir = options.output_dir or "."
+        os.execute("mkdir -p " .. shell_escape(out_dir))
+        for _, artifact in ipairs(result.artifacts) do
+            local filename = artifact.filename or "artifact"
+            local content = base64_decode(artifact.content_base64)
+            local filepath = out_dir .. "/" .. filename
+            local file = io.open(filepath, "wb")
+            file:write(content)
+            file:close()
+            os.execute("chmod 755 " .. shell_escape(filepath))
+            io.stderr:write(GREEN .. "Saved: " .. filepath .. RESET .. "\n")
+        end
+    end
+
+    os.exit(result.exit_code or 0)
+end
+
+local function cmd_session(options)
+    local api_key = get_api_key(options.api_key)
+
+    if options.list then
+        local result = api_request("/sessions", "GET", nil, api_key)
+        local sessions = result.sessions or {}
+        if #sessions == 0 then
+            print("No active sessions")
+        else
+            print(string.format("%-40s %-10s %-10s %s", "ID", "Shell", "Status", "Created"))
+            for _, s in ipairs(sessions) do
+                print(string.format("%-40s %-10s %-10s %s",
+                    s.id or "N/A", s.shell or "N/A",
+                    s.status or "N/A", s.created_at or "N/A"))
+            end
+        end
+        return
+    end
+
+    if options.kill then
+        api_request("/sessions/" .. options.kill, "DELETE", nil, api_key)
+        print(GREEN .. "Session terminated: " .. options.kill .. RESET)
+        return
+    end
+
+    if options.attach then
+        print(YELLOW .. "Attaching to session " .. options.attach .. "..." .. RESET)
+        print(YELLOW .. "(Interactive sessions require WebSocket - use un2 for full support)" .. RESET)
+        return
+    end
+
+    local payload = { shell = options.shell or "bash" }
+    if options.network then payload.network = options.network end
+    if options.vcpu then payload.vcpu = options.vcpu end
+    if options.tmux then payload.persistence = "tmux" end
+    if options.screen then payload.persistence = "screen" end
+    if options.audit then payload.audit = true end
+
+    print(YELLOW .. "Creating session..." .. RESET)
+    local result = api_request("/sessions", "POST", payload, api_key)
+    print(GREEN .. "Session created: " .. (result.id or "N/A") .. RESET)
+    print(YELLOW .. "(Interactive sessions require WebSocket - use un2 for full support)" .. RESET)
+end
+
+local function cmd_service(options)
+    local api_key = get_api_key(options.api_key)
+
+    if options.list then
+        local result = api_request("/services", "GET", nil, api_key)
+        local services = result.services or {}
+        if #services == 0 then
+            print("No services")
+        else
+            print(string.format("%-20s %-15s %-10s %-15s %s", "ID", "Name", "Status", "Ports", "Domains"))
+            for _, s in ipairs(services) do
+                local ports = table.concat(s.ports or {}, ",")
+                local domains = table.concat(s.domains or {}, ",")
+                print(string.format("%-20s %-15s %-10s %-15s %s",
+                    s.id or "N/A", s.name or "N/A",
+                    s.status or "N/A", ports, domains))
+            end
+        end
+        return
+    end
+
+    if options.info then
+        local result = api_request("/services/" .. options.info, "GET", nil, api_key)
+        print(json.encode(result))
+        return
+    end
+
+    if options.logs then
+        local result = api_request("/services/" .. options.logs .. "/logs", "GET", nil, api_key)
+        print(result.logs or "")
+        return
+    end
+
+    if options.tail then
+        local result = api_request("/services/" .. options.tail .. "/logs?lines=9000", "GET", nil, api_key)
+        print(result.logs or "")
+        return
+    end
+
+    if options.sleep then
+        api_request("/services/" .. options.sleep .. "/sleep", "POST", nil, api_key)
+        print(GREEN .. "Service sleeping: " .. options.sleep .. RESET)
+        return
+    end
+
+    if options.wake then
+        api_request("/services/" .. options.wake .. "/wake", "POST", nil, api_key)
+        print(GREEN .. "Service waking: " .. options.wake .. RESET)
+        return
+    end
+
+    if options.destroy then
+        api_request("/services/" .. options.destroy, "DELETE", nil, api_key)
+        print(GREEN .. "Service destroyed: " .. options.destroy .. RESET)
+        return
+    end
+
+    if options.execute then
+        local payload = { command = options.command }
+        local result = api_request("/services/" .. options.execute .. "/execute", "POST", payload, api_key)
+        if result.stdout then io.write(BLUE .. result.stdout .. RESET) end
+        if result.stderr then io.stderr:write(RED .. result.stderr .. RESET) end
+        return
+    end
+
+    if options.name then
+        local payload = { name = options.name }
+        if options.ports then
+            local ports = {}
+            for p in options.ports:gmatch("[^,]+") do
+                table.insert(ports, tonumber(p))
+            end
+            payload.ports = ports
+        end
+        if options.domains then
+            local domains = {}
+            for d in options.domains:gmatch("[^,]+") do
+                table.insert(domains, d)
+            end
+            payload.domains = domains
+        end
+        if options.bootstrap then
+            local file = io.open(options.bootstrap, "r")
+            if file then
+                payload.bootstrap = file:read("*all")
+                file:close()
+            else
+                payload.bootstrap = options.bootstrap
+            end
+        end
+        if options.network then payload.network = options.network end
+        if options.vcpu then payload.vcpu = options.vcpu end
+
+        local result = api_request("/services", "POST", payload, api_key)
+        print(GREEN .. "Service created: " .. (result.id or "N/A") .. RESET)
+        print("Name: " .. (result.name or "N/A"))
+        if result.url then print("URL: " .. result.url) end
+        return
+    end
+
+    io.stderr:write(RED .. "Error: Specify --name to create a service, or use --list, --info, etc." .. RESET .. "\n")
+    os.exit(1)
+end
+
+local function main()
+    local options = {
+        command = nil,
+        source_file = nil,
+        env = {},
+        files = {},
+        artifacts = false,
+        output_dir = nil,
+        network = nil,
+        vcpu = nil,
+        api_key = nil,
+        shell = nil,
+        list = false,
+        attach = nil,
+        kill = nil,
+        audit = false,
+        tmux = false,
+        screen = false,
+        name = nil,
+        ports = nil,
+        domains = nil,
+        bootstrap = nil,
+        info = nil,
+        logs = nil,
+        tail = nil,
+        sleep = nil,
+        wake = nil,
+        destroy = nil,
+        execute = nil,
+        command = nil
+    }
+
+    local i = 1
+    while i <= #arg do
+        local a = arg[i]
+
+        if a == "session" or a == "service" then
+            options.command = a
+        elseif a == "-e" then
+            i = i + 1
+            table.insert(options.env, arg[i])
+        elseif a == "-f" then
+            i = i + 1
+            table.insert(options.files, arg[i])
+        elseif a == "-a" then
+            options.artifacts = true
+        elseif a == "-o" then
+            i = i + 1
+            options.output_dir = arg[i]
+        elseif a == "-n" then
+            i = i + 1
+            options.network = arg[i]
+        elseif a == "-v" then
+            i = i + 1
+            options.vcpu = tonumber(arg[i])
+        elseif a == "-k" then
+            i = i + 1
+            options.api_key = arg[i]
+        elseif a == "-s" or a == "--shell" then
+            i = i + 1
+            options.shell = arg[i]
+        elseif a == "-l" or a == "--list" then
+            options.list = true
+        elseif a == "--attach" then
+            i = i + 1
+            options.attach = arg[i]
+        elseif a == "--kill" then
+            i = i + 1
+            options.kill = arg[i]
+        elseif a == "--audit" then
+            options.audit = true
+        elseif a == "--tmux" then
+            options.tmux = true
+        elseif a == "--screen" then
+            options.screen = true
+        elseif a == "--name" then
+            i = i + 1
+            options.name = arg[i]
+        elseif a == "--ports" then
+            i = i + 1
+            options.ports = arg[i]
+        elseif a == "--domains" then
+            i = i + 1
+            options.domains = arg[i]
+        elseif a == "--bootstrap" then
+            i = i + 1
+            options.bootstrap = arg[i]
+        elseif a == "--info" then
+            i = i + 1
+            options.info = arg[i]
+        elseif a == "--logs" then
+            i = i + 1
+            options.logs = arg[i]
+        elseif a == "--tail" then
+            i = i + 1
+            options.tail = arg[i]
+        elseif a == "--sleep" then
+            i = i + 1
+            options.sleep = arg[i]
+        elseif a == "--wake" then
+            i = i + 1
+            options.wake = arg[i]
+        elseif a == "--destroy" then
+            i = i + 1
+            options.destroy = arg[i]
+        elseif a == "--execute" then
+            i = i + 1
+            options.execute = arg[i]
+        elseif a == "--command" then
+            i = i + 1
+            options.command = arg[i]
+        elseif not a:match("^%-") then
+            options.source_file = a
+        end
+
+        i = i + 1
+    end
+
+    if options.command == "session" then
+        cmd_session(options)
+    elseif options.command == "service" then
+        cmd_service(options)
+    elseif options.source_file then
+        cmd_execute(options)
+    else
+        print([[
+Unsandbox CLI - Execute code in secure sandboxes
+
+Usage:
+  ]] .. arg[0] .. [[ [options] <source_file>
+  ]] .. arg[0] .. [[ session [options]
+  ]] .. arg[0] .. [[ service [options]
+
+Execute options:
+  -e KEY=VALUE      Environment variable (multiple allowed)
+  -f FILE          Input file (multiple allowed)
+  -a               Return artifacts
+  -o DIR           Output directory for artifacts
+  -n MODE          Network mode (zerotrust|semitrusted)
+  -v N             vCPU count (1-8)
+  -k KEY           API key
+
+Session options:
+  -s, --shell NAME  Shell/REPL (default: bash)
+  -l, --list       List sessions
+  --attach ID      Attach to session
+  --kill ID        Terminate session
+  --audit          Record session
+  --tmux           Enable tmux persistence
+  --screen         Enable screen persistence
+
+Service options:
+  --name NAME      Service name
+  --ports PORTS    Comma-separated ports
+  --domains DOMAINS Custom domains
+  --bootstrap CMD  Bootstrap command/file
+  -l, --list       List services
+  --info ID        Get service details
+  --logs ID        Get all logs
+  --tail ID        Get last 9000 lines
+  --sleep ID       Freeze service
+  --wake ID        Unfreeze service
+  --destroy ID     Destroy service
+  --execute ID     Execute command in service
+  --command CMD    Command to execute (with --execute)
+]])
+        os.exit(1)
+    end
+end
+
+main()

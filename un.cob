@@ -1,0 +1,352 @@
+      * PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+      *
+      * This is free public domain software for the public good of a permacomputer hosted
+      * at permacomputer.com - an always-on computer by the people, for the people. One
+      * which is durable, easy to repair, and distributed like tap water for machine
+      * learning intelligence.
+      *
+      * The permacomputer is community-owned infrastructure optimized around four values:
+      *
+      *   TRUTH    - Source code must be open source & freely distributed
+      *   FREEDOM  - Voluntary participation without corporate control
+      *   HARMONY  - Systems operating with minimal waste that self-renew
+      *   LOVE     - Individual rights protected while fostering cooperation
+      *
+      * This software contributes to that vision by enabling code execution across 42+
+      * programming languages through a unified interface, accessible to all. Code is
+      * seeds to sprout on any abandoned technology.
+      *
+      * Learn more: https://www.permacomputer.com
+      *
+      * Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+      * software, either in source code form or as a compiled binary, for any purpose,
+      * commercial or non-commercial, and by any means.
+      *
+      * NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+      *
+      * That said, our permacomputer's digital membrane stratum continuously runs unit,
+      * integration, and functional tests on all of it's own software - with our
+      * permacomputer monitoring itself, repairing itself, with minimal human in the
+      * loop guidance. Our agents do their best.
+      *
+      * Copyright 2025 TimeHexOn & foxhop & russell@unturf
+      * https://www.timehexon.com
+      * https://www.foxhop.net
+      * https://www.unturf.com/software
+
+
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. UNSANDBOX-CLI.
+       AUTHOR. UNSANDBOX.
+
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT SOURCE-FILE ASSIGN TO WS-FILENAME
+               ORGANIZATION IS LINE SEQUENTIAL
+               FILE STATUS IS WS-FILE-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  SOURCE-FILE.
+       01  SOURCE-LINE         PIC X(1024).
+
+       WORKING-STORAGE SECTION.
+       01  WS-FILENAME         PIC X(256).
+       01  WS-FILE-STATUS      PIC XX.
+       01  WS-API-KEY          PIC X(256).
+       01  WS-LANGUAGE         PIC X(32).
+       01  WS-EXTENSION        PIC X(16).
+       01  WS-CURL-CMD         PIC X(4096).
+       01  WS-EXIT-CODE        PIC 9(4) VALUE 0.
+       01  WS-DOT-POS          PIC 9(4) VALUE 0.
+       01  WS-LEN              PIC 9(4) VALUE 0.
+       01  WS-I                PIC 9(4) VALUE 0.
+       01  WS-ARG1             PIC X(256).
+       01  WS-ARG2             PIC X(256).
+       01  WS-ARG3             PIC X(256).
+       01  WS-COMMAND          PIC X(32).
+       01  WS-OPERATION        PIC X(32).
+       01  WS-ID               PIC X(256).
+
+       PROCEDURE DIVISION.
+       MAIN-PROCEDURE.
+      * Get command line argument (first argument)
+           ACCEPT WS-ARG1 FROM COMMAND-LINE.
+
+           IF WS-ARG1 = SPACES
+               DISPLAY "Usage: un.cob <source_file>" UPON SYSERR
+               DISPLAY "       un.cob session [options]" UPON SYSERR
+               DISPLAY "       un.cob service [options]" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Check for subcommands
+           IF WS-ARG1 = "session"
+               PERFORM HANDLE-SESSION
+               STOP RUN
+           END-IF.
+
+           IF WS-ARG1 = "service"
+               PERFORM HANDLE-SERVICE
+               STOP RUN
+           END-IF.
+
+      * Default: execute command
+           MOVE WS-ARG1 TO WS-FILENAME.
+           PERFORM HANDLE-EXECUTE.
+           STOP RUN.
+
+       HANDLE-EXECUTE.
+      * Check if file exists
+           OPEN INPUT SOURCE-FILE.
+           IF WS-FILE-STATUS NOT = "00"
+               DISPLAY "Error: File not found: " WS-FILENAME
+                   UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+           CLOSE SOURCE-FILE.
+
+      * Detect language from extension
+           PERFORM DETECT-LANGUAGE.
+
+           IF WS-LANGUAGE = "unknown"
+               DISPLAY "Error: Unknown language for file: "
+                   WS-FILENAME UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Get API key from environment
+           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
+
+           IF WS-API-KEY = SPACES
+               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Use curl to make request
+           PERFORM MAKE-EXECUTE-REQUEST.
+
+       HANDLE-SESSION.
+      * Get API key
+           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
+           IF WS-API-KEY = SPACES
+               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Parse session arguments (simplified)
+      * For full implementation, would need to parse multiple args
+           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+
+           IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
+               PERFORM SESSION-LIST
+           ELSE
+               IF WS-ARG2 = "--kill"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM SESSION-KILL
+               ELSE
+                   DISPLAY "Error: Use --list or --kill ID"
+                       UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+               END-IF
+           END-IF.
+
+       HANDLE-SERVICE.
+      * Get API key
+           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
+           IF WS-API-KEY = SPACES
+               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Parse service arguments
+           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+
+           IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
+               PERFORM SERVICE-LIST
+           ELSE IF WS-ARG2 = "--info"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM SERVICE-INFO
+           ELSE IF WS-ARG2 = "--logs"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM SERVICE-LOGS
+           ELSE IF WS-ARG2 = "--sleep"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM SERVICE-SLEEP
+           ELSE IF WS-ARG2 = "--wake"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM SERVICE-WAKE
+           ELSE IF WS-ARG2 = "--destroy"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM SERVICE-DESTROY
+           ELSE
+               DISPLAY "Error: Use --list, --info, --logs, "
+                   "--sleep, --wake, or --destroy" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+           END-IF.
+
+       DETECT-LANGUAGE.
+      * Find last dot in filename
+           MOVE FUNCTION LENGTH(FUNCTION TRIM(WS-FILENAME)) TO WS-LEN.
+           MOVE 0 TO WS-DOT-POS.
+           PERFORM VARYING WS-I FROM WS-LEN BY -1
+               UNTIL WS-I < 1 OR WS-DOT-POS > 0
+               IF WS-FILENAME(WS-I:1) = "."
+                   MOVE WS-I TO WS-DOT-POS
+               END-IF
+           END-PERFORM.
+
+           IF WS-DOT-POS = 0
+               MOVE "unknown" TO WS-LANGUAGE
+           ELSE
+               COMPUTE WS-I = WS-LEN - WS-DOT-POS + 1
+               MOVE WS-FILENAME(WS-DOT-POS:WS-I) TO WS-EXTENSION
+
+               EVALUATE WS-EXTENSION
+                   WHEN ".jl"     MOVE "julia"      TO WS-LANGUAGE
+                   WHEN ".r"      MOVE "r"          TO WS-LANGUAGE
+                   WHEN ".cr"     MOVE "crystal"    TO WS-LANGUAGE
+                   WHEN ".f90"    MOVE "fortran"    TO WS-LANGUAGE
+                   WHEN ".cob"    MOVE "cobol"      TO WS-LANGUAGE
+                   WHEN ".pro"    MOVE "prolog"     TO WS-LANGUAGE
+                   WHEN ".forth"  MOVE "forth"      TO WS-LANGUAGE
+                   WHEN ".4th"    MOVE "forth"      TO WS-LANGUAGE
+                   WHEN ".py"     MOVE "python"     TO WS-LANGUAGE
+                   WHEN ".js"     MOVE "javascript" TO WS-LANGUAGE
+                   WHEN ".rb"     MOVE "ruby"       TO WS-LANGUAGE
+                   WHEN ".go"     MOVE "go"         TO WS-LANGUAGE
+                   WHEN ".rs"     MOVE "rust"       TO WS-LANGUAGE
+                   WHEN ".c"      MOVE "c"          TO WS-LANGUAGE
+                   WHEN ".cpp"    MOVE "cpp"        TO WS-LANGUAGE
+                   WHEN ".java"   MOVE "java"       TO WS-LANGUAGE
+                   WHEN ".sh"     MOVE "bash"       TO WS-LANGUAGE
+                   WHEN OTHER     MOVE "unknown"    TO WS-LANGUAGE
+               END-EVALUATE
+           END-IF.
+
+       MAKE-EXECUTE-REQUEST.
+      * Build curl command using shell
+           STRING "curl -s -X POST https://api.unsandbox.com/execute "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' --data-binary @- -o /tmp/unsandbox_resp.json "
+               "< <(jq -Rs '{language: """
+               FUNCTION TRIM(WS-LANGUAGE)
+               """, code: .}' < '"
+               FUNCTION TRIM(WS-FILENAME)
+               "'); "
+               "jq -r '.stdout // empty' /tmp/unsandbox_resp.json | "
+               "sed 's/^/\x1b[34m/' | sed 's/$/\x1b[0m/'; "
+               "jq -r '.stderr // empty' /tmp/unsandbox_resp.json | "
+               "sed 's/^/\x1b[31m/' | sed 's/$/\x1b[0m/' >&2; "
+               "rm -f /tmp/unsandbox_resp.json"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD
+               RETURNING WS-EXIT-CODE.
+
+           MOVE WS-EXIT-CODE TO RETURN-CODE.
+
+       SESSION-LIST.
+           STRING "curl -s -X GET https://api.unsandbox.com/sessions "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' | jq -r '.sessions[] | "
+               '"\(.id) \(.shell) \(.status) \(.created_at)"'' "
+               "2>/dev/null || echo 'No active sessions'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SESSION-KILL.
+           STRING "curl -s -X DELETE "
+               "https://api.unsandbox.com/sessions/"
+               FUNCTION TRIM(WS-ID) " "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' >/dev/null && "
+               "echo -e '\x1b[32mSession terminated: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-LIST.
+           STRING "curl -s -X GET https://api.unsandbox.com/services "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' | jq -r '.services[] | "
+               '"\(.id) \(.name) \(.status)"'' "
+               "2>/dev/null || echo 'No services'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-INFO.
+           STRING "curl -s -X GET "
+               "https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID) " "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-LOGS.
+           STRING "curl -s -X GET "
+               "https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID) "/logs "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' | jq -r '.logs'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-SLEEP.
+           STRING "curl -s -X POST "
+               "https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID) "/sleep "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' >/dev/null && "
+               "echo -e '\x1b[32mService sleeping: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-WAKE.
+           STRING "curl -s -X POST "
+               "https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID) "/wake "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' >/dev/null && "
+               "echo -e '\x1b[32mService waking: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-DESTROY.
+           STRING "curl -s -X DELETE "
+               "https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID) " "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' >/dev/null && "
+               "echo -e '\x1b[32mService destroyed: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.

@@ -1,0 +1,241 @@
+# PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+#
+# This is free public domain software for the public good of a permacomputer hosted
+# at permacomputer.com - an always-on computer by the people, for the people. One
+# which is durable, easy to repair, and distributed like tap water for machine
+# learning intelligence.
+#
+# The permacomputer is community-owned infrastructure optimized around four values:
+#
+#   TRUTH    - Source code must be open source & freely distributed
+#   FREEDOM  - Voluntary participation without corporate control
+#   HARMONY  - Systems operating with minimal waste that self-renew
+#   LOVE     - Individual rights protected while fostering cooperation
+#
+# This software contributes to that vision by enabling code execution across 42+
+# programming languages through a unified interface, accessible to all. Code is
+# seeds to sprout on any abandoned technology.
+#
+# Learn more: https://www.permacomputer.com
+#
+# Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+# software, either in source code form or as a compiled binary, for any purpose,
+# commercial or non-commercial, and by any means.
+#
+# NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+#
+# That said, our permacomputer's digital membrane stratum continuously runs unit,
+# integration, and functional tests on all of it's own software - with our
+# permacomputer monitoring itself, repairing itself, with minimal human in the
+# loop guidance. Our agents do their best.
+#
+# Copyright 2025 TimeHexOn & foxhop & russell@unturf
+# https://www.timehexon.com
+# https://www.foxhop.net
+# https://www.unturf.com/software
+
+#!/usr/bin/awk -f
+# un.awk - Unsandbox CLI Client (AWK Implementation)
+#
+# Usage: awk -f un.awk <source_file>
+#
+# Note: AWK has limited capabilities, so this uses system() to call curl
+# Requires: UNSANDBOX_API_KEY environment variable
+
+BEGIN {
+    API_BASE = "https://api.unsandbox.com"
+
+    # Extension to language map
+    split("py:python js:javascript ts:typescript rb:ruby php:php pl:perl lua:lua sh:bash go:go rs:rust c:c cpp:cpp java:java kt:kotlin cs:csharp fs:fsharp hs:haskell ml:ocaml clj:clojure scm:scheme lisp:commonlisp erl:erlang ex:elixir jl:julia r:r cr:crystal d:d nim:nim zig:zig v:v dart:dart groovy:groovy f90:fortran cob:cobol pro:prolog forth:forth tcl:tcl raku:raku m:objc awk:awk ps1:powershell", pairs, " ")
+    for (i in pairs) {
+        split(pairs[i], kv, ":")
+        ext_map[kv[1]] = kv[2]
+    }
+
+    # Colors
+    BLUE = "\033[34m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    RESET = "\033[0m"
+}
+
+function get_api_key() {
+    cmd = "echo $UNSANDBOX_API_KEY"
+    cmd | getline api_key
+    close(cmd)
+    if (api_key == "") {
+        print RED "Error: UNSANDBOX_API_KEY not set" RESET > "/dev/stderr"
+        exit 1
+    }
+    return api_key
+}
+
+function get_extension(filename) {
+    n = split(filename, parts, ".")
+    if (n > 1) {
+        return parts[n]
+    }
+    return ""
+}
+
+function escape_json(s) {
+    gsub(/\\/, "\\\\", s)
+    gsub(/"/, "\\\"", s)
+    gsub(/\n/, "\\n", s)
+    gsub(/\r/, "\\r", s)
+    gsub(/\t/, "\\t", s)
+    return s
+}
+
+function execute(filename) {
+    api_key = get_api_key()
+
+    # Get extension and language
+    ext = get_extension(filename)
+    language = ext_map[ext]
+
+    if (language == "") {
+        print RED "Error: Unknown extension: ." ext RESET > "/dev/stderr"
+        exit 1
+    }
+
+    # Read file content
+    code = ""
+    while ((getline line < filename) > 0) {
+        if (code != "") code = code "\n"
+        code = code line
+    }
+    close(filename)
+
+    # Escape for JSON
+    escaped_code = escape_json(code)
+
+    # Build JSON
+    json = "{\"language\":\"" language "\",\"code\":\"" escaped_code "\"}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE "/execute' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " api_key "' " \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    # Parse stdout from response (simple regex)
+    if (match(response, /"stdout":"([^"]*)"/, arr)) {
+        stdout = arr[1]
+        gsub(/\\n/, "\n", stdout)
+        gsub(/\\t/, "\t", stdout)
+        gsub(/\\"/, "\"", stdout)
+        gsub(/\\\\/, "\\", stdout)
+        printf "%s%s%s", BLUE, stdout, RESET
+    }
+
+    # Parse stderr
+    if (match(response, /"stderr":"([^"]*)"/, arr)) {
+        stderr = arr[1]
+        gsub(/\\n/, "\n", stderr)
+        gsub(/\\t/, "\t", stderr)
+        gsub(/\\"/, "\"", stderr)
+        gsub(/\\\\/, "\\", stderr)
+        printf "%s%s%s", RED, stderr, RESET > "/dev/stderr"
+    }
+
+    # Parse exit code
+    if (match(response, /"exit_code":([0-9]+)/, arr)) {
+        exit arr[1]
+    }
+}
+
+function session_list() {
+    api_key = get_api_key()
+    cmd = "curl -s '" API_BASE "/sessions' -H 'Authorization: Bearer " api_key "'"
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function session_kill(id) {
+    api_key = get_api_key()
+    cmd = "curl -s -X DELETE '" API_BASE "/sessions/" id "' -H 'Authorization: Bearer " api_key "'"
+    system(cmd)
+    print GREEN "Session terminated: " id RESET
+}
+
+function service_list() {
+    api_key = get_api_key()
+    cmd = "curl -s '" API_BASE "/services' -H 'Authorization: Bearer " api_key "'"
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function service_destroy(id) {
+    api_key = get_api_key()
+    cmd = "curl -s -X DELETE '" API_BASE "/services/" id "' -H 'Authorization: Bearer " api_key "'"
+    system(cmd)
+    print GREEN "Service destroyed: " id RESET
+}
+
+function show_help() {
+    print "Usage: awk -f un.awk <source_file>"
+    print "       awk -f un.awk session --list"
+    print "       awk -f un.awk session --kill ID"
+    print "       awk -f un.awk service --list"
+    print "       awk -f un.awk service --destroy ID"
+    print ""
+    print "Requires: UNSANDBOX_API_KEY environment variable"
+}
+
+# Main logic
+{
+    # This block processes each input line from files passed as arguments
+    # For our CLI, we process ARGV instead
+}
+
+END {
+    if (ARGC < 2) {
+        show_help()
+        exit 0
+    }
+
+    if (ARGV[1] == "--help" || ARGV[1] == "-h") {
+        show_help()
+        exit 0
+    }
+
+    if (ARGV[1] == "session") {
+        if (ARGC >= 3 && ARGV[2] == "--list") {
+            session_list()
+        } else if (ARGC >= 4 && ARGV[2] == "--kill") {
+            session_kill(ARGV[3])
+        } else {
+            print "Usage: awk -f un.awk session --list|--kill ID"
+        }
+        exit 0
+    }
+
+    if (ARGV[1] == "service") {
+        if (ARGC >= 3 && ARGV[2] == "--list") {
+            service_list()
+        } else if (ARGC >= 4 && ARGV[2] == "--destroy") {
+            service_destroy(ARGV[3])
+        } else {
+            print "Usage: awk -f un.awk service --list|--destroy ID"
+        }
+        exit 0
+    }
+
+    # Default: execute file
+    execute(ARGV[1])
+}

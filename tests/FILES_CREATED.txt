@@ -1,0 +1,49 @@
+UN CLI Inception Test Suite - Files Created
+============================================
+
+Test Files (7 languages):
+-------------------------
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_py.py
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_js.js
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_ts.ts
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_rb.rb
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_php.php
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_pl.pl
+/home/fox/git/unsandbox.com/cli/inception/tests/test_un_lua.lua
+
+Supporting Files:
+-----------------
+/home/fox/git/unsandbox.com/cli/inception/tests/run_basic_tests.sh
+/home/fox/git/unsandbox.com/cli/inception/tests/TEST_SUMMARY.md
+/home/fox/git/unsandbox.com/cli/inception/tests/FILES_CREATED.txt
+
+Implementation Files (tested by these tests):
+---------------------------------------------
+/home/fox/git/unsandbox.com/cli/inception/un.py
+/home/fox/git/unsandbox.com/cli/inception/un.js
+/home/fox/git/unsandbox.com/cli/inception/un.ts
+/home/fox/git/unsandbox.com/cli/inception/un.rb
+/home/fox/git/unsandbox.com/cli/inception/un.php
+/home/fox/git/unsandbox.com/cli/inception/un.pl
+/home/fox/git/unsandbox.com/cli/inception/un.lua
+
+Test Data Files:
+----------------
+/home/fox/git/unsandbox.com/cli/test/fib.py
+/home/fox/git/unsandbox.com/cli/test/fib.js
+/home/fox/git/unsandbox.com/cli/test/fib.rb
+/home/fox/git/unsandbox.com/cli/test/fib.lua
+/home/fox/git/unsandbox.com/cli/test/fib.pl
+/home/fox/git/unsandbox.com/cli/test/fib.php
+
+Quick Commands:
+---------------
+# Run all tests
+cd /home/fox/git/unsandbox.com/cli/inception/tests && ./run_basic_tests.sh
+
+# Run individual test
+cd /home/fox/git/unsandbox.com/cli/inception/tests && ./test_un_py.py
+
+# With API key
+export UNSANDBOX_API_KEY="your-key"
+cd /home/fox/git/unsandbox.com/cli/inception/tests && ./run_basic_tests.sh
