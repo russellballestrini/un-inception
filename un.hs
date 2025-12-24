@@ -7,10 +7,10 @@
 --
 -- The permacomputer is community-owned infrastructure optimized around four values:
 --
---   TRUTH    - Source code must be open source & freely distributed
---   FREEDOM  - Voluntary participation without corporate control
---   HARMONY  - Systems operating with minimal waste that self-renew
---   LOVE     - Individual rights protected while fostering cooperation
+--   TRUTH    - First principles, math & science, open source code freely distributed
+--   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
+--   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
+--   LOVE     - Be yourself without hurting others, cooperation through natural law
 --
 -- This software contributes to that vision by enabling code execution across 42+
 -- programming languages through a unified interface, accessible to all. Code is
