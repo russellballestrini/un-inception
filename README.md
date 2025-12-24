@@ -155,16 +155,16 @@ Each implementation supports:
 ./tests/run_matrix.sh
 ```
 
-## Run with un2 (Meta-inception)
+## Run with un (Meta-inception)
 
 You can use the main `un` CLI to run these implementations inside unsandbox:
 
 ```bash
 # Python implementation running inside unsandbox
-un2 -n semitrusted un.py test/fib.py
+un -n semitrusted un.py test/fib.py
 
 # Rust implementation running inside unsandbox
-un2 -n semitrusted un.rs test/fib.py
+un -n semitrusted un.rs test/fib.py
 
 # It's turtles all the way down
 ```
