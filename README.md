@@ -4,44 +4,6 @@ The UN CLI written in every language it can execute. **42 implementations, one u
 
 > "If you replace every line of un.c with a different programming language, but it still executes code on unsandbox... is it still un?"
 
-## License
-
-PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-
-This is free public domain software for the public good of a permacomputer hosted
-at permacomputer.com - an always-on computer by the people, for the people. One
-which is durable, easy to repair, and distributed like tap water for machine
-learning intelligence.
-
-The permacomputer is community-owned infrastructure optimized around four values:
-
-  TRUTH    - First principles, math & science, open source code freely distributed
-  FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
-  HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
-  LOVE     - Be yourself without hurting others, cooperation through natural law
-
-This software contributes to that vision by enabling code execution across 42+
-programming languages through a unified interface, accessible to all. Code is
-seeds to sprout on any abandoned technology.
-
-Learn more: https://www.permacomputer.com
-
-Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
-software, either in source code form or as a compiled binary, for any purpose,
-commercial or non-commercial, and by any means.
-
-NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-
-That said, our permacomputer's digital membrane stratum continuously runs unit,
-integration, and functional tests on all of it's own software - with our
-permacomputer monitoring itself, repairing itself, with minimal human in the
-loop guidance. Our agents do their best.
-
-Copyright 2025 TimeHexOn & foxhop & russell@unturf
-https://www.timehexon.com
-https://www.foxhop.net
-https://www.unturf.com/software
-
 ## Quick Start
 
 ```bash
@@ -99,9 +61,9 @@ go run un.go test/fib.py
 | R | `un.r` | Scientific |
 | Crystal | `un.cr` | Scientific |
 | Fortran | `un.f90` | Scientific |
-| COBOL | `un.cob` | Scientific |
-| Prolog | `un.pro` | Scientific |
-| Forth | `un.forth` | Scientific |
+| COBOL | `un.cob` | Legacy |
+| Prolog | `un.pro` | Logic |
+| Forth | `un.forth` | Stack |
 | Tcl | `un.tcl` | Other |
 | Raku | `un.raku` | Other |
 | Objective-C | `un.m` | Other |
@@ -155,22 +117,35 @@ Each implementation supports:
 ./tests/run_matrix.sh
 ```
 
-## Run with un (Meta-inception)
-
-You can use the main `un` CLI to run these implementations inside unsandbox:
-
-```bash
-# Python implementation running inside unsandbox
-un -n semitrusted un.py test/fib.py
-
-# Rust implementation running inside unsandbox
-un -n semitrusted un.rs test/fib.py
-
-# It's turtles all the way down
-```
-
 ## Links
 
 - [unsandbox.com](https://unsandbox.com) - Remote code execution API
 - [CLI Inception Gallery](https://unsandbox.com/cli/inception) - Browse all implementations
 - [API Documentation](https://unsandbox.com/docs) - Full API reference
+
+## License
+
+**PUBLIC DOMAIN - NO LICENSE, NO WARRANTY**
+
+This is free public domain software for the public good of a permacomputer hosted at permacomputer.com - an always-on computer by the people, for the people. One which is durable, easy to repair, and distributed like tap water for machine learning intelligence.
+
+The permacomputer is community-owned infrastructure optimized around four values:
+
+```
+TRUTH    - First principles, math & science, open source code freely distributed
+FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
+HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
+LOVE     - Be yourself without hurting others, cooperation through natural law
+```
+
+This software contributes to that vision by enabling code execution across all 42 programming languages through a unified interface, accessible to all. Code is seeds to sprout on any abandoned technology.
+
+Learn more: [permacomputer.com](https://www.permacomputer.com)
+
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this software, either in source code form or as a compiled binary, for any purpose, commercial or non-commercial, and by any means.
+
+**NO WARRANTY.** THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+
+---
+
+Copyright 2025 [TimeHexOn](https://www.timehexon.com) & [foxhop](https://www.foxhop.net) & [russell@unturf](https://www.unturf.com/software)
