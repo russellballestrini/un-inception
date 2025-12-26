@@ -336,6 +336,9 @@ function cmd_service($options) {
         if ($options['domains']) {
             $payload['domains'] = explode(',', $options['domains']);
         }
+        if ($options['type']) {
+            $payload['service_type'] = $options['type'];
+        }
         if ($options['bootstrap']) {
             if (file_exists($options['bootstrap'])) {
                 $payload['bootstrap'] = file_get_contents($options['bootstrap']);
@@ -380,6 +383,7 @@ function main() {
         'name' => null,
         'ports' => null,
         'domains' => null,
+        'type' => null,
         'bootstrap' => null,
         'info' => null,
         'logs' => null,
@@ -452,6 +456,9 @@ function main() {
             case '--domains':
                 $options['domains'] = $argv[++$i];
                 break;
+            case '--type':
+                $options['type'] = $argv[++$i];
+                break;
             case '--bootstrap':
                 $options['bootstrap'] = $argv[++$i];
                 break;
@@ -523,6 +530,7 @@ Service options:
   --name NAME      Service name
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
+  --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
   --bootstrap CMD  Bootstrap command/file
   -l, --list       List services
   --info ID        Get service details

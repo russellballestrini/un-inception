@@ -85,6 +85,7 @@ data class Args(
     var serviceList: Boolean = false,
     var serviceName: String? = null,
     var servicePorts: String? = null,
+    var serviceType: String? = null,
     var serviceBootstrap: String? = null,
     var serviceInfo: String? = null,
     var serviceLogs: String? = null,
@@ -302,6 +303,9 @@ fun cmdService(args: Args) {
         if (args.servicePorts != null) {
             payload["ports"] = args.servicePorts!!.split(",").map { it.trim().toInt() }
         }
+        if (args.serviceType != null) {
+            payload["service_type"] = args.serviceType!!
+        }
         if (args.serviceBootstrap != null) {
             payload["bootstrap"] = args.serviceBootstrap!!
         }
@@ -513,6 +517,7 @@ fun parseArgs(args: Array<String>): Args {
             "--kill" -> result.sessionKill = args[++i]
             "--name" -> result.serviceName = args[++i]
             "--ports" -> result.servicePorts = args[++i]
+            "--type" -> result.serviceType = args[++i]
             "--bootstrap" -> result.serviceBootstrap = args[++i]
             "--info" -> result.serviceInfo = args[++i]
             "--logs" -> result.serviceLogs = args[++i]
@@ -551,6 +556,7 @@ Service options:
   --list            List services
   --name NAME       Service name
   --ports PORTS     Comma-separated ports
+  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
   --info ID         Get service details
   --logs ID         Get all logs

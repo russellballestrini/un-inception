@@ -193,13 +193,15 @@ defmodule Un do
     bootstrap = get_opt(args, "--bootstrap", nil, nil)
     network = get_opt(args, "-n", nil, nil)
     vcpu = get_opt(args, "-v", nil, nil)
+    service_type = get_opt(args, "--type", nil, nil)
 
     ports_json = if ports, do: ",\"ports\":[#{ports}]", else: ""
     bootstrap_json = if bootstrap, do: ",\"bootstrap\":\"#{escape_json(bootstrap)}\"", else: ""
     network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
     vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
+    type_json = if service_type, do: ",\"service_type\":\"#{service_type}\"", else: ""
 
-    json = "{\"name\":\"#{name}\"#{ports_json}#{bootstrap_json}#{network_json}#{vcpu_json}}"
+    json = "{\"name\":\"#{name}\"#{ports_json}#{bootstrap_json}#{network_json}#{vcpu_json}#{type_json}}"
     response = curl_post(api_key, "/services", json)
     IO.puts("#{@green}Service created#{@reset}")
     IO.puts(response)

@@ -130,6 +130,7 @@ data ServiceOpts = ServiceOpts
   { svcAction :: ServiceAction
   , svcName :: Maybe String
   , svcPorts :: Maybe String
+  , svcType :: Maybe String
   , svcBootstrap :: Maybe String
   , svcNetwork :: Maybe String
   , svcVcpu :: Maybe Int
@@ -161,7 +162,7 @@ parseSession args = return $ parseSessionArgs args defaultSessionOpts
 parseService :: [String] -> IO ServiceOpts
 parseService args = return $ parseServiceArgs args defaultServiceOpts
   where
-    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing
+    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing
     parseServiceArgs [] opts = opts
     parseServiceArgs ("--list":rest) opts = parseServiceArgs rest opts { svcAction = ServiceList }
     parseServiceArgs ("--info":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceInfo id }
@@ -171,6 +172,7 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--destroy":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDestroy id }
     parseServiceArgs ("--name":n:rest) opts = parseServiceArgs rest opts { svcName = Just n }
     parseServiceArgs ("--ports":p:rest) opts = parseServiceArgs rest opts { svcPorts = Just p }
+    parseServiceArgs ("--type":t:rest) opts = parseServiceArgs rest opts { svcType = Just t }
     parseServiceArgs ("--bootstrap":b:rest) opts = parseServiceArgs rest opts { svcBootstrap = Just b }
     parseServiceArgs ("-n":net:rest) opts = parseServiceArgs rest opts { svcNetwork = Just net }
     parseServiceArgs ("-v":v:rest) opts = parseServiceArgs rest opts { svcVcpu = Just (read v) }
@@ -317,10 +319,11 @@ serviceCommand opts = do
           exitFailure
         Just name -> do
           let portsJSON = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") (svcPorts opts)
+          let typeJSON = maybe "" (\t -> ",\"service_type\":\"" ++ t ++ "\"") (svcType opts)
           let bootstrapJSON = maybe "" (\b -> ",\"bootstrap\":\"" ++ escapeJSON b ++ "\"") (svcBootstrap opts)
           let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (svcNetwork opts)
           let vcpuJSON = maybe "" (\v -> ",\"vcpu\":" ++ show v) (svcVcpu opts)
-          let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ bootstrapJSON ++ networkJSON ++ vcpuJSON ++ "}"
+          let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ networkJSON ++ vcpuJSON ++ "}"
           (_, stdout, _) <- curlPost apiKey "/services" json
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout

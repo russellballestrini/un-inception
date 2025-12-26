@@ -68,6 +68,11 @@
        01  WS-COMMAND          PIC X(32).
        01  WS-OPERATION        PIC X(32).
        01  WS-ID               PIC X(256).
+       01  WS-NAME             PIC X(256).
+       01  WS-PORTS            PIC X(256).
+       01  WS-DOMAINS          PIC X(256).
+       01  WS-SERVICE-TYPE     PIC X(64).
+       01  WS-BOOTSTRAP        PIC X(2048).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -166,6 +171,13 @@
                STOP RUN
            END-IF.
 
+      * Initialize service parameters
+           MOVE SPACES TO WS-NAME.
+           MOVE SPACES TO WS-PORTS.
+           MOVE SPACES TO WS-DOMAINS.
+           MOVE SPACES TO WS-SERVICE-TYPE.
+           MOVE SPACES TO WS-BOOTSTRAP.
+
       * Parse service arguments
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
 
@@ -186,9 +198,13 @@
            ELSE IF WS-ARG2 = "--destroy"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-DESTROY
+           ELSE IF WS-ARG2 = "--name"
+               ACCEPT WS-NAME FROM ARGUMENT-VALUE
+               PERFORM PARSE-SERVICE-CREATE-ARGS
+               PERFORM SERVICE-CREATE
            ELSE
                DISPLAY "Error: Use --list, --info, --logs, "
-                   "--sleep, --wake, or --destroy" UPON SYSERR
+                   "--sleep, --wake, --destroy, or --name" UPON SYSERR
                MOVE 1 TO RETURN-CODE
            END-IF.
 
@@ -346,6 +362,82 @@
                "' >/dev/null && "
                "echo -e '\x1b[32mService destroyed: "
                FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-SERVICE-CREATE-ARGS.
+      * Parse remaining arguments for service creation
+      * This is a simplified parser that looks for specific flags
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "--ports"
+                   ACCEPT WS-PORTS FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--domains"
+                   ACCEPT WS-DOMAINS FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--type"
+                   ACCEPT WS-SERVICE-TYPE FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--bootstrap"
+                   ACCEPT WS-BOOTSTRAP FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       SERVICE-CREATE.
+      * Build JSON payload for service creation
+      * Start with base payload containing name
+           STRING "curl -s -X POST "
+               "https://api.unsandbox.com/services "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' -d '{""name"":"""
+               FUNCTION TRIM(WS-NAME)
+               """"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+      * Add ports if provided
+           IF WS-PORTS NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",""ports"":[" FUNCTION TRIM(WS-PORTS) "]"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+      * Add domains if provided
+           IF WS-DOMAINS NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",""domains"":["""
+                   FUNCTION TRIM(WS-DOMAINS)
+                   """]"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+      * Add service_type if provided
+           IF WS-SERVICE-TYPE NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",""service_type"":"""
+                   FUNCTION TRIM(WS-SERVICE-TYPE)
+                   """"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+      * Add bootstrap if provided
+           IF WS-BOOTSTRAP NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",""bootstrap"":"""
+                   FUNCTION TRIM(WS-BOOTSTRAP)
+                   """"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+      * Close JSON and add output formatting
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "}' | jq -r '.id + "" created""'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

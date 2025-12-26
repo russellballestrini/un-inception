@@ -187,12 +187,75 @@ function service_destroy(id) {
     print GREEN "Service destroyed: " id RESET
 }
 
+function service_create(name, ports, domains, service_type, bootstrap) {
+    api_key = get_api_key()
+
+    # Build JSON payload
+    json = "{\"name\":\"" escape_json(name) "\""
+
+    if (ports != "") {
+        json = json ",\"ports\":[" ports "]"
+    }
+
+    if (domains != "") {
+        # Split domains by comma and build array
+        split(domains, domain_arr, ",")
+        json = json ",\"domains\":["
+        for (i in domain_arr) {
+            if (i > 1) json = json ","
+            json = json "\"" escape_json(domain_arr[i]) "\""
+        }
+        json = json "]"
+    }
+
+    if (service_type != "") {
+        json = json ",\"service_type\":\"" escape_json(service_type) "\""
+    }
+
+    if (bootstrap != "") {
+        json = json ",\"bootstrap\":\"" escape_json(bootstrap) "\""
+    }
+
+    json = json "}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_svc_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE "/services' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " api_key "' " \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    # Print response
+    print response
+}
+
 function show_help() {
     print "Usage: awk -f un.awk <source_file>"
     print "       awk -f un.awk session --list"
     print "       awk -f un.awk session --kill ID"
     print "       awk -f un.awk service --list"
+    print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD]"
     print "       awk -f un.awk service --destroy ID"
+    print ""
+    print "Service options:"
+    print "  --name NAME      Service name (required for --create)"
+    print "  --ports PORTS    Comma-separated port numbers"
+    print "  --domains DOMAINS Comma-separated domain names"
+    print "  --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
+    print "  --bootstrap CMD  Bootstrap command or script"
     print ""
     print "Requires: UNSANDBOX_API_KEY environment variable"
 }
@@ -230,8 +293,44 @@ END {
             service_list()
         } else if (ARGC >= 4 && ARGV[2] == "--destroy") {
             service_destroy(ARGV[3])
+        } else if (ARGV[2] == "--create") {
+            # Parse service creation arguments
+            name = ""
+            ports = ""
+            domains = ""
+            service_type = ""
+            bootstrap = ""
+
+            i = 3
+            while (i < ARGC) {
+                if (ARGV[i] == "--name" && i + 1 < ARGC) {
+                    name = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--ports" && i + 1 < ARGC) {
+                    ports = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--domains" && i + 1 < ARGC) {
+                    domains = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--type" && i + 1 < ARGC) {
+                    service_type = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--bootstrap" && i + 1 < ARGC) {
+                    bootstrap = ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+
+            if (name == "") {
+                print RED "Error: --name is required for service creation" RESET > "/dev/stderr"
+                exit 1
+            }
+
+            service_create(name, ports, domains, service_type, bootstrap)
         } else {
-            print "Usage: awk -f un.awk service --list|--destroy ID"
+            print "Usage: awk -f un.awk service --list|--create|--destroy ID"
         }
         exit 0
     }

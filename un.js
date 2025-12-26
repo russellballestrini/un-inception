@@ -325,6 +325,7 @@ async function cmdService(args) {
     const payload = { name: args.name };
     if (args.ports) payload.ports = args.ports.split(',').map(p => parseInt(p.trim()));
     if (args.domains) payload.domains = args.domains.split(',');
+    if (args.serviceType) payload.service_type = args.serviceType;
     if (args.bootstrap) {
       if (fs.existsSync(args.bootstrap)) {
         payload.bootstrap = fs.readFileSync(args.bootstrap, 'utf-8');
@@ -436,6 +437,9 @@ function parseArgs(argv) {
     } else if (arg === '--domains' && i + 1 < argv.length) {
       args.domains = argv[++i];
       i++;
+    } else if (arg === '--type' && i + 1 < argv.length) {
+      args.serviceType = argv[++i];
+      i++;
     } else if (arg === '--bootstrap' && i + 1 < argv.length) {
       args.bootstrap = argv[++i];
       i++;
@@ -514,6 +518,7 @@ Service options:
   --name NAME      Service name
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
+  --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)
   --bootstrap CMD  Bootstrap command/file
   -l, --list       List services
   --info ID        Get service details

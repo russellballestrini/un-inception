@@ -76,6 +76,7 @@ class Args {
     Boolean serviceList = false
     String serviceName = null
     String servicePorts = null
+    String serviceType = null
     String serviceBootstrap = null
     String serviceInfo = null
     String serviceLogs = null
@@ -331,6 +332,9 @@ def cmdService(args) {
             def ports = args.servicePorts.split(',').collect { it.trim() }.join(',')
             json += ""","ports":[${ports}]"""
         }
+        if (args.serviceType) {
+            json += ""","service_type":"${args.serviceType}""""
+        }
         if (args.serviceBootstrap) {
             def escaped = args.serviceBootstrap.replace('\\', '\\\\').replace('"', '\\"')
             json += ""","bootstrap":"${escaped}""""
@@ -420,6 +424,9 @@ def parseArgs(argv) {
             case '--ports':
                 args.servicePorts = argv[++i]
                 break
+            case '--type':
+                args.serviceType = argv[++i]
+                break
             case '--bootstrap':
                 args.serviceBootstrap = argv[++i]
                 break
@@ -474,6 +481,7 @@ Service options:
   --list            List services
   --name NAME       Service name
   --ports PORTS     Comma-separated ports
+  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
   --info ID         Get service details
   --logs ID         Get all logs

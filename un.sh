@@ -395,6 +395,7 @@ cmd_service() {
     local name=""
     local ports=""
     local domains=""
+    local service_type=""
     local bootstrap=""
     local list=false
     local info=""
@@ -421,6 +422,10 @@ cmd_service() {
                 ;;
             --domains)
                 domains="$2"
+                shift 2
+                ;;
+            --type)
+                service_type="$2"
                 shift 2
                 ;;
             --bootstrap)
@@ -555,6 +560,10 @@ cmd_service() {
             payload=$(echo "$payload" | jq --argjson d "$domains_json" '. + {domains: $d}')
         fi
 
+        if [[ -n "$service_type" ]]; then
+            payload=$(echo "$payload" | jq --arg t "$service_type" '. + {service_type: $t}')
+        fi
+
         if [[ -n "$bootstrap" ]]; then
             if [[ -f "$bootstrap" ]]; then
                 local bootstrap_content=$(cat "$bootstrap")
@@ -614,6 +623,7 @@ Service options:
   --name NAME      Service name
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
+  --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)
   --bootstrap CMD  Bootstrap command/file
   -l, --list       List services
   --info ID        Get service details

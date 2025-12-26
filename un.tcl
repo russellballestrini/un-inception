@@ -361,6 +361,7 @@ proc cmd_service {args} {
     set destroy_id ""
     set name ""
     set ports ""
+    set service_type ""
     set bootstrap ""
     set network ""
     set vcpu 0
@@ -399,6 +400,10 @@ proc cmd_service {args} {
             --ports {
                 incr i
                 set ports [lindex $args $i]
+            }
+            --type {
+                incr i
+                set service_type [lindex $args $i]
             }
             --bootstrap {
                 incr i
@@ -477,6 +482,10 @@ proc cmd_service {args} {
                 lappend port_json $p
             }
             lappend payload ports [::json::write array {*}$port_json]
+        }
+
+        if {$service_type ne ""} {
+            lappend payload service_type [::json::write string $service_type]
         }
 
         if {$bootstrap ne ""} {

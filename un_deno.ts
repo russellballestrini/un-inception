@@ -338,6 +338,7 @@ async function cmdService(args: string[]) {
   let destroyId = "";
   let name = "";
   let ports = "";
+  let serviceType = "";
   let bootstrap = "";
   let network = "";
   let vcpu = 0;
@@ -382,6 +383,11 @@ async function cmdService(args: string[]) {
       case "--ports":
         if (i + 1 < args.length) {
           ports = args[++i];
+        }
+        break;
+      case "--type":
+        if (i + 1 < args.length) {
+          serviceType = args[++i];
         }
         break;
       case "--bootstrap":
@@ -458,6 +464,10 @@ async function cmdService(args: string[]) {
 
     if (ports) {
       payload.ports = ports.split(",").map((p) => parseInt(p));
+    }
+
+    if (serviceType) {
+      payload.service_type = serviceType;
     }
 
     if (bootstrap) {

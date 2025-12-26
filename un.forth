@@ -252,6 +252,36 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
+\ Service create (requires --name, optional --ports, --domains, --type, --bootstrap)
+: service-create ( -- )
+    get-api-key
+    \ Parse arguments (simplified - in real implementation would iterate through args)
+    \ For now, just create the curl command that will be constructed by bash
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" NAME=''; PORTS=''; DOMAINS=''; TYPE=''; BOOTSTRAP=''" r@ write-line throw
+    s" for ((i=3; i<$#; i+=2)); do" r@ write-line throw
+    s"   case ${!i} in" r@ write-line throw
+    s"     --name) NAME=${!((i+1))} ;;" r@ write-line throw
+    s"     --ports) PORTS=${!((i+1))} ;;" r@ write-line throw
+    s"     --domains) DOMAINS=${!((i+1))} ;;" r@ write-line throw
+    s"     --type) TYPE=${!((i+1))} ;;" r@ write-line throw
+    s"     --bootstrap) BOOTSTRAP=${!((i+1))} ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s" done" r@ write-line throw
+    s" [ -z \"$NAME\" ] && echo 'Error: --name required' && exit 1" r@ write-line throw
+    s" PAYLOAD='{\"name\":\"'\"$NAME\"'\"}'" r@ write-line throw
+    s" [ -n \"$PORTS\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg p \"$PORTS\" '. + {ports: ($p | split(\",\") | map(tonumber))}')" r@ write-line throw
+    s" [ -n \"$DOMAINS\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg d \"$DOMAINS\" '. + {domains: ($d | split(\",\"))}')" r@ write-line throw
+    s" [ -n \"$TYPE\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg t \"$TYPE\" '. + {service_type: $t}')" r@ write-line throw
+    s" [ -n \"$BOOTSTRAP\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg b \"$BOOTSTRAP\" '. + {bootstrap: $b}')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/services -H 'Content-Type: application/json' -H 'Authorization: Bearer " r@ write-file throw
+    get-api-key r@ write-file throw
+    s" ' -d \"$PAYLOAD\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
 \ Handle session subcommand
 : handle-session ( -- )
     argc @ 3 < if
@@ -287,7 +317,7 @@
 \ Handle service subcommand
 : handle-service ( -- )
     argc @ 3 < if
-        s" Error: Use --list, --info, --logs, --sleep, --wake, or --destroy" type cr
+        s" Error: Use --name (create), --list, --info, --logs, --sleep, --wake, or --destroy" type cr
         1 (bye)
     then
 
@@ -298,6 +328,11 @@
 
     2dup s" -l" compare 0= if
         2drop service-list
+        0 (bye)
+    then
+
+    2dup s" --name" compare 0= if
+        2drop service-create
         0 (bye)
     then
 
@@ -352,7 +387,7 @@
     then
 
     2drop
-    s" Error: Use --list, --info, --logs, --sleep, --wake, or --destroy" type cr
+    s" Error: Use --name (create), --list, --info, --logs, --sleep, --wake, or --destroy" type cr
     1 (bye)
 ;
 

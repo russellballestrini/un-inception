@@ -175,6 +175,29 @@ service_destroy(ServiceId) :-
         [ServiceId, ApiKey, ServiceId]),
     shell(Cmd, 0).
 
+% Service create
+service_create(Name, Ports, Bootstrap, ServiceType) :-
+    get_api_key(ApiKey),
+    % Build JSON payload
+    (   Ports \= ''
+    ->  format(atom(PortsJson), ',"ports":[~w]', [Ports])
+    ;   PortsJson = ''
+    ),
+    (   Bootstrap \= ''
+    ->  format(atom(BootstrapJson), ',"bootstrap":"~w"', [Bootstrap])
+    ;   BootstrapJson = ''
+    ),
+    (   ServiceType \= ''
+    ->  format(atom(ServiceTypeJson), ',"service_type":"~w"', [ServiceType])
+    ;   ServiceTypeJson = ''
+    ),
+    format(atom(Json), '{"name":"~w"~w~w~w}', [Name, PortsJson, BootstrapJson, ServiceTypeJson]),
+    % Execute curl command
+    format(atom(Cmd),
+        'curl -s -X POST https://api.unsandbox.com/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -d \'~w\' && echo -e "\\x1b[32mService created\\x1b[0m"',
+        [ApiKey, Json]),
+    shell(Cmd, 0).
+
 % Handle session subcommand
 handle_session(['--list'|_]) :- session_list.
 handle_session(['-l'|_]) :- session_list.
@@ -184,16 +207,43 @@ handle_session(_) :-
     halt(1).
 
 % Handle service subcommand
-handle_service(['--list'|_]) :- service_list.
-handle_service(['-l'|_]) :- service_list.
-handle_service(['--info', ServiceId|_]) :- service_info(ServiceId).
-handle_service(['--logs', ServiceId|_]) :- service_logs(ServiceId).
-handle_service(['--sleep', ServiceId|_]) :- service_sleep(ServiceId).
-handle_service(['--wake', ServiceId|_]) :- service_wake(ServiceId).
-handle_service(['--destroy', ServiceId|_]) :- service_destroy(ServiceId).
-handle_service(_) :-
-    write(user_error, 'Error: Use --list, --info, --logs, --sleep, --wake, or --destroy\n'),
-    halt(1).
+handle_service(Args) :-
+    parse_service_args(Args, '', '', '', '', Action),
+    execute_service_action(Action).
+
+% Parse service arguments
+parse_service_args([], Name, Ports, Bootstrap, ServiceType, create) :-
+    (   Name \= ''
+    ->  service_create(Name, Ports, Bootstrap, ServiceType)
+    ;   write(user_error, 'Error: --name required for service creation\n'),
+        halt(1)
+    ).
+parse_service_args([], _, _, _, _, Action) :-
+    (   Action = list
+    ->  service_list
+    ;   write(user_error, 'Error: Use --list, --info, --logs, --sleep, --wake, --destroy, or --name\n'),
+        halt(1)
+    ).
+parse_service_args(['--list'|_], _, _, _, _, _) :- service_list.
+parse_service_args(['-l'|_], _, _, _, _, _) :- service_list.
+parse_service_args(['--info', ServiceId|_], _, _, _, _, _) :- service_info(ServiceId).
+parse_service_args(['--logs', ServiceId|_], _, _, _, _, _) :- service_logs(ServiceId).
+parse_service_args(['--sleep', ServiceId|_], _, _, _, _, _) :- service_sleep(ServiceId).
+parse_service_args(['--wake', ServiceId|_], _, _, _, _, _) :- service_wake(ServiceId).
+parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _) :- service_destroy(ServiceId).
+parse_service_args(['--name', Name|Rest], _, Ports, Bootstrap, ServiceType, _) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, ServiceType, create).
+parse_service_args(['--ports', PortsList|Rest], Name, _, Bootstrap, ServiceType, Action) :-
+    parse_service_args(Rest, Name, PortsList, Bootstrap, ServiceType, Action).
+parse_service_args(['--bootstrap', BootstrapFile|Rest], Name, Ports, _, ServiceType, Action) :-
+    parse_service_args(Rest, Name, Ports, BootstrapFile, ServiceType, Action).
+parse_service_args(['--type', Type|Rest], Name, Ports, Bootstrap, _, Action) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, Type, Action).
+parse_service_args([_|Rest], Name, Ports, Bootstrap, ServiceType, Action) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, ServiceType, Action).
+
+% Execute service action (not used, but kept for structure)
+execute_service_action(_).
 
 % Main program
 main(Argv) :-

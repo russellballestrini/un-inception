@@ -173,7 +173,7 @@
                 (println (str yellow "Session created (WebSocket required)" reset))
                 (println (curl-post api-key "/sessions" json))))))
 
-(defn service-command [action sid name ports bootstrap network vcpu]
+(defn service-command [action sid name ports bootstrap service-type network vcpu]
   (let [api-key (get-api-key)]
     (case action
       :list (println (curl-get api-key "/services"))
@@ -191,9 +191,10 @@
       :create (when name
                 (let [ports-json (if ports (str ",\"ports\":[" ports "]") "")
                       bootstrap-json (if bootstrap (str ",\"bootstrap\":\"" (escape-json bootstrap) "\"") "")
+                      service-type-json (if service-type (str ",\"service_type\":\"" service-type "\"") "")
                       network-json (if network (str ",\"network\":\"" network "\"") "")
                       vcpu-json (if vcpu (str ",\"vcpu\":" vcpu) "")
-                      json (str "{\"name\":\"" name "\"" ports-json bootstrap-json network-json vcpu-json "}")]
+                      json (str "{\"name\":\"" name "\"" ports-json bootstrap-json service-type-json network-json vcpu-json "}")]
                   (println (str green "Service created" reset))
                   (println (curl-post api-key "/services" json)))))))
 
@@ -213,12 +214,13 @@
          service-name nil
          service-ports nil
          service-bootstrap nil
+         service-type nil
          mode :execute]
     (cond
       (empty? args)
       (case mode
         :session (session-command (or session-action :create) session-id session-shell network vcpu)
-        :service (service-command (or service-action :create) service-id service-name service-ports service-bootstrap network vcpu)
+        :service (service-command (or service-action :create) service-id service-name service-ports service-bootstrap service-type network vcpu)
         :execute (if file
                    (execute-command file env-vars artifacts out-dir network vcpu)
                    (do (println "Usage: un.clj [options] <source_file>")
@@ -228,91 +230,95 @@
 
       (= (first args) "session")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap :session)
+             service-action service-id service-name service-ports service-bootstrap service-type :session)
 
       (= (first args) "service")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap :service)
+             service-action service-id service-name service-ports service-bootstrap service-type :service)
 
       ;; Session options
       (and (= mode :session) (= (first args) "--list"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu :list session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :session) (= (first args) "--kill"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu :kill (second args) session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :session) (or (= (first args) "--shell") (= (first args) "-s")))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id (second args)
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       ;; Service options
       (and (= mode :service) (= (first args) "--list"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :list service-id service-name service-ports service-bootstrap mode)
+             :list service-id service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--info"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :info (second args) service-name service-ports service-bootstrap mode)
+             :info (second args) service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--logs"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :logs (second args) service-name service-ports service-bootstrap mode)
+             :logs (second args) service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--sleep"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :sleep (second args) service-name service-ports service-bootstrap mode)
+             :sleep (second args) service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--wake"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :wake (second args) service-name service-ports service-bootstrap mode)
+             :wake (second args) service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--destroy"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :destroy (second args) service-name service-ports service-bootstrap mode)
+             :destroy (second args) service-name service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--name"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :create service-id (second args) service-ports service-bootstrap mode)
+             :create service-id (second args) service-ports service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--ports"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name (second args) service-bootstrap mode)
+             service-action service-id service-name (second args) service-bootstrap service-type mode)
 
       (and (= mode :service) (= (first args) "--bootstrap"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports (second args) mode)
+             service-action service-id service-name service-ports (second args) service-type mode)
+
+      (and (= mode :service) (= (first args) "--type"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
+             service-action service-id service-name service-ports service-bootstrap (second args) mode)
 
       ;; Execute options
       (= (first args) "-e")
       (let [[k v] (str/split (second args) #"=" 2)]
         (recur (rest (rest args)) file (conj env-vars [k v]) artifacts out-dir network vcpu
-               session-action session-id session-shell service-action service-id service-name service-ports service-bootstrap mode))
+               session-action session-id session-shell service-action service-id service-name service-ports service-bootstrap service-type mode))
 
       (= (first args) "-a")
       (recur (rest args) file env-vars true out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       (= (first args) "-o")
       (recur (rest (rest args)) file env-vars artifacts (second args) network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       (= (first args) "-n")
       (recur (rest (rest args)) file env-vars artifacts out-dir (second args) vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       (= (first args) "-v")
       (recur (rest (rest args)) file env-vars artifacts out-dir network (Integer/parseInt (second args)) session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       ;; Source file
       (and (= mode :execute) (not (.startsWith (first args) "-")) (nil? file))
       (recur (rest args) (first args) env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode)
+             service-action service-id service-name service-ports service-bootstrap service-type mode)
 
       :else
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap mode))))
+             service-action service-id service-name service-ports service-bootstrap service-type mode))))
 
 (parse-args *command-line-args*)

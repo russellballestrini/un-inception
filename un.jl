@@ -286,7 +286,51 @@ function cmd_service(args)
         return
     end
 
-    println(stderr, "$(RED)Error: Use --list, --info, --logs, --sleep, --wake, or --destroy$(RESET)")
+    # Create new service
+    if args["name"] !== nothing
+        payload = Dict("name" => args["name"])
+
+        if args["ports"] !== nothing
+            ports = [parse(Int, strip(p)) for p in split(args["ports"], ',')]
+            payload["ports"] = ports
+        end
+
+        if args["domains"] !== nothing
+            domains = [strip(d) for d in split(args["domains"], ',')]
+            payload["domains"] = domains
+        end
+
+        if args["type"] !== nothing
+            payload["service_type"] = args["type"]
+        end
+
+        if args["bootstrap"] !== nothing
+            bootstrap = args["bootstrap"]
+            if isfile(bootstrap)
+                payload["bootstrap"] = read(bootstrap, String)
+            else
+                payload["bootstrap"] = bootstrap
+            end
+        end
+
+        if args["network"] !== nothing
+            payload["network"] = args["network"]
+        end
+
+        if args["vcpu"] !== nothing
+            payload["vcpu"] = args["vcpu"]
+        end
+
+        result = api_request("/services", api_key, method="POST", data=payload)
+        println("$(GREEN)Service created: $(get(result, "id", "N/A"))$(RESET)")
+        println("Name: $(get(result, "name", "N/A"))")
+        if haskey(result, "url")
+            println("URL: $(result["url"])")
+        end
+        return
+    end
+
+    println(stderr, "$(RED)Error: Use --name to create, or --list, --info, --logs, --sleep, --wake, --destroy$(RESET)")
     exit(1)
 end
 
@@ -333,6 +377,24 @@ function main()
     end
 
     @add_arg_table! s["service"] begin
+        "--name"
+            help = "Service name"
+        "--ports"
+            help = "Comma-separated ports"
+        "--domains"
+            help = "Comma-separated custom domains"
+        "--type"
+            help = "Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
+        "--bootstrap"
+            help = "Bootstrap command/file"
+        "--network", "-n"
+            help = "Network mode"
+            arg_type = String
+            range_tester = x -> x in ["zerotrust", "semitrusted"]
+        "--vcpu", "-v"
+            help = "vCPU count (1-8)"
+            arg_type = Int
+            range_tester = x -> x >= 1 && x <= 8
         "--list", "-l"
             help = "List services"
             action = :store_true

@@ -336,6 +336,7 @@ void cmdService(NSArray* args) {
     NSString* destroyId = nil;
     NSString* name = nil;
     NSString* ports = nil;
+    NSString* type = nil;
     NSString* bootstrap = nil;
     NSString* network = nil;
     int vcpu = 0;
@@ -359,6 +360,8 @@ void cmdService(NSArray* args) {
             name = args[++i];
         } else if ([arg isEqualToString:@"--ports"] && i + 1 < [args count]) {
             ports = args[++i];
+        } else if ([arg isEqualToString:@"--type"] && i + 1 < [args count]) {
+            type = args[++i];
         } else if ([arg isEqualToString:@"--bootstrap"] && i + 1 < [args count]) {
             bootstrap = args[++i];
         } else if ([arg isEqualToString:@"-n"] && i + 1 < [args count]) {
@@ -439,6 +442,10 @@ void cmdService(NSArray* args) {
                 [portNumbers addObject:@([p intValue])];
             }
             payload[@"ports"] = portNumbers;
+        }
+
+        if (type) {
+            payload[@"service_type"] = type;
         }
 
         if (bootstrap) {

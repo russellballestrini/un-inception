@@ -330,6 +330,8 @@ def cmd_service(args):
             payload["ports"] = [int(p) for p in args.ports.split(',')]
         if args.domains:
             payload["domains"] = args.domains.split(',')
+        if args.service_type:
+            payload["service_type"] = args.service_type
         if args.bootstrap:
             # Check if bootstrap is a file
             if os.path.exists(args.bootstrap):
@@ -396,6 +398,7 @@ Examples:
     service_parser.add_argument("--name", help="Service name")
     service_parser.add_argument("--ports", help="Comma-separated ports")
     service_parser.add_argument("--domains", help="Comma-separated custom domains")
+    service_parser.add_argument("--type", dest="service_type", help="Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)")
     service_parser.add_argument("--bootstrap", help="Bootstrap command/file")
     service_parser.add_argument("-l", "--list", action="store_true", help="List services")
     service_parser.add_argument("--info", metavar="ID", help="Get service details")

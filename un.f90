@@ -214,19 +214,24 @@ contains
 
     subroutine handle_service()
         character(len=2048) :: full_cmd
-        character(len=256) :: arg, service_id, operation
+        character(len=256) :: arg, service_id, operation, service_type
         integer :: i, stat
         logical :: list_mode
 
         list_mode = .false.
         operation = ''
         service_id = ''
+        service_type = ''
 
         ! Parse service arguments
         do i = 2, command_argument_count()
             call get_command_argument(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
+            else if (trim(arg) == '--type') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_type)
+                end if
             else if (trim(arg) == '--info') then
                 operation = 'info'
                 if (i+1 <= command_argument_count()) then

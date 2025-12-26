@@ -284,7 +284,53 @@ def cmd_service(args)
     return
   end
 
-  STDERR.puts "#{RED}Error: Use --list, --info, --logs, --sleep, --wake, or --destroy#{RESET}"
+  # Create new service
+  if name = args[:name]?.as?(String)
+    payload = JSON.parse({name: name}.to_json)
+
+    # Add ports
+    if ports_str = args[:ports]?.as?(String)
+      ports = ports_str.split(',').map(&.to_i)
+      payload.as_h["ports"] = JSON.parse(ports.to_json)
+    end
+
+    # Add domains
+    if domains_str = args[:domains]?.as?(String)
+      domains = domains_str.split(',')
+      payload.as_h["domains"] = JSON.parse(domains.to_json)
+    end
+
+    # Add service_type
+    if service_type = args[:service_type]?.as?(String)
+      payload.as_h["service_type"] = JSON::Any.new(service_type)
+    end
+
+    # Add bootstrap
+    if bootstrap = args[:bootstrap]?.as?(String)
+      # Check if bootstrap is a file
+      if File.exists?(bootstrap)
+        payload.as_h["bootstrap"] = JSON::Any.new(File.read(bootstrap))
+      else
+        payload.as_h["bootstrap"] = JSON::Any.new(bootstrap)
+      end
+    end
+
+    # Add network
+    if network = args[:network]?.as?(String)
+      payload.as_h["network"] = JSON::Any.new(network)
+    end
+
+    # Create service
+    result = api_request("/services", api_key, method: "POST", data: payload)
+    puts "#{GREEN}Service created: #{result["id"]?.try(&.as_s?) || "N/A"}#{RESET}"
+    puts "Name: #{result["name"]?.try(&.as_s?) || "N/A"}"
+    if url = result["url"]?.try(&.as_s?)
+      puts "URL: #{url}"
+    end
+    return
+  end
+
+  STDERR.puts "#{RED}Error: Use --list, --info, --logs, --sleep, --wake, --destroy, or --name to create#{RESET}"
   exit 1
 end
 
@@ -304,7 +350,12 @@ def main
     logs: nil,
     sleep: nil,
     wake: nil,
-    destroy: nil
+    destroy: nil,
+    name: nil,
+    ports: nil,
+    domains: nil,
+    service_type: nil,
+    bootstrap: nil
   } of Symbol => (String | Array(String) | Bool | Nil)
 
   parser = OptionParser.new do |opts|
@@ -323,6 +374,11 @@ def main
     opts.on("--sleep=ID", "Sleep service") { |id| args[:sleep] = id }
     opts.on("--wake=ID", "Wake service") { |id| args[:wake] = id }
     opts.on("--destroy=ID", "Destroy service") { |id| args[:destroy] = id }
+    opts.on("--name=NAME", "Service name") { |n| args[:name] = n }
+    opts.on("--ports=PORTS", "Comma-separated ports") { |p| args[:ports] = p }
+    opts.on("--domains=DOMAINS", "Comma-separated domains") { |d| args[:domains] = d }
+    opts.on("--type=TYPE", "Service type for SRV records") { |t| args[:service_type] = t }
+    opts.on("--bootstrap=CMD", "Bootstrap command/file") { |b| args[:bootstrap] = b }
 
     opts.unknown_args do |before, after|
       if before.size > 0

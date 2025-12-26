@@ -265,7 +265,7 @@ let session_command action shell network vcpu =
   | _ -> ()
 
 (* Service command *)
-let service_command action name ports bootstrap network vcpu =
+let service_command action name ports bootstrap service_type network vcpu =
   let api_key = get_api_key () in
   match action with
   | "list" ->
@@ -330,9 +330,10 @@ let service_command action name ports bootstrap network vcpu =
      | Some n ->
        let ports_json = match ports with Some p -> Printf.sprintf ",\"ports\":[%s]" p | None -> "" in
        let bootstrap_json = match bootstrap with Some b -> Printf.sprintf ",\"bootstrap\":\"%s\"" (escape_json b) | None -> "" in
+       let service_type_json = match service_type with Some t -> Printf.sprintf ",\"service_type\":\"%s\"" t | None -> "" in
        let network_json = match network with Some net -> Printf.sprintf ",\"network\":\"%s\"" net | None -> "" in
        let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
-       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s}" n ports_json bootstrap_json network_json vcpu_json in
+       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s}" n ports_json bootstrap_json service_type_json network_json vcpu_json in
        let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
        let oc = open_out tmp_file in
        output_string oc json;
@@ -376,22 +377,23 @@ let () =
     in
     parse_session "create" None None None rest
   | "service" :: rest ->
-    let rec parse_service action name ports bootstrap network vcpu = function
-      | [] -> service_command action name ports bootstrap network vcpu
-      | "--list" :: rest -> parse_service "list" name ports bootstrap network vcpu rest
-      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap network vcpu rest
-      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap network vcpu rest
-      | "--sleep" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap network vcpu rest
-      | "--wake" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap network vcpu rest
-      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap network vcpu rest
-      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap network vcpu rest
-      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap network vcpu rest
-      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) network vcpu rest
-      | "-n" :: net :: rest -> parse_service action name ports bootstrap (Some net) vcpu rest
-      | "-v" :: v :: rest -> parse_service action name ports bootstrap network (Some (int_of_string v)) rest
-      | _ :: rest -> parse_service action name ports bootstrap network vcpu rest
+    let rec parse_service action name ports bootstrap service_type network vcpu = function
+      | [] -> service_command action name ports bootstrap service_type network vcpu
+      | "--list" :: rest -> parse_service "list" name ports bootstrap service_type network vcpu rest
+      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap service_type network vcpu rest
+      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap service_type network vcpu rest
+      | "--sleep" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap service_type network vcpu rest
+      | "--wake" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap service_type network vcpu rest
+      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap service_type network vcpu rest
+      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap service_type network vcpu rest
+      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap service_type network vcpu rest
+      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) service_type network vcpu rest
+      | "--type" :: t :: rest -> parse_service action name ports bootstrap (Some t) network vcpu rest
+      | "-n" :: net :: rest -> parse_service action name ports bootstrap service_type (Some net) vcpu rest
+      | "-v" :: v :: rest -> parse_service action name ports bootstrap service_type network (Some (int_of_string v)) rest
+      | _ :: rest -> parse_service action name ports bootstrap service_type network vcpu rest
     in
-    parse_service "create" None None None None None rest
+    parse_service "create" None None None None None None rest
   | args ->
     let rec parse_execute file env_vars artifacts out_dir network vcpu = function
       | [] -> execute_command file env_vars artifacts out_dir network vcpu

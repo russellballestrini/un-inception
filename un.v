@@ -176,7 +176,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl(cmd))
 }
 
-fn cmd_service(name string, ports string, bootstrap string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, network string, vcpu int, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, network string, vcpu int, api_key string) {
 	if list {
 		cmd := "curl -s -X GET '${api_base}/services' -H 'Authorization: Bearer ${api_key}'"
 		println(exec_curl(cmd))
@@ -226,6 +226,9 @@ fn cmd_service(name string, ports string, bootstrap string, list bool, info stri
 		mut json := '{"name":"${name}"'
 		if ports != '' {
 			json += ',"ports":[${ports}]'
+		}
+		if service_type != '' {
+			json += ',"service_type":"${service_type}"'
 		}
 		if bootstrap != '' {
 			if os.exists(bootstrap) {
@@ -310,6 +313,7 @@ fn main() {
 	if os.args[1] == 'service' {
 		mut name := ''
 		mut ports := ''
+		mut service_type := ''
 		mut bootstrap := ''
 		mut list := false
 		mut info := ''
@@ -331,6 +335,10 @@ fn main() {
 				'--ports' {
 					i++
 					ports = os.args[i]
+				}
+				'--type' {
+					i++
+					service_type = os.args[i]
 				}
 				'--bootstrap' {
 					i++
@@ -378,7 +386,7 @@ fn main() {
 			i++
 		}
 
-		cmd_service(name, ports, bootstrap, list, info, logs, tail, sleep, wake, destroy, network,
+		cmd_service(name, ports, service_type, bootstrap, list, info, logs, tail, sleep, wake, destroy, network,
 			vcpu, api_key)
 		return
 	}

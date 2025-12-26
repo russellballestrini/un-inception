@@ -338,6 +338,7 @@ fn cmd_service(
     name: Option<&str>,
     ports: Option<&str>,
     domains: Option<&str>,
+    service_type: Option<&str>,
     bootstrap: Option<&str>,
     list: bool,
     info: Option<&str>,
@@ -418,6 +419,10 @@ fn cmd_service(
                 json.push_str(&format!(r#""{}""#, domain.trim()));
             }
             json.push(']');
+        }
+
+        if let Some(t) = service_type {
+            json.push_str(&format!(r#","service_type":"{}""#, t));
         }
 
         if let Some(b) = bootstrap {
@@ -559,6 +564,7 @@ fn main() {
                     args.iter().position(|x| x == "--name").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--ports").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--domains").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--type").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--bootstrap").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.contains(&"--list".to_string()),
                     args.iter().position(|x| x == "--info").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),

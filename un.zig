@@ -117,6 +117,7 @@ pub fn main() !u8 {
         var list = false;
         var name: ?[]const u8 = null;
         var ports: ?[]const u8 = null;
+        var service_type: ?[]const u8 = null;
         var info: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
@@ -128,6 +129,9 @@ pub fn main() !u8 {
             } else if (mem.eql(u8, args[i], "--ports") and i + 1 < args.len) {
                 i += 1;
                 ports = args[i];
+            } else if (mem.eql(u8, args[i], "--type") and i + 1 < args.len) {
+                i += 1;
+                service_type = args[i];
             } else if (mem.eql(u8, args[i], "--info") and i + 1 < args.len) {
                 i += 1;
                 info = args[i];
@@ -151,6 +155,9 @@ pub fn main() !u8 {
             try writer.print("{{\"name\":\"{s}\"", .{n});
             if (ports) |p| {
                 try writer.print(",\"ports\":[{s}]", .{p});
+            }
+            if (service_type) |t| {
+                try writer.print(",\"service_type\":\"{s}\"", .{t});
             }
             try writer.writeAll("}");
             const json_str = json_stream.getWritten();

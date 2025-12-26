@@ -127,7 +127,7 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap: string, list: bool, info, logs, tail, sleep, wake, destroy, network: string, vcpu: int, apiKey: string) =
+proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, network: string, vcpu: int, apiKey: string) =
   if list:
     let cmd = fmt"""curl -s -X GET '{API_BASE}/services' -H 'Authorization: Bearer {apiKey}'"""
     echo execCurl(cmd)
@@ -175,6 +175,7 @@ proc cmdService(name, ports, bootstrap: string, list: bool, info, logs, tail, sl
         json.add(fmt""","bootstrap":"{escapeJson(bootCode)}"""")
       else:
         json.add(fmt""","bootstrap":"{escapeJson(bootstrap)}"""")
+    if serviceType != "": json.add(fmt""","service_type":"{serviceType}"""")
     if network != "": json.add(fmt""","network":"{network}"""")
     if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
     json.add("}")
@@ -218,7 +219,7 @@ proc main() =
     return
 
   if args[0] == "service":
-    var name, ports, bootstrap = ""
+    var name, ports, bootstrap, serviceType = ""
     var list = false
     var info, logs, tail, sleep, wake, destroy, network = ""
     var vcpu = 0
@@ -228,6 +229,7 @@ proc main() =
       of "--name": name = args[i+1]; inc i
       of "--ports": ports = args[i+1]; inc i
       of "--bootstrap": bootstrap = args[i+1]; inc i
+      of "--type": serviceType = args[i+1]; inc i
       of "--list": list = true
       of "--info": info = args[i+1]; inc i
       of "--logs": logs = args[i+1]; inc i
@@ -239,7 +241,7 @@ proc main() =
       of "-v": vcpu = parseInt(args[i+1]); inc i
       of "-k": apiKey = args[i+1]; inc i
       inc i
-    cmdService(name, ports, bootstrap, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey)
+    cmdService(name, ports, bootstrap, serviceType, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey)
     return
 
   # Execute mode

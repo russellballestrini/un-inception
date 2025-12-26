@@ -82,6 +82,7 @@ class Args {
   bool serviceList = false;
   String? serviceName;
   String? servicePorts;
+  String? serviceType;
   String? serviceBootstrap;
   String? serviceInfo;
   String? serviceLogs;
@@ -321,6 +322,9 @@ Future<void> cmdService(Args args) async {
     if (args.servicePorts != null) {
       payload['ports'] = args.servicePorts!.split(',').map((p) => int.parse(p.trim())).toList();
     }
+    if (args.serviceType != null) {
+      payload['service_type'] = args.serviceType;
+    }
     if (args.serviceBootstrap != null) {
       payload['bootstrap'] = args.serviceBootstrap;
     }
@@ -404,6 +408,9 @@ Args parseArgs(List<String> argv) {
       case '--ports':
         args.servicePorts = argv[++i];
         break;
+      case '--type':
+        args.serviceType = argv[++i];
+        break;
       case '--bootstrap':
         args.serviceBootstrap = argv[++i];
         break;
@@ -459,6 +466,7 @@ Service options:
   --list            List services
   --name NAME       Service name
   --ports PORTS     Comma-separated ports
+  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
   --info ID         Get service details
   --logs ID         Get all logs

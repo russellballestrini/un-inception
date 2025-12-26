@@ -338,7 +338,7 @@ func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, network string, vcpu int, apiKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, network string, vcpu int, apiKey string) {
 	if serviceList != "" {
 		result := apiRequest("/services", "GET", nil, apiKey)
 		services := result["services"].([]interface{})
@@ -422,6 +422,9 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceBootstrap, ser
 		if serviceDomains != "" {
 			payload["domains"] = strings.Split(serviceDomains, ",")
 		}
+		if serviceType != "" {
+			payload["service_type"] = serviceType
+		}
 		if serviceBootstrap != "" {
 			// Check if it's a file
 			if _, err := os.Stat(serviceBootstrap); err == nil {
@@ -481,6 +484,7 @@ func main() {
 	serviceName := serviceCmd.String("name", "", "Service name")
 	servicePorts := serviceCmd.String("ports", "", "Ports (comma-separated)")
 	serviceDomains := serviceCmd.String("domains", "", "Custom domains (comma-separated)")
+	serviceType := serviceCmd.String("type", "", "Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)")
 	serviceBootstrap := serviceCmd.String("bootstrap", "", "Bootstrap command/file")
 	serviceList := serviceCmd.String("list", "", "List services")
 	serviceInfo := serviceCmd.String("info", "", "Get service info")
@@ -523,7 +527,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, net, vc, key)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, net, vc, key)
 			return
 		}
 	}

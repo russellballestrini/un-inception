@@ -331,6 +331,10 @@ class Un
                 }
                 payload["ports"] = ports;
             }
+            if (args.ServiceType != null)
+            {
+                payload["service_type"] = args.ServiceType;
+            }
             if (args.ServiceBootstrap != null)
             {
                 payload["bootstrap"] = args.ServiceBootstrap;
@@ -675,6 +679,7 @@ class Un
         public string ServiceSleep = null;
         public string ServiceWake = null;
         public string ServiceDestroy = null;
+        public string ServiceType = null;
     }
 
     static Args ParseArgs(string[] args)
@@ -701,6 +706,7 @@ class Un
             else if (arg == "--kill") result.SessionKill = args[++i];
             else if (arg == "--name") result.ServiceName = args[++i];
             else if (arg == "--ports") result.ServicePorts = args[++i];
+            else if (arg == "--type") result.ServiceType = args[++i];
             else if (arg == "--bootstrap") result.ServiceBootstrap = args[++i];
             else if (arg == "--info") result.ServiceInfo = args[++i];
             else if (arg == "--logs") result.ServiceLogs = args[++i];
@@ -737,6 +743,7 @@ Service options:
   --list            List services
   --name NAME       Service name
   --ports PORTS     Comma-separated ports
+  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
   --info ID         Get service details
   --logs ID         Get all logs

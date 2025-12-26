@@ -320,6 +320,7 @@ sub cmd-service(@args) {
     my $destroy-id = '';
     my $name = '';
     my $ports = '';
+    my $type = '';
     my $bootstrap = '';
     my $network = '';
     my $vcpu = 0;
@@ -358,6 +359,10 @@ sub cmd-service(@args) {
             when '--ports' {
                 $i++;
                 $ports = @args[$i];
+            }
+            when '--type' {
+                $i++;
+                $type = @args[$i];
             }
             when '--bootstrap' {
                 $i++;
@@ -428,6 +433,10 @@ sub cmd-service(@args) {
 
         if $ports {
             %payload<ports> = $ports.split(',')>>.Int;
+        }
+
+        if $type {
+            %payload<service_type> = $type;
         }
 
         if $bootstrap {

@@ -151,7 +151,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string network, int vcpu, string apiKey) {
+void cmdService(string name, string ports, string bootstrap, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string network, int vcpu, string apiKey) {
     if (list) {
         string cmd = format(`curl -s -X GET '%s/services' -H 'Authorization: Bearer %s'`, API_BASE, apiKey);
         writeln(execCurl(cmd));
@@ -200,6 +200,7 @@ void cmdService(string name, string ports, string bootstrap, bool list, string i
     if (!name.empty) {
         string json = format(`{"name":"%s"`, name);
         if (!ports.empty) json ~= format(`,"ports":[%s]`, ports);
+        if (!type.empty) json ~= format(`,"service_type":"%s"`, type);
         if (!bootstrap.empty) {
             if (exists(bootstrap)) {
                 string bootCode = readText(bootstrap);
@@ -254,7 +255,7 @@ int main(string[] args) {
     }
 
     if (args[1] == "service") {
-        string name, ports, bootstrap;
+        string name, ports, bootstrap, type;
         bool list = false;
         string info, logs, tail, sleep, wake, destroy, network;
         int vcpu = 0;
@@ -263,6 +264,7 @@ int main(string[] args) {
             if (args[i] == "--name" && i+1 < args.length) name = args[++i];
             else if (args[i] == "--ports" && i+1 < args.length) ports = args[++i];
             else if (args[i] == "--bootstrap" && i+1 < args.length) bootstrap = args[++i];
+            else if (args[i] == "--type" && i+1 < args.length) type = args[++i];
             else if (args[i] == "--list") list = true;
             else if (args[i] == "--info" && i+1 < args.length) info = args[++i];
             else if (args[i] == "--logs" && i+1 < args.length) logs = args[++i];
@@ -275,7 +277,7 @@ int main(string[] args) {
             else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey);
+        cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey);
         return 0;
     }
 

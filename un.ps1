@@ -231,6 +231,11 @@ function Invoke-Service {
             $payload["bootstrap"] = $Args[$bIdx + 1]
         }
 
+        if ($Args -contains "--type") {
+            $tIdx = [array]::IndexOf($Args, "--type")
+            $payload["service_type"] = $Args[$tIdx + 1]
+        }
+
         $body = $payload | ConvertTo-Json -Depth 5
         $result = Invoke-Api -Endpoint "/services" -Method "POST" -Body $body
         Write-Host "`e[32mService created`e[0m"
@@ -261,6 +266,7 @@ Session options:
 Service options:
   --name NAME     Service name
   --ports PORTS   Comma-separated ports
+  --type TYPE     Service type (minecraft, mumble, teamspeak, source, tcp, udp)
   --bootstrap CMD Bootstrap command
   --list, -l      List services
   --info ID       Get service info

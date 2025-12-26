@@ -281,6 +281,9 @@ public class Un {
                 }
                 payload.put("ports", ports);
             }
+            if (args.serviceType != null) {
+                payload.put("service_type", args.serviceType);
+            }
             if (args.serviceBootstrap != null) {
                 payload.put("bootstrap", args.serviceBootstrap);
             }
@@ -551,6 +554,7 @@ public class Un {
         boolean serviceList = false;
         String serviceName = null;
         String servicePorts = null;
+        String serviceType = null;
         String serviceBootstrap = null;
         String serviceInfo = null;
         String serviceLogs = null;
@@ -593,6 +597,8 @@ public class Un {
                 result.serviceName = args[++i];
             } else if (arg.equals("--ports")) {
                 result.servicePorts = args[++i];
+            } else if (arg.equals("--type")) {
+                result.serviceType = args[++i];
             } else if (arg.equals("--bootstrap")) {
                 result.serviceBootstrap = args[++i];
             } else if (arg.equals("--info")) {
@@ -637,6 +643,7 @@ public class Un {
         System.out.println("  --list            List services");
         System.out.println("  --name NAME       Service name");
         System.out.println("  --ports PORTS     Comma-separated ports");
+        System.out.println("  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)");
         System.out.println("  --bootstrap CMD   Bootstrap command");
         System.out.println("  --info ID         Get service details");
         System.out.println("  --logs ID         Get all logs");

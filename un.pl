@@ -334,6 +334,9 @@ sub cmd_service {
             my @domains = split(',', $options->{domains});
             $payload->{domains} = \@domains;
         }
+        if ($options->{type}) {
+            $payload->{service_type} = $options->{type};
+        }
         if ($options->{bootstrap}) {
             if (-e $options->{bootstrap}) {
                 open my $fh, '<', $options->{bootstrap} or die "Cannot read file: $!";
@@ -379,6 +382,7 @@ sub main {
         name => undef,
         ports => undef,
         domains => undef,
+        type => undef,
         bootstrap => undef,
         info => undef,
         logs => undef,
@@ -429,6 +433,8 @@ sub main {
             $options{ports} = $ARGV[++$i];
         } elsif ($arg eq '--domains') {
             $options{domains} = $ARGV[++$i];
+        } elsif ($arg eq '--type') {
+            $options{type} = $ARGV[++$i];
         } elsif ($arg eq '--bootstrap') {
             $options{bootstrap} = $ARGV[++$i];
         } elsif ($arg eq '--info') {
@@ -489,6 +495,7 @@ Service options:
   --name NAME      Service name
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
+  --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
   --bootstrap CMD  Bootstrap command/file
   -l, --list       List services
   --info ID        Get service details

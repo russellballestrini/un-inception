@@ -85,6 +85,7 @@ type Args = {
     mutable ServiceList: bool
     mutable ServiceName: string option
     mutable ServicePorts: string option
+    mutable ServiceType: string option
     mutable ServiceBootstrap: string option
     mutable ServiceInfo: string option
     mutable ServiceLogs: string option
@@ -357,6 +358,8 @@ let cmdService (args: Args) =
         if args.ServicePorts.IsSome then
             let ports = args.ServicePorts.Value.Split(',') |> Array.map (fun p -> box (int (p.Trim())))
             payload <- payload @ [("ports", box ports)]
+        if args.ServiceType.IsSome then
+            payload <- payload @ [("service_type", box args.ServiceType.Value)]
         if args.ServiceBootstrap.IsSome then
             payload <- payload @ [("bootstrap", box args.ServiceBootstrap.Value)]
         if args.Network.IsSome then
@@ -395,6 +398,7 @@ let parseArgs (argv: string[]) =
         ServiceList = false
         ServiceName = None
         ServicePorts = None
+        ServiceType = None
         ServiceBootstrap = None
         ServiceInfo = None
         ServiceLogs = None
@@ -425,6 +429,7 @@ let parseArgs (argv: string[]) =
         | "--kill" -> i <- i + 1; args.SessionKill <- Some argv.[i]
         | "--name" -> i <- i + 1; args.ServiceName <- Some argv.[i]
         | "--ports" -> i <- i + 1; args.ServicePorts <- Some argv.[i]
+        | "--type" -> i <- i + 1; args.ServiceType <- Some argv.[i]
         | "--bootstrap" -> i <- i + 1; args.ServiceBootstrap <- Some argv.[i]
         | "--info" -> i <- i + 1; args.ServiceInfo <- Some argv.[i]
         | "--logs" -> i <- i + 1; args.ServiceLogs <- Some argv.[i]
@@ -461,6 +466,7 @@ let printHelp () =
     printfn "  --list            List services"
     printfn "  --name NAME       Service name"
     printfn "  --ports PORTS     Comma-separated ports"
+    printfn "  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)"
     printfn "  --bootstrap CMD   Bootstrap command"
     printfn "  --info ID         Get service details"
     printfn "  --logs ID         Get all logs"

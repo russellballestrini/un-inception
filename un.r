@@ -286,7 +286,49 @@ cmd_service <- function(args) {
         return()
     }
 
-    cat(sprintf("%sError: Use --list, --info, --logs, --sleep, --wake, or --destroy%s\n", RED, RESET), file = stderr())
+    if (!is.null(args$name)) {
+        payload <- list(name = args$name)
+
+        if (!is.null(args$ports)) {
+            ports_vec <- as.integer(strsplit(args$ports, ",")[[1]])
+            payload$ports <- ports_vec
+        }
+
+        if (!is.null(args$domains)) {
+            domains_vec <- strsplit(args$domains, ",")[[1]]
+            payload$domains <- domains_vec
+        }
+
+        if (!is.null(args$type)) {
+            payload$service_type <- args$type
+        }
+
+        if (!is.null(args$bootstrap)) {
+            if (file.exists(args$bootstrap)) {
+                payload$bootstrap <- paste(readLines(args$bootstrap, warn = FALSE), collapse = "\n")
+            } else {
+                payload$bootstrap <- args$bootstrap
+            }
+        }
+
+        if (!is.null(args$network)) {
+            payload$network <- args$network
+        }
+
+        if (!is.null(args$vcpu)) {
+            payload$vcpu <- args$vcpu
+        }
+
+        result <- api_request("/services", api_key, method = "POST", data = payload)
+        cat(sprintf("%sService created: %s%s\n", GREEN, if (!is.null(result$id)) result$id else "N/A", RESET))
+        cat(sprintf("Name: %s\n", if (!is.null(result$name)) result$name else "N/A"))
+        if (!is.null(result$url)) {
+            cat(sprintf("URL: %s\n", result$url))
+        }
+        return()
+    }
+
+    cat(sprintf("%sError: Use --name to create, or --list, --info, --logs, --sleep, --wake, --destroy%s\n", RED, RESET), file = stderr())
     quit(status = 1)
 }
 
@@ -308,7 +350,13 @@ parse_args <- function() {
         logs = NULL,
         sleep = NULL,
         wake = NULL,
-        destroy = NULL
+        destroy = NULL,
+        name = NULL,
+        ports = NULL,
+        domains = NULL,
+        type = NULL,
+        bootstrap = NULL,
+        vcpu = NULL
     )
 
     i <- 1
@@ -370,6 +418,30 @@ parse_args <- function() {
         } else if (arg == "--destroy") {
             i <- i + 1
             result$destroy <- args[i]
+            i <- i + 1
+        } else if (arg == "--name") {
+            i <- i + 1
+            result$name <- args[i]
+            i <- i + 1
+        } else if (arg == "--ports") {
+            i <- i + 1
+            result$ports <- args[i]
+            i <- i + 1
+        } else if (arg == "--domains") {
+            i <- i + 1
+            result$domains <- args[i]
+            i <- i + 1
+        } else if (arg == "--type") {
+            i <- i + 1
+            result$type <- args[i]
+            i <- i + 1
+        } else if (arg == "--bootstrap") {
+            i <- i + 1
+            result$bootstrap <- args[i]
+            i <- i + 1
+        } else if (arg %in% c("-v", "--vcpu")) {
+            i <- i + 1
+            result$vcpu <- as.integer(args[i])
             i <- i + 1
         } else if (!startsWith(arg, "-")) {
             result$source_file <- arg

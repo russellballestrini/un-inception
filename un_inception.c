@@ -312,7 +312,7 @@ void cmd_session(int list, const char *kill, const char *shell, const char *netw
     printf("\n%sSession created%s\n", GREEN, RESET);
 }
 
-void cmd_service(const char *name, const char *ports, const char *domains, const char *bootstrap, int list, const char *info, const char *logs, const char *tail, const char *sleep_svc, const char *wake, const char *destroy, const char *network, int vcpu, const char *api_key) {
+void cmd_service(const char *name, const char *ports, const char *domains, const char *service_type, const char *bootstrap, int list, const char *info, const char *logs, const char *tail, const char *sleep_svc, const char *wake, const char *destroy, const char *network, int vcpu, const char *api_key) {
     char cmd[8192];
 
     if (list) {
@@ -382,6 +382,11 @@ void cmd_service(const char *name, const char *ports, const char *domains, const
         if (ports) {
             char temp[256];
             snprintf(temp, sizeof(temp), ",\"ports\":[%s]", ports);
+            strcat(json, temp);
+        }
+        if (service_type) {
+            char temp[128];
+            snprintf(temp, sizeof(temp), ",\"service_type\":\"%s\"", service_type);
             strcat(json, temp);
         }
         if (bootstrap) {
@@ -465,6 +470,7 @@ int main(int argc, char *argv[]) {
         const char *name = NULL;
         const char *ports = NULL;
         const char *domains = NULL;
+        const char *service_type = NULL;
         const char *bootstrap = NULL;
         int list = 0;
         const char *info = NULL;
@@ -480,6 +486,7 @@ int main(int argc, char *argv[]) {
             if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) name = argv[++i];
             else if (strcmp(argv[i], "--ports") == 0 && i + 1 < argc) ports = argv[++i];
             else if (strcmp(argv[i], "--domains") == 0 && i + 1 < argc) domains = argv[++i];
+            else if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) service_type = argv[++i];
             else if (strcmp(argv[i], "--bootstrap") == 0 && i + 1 < argc) bootstrap = argv[++i];
             else if (strcmp(argv[i], "--list") == 0) list = 1;
             else if (strcmp(argv[i], "--info") == 0 && i + 1 < argc) info = argv[++i];
@@ -493,7 +500,7 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) api_key = argv[++i];
         }
 
-        cmd_service(name, ports, domains, bootstrap, list, info, logs, tail, sleep_svc, wake, destroy, network, vcpu, api_key);
+        cmd_service(name, ports, domains, service_type, bootstrap, list, info, logs, tail, sleep_svc, wake, destroy, network, vcpu, api_key);
         return 0;
     }
 

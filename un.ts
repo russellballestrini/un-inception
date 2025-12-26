@@ -98,6 +98,7 @@ interface Args {
   name: string | null;
   ports: string | null;
   domains: string | null;
+  type: string | null;
   bootstrap: string | null;
   info: string | null;
   logs: string | null;
@@ -356,6 +357,7 @@ async function cmdService(args: Args): Promise<void> {
     const payload: any = { name: args.name };
     if (args.ports) payload.ports = args.ports.split(',').map(p => parseInt(p.trim()));
     if (args.domains) payload.domains = args.domains.split(',');
+    if (args.type) payload.service_type = args.type;
     if (args.bootstrap) {
       if (fs.existsSync(args.bootstrap)) {
         payload.bootstrap = fs.readFileSync(args.bootstrap, 'utf-8');
@@ -398,6 +400,7 @@ function parseArgs(argv: string[]): Args {
     name: null,
     ports: null,
     domains: null,
+    type: null,
     bootstrap: null,
     info: null,
     logs: null,
@@ -466,6 +469,9 @@ function parseArgs(argv: string[]): Args {
       i++;
     } else if (arg === '--domains' && i + 1 < argv.length) {
       args.domains = argv[++i];
+      i++;
+    } else if (arg === '--type' && i + 1 < argv.length) {
+      args.type = argv[++i];
       i++;
     } else if (arg === '--bootstrap' && i + 1 < argv.length) {
       args.bootstrap = argv[++i];
@@ -545,6 +551,7 @@ Service options:
   --name NAME      Service name
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
+  --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
   --bootstrap CMD  Bootstrap command/file
   -l, --list       List services
   --info ID        Get service details

@@ -314,6 +314,7 @@ def cmd_service(options)
     payload = { name: options[:name] }
     payload[:ports] = options[:ports].split(',').map(&:to_i) if options[:ports]
     payload[:domains] = options[:domains].split(',') if options[:domains]
+    payload[:service_type] = options[:type] if options[:type]
     if options[:bootstrap]
       payload[:bootstrap] = if File.exist?(options[:bootstrap])
                               File.read(options[:bootstrap])
@@ -356,6 +357,7 @@ def main
     name: nil,
     ports: nil,
     domains: nil,
+    type: nil,
     bootstrap: nil,
     info: nil,
     logs: nil,
@@ -421,6 +423,9 @@ def main
     when '--domains'
       i += 1
       options[:domains] = ARGV[i]
+    when '--type'
+      i += 1
+      options[:type] = ARGV[i]
     when '--bootstrap'
       i += 1
       options[:bootstrap] = ARGV[i]
@@ -494,6 +499,7 @@ def main
           --name NAME      Service name
           --ports PORTS    Comma-separated ports
           --domains DOMAINS Custom domains
+          --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
           --bootstrap CMD  Bootstrap command/file
           -l, --list       List services
           --info ID        Get service details

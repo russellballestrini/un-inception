@@ -217,7 +217,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& network, int vcpu, const string& api_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& network, int vcpu, const string& api_key) {
     if (list) {
         string cmd = "curl -s -X GET '" + API_BASE + "/services' -H 'Authorization: Bearer " + api_key + "'";
         cout << exec_curl(cmd) << endl;
@@ -267,6 +267,7 @@ void cmd_service(const string& name, const string& ports, const string& bootstra
         ostringstream json;
         json << "{\"name\":\"" << name << "\"";
         if (!ports.empty()) json << ",\"ports\":[" << ports << "]";
+        if (!type.empty()) json << ",\"service_type\":\"" << type << "\"";
         if (!bootstrap.empty()) {
             struct stat st;
             if (stat(bootstrap.c_str(), &st) == 0) {
@@ -328,7 +329,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (cmd_type == "service") {
-        string name, ports, bootstrap;
+        string name, ports, type, bootstrap;
         bool list = false;
         string info, logs, tail, sleep, wake, destroy, network;
         int vcpu = 0;
@@ -337,6 +338,7 @@ int main(int argc, char* argv[]) {
             string arg = argv[i];
             if (arg == "--name" && i+1 < argc) name = argv[++i];
             else if (arg == "--ports" && i+1 < argc) ports = argv[++i];
+            else if (arg == "--type" && i+1 < argc) type = argv[++i];
             else if (arg == "--bootstrap" && i+1 < argc) bootstrap = argv[++i];
             else if (arg == "--list") list = true;
             else if (arg == "--info" && i+1 < argc) info = argv[++i];
@@ -350,7 +352,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
         }
 
-        cmd_service(name, ports, bootstrap, list, info, logs, tail, sleep, wake, destroy, network, vcpu, api_key);
+        cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, network, vcpu, api_key);
         return 0;
     }
 

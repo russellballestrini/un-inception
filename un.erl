@@ -152,6 +152,7 @@ service_command(Args) ->
             ApiKey = get_api_key(),
             Ports = get_service_ports(Args),
             Bootstrap = get_service_bootstrap(Args),
+            Type = get_service_type(Args),
             PortsJson = case Ports of
                 undefined -> "";
                 P -> ",\"ports\":[" ++ P ++ "]"
@@ -160,7 +161,11 @@ service_command(Args) ->
                 undefined -> "";
                 B -> ",\"bootstrap\":\"" ++ escape_json(B) ++ "\""
             end,
-            Json = "{\"name\":\"" ++ Name ++ "\"" ++ PortsJson ++ BootstrapJson ++ "}",
+            TypeJson = case Type of
+                undefined -> "";
+                T -> ",\"service_type\":\"" ++ T ++ "\""
+            end,
+            Json = "{\"name\":\"" ++ Name ++ "\"" ++ PortsJson ++ BootstrapJson ++ TypeJson ++ "}",
             TmpFile = write_temp_file(Json),
             Response = curl_post(ApiKey, "/services", TmpFile),
             file:delete(TmpFile),
@@ -280,3 +285,7 @@ get_service_ports([_ | Rest]) -> get_service_ports(Rest).
 get_service_bootstrap([]) -> undefined;
 get_service_bootstrap(["--bootstrap", Bootstrap | _]) -> Bootstrap;
 get_service_bootstrap([_ | Rest]) -> get_service_bootstrap(Rest).
+
+get_service_type([]) -> undefined;
+get_service_type(["--type", Type | _]) -> Type;
+get_service_type([_ | Rest]) -> get_service_type(Rest).

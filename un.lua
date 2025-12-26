@@ -384,6 +384,9 @@ local function cmd_service(options)
             end
             payload.domains = domains
         end
+        if options.type then
+            payload.service_type = options.type
+        end
         if options.bootstrap then
             local file = io.open(options.bootstrap, "r")
             if file then
@@ -428,6 +431,7 @@ local function main()
         name = nil,
         ports = nil,
         domains = nil,
+        type = nil,
         bootstrap = nil,
         info = nil,
         logs = nil,
@@ -491,6 +495,9 @@ local function main()
         elseif a == "--domains" then
             i = i + 1
             options.domains = arg[i]
+        elseif a == "--type" then
+            i = i + 1
+            options.type = arg[i]
         elseif a == "--bootstrap" then
             i = i + 1
             options.bootstrap = arg[i]
@@ -562,6 +569,7 @@ Service options:
   --name NAME      Service name
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
+  --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
   --bootstrap CMD  Bootstrap command/file
   -l, --list       List services
   --info ID        Get service details
