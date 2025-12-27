@@ -94,6 +94,10 @@ type Args = {
     mutable ServiceSleep: string option
     mutable ServiceWake: string option
     mutable ServiceDestroy: string option
+    mutable ServiceExecute: string option
+    mutable ServiceCommand: string option
+    mutable ServiceDumpBootstrap: string option
+    mutable ServiceDumpFile: string option
     mutable KeyExtend: bool
 }
 
@@ -436,6 +440,37 @@ let cmdService (args: Args) =
     elif args.ServiceDestroy.IsSome then
         let result = apiRequest (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None apiKey
         printfn "%sService destroyed: %s%s" green args.ServiceDestroy.Value reset
+    elif args.ServiceExecute.IsSome then
+        let payload = [("command", box args.ServiceCommand.Value)]
+        let result = apiRequest (sprintf "/services/%s/execute" args.ServiceExecute.Value) "POST" (Some payload) apiKey
+        match result.TryFind "stdout" with
+        | Some stdout when not (String.IsNullOrEmpty(stdout.ToString())) ->
+            printf "%s%s%s" blue (stdout.ToString()) reset
+        | _ -> ()
+        match result.TryFind "stderr" with
+        | Some stderr when not (String.IsNullOrEmpty(stderr.ToString())) ->
+            eprintf "%s%s%s" red (stderr.ToString()) reset
+        | _ -> ()
+    elif args.ServiceDumpBootstrap.IsSome then
+        eprintfn "Fetching bootstrap script from %s..." args.ServiceDumpBootstrap.Value
+        let payload = [("command", box "cat /tmp/bootstrap.sh")]
+        let result = apiRequest (sprintf "/services/%s/execute" args.ServiceDumpBootstrap.Value) "POST" (Some payload) apiKey
+
+        match result.TryFind "stdout" with
+        | Some bootstrap when not (String.IsNullOrEmpty(bootstrap.ToString())) ->
+            let bootstrapText = bootstrap.ToString()
+            if args.ServiceDumpFile.IsSome then
+                try
+                    File.WriteAllText(args.ServiceDumpFile.Value, bootstrapText)
+                    printfn "Bootstrap saved to %s" args.ServiceDumpFile.Value
+                with ex ->
+                    eprintfn "%sError: Could not write to %s: %s%s" red args.ServiceDumpFile.Value ex.Message reset
+                    exit 1
+            else
+                printf "%s" bootstrapText
+        | _ ->
+            eprintfn "%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s" red reset
+            exit 1
     elif args.ServiceName.IsSome then
         let mutable payload = [("name", box args.ServiceName.Value)]
         if args.ServicePorts.IsSome then
@@ -489,6 +524,10 @@ let parseArgs (argv: string[]) =
         ServiceSleep = None
         ServiceWake = None
         ServiceDestroy = None
+        ServiceExecute = None
+        ServiceCommand = None
+        ServiceDumpBootstrap = None
+        ServiceDumpFile = None
         KeyExtend = false
     }
 
@@ -519,9 +558,13 @@ let parseArgs (argv: string[]) =
         | "--info" -> i <- i + 1; args.ServiceInfo <- Some argv.[i]
         | "--logs" -> i <- i + 1; args.ServiceLogs <- Some argv.[i]
         | "--tail" -> i <- i + 1; args.ServiceTail <- Some argv.[i]
-        | "--sleep" -> i <- i + 1; args.ServiceSleep <- Some argv.[i]
-        | "--wake" -> i <- i + 1; args.ServiceWake <- Some argv.[i]
+        | "--freeze" -> i <- i + 1; args.ServiceSleep <- Some argv.[i]
+        | "--unfreeze" -> i <- i + 1; args.ServiceWake <- Some argv.[i]
         | "--destroy" -> i <- i + 1; args.ServiceDestroy <- Some argv.[i]
+        | "--execute" -> i <- i + 1; args.ServiceExecute <- Some argv.[i]
+        | "--command" -> i <- i + 1; args.ServiceCommand <- Some argv.[i]
+        | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
+        | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
         | "--extend" -> args.KeyExtend <- true
         | arg when not (arg.StartsWith("-")) -> args.SourceFile <- Some arg
         | _ -> ()
@@ -558,9 +601,13 @@ let printHelp () =
     printfn "  --info ID         Get service details"
     printfn "  --logs ID         Get all logs"
     printfn "  --tail ID         Get last 9000 lines"
-    printfn "  --sleep ID        Freeze service"
-    printfn "  --wake ID         Unfreeze service"
+    printfn "  --freeze ID        Freeze service"
+    printfn "  --unfreeze ID         Unfreeze service"
     printfn "  --destroy ID      Destroy service"
+    printfn "  --execute ID      Execute command in service"
+    printfn "  --command CMD     Command to execute (with --execute)"
+    printfn "  --dump-bootstrap ID   Dump bootstrap script"
+    printfn "  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)"
     printfn ""
     printfn "Key options:"
     printfn "  --extend          Open browser to extend key"

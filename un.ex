@@ -166,13 +166,13 @@ defmodule Un do
     IO.puts(response)
   end
 
-  defp service_command(["--sleep", service_id | _]) do
+  defp service_command(["--freeze", service_id | _]) do
     api_key = get_api_key()
     curl_post(api_key, "/services/#{service_id}/sleep", "{}")
     IO.puts("#{@green}Service sleeping: #{service_id}#{@reset}")
   end
 
-  defp service_command(["--wake", service_id | _]) do
+  defp service_command(["--unfreeze", service_id | _]) do
     api_key = get_api_key()
     curl_post(api_key, "/services/#{service_id}/wake", "{}")
     IO.puts("#{@green}Service waking: #{service_id}#{@reset}")
@@ -182,6 +182,49 @@ defmodule Un do
     api_key = get_api_key()
     curl_delete(api_key, "/services/#{service_id}")
     IO.puts("#{@green}Service destroyed: #{service_id}#{@reset}")
+  end
+
+  defp service_command(["--execute", service_id, "--command", command | _]) do
+    api_key = get_api_key()
+    json = "{\"command\":\"#{escape_json(command)}\"}"
+    response = curl_post(api_key, "/services/#{service_id}/execute", json)
+
+    case extract_json_value(response, "stdout") do
+      nil -> :ok
+      stdout -> IO.write("#{@blue}#{stdout}#{@reset}")
+    end
+  end
+
+  defp service_command(["--dump-bootstrap", service_id, file | _]) do
+    api_key = get_api_key()
+    IO.puts(:stderr, "Fetching bootstrap script from #{service_id}...")
+    json = "{\"command\":\"cat /tmp/bootstrap.sh\"}"
+    response = curl_post(api_key, "/services/#{service_id}/execute", json)
+
+    case extract_json_value(response, "stdout") do
+      nil ->
+        IO.puts(:stderr, "#{@red}Error: Failed to fetch bootstrap (service not running or no bootstrap file)#{@reset}")
+        System.halt(1)
+      script ->
+        File.write!(file, script)
+        System.cmd("chmod", ["755", file])
+        IO.puts("Bootstrap saved to #{file}")
+    end
+  end
+
+  defp service_command(["--dump-bootstrap", service_id | _]) do
+    api_key = get_api_key()
+    IO.puts(:stderr, "Fetching bootstrap script from #{service_id}...")
+    json = "{\"command\":\"cat /tmp/bootstrap.sh\"}"
+    response = curl_post(api_key, "/services/#{service_id}/execute", json)
+
+    case extract_json_value(response, "stdout") do
+      nil ->
+        IO.puts(:stderr, "#{@red}Error: Failed to fetch bootstrap (service not running or no bootstrap file)#{@reset}")
+        System.halt(1)
+      script ->
+        IO.write(script)
+    end
   end
 
   defp service_command(args) do

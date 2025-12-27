@@ -197,22 +197,25 @@
            ELSE IF WS-ARG2 = "--logs"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-LOGS
-           ELSE IF WS-ARG2 = "--sleep"
+           ELSE IF WS-ARG2 = "--freeze"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-SLEEP
-           ELSE IF WS-ARG2 = "--wake"
+           ELSE IF WS-ARG2 = "--unfreeze"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-WAKE
            ELSE IF WS-ARG2 = "--destroy"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-DESTROY
+           ELSE IF WS-ARG2 = "--dump-bootstrap"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM SERVICE-DUMP-BOOTSTRAP
            ELSE IF WS-ARG2 = "--name"
                ACCEPT WS-NAME FROM ARGUMENT-VALUE
                PERFORM PARSE-SERVICE-CREATE-ARGS
                PERFORM SERVICE-CREATE
            ELSE
                DISPLAY "Error: Use --list, --info, --logs, "
-                   "--sleep, --wake, --destroy, or --name" UPON SYSERR
+                   "--freeze, --unfreeze, --destroy, --dump-bootstrap, or --name" UPON SYSERR
                MOVE 1 TO RETURN-CODE
            END-IF.
 
@@ -370,6 +373,52 @@
                "' >/dev/null && "
                "echo -e '\x1b[32mService destroyed: "
                FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-DUMP-BOOTSTRAP.
+      * Check if WS-ARG3 contains --dump-file argument
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           MOVE SPACES TO WS-BOOTSTRAP.
+           IF WS-ARG3 = "--dump-file"
+               ACCEPT WS-BOOTSTRAP FROM ARGUMENT-VALUE
+           END-IF.
+
+           STRING "echo 'Fetching bootstrap script from "
+               FUNCTION TRIM(WS-ID) "...' >&2; "
+               "RESP=$(curl -s -X POST "
+               "https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID) "/execute "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' -d '{\"command\":\"cat /tmp/bootstrap.sh\"}'); "
+               "STDOUT=$(echo \"$RESP\" | jq -r '.stdout // empty'); "
+               "if [ -n \"$STDOUT\" ]; then "
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-BOOTSTRAP NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "echo \"$STDOUT\" > '"
+                   FUNCTION TRIM(WS-BOOTSTRAP)
+                   "' && chmod 755 '"
+                   FUNCTION TRIM(WS-BOOTSTRAP)
+                   "' && echo 'Bootstrap saved to "
+                   FUNCTION TRIM(WS-BOOTSTRAP) "'; "
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           ELSE
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "echo \"$STDOUT\"; "
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "else echo -e '\x1b[31mError: Failed to fetch "
+               "bootstrap\x1b[0m' >&2; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

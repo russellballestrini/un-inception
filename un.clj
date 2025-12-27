@@ -201,6 +201,31 @@
       :destroy (do
                  (curl-delete api-key (str "/services/" sid))
                  (println (str green "Service destroyed: " sid reset)))
+      :execute (when (and sid bootstrap)
+                 (let [json (str "{\"command\":\"" (escape-json bootstrap) "\"}")
+                       response (curl-post api-key (str "/services/" sid "/execute") json)
+                       stdout-val (extract-field "stdout" response)]
+                   (when stdout-val
+                     (print (str blue (unescape-json stdout-val) reset))
+                     (flush))))
+      :dump-bootstrap (when sid
+                        (binding [*out* *err*]
+                          (println (str "Fetching bootstrap script from " sid "...")))
+                        (let [json "{\"command\":\"cat /tmp/bootstrap.sh\"}"
+                              response (curl-post api-key (str "/services/" sid "/execute") json)
+                              stdout-val (extract-field "stdout" response)]
+                          (if stdout-val
+                            (let [script (unescape-json stdout-val)]
+                              (if service-type
+                                (do
+                                  (spit service-type script)
+                                  (sh "chmod" "755" service-type)
+                                  (println (str "Bootstrap saved to " service-type)))
+                                (print script)))
+                            (do
+                              (binding [*out* *err*]
+                                (println (str red "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" reset)))
+                              (System/exit 1)))))
       :create (when name
                 (let [ports-json (if ports (str ",\"ports\":[" ports "]") "")
                       bootstrap-json (if bootstrap (str ",\"bootstrap\":\"" (escape-json bootstrap) "\"") "")
@@ -336,17 +361,29 @@
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
              :logs (second args) service-name service-ports service-bootstrap service-type key-extend mode)
 
-      (and (= mode :service) (= (first args) "--sleep"))
+      (and (= mode :service) (= (first args) "--freeze"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
              :sleep (second args) service-name service-ports service-bootstrap service-type key-extend mode)
 
-      (and (= mode :service) (= (first args) "--wake"))
+      (and (= mode :service) (= (first args) "--unfreeze"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
              :wake (second args) service-name service-ports service-bootstrap service-type key-extend mode)
 
       (and (= mode :service) (= (first args) "--destroy"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
              :destroy (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+
+      (and (= mode :service) (= (first args) "--execute"))
+      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
+             :execute (second args) service-name service-ports (nth args 2) service-type key-extend mode)
+
+      (and (= mode :service) (= (first args) "--dump-bootstrap") (>= (count args) 3) (not (.startsWith (nth args 2) "-")))
+      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) key-extend mode)
+
+      (and (= mode :service) (= (first args) "--dump-bootstrap"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-type key-extend mode)
 
       (and (= mode :service) (= (first args) "--name"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell

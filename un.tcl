@@ -445,6 +445,8 @@ proc cmd_service {args} {
     set sleep_id ""
     set wake_id ""
     set destroy_id ""
+    set dump_bootstrap_id ""
+    set dump_file ""
     set name ""
     set ports ""
     set service_type ""
@@ -467,17 +469,25 @@ proc cmd_service {args} {
                 incr i
                 set logs_id [lindex $args $i]
             }
-            --sleep {
+            --freeze {
                 incr i
                 set sleep_id [lindex $args $i]
             }
-            --wake {
+            --unfreeze {
                 incr i
                 set wake_id [lindex $args $i]
             }
             --destroy {
                 incr i
                 set destroy_id [lindex $args $i]
+            }
+            --dump-bootstrap {
+                incr i
+                set dump_bootstrap_id [lindex $args $i]
+            }
+            --dump-file {
+                incr i
+                set dump_file [lindex $args $i]
             }
             --name {
                 incr i
@@ -554,6 +564,31 @@ proc cmd_service {args} {
     if {$destroy_id ne ""} {
         api_request "/services/$destroy_id" "DELETE" {} $api_key
         puts "${::GREEN}Service destroyed: $destroy_id${::RESET}"
+        return
+    }
+
+    if {$dump_bootstrap_id ne ""} {
+        puts stderr "Fetching bootstrap script from $dump_bootstrap_id..."
+        set payload [list command [::json::write string "cat /tmp/bootstrap.sh"]]
+        set result [api_request "/services/$dump_bootstrap_id/execute" "POST" $payload $api_key]
+
+        if {[dict exists $result stdout] && [dict get $result stdout] ne ""} {
+            set bootstrap [dict get $result stdout]
+            if {$dump_file ne ""} {
+                # Write to file
+                set fp [open $dump_file w]
+                puts -nonewline $fp $bootstrap
+                close $fp
+                file attributes $dump_file -permissions 0755
+                puts "Bootstrap saved to $dump_file"
+            } else {
+                # Print to stdout
+                puts -nonewline $bootstrap
+            }
+        } else {
+            puts stderr "${::RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${::RESET}"
+            exit 1
+        }
         return
     }
 

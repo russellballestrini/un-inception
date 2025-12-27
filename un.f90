@@ -248,12 +248,12 @@ contains
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
                 end if
-            else if (trim(arg) == '--sleep') then
+            else if (trim(arg) == '--freeze') then
                 operation = 'sleep'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
                 end if
-            else if (trim(arg) == '--wake') then
+            else if (trim(arg) == '--unfreeze') then
                 operation = 'wake'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
@@ -262,6 +262,16 @@ contains
                 operation = 'destroy'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                end if
+            else if (trim(arg) == '--dump-bootstrap') then
+                operation = 'dump-bootstrap'
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_id)
+                end if
+            else if (trim(arg) == '--dump-file') then
+                operation = 'dump-file'
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_type)
                 end if
             end if
         end do
@@ -314,8 +324,24 @@ contains
                 '-H "Authorization: Bearer ', trim(api_key), '" >/dev/null && ', &
                 'echo -e "\x1b[32mService destroyed: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'dump-bootstrap' .and. len_trim(service_id) > 0) then
+            write(full_cmd, '(20A)') &
+                'echo "Fetching bootstrap script from ', trim(service_id), '..." >&2; ', &
+                'RESP=$(curl -s -X POST https://api.unsandbox.com/services/', &
+                trim(service_id), '/execute ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(api_key), '" ', &
+                '-d ''{"command":"cat /tmp/bootstrap.sh"}''); ', &
+                'STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); ', &
+                'if [ -n "$STDOUT" ]; then ', &
+                'if [ -n "', trim(service_type), '" ]; then ', &
+                'echo "$STDOUT" > "', trim(service_type), '" && chmod 755 "', trim(service_type), '" && ', &
+                'echo "Bootstrap saved to ', trim(service_type), '"; ', &
+                'else echo "$STDOUT"; fi; ', &
+                'else echo -e "\x1b[31mError: Failed to fetch bootstrap\x1b[0m" >&2; exit 1; fi'
+            call execute_command_line(trim(full_cmd), wait=.true.)
         else
-            write(0, '(A)') 'Error: Use --list, --info, --logs, --sleep, --wake, or --destroy'
+            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --dump-bootstrap'
             stop 1
         end if
     end subroutine handle_service

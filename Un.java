@@ -274,6 +274,49 @@ public class Un {
             return;
         }
 
+        if (args.serviceExecute != null) {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("command", args.serviceCommand);
+            Map<String, Object> result = apiRequest("/services/" + args.serviceExecute + "/execute", "POST", payload, apiKey);
+            String stdout = (String) result.get("stdout");
+            String stderr = (String) result.get("stderr");
+            if (stdout != null && !stdout.isEmpty()) {
+                System.out.print(BLUE + stdout + RESET);
+            }
+            if (stderr != null && !stderr.isEmpty()) {
+                System.err.print(RED + stderr + RESET);
+            }
+            return;
+        }
+
+        if (args.serviceDumpBootstrap != null) {
+            System.err.println("Fetching bootstrap script from " + args.serviceDumpBootstrap + "...");
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("command", "cat /tmp/bootstrap.sh");
+            Map<String, Object> result = apiRequest("/services/" + args.serviceDumpBootstrap + "/execute", "POST", payload, apiKey);
+
+            String bootstrap = (String) result.get("stdout");
+            if (bootstrap != null && !bootstrap.isEmpty()) {
+                if (args.serviceDumpFile != null) {
+                    try {
+                        java.nio.file.Path path = java.nio.file.Paths.get(args.serviceDumpFile);
+                        java.nio.file.Files.write(path, bootstrap.getBytes());
+                        path.toFile().setExecutable(true, false);
+                        System.out.println("Bootstrap saved to " + args.serviceDumpFile);
+                    } catch (Exception e) {
+                        System.err.println(RED + "Error: Could not write to " + args.serviceDumpFile + ": " + e.getMessage() + RESET);
+                        System.exit(1);
+                    }
+                } else {
+                    System.out.print(bootstrap);
+                }
+            } else {
+                System.err.println(RED + "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" + RESET);
+                System.exit(1);
+            }
+            return;
+        }
+
         if (args.serviceName != null) {
             Map<String, Object> payload = new HashMap<>();
             payload.put("name", args.serviceName);
@@ -667,6 +710,10 @@ public class Un {
         String serviceSleep = null;
         String serviceWake = null;
         String serviceDestroy = null;
+        String serviceExecute = null;
+        String serviceCommand = null;
+        String serviceDumpBootstrap = null;
+        String serviceDumpFile = null;
 
         // Key args
         boolean keyExtend = false;
@@ -717,12 +764,20 @@ public class Un {
                 result.serviceLogs = args[++i];
             } else if (arg.equals("--tail")) {
                 result.serviceTail = args[++i];
-            } else if (arg.equals("--sleep")) {
+            } else if (arg.equals("--freeze")) {
                 result.serviceSleep = args[++i];
-            } else if (arg.equals("--wake")) {
+            } else if (arg.equals("--unfreeze")) {
                 result.serviceWake = args[++i];
             } else if (arg.equals("--destroy")) {
                 result.serviceDestroy = args[++i];
+            } else if (arg.equals("--execute")) {
+                result.serviceExecute = args[++i];
+            } else if (arg.equals("--command")) {
+                result.serviceCommand = args[++i];
+            } else if (arg.equals("--dump-bootstrap")) {
+                result.serviceDumpBootstrap = args[++i];
+            } else if (arg.equals("--dump-file")) {
+                result.serviceDumpFile = args[++i];
             } else if (arg.equals("--extend")) {
                 result.keyExtend = true;
             } else if (!arg.startsWith("-")) {
@@ -761,9 +816,13 @@ public class Un {
         System.out.println("  --info ID         Get service details");
         System.out.println("  --logs ID         Get all logs");
         System.out.println("  --tail ID         Get last 9000 lines");
-        System.out.println("  --sleep ID        Freeze service");
-        System.out.println("  --wake ID         Unfreeze service");
+        System.out.println("  --freeze ID        Freeze service");
+        System.out.println("  --unfreeze ID         Unfreeze service");
         System.out.println("  --destroy ID      Destroy service");
+        System.out.println("  --execute ID      Execute command in service");
+        System.out.println("  --command CMD     Command to execute (with --execute)");
+        System.out.println("  --dump-bootstrap ID   Dump bootstrap script");
+        System.out.println("  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)");
         System.out.println();
         System.out.println("Key options:");
         System.out.println("  --extend          Open browser to extend key");

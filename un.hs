@@ -145,6 +145,7 @@ data ServiceOpts = ServiceOpts
 
 data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
                    | ServiceSleep String | ServiceWake String | ServiceDestroy String
+                   | ServiceExecute String String | ServiceDumpBootstrap String (Maybe String)
                    | ServiceCreate
 
 data KeyOpts = KeyOpts
@@ -187,9 +188,12 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--list":rest) opts = parseServiceArgs rest opts { svcAction = ServiceList }
     parseServiceArgs ("--info":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceInfo id }
     parseServiceArgs ("--logs":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceLogs id }
-    parseServiceArgs ("--sleep":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSleep id }
-    parseServiceArgs ("--wake":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceWake id }
+    parseServiceArgs ("--freeze":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSleep id }
+    parseServiceArgs ("--unfreeze":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceWake id }
     parseServiceArgs ("--destroy":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDestroy id }
+    parseServiceArgs ("--execute":id:"--command":cmd:rest) opts = parseServiceArgs rest opts { svcAction = ServiceExecute id cmd }
+    parseServiceArgs ("--dump-bootstrap":id:file:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id (Just file) }
+    parseServiceArgs ("--dump-bootstrap":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id Nothing }
     parseServiceArgs ("--name":n:rest) opts = parseServiceArgs rest opts { svcName = Just n }
     parseServiceArgs ("--ports":p:rest) opts = parseServiceArgs rest opts { svcPorts = Just p }
     parseServiceArgs ("--type":t:rest) opts = parseServiceArgs rest opts { svcType = Just t }
@@ -337,6 +341,28 @@ serviceCommand opts = do
     ServiceDestroy sid -> do
       (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/services/" ++ sid)
       putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset
+    ServiceExecute sid cmd -> do
+      let json = "{\"command\":\"" ++ escapeJSON cmd ++ "\"}"
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/execute") json
+      unless (null stdout) $ putStr $ blue ++ stdout ++ reset
+    ServiceDumpBootstrap sid maybeFile -> do
+      hPutStrLn stderr $ "Fetching bootstrap script from " ++ sid ++ "..."
+      let json = "{\"command\":\"cat /tmp/bootstrap.sh\"}"
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/execute") json
+      -- Extract stdout from JSON response
+      let bootstrapScript = extractJsonString stdout "stdout"
+      case bootstrapScript of
+        Just script | not (null script) -> do
+          case maybeFile of
+            Just file -> do
+              writeFile file script
+              perms <- getPermissions file
+              setPermissions file (setOwnerExecutable True perms)
+              putStrLn $ "Bootstrap saved to " ++ file
+            Nothing -> putStr script
+        _ -> do
+          hPutStrLn stderr $ red ++ "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" ++ reset
+          exitFailure
     ServiceCreate -> do
       case svcName opts of
         Nothing -> do

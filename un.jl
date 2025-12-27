@@ -288,6 +288,34 @@ function cmd_service(args)
         return
     end
 
+    if args["dump-bootstrap"] !== nothing
+        println(stderr, "Fetching bootstrap script from $(args["dump-bootstrap"])...")
+        payload = Dict("command" => "cat /tmp/bootstrap.sh")
+        result = api_request("/services/$(args["dump-bootstrap"])/execute", api_key, method="POST", data=payload)
+
+        if haskey(result, "stdout") && !isempty(result["stdout"])
+            bootstrap = result["stdout"]
+            if args["dump-file"] !== nothing
+                # Write to file
+                try
+                    write(args["dump-file"], bootstrap)
+                    chmod(args["dump-file"], 0o755)
+                    println("Bootstrap saved to $(args["dump-file"])")
+                catch e
+                    println(stderr, "$(RED)Error: Could not write to $(args["dump-file"]): $e$(RESET)")
+                    exit(1)
+                end
+            else
+                # Print to stdout
+                print(bootstrap)
+            end
+        else
+            println(stderr, "$(RED)Error: Failed to fetch bootstrap (service not running or no bootstrap file)$(RESET)")
+            exit(1)
+        end
+        return
+    end
+
     # Create new service
     if args["name"] !== nothing
         payload = Dict("name" => args["name"])
@@ -332,7 +360,7 @@ function cmd_service(args)
         return
     end
 
-    println(stderr, "$(RED)Error: Use --name to create, or --list, --info, --logs, --sleep, --wake, --destroy$(RESET)")
+    println(stderr, "$(RED)Error: Use --name to create, or --list, --info, --logs, --freeze, --unfreeze, --destroy$(RESET)")
     exit(1)
 end
 
@@ -550,12 +578,16 @@ function main()
             help = "Get service details"
         "--logs"
             help = "Get all logs"
-        "--sleep"
+        "--freeze"
             help = "Freeze service"
-        "--wake"
+        "--unfreeze"
             help = "Unfreeze service"
         "--destroy"
             help = "Destroy service"
+        "--dump-bootstrap"
+            help = "Dump bootstrap script from service"
+        "--dump-file"
+            help = "File to save bootstrap (with --dump-bootstrap)"
         "--api-key", "-k"
             help = "API key"
     end

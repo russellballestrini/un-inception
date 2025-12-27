@@ -406,6 +406,62 @@ class Un
             return;
         }
 
+        if (args.ServiceExecute != null)
+        {
+            var payload = new Dictionary<string, object>
+            {
+                ["command"] = args.ServiceCommand
+            };
+            var result = ApiRequest($"/services/{args.ServiceExecute}/execute", "POST", payload, apiKey);
+            if (result.ContainsKey("stdout") && !string.IsNullOrEmpty((string)result["stdout"]))
+            {
+                Console.Write($"{BLUE}{result["stdout"]}{RESET}");
+            }
+            if (result.ContainsKey("stderr") && !string.IsNullOrEmpty((string)result["stderr"]))
+            {
+                Console.Error.Write($"{RED}{result["stderr"]}{RESET}");
+            }
+            return;
+        }
+
+        if (args.ServiceDumpBootstrap != null)
+        {
+            Console.Error.WriteLine($"Fetching bootstrap script from {args.ServiceDumpBootstrap}...");
+            var payload = new Dictionary<string, object>
+            {
+                ["command"] = "cat /tmp/bootstrap.sh"
+            };
+            var result = ApiRequest($"/services/{args.ServiceDumpBootstrap}/execute", "POST", payload, apiKey);
+
+            var bootstrap = result.ContainsKey("stdout") ? (string)result["stdout"] : null;
+            if (!string.IsNullOrEmpty(bootstrap))
+            {
+                if (args.ServiceDumpFile != null)
+                {
+                    try
+                    {
+                        File.WriteAllText(args.ServiceDumpFile, bootstrap);
+                        Console.WriteLine($"Bootstrap saved to {args.ServiceDumpFile}");
+                    }
+                    catch (Exception e)
+                    {
+                        Console.Error.WriteLine($"{RED}Error: Could not write to {args.ServiceDumpFile}: {e.Message}{RESET}");
+                        Environment.Exit(1);
+                    }
+                }
+                else
+                {
+                    Console.Write(bootstrap);
+                }
+            }
+            else
+            {
+                Console.Error.WriteLine($"{RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file){RESET}");
+                Environment.Exit(1);
+            }
+            return;
+        }
+
         if (args.ServiceName != null)
         {
             var payload = new Dictionary<string, object>
@@ -770,6 +826,10 @@ class Un
         public string ServiceWake = null;
         public string ServiceDestroy = null;
         public string ServiceType = null;
+        public string ServiceExecute = null;
+        public string ServiceCommand = null;
+        public string ServiceDumpBootstrap = null;
+        public string ServiceDumpFile = null;
         public bool KeyExtend = false;
     }
 
@@ -803,9 +863,13 @@ class Un
             else if (arg == "--info") result.ServiceInfo = args[++i];
             else if (arg == "--logs") result.ServiceLogs = args[++i];
             else if (arg == "--tail") result.ServiceTail = args[++i];
-            else if (arg == "--sleep") result.ServiceSleep = args[++i];
-            else if (arg == "--wake") result.ServiceWake = args[++i];
+            else if (arg == "--freeze") result.ServiceSleep = args[++i];
+            else if (arg == "--unfreeze") result.ServiceWake = args[++i];
             else if (arg == "--destroy") result.ServiceDestroy = args[++i];
+            else if (arg == "--execute") result.ServiceExecute = args[++i];
+            else if (arg == "--command") result.ServiceCommand = args[++i];
+            else if (arg == "--dump-bootstrap") result.ServiceDumpBootstrap = args[++i];
+            else if (arg == "--dump-file") result.ServiceDumpFile = args[++i];
             else if (arg == "--extend") result.KeyExtend = true;
             else if (!arg.StartsWith("-")) result.SourceFile = arg;
         }
@@ -842,9 +906,13 @@ Service options:
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --sleep ID        Freeze service
-  --wake ID         Unfreeze service
+  --freeze ID        Freeze service
+  --unfreeze ID         Unfreeze service
   --destroy ID      Destroy service
+  --execute ID      Execute command in service
+  --command CMD     Command to execute (with --execute)
+  --dump-bootstrap ID   Dump bootstrap script
+  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend          Open browser to extend expired key");

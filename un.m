@@ -444,6 +444,8 @@ void cmdService(NSArray* args) {
     NSString* sleepId = nil;
     NSString* wakeId = nil;
     NSString* destroyId = nil;
+    NSString* dumpBootstrapId = nil;
+    NSString* dumpFile = nil;
     NSString* name = nil;
     NSString* ports = nil;
     NSString* type = nil;
@@ -460,12 +462,16 @@ void cmdService(NSArray* args) {
             infoId = args[++i];
         } else if ([arg isEqualToString:@"--logs"] && i + 1 < [args count]) {
             logsId = args[++i];
-        } else if ([arg isEqualToString:@"--sleep"] && i + 1 < [args count]) {
+        } else if ([arg isEqualToString:@"--freeze"] && i + 1 < [args count]) {
             sleepId = args[++i];
-        } else if ([arg isEqualToString:@"--wake"] && i + 1 < [args count]) {
+        } else if ([arg isEqualToString:@"--unfreeze"] && i + 1 < [args count]) {
             wakeId = args[++i];
         } else if ([arg isEqualToString:@"--destroy"] && i + 1 < [args count]) {
             destroyId = args[++i];
+        } else if ([arg isEqualToString:@"--dump-bootstrap"] && i + 1 < [args count]) {
+            dumpBootstrapId = args[++i];
+        } else if ([arg isEqualToString:@"--dump-file"] && i + 1 < [args count]) {
+            dumpFile = args[++i];
         } else if ([arg isEqualToString:@"--name"] && i + 1 < [args count]) {
             name = args[++i];
         } else if ([arg isEqualToString:@"--ports"] && i + 1 < [args count]) {
@@ -538,6 +544,39 @@ void cmdService(NSArray* args) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@", destroyId];
         apiRequest(endpoint, @"DELETE", nil, apiKey);
         printf("%sService destroyed: %s%s\n", [GREEN UTF8String], [destroyId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (dumpBootstrapId) {
+        fprintf(stderr, "Fetching bootstrap script from %s...\n", [dumpBootstrapId UTF8String]);
+        NSDictionary* payload = @{@"command": @"cat /tmp/bootstrap.sh"};
+        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/execute", dumpBootstrapId];
+        NSDictionary* result = apiRequest(endpoint, @"POST", payload, apiKey);
+
+        if (result[@"stdout"] && [result[@"stdout"] length] > 0) {
+            NSString* bootstrap = result[@"stdout"];
+            if (dumpFile) {
+                // Write to file
+                NSError* error = nil;
+                [bootstrap writeToFile:dumpFile atomically:YES encoding:NSUTF8StringEncoding error:&error];
+                if (error) {
+                    fprintf(stderr, "%sError: Could not write to %s: %s%s\n",
+                            [RED UTF8String], [dumpFile UTF8String],
+                            [[error localizedDescription] UTF8String], [RESET UTF8String]);
+                    exit(1);
+                }
+                NSFileManager* fm = [NSFileManager defaultManager];
+                [fm setAttributes:@{NSFilePosixPermissions: @0755} ofItemAtPath:dumpFile error:nil];
+                printf("Bootstrap saved to %s\n", [dumpFile UTF8String]);
+            } else {
+                // Print to stdout
+                printf("%s", [bootstrap UTF8String]);
+            }
+        } else {
+            fprintf(stderr, "%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s\n",
+                    [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
         return;
     }
 

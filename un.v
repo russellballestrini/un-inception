@@ -268,7 +268,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl(cmd))
 }
 
-fn cmd_service(name string, ports string, service_type string, bootstrap string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, network string, vcpu int, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, api_key string) {
 	if list {
 		cmd := "curl -s -X GET '${api_base}/services' -H 'Authorization: Bearer ${api_key}'"
 		println(exec_curl(cmd))
@@ -311,6 +311,46 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		cmd := "curl -s -X DELETE '${api_base}/services/${destroy}' -H 'Authorization: Bearer ${api_key}'"
 		exec_curl(cmd)
 		println('${green}Service destroyed: ${destroy}${reset}')
+		return
+	}
+
+	if execute != '' {
+		json := '{"command":"${escape_json(command)}"}'
+		cmd := "curl -s -X POST '${api_base}/services/${execute}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '${json}'"
+		result := exec_curl(cmd)
+
+		stdout_str := extract_json_string(result, 'stdout')
+		stderr_str := extract_json_string(result, 'stderr')
+		if stdout_str != '' {
+			print(stdout_str)
+		}
+		if stderr_str != '' {
+			eprint(stderr_str)
+		}
+		return
+	}
+
+	if dump_bootstrap != '' {
+		eprintln('Fetching bootstrap script from ${dump_bootstrap}...')
+		cmd := "curl -s -X POST '${api_base}/services/${dump_bootstrap}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '{\"command\":\"cat /tmp/bootstrap.sh\"}'"
+		result := exec_curl(cmd)
+
+		bootstrap_script := extract_json_string(result, 'stdout')
+		if bootstrap_script != '' {
+			if dump_file != '' {
+				os.write_file(dump_file, bootstrap_script) or {
+					eprintln('${red}Error: Could not write to ${dump_file}: ${err}${reset}')
+					exit(1)
+				}
+				os.chmod(dump_file, 0o755) or {}
+				println('Bootstrap saved to ${dump_file}')
+			} else {
+				print(bootstrap_script)
+			}
+		} else {
+			eprintln('${red}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${reset}')
+			exit(1)
+		}
 		return
 	}
 
@@ -415,6 +455,10 @@ fn main() {
 		mut sleep := ''
 		mut wake := ''
 		mut destroy := ''
+		mut execute := ''
+		mut command := ''
+		mut dump_bootstrap := ''
+		mut dump_file := ''
 		mut network := ''
 		mut vcpu := 0
 
@@ -450,17 +494,33 @@ fn main() {
 					i++
 					tail = os.args[i]
 				}
-				'--sleep' {
+				'--freeze' {
 					i++
 					sleep = os.args[i]
 				}
-				'--wake' {
+				'--unfreeze' {
 					i++
 					wake = os.args[i]
 				}
 				'--destroy' {
 					i++
 					destroy = os.args[i]
+				}
+				'--execute' {
+					i++
+					execute = os.args[i]
+				}
+				'--command' {
+					i++
+					command = os.args[i]
+				}
+				'--dump-bootstrap' {
+					i++
+					dump_bootstrap = os.args[i]
+				}
+				'--dump-file' {
+					i++
+					dump_file = os.args[i]
 				}
 				'-n' {
 					i++
@@ -479,7 +539,7 @@ fn main() {
 			i++
 		}
 
-		cmd_service(name, ports, service_type, bootstrap, list, info, logs, tail, sleep, wake, destroy, network,
+		cmd_service(name, ports, service_type, bootstrap, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network,
 			vcpu, api_key)
 		return
 	}

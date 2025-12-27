@@ -258,6 +258,43 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
+\ Service dump bootstrap
+: service-dump-bootstrap ( service-id-addr service-id-len file-addr file-len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" echo 'Fetching bootstrap script from " r@ write-file throw
+    2over r@ write-file throw
+    s" ...' >&2" r@ write-line throw
+    s" RESP=$(curl -s -X POST https://api.unsandbox.com/services/" r@ write-file throw
+    2over r@ write-file throw
+    s" /execute -H 'Content-Type: application/json' -H 'Authorization: Bearer " r@ write-file throw
+    get-api-key r@ write-file throw
+    s" ' -d '{\"command\":\"cat /tmp/bootstrap.sh\"}')" r@ write-line throw
+    s" STDOUT=$(echo \"$RESP\" | jq -r '.stdout // empty')" r@ write-line throw
+    s" if [ -n \"$STDOUT\" ]; then" r@ write-line throw
+    2dup 0 0 d= if
+        \ No file specified, print to stdout
+        2drop
+        s"   echo \"$STDOUT\"" r@ write-line throw
+    else
+        \ File specified, save to file
+        s"   echo \"$STDOUT\" > '" r@ write-file throw
+        r@ write-file throw
+        s" ' && chmod 755 '" r@ write-file throw
+        2dup r@ write-file throw
+        s" ' && echo 'Bootstrap saved to " r@ write-file throw
+        r@ write-file throw
+        s" '" r@ write-line throw
+    then
+    s" else" r@ write-line throw
+    s"   echo -e '\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m' >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
 \ Service create (requires --name, optional --ports, --domains, --type, --bootstrap)
 : service-create ( -- )
     get-api-key
@@ -394,7 +431,7 @@
 \ Handle service subcommand
 : handle-service ( -- )
     argc @ 3 < if
-        s" Error: Use --name (create), --list, --info, --logs, --sleep, --wake, or --destroy" type cr
+        s" Error: Use --name (create), --list, --info, --logs, --freeze, --unfreeze, or --destroy" type cr
         1 (bye)
     then
 
@@ -433,20 +470,20 @@
         0 (bye)
     then
 
-    2dup s" --sleep" compare 0= if
+    2dup s" --freeze" compare 0= if
         2drop
         argc @ 4 < if
-            s" Error: --sleep requires service ID" type cr
+            s" Error: --freeze requires service ID" type cr
             1 (bye)
         then
         3 arg service-sleep
         0 (bye)
     then
 
-    2dup s" --wake" compare 0= if
+    2dup s" --unfreeze" compare 0= if
         2drop
         argc @ 4 < if
-            s" Error: --wake requires service ID" type cr
+            s" Error: --unfreeze requires service ID" type cr
             1 (bye)
         then
         3 arg service-wake
@@ -463,8 +500,34 @@
         0 (bye)
     then
 
+    2dup s" --dump-bootstrap" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --dump-bootstrap requires service ID" type cr
+            1 (bye)
+        then
+        3 arg
+        \ Check for --dump-file
+        argc @ 5 >= if
+            4 arg 2dup s" --dump-file" compare 0= if
+                2drop
+                argc @ 6 < if
+                    s" Error: --dump-file requires filename" type cr
+                    1 (bye)
+                then
+                5 arg
+            else
+                2drop 0 0
+            then
+        else
+            0 0
+        then
+        service-dump-bootstrap
+        0 (bye)
+    then
+
     2drop
-    s" Error: Use --name (create), --list, --info, --logs, --sleep, --wake, or --destroy" type cr
+    s" Error: Use --name (create), --list, --info, --logs, --freeze, --unfreeze, --destroy, or --dump-bootstrap" type cr
     1 (bye)
 ;
 

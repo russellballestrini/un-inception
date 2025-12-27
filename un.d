@@ -152,7 +152,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string network, int vcpu, string apiKey) {
+void cmdService(string name, string ports, string bootstrap, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string apiKey) {
     if (list) {
         string cmd = format(`curl -s -X GET '%s/services' -H 'Authorization: Bearer %s'`, API_BASE, apiKey);
         writeln(execCurl(cmd));
@@ -195,6 +195,74 @@ void cmdService(string name, string ports, string bootstrap, string type, bool l
         string cmd = format(`curl -s -X DELETE '%s/services/%s' -H 'Authorization: Bearer %s'`, API_BASE, destroy, apiKey);
         execCurl(cmd);
         writefln("%sService destroyed: %s%s", GREEN, destroy, RESET);
+        return;
+    }
+
+    if (!execute.empty) {
+        string json = format(`{"command":"%s"}`, escapeJson(command));
+        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '%s'`, API_BASE, execute, apiKey, json);
+        string result = execCurl(cmd);
+
+        // Simple JSON parsing for stdout/stderr
+        import std.algorithm : findSplitAfter;
+        auto stdoutSearch = result.findSplitAfter(`"stdout":"`);
+        if (stdoutSearch[0].length > 0 && stdoutSearch[1].length > 0) {
+            auto stdoutEnd = stdoutSearch[1].findSplitAfter(`"`);
+            if (stdoutEnd[0].length > 1) {
+                string output = stdoutEnd[0][0..$-1];
+                output = output.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\");
+                write(output);
+            }
+        }
+
+        auto stderrSearch = result.findSplitAfter(`"stderr":"`);
+        if (stderrSearch[0].length > 0 && stderrSearch[1].length > 0) {
+            auto stderrEnd = stderrSearch[1].findSplitAfter(`"`);
+            if (stderrEnd[0].length > 1) {
+                string errout = stderrEnd[0][0..$-1];
+                errout = errout.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\");
+                stderr.write(errout);
+            }
+        }
+        return;
+    }
+
+    if (!dumpBootstrap.empty) {
+        stderr.writefln("Fetching bootstrap script from %s...", dumpBootstrap);
+        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '{"command":"cat /tmp/bootstrap.sh"}'`, API_BASE, dumpBootstrap, apiKey);
+        string result = execCurl(cmd);
+
+        import std.algorithm : findSplitAfter;
+        auto stdoutSearch = result.findSplitAfter(`"stdout":"`);
+        if (stdoutSearch[0].length > 0 && stdoutSearch[1].length > 0) {
+            auto stdoutEnd = stdoutSearch[1].findSplitAfter(`"`);
+            if (stdoutEnd[0].length > 1) {
+                string bootstrapScript = stdoutEnd[0][0..$-1];
+                bootstrapScript = bootstrapScript.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\");
+
+                if (!dumpFile.empty) {
+                    try {
+                        std.file.write(dumpFile, bootstrapScript);
+                        version(Posix) {
+                            import core.sys.posix.sys.stat;
+                            chmod(dumpFile.toStringz(), octal!755);
+                        }
+                        writefln("Bootstrap saved to %s", dumpFile);
+                    } catch (Exception e) {
+                        stderr.writefln("%sError: Could not write to %s: %s%s", RED, dumpFile, e.msg, RESET);
+                        exit(1);
+                    }
+                } else {
+                    write(bootstrapScript);
+                }
+            } else {
+                stderr.writefln("%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s", RED, RESET);
+                exit(1);
+            }
+        } else {
+            stderr.writefln("%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s", RED, RESET);
+            exit(1);
+        }
         return;
     }
 
@@ -379,7 +447,7 @@ int main(string[] args) {
     if (args[1] == "service") {
         string name, ports, bootstrap, type;
         bool list = false;
-        string info, logs, tail, sleep, wake, destroy, network;
+        string info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network;
         int vcpu = 0;
 
         for (size_t i = 2; i < args.length; i++) {
@@ -391,15 +459,19 @@ int main(string[] args) {
             else if (args[i] == "--info" && i+1 < args.length) info = args[++i];
             else if (args[i] == "--logs" && i+1 < args.length) logs = args[++i];
             else if (args[i] == "--tail" && i+1 < args.length) tail = args[++i];
-            else if (args[i] == "--sleep" && i+1 < args.length) sleep = args[++i];
-            else if (args[i] == "--wake" && i+1 < args.length) wake = args[++i];
+            else if (args[i] == "--freeze" && i+1 < args.length) sleep = args[++i];
+            else if (args[i] == "--unfreeze" && i+1 < args.length) wake = args[++i];
             else if (args[i] == "--destroy" && i+1 < args.length) destroy = args[++i];
+            else if (args[i] == "--execute" && i+1 < args.length) execute = args[++i];
+            else if (args[i] == "--command" && i+1 < args.length) command = args[++i];
+            else if (args[i] == "--dump-bootstrap" && i+1 < args.length) dumpBootstrap = args[++i];
+            else if (args[i] == "--dump-file" && i+1 < args.length) dumpFile = args[++i];
             else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
             else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey);
+        cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, apiKey);
         return 0;
     }
 

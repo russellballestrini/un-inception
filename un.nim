@@ -128,7 +128,7 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, network: string, vcpu: int, apiKey: string) =
+proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, apiKey: string) =
   if list:
     let cmd = fmt"""curl -s -X GET '{API_BASE}/services' -H 'Authorization: Bearer {apiKey}'"""
     echo execCurl(cmd)
@@ -165,6 +165,76 @@ proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, l
     let cmd = fmt"""curl -s -X DELETE '{API_BASE}/services/{destroy}' -H 'Authorization: Bearer {apiKey}'"""
     discard execCurl(cmd)
     echo GREEN & "Service destroyed: " & destroy & RESET
+    return
+
+  if execute != "":
+    let json = fmt"""{"command":"{escapeJson(command)}"}"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{execute}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
+    let result = execCurl(cmd)
+
+    # Simple parsing for stdout/stderr
+    let stdoutStart = result.find("\"stdout\":\"")
+    if stdoutStart >= 0:
+      let start = stdoutStart + 10
+      var endPos = start
+      while endPos < result.len:
+        if result[endPos] == '"' and (endPos == 0 or result[endPos-1] != '\\'):
+          break
+        inc endPos
+      if endPos > start:
+        var output = result[start..<endPos]
+        output = output.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\")
+        stdout.write(output)
+
+    let stderrStart = result.find("\"stderr\":\"")
+    if stderrStart >= 0:
+      let start = stderrStart + 10
+      var endPos = start
+      while endPos < result.len:
+        if result[endPos] == '"' and (endPos == 0 or result[endPos-1] != '\\'):
+          break
+        inc endPos
+      if endPos > start:
+        var errout = result[start..<endPos]
+        errout = errout.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\")
+        stderr.write(errout)
+    return
+
+  if dumpBootstrap != "":
+    stderr.writeLine("Fetching bootstrap script from " & dumpBootstrap & "...")
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{dumpBootstrap}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{{"command":"cat /tmp/bootstrap.sh"}}'"""
+    let result = execCurl(cmd)
+
+    let stdoutStart = result.find("\"stdout\":\"")
+    if stdoutStart >= 0:
+      let start = stdoutStart + 10
+      var endPos = start
+      while endPos < result.len:
+        if result[endPos] == '"' and (endPos == 0 or result[endPos-1] != '\\'):
+          break
+        inc endPos
+      if endPos > start:
+        var bootstrapScript = result[start..<endPos]
+        bootstrapScript = bootstrapScript.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\")
+
+        if dumpFile != "":
+          try:
+            writeFile(dumpFile, bootstrapScript)
+            when defined(posix):
+              import os
+              setFilePermissions(dumpFile, {fpUserExec, fpUserWrite, fpUserRead, fpGroupExec, fpGroupRead, fpOthersExec, fpOthersRead})
+            echo "Bootstrap saved to " & dumpFile
+          except IOError as e:
+            stderr.writeLine(RED & "Error: Could not write to " & dumpFile & ": " & e.msg & RESET)
+            quit(1)
+        else:
+          stdout.write(bootstrapScript)
+      else:
+        stderr.writeLine(RED & "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" & RESET)
+        quit(1)
+    else:
+      stderr.writeLine(RED & "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" & RESET)
+      quit(1)
     return
 
   if name != "":
@@ -309,7 +379,7 @@ proc main() =
   if args[0] == "service":
     var name, ports, bootstrap, serviceType = ""
     var list = false
-    var info, logs, tail, sleep, wake, destroy, network = ""
+    var info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network = ""
     var vcpu = 0
     var i = 1
     while i < args.len:
@@ -322,14 +392,18 @@ proc main() =
       of "--info": info = args[i+1]; inc i
       of "--logs": logs = args[i+1]; inc i
       of "--tail": tail = args[i+1]; inc i
-      of "--sleep": sleep = args[i+1]; inc i
-      of "--wake": wake = args[i+1]; inc i
+      of "--freeze": sleep = args[i+1]; inc i
+      of "--unfreeze": wake = args[i+1]; inc i
       of "--destroy": destroy = args[i+1]; inc i
+      of "--execute": execute = args[i+1]; inc i
+      of "--command": command = args[i+1]; inc i
+      of "--dump-bootstrap": dumpBootstrap = args[i+1]; inc i
+      of "--dump-file": dumpFile = args[i+1]; inc i
       of "-n": network = args[i+1]; inc i
       of "-v": vcpu = parseInt(args[i+1]); inc i
       of "-k": apiKey = args[i+1]; inc i
       inc i
-    cmdService(name, ports, bootstrap, serviceType, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey)
+    cmdService(name, ports, bootstrap, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, apiKey)
     return
 
   # Execute mode

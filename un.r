@@ -354,6 +354,34 @@ cmd_service <- function(args) {
         return()
     }
 
+    if (!is.null(args$dump_bootstrap)) {
+        cat(sprintf("Fetching bootstrap script from %s...\n", args$dump_bootstrap), file = stderr())
+        payload <- list(command = "cat /tmp/bootstrap.sh")
+        result <- api_request(paste0("/services/", args$dump_bootstrap, "/execute"), api_key, method = "POST", data = payload)
+
+        if (!is.null(result$stdout) && result$stdout != "") {
+            bootstrap <- result$stdout
+            if (!is.null(args$dump_file)) {
+                # Write to file
+                tryCatch({
+                    writeLines(bootstrap, args$dump_file)
+                    Sys.chmod(args$dump_file, mode = "0755")
+                    cat(sprintf("Bootstrap saved to %s\n", args$dump_file))
+                }, error = function(e) {
+                    cat(sprintf("%sError: Could not write to %s: %s%s\n", RED, args$dump_file, e$message, RESET), file = stderr())
+                    quit(status = 1)
+                })
+            } else {
+                # Print to stdout
+                cat(bootstrap)
+            }
+        } else {
+            cat(sprintf("%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        return()
+    }
+
     if (!is.null(args$name)) {
         payload <- list(name = args$name)
 
@@ -396,7 +424,7 @@ cmd_service <- function(args) {
         return()
     }
 
-    cat(sprintf("%sError: Use --name to create, or --list, --info, --logs, --sleep, --wake, --destroy%s\n", RED, RESET), file = stderr())
+    cat(sprintf("%sError: Use --name to create, or --list, --info, --logs, --freeze, --unfreeze, --destroy%s\n", RED, RESET), file = stderr())
     quit(status = 1)
 }
 
@@ -419,6 +447,8 @@ parse_args <- function() {
         sleep = NULL,
         wake = NULL,
         destroy = NULL,
+        dump_bootstrap = NULL,
+        dump_file = NULL,
         name = NULL,
         ports = NULL,
         domains = NULL,
@@ -479,17 +509,25 @@ parse_args <- function() {
             i <- i + 1
             result$logs <- args[i]
             i <- i + 1
-        } else if (arg == "--sleep") {
+        } else if (arg == "--freeze") {
             i <- i + 1
             result$sleep <- args[i]
             i <- i + 1
-        } else if (arg == "--wake") {
+        } else if (arg == "--unfreeze") {
             i <- i + 1
             result$wake <- args[i]
             i <- i + 1
         } else if (arg == "--destroy") {
             i <- i + 1
             result$destroy <- args[i]
+            i <- i + 1
+        } else if (arg == "--dump-bootstrap") {
+            i <- i + 1
+            result$dump_bootstrap <- args[i]
+            i <- i + 1
+        } else if (arg == "--dump-file") {
+            i <- i + 1
+            result$dump_file <- args[i]
             i <- i + 1
         } else if (arg == "--name") {
             i <- i + 1

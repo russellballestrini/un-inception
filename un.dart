@@ -91,6 +91,10 @@ class Args {
   String? serviceSleep;
   String? serviceWake;
   String? serviceDestroy;
+  String? serviceExecute;
+  String? serviceCommand;
+  String? serviceDumpBootstrap;
+  String? serviceDumpFile;
   bool keyExtend = false;
 }
 
@@ -318,6 +322,50 @@ Future<void> cmdService(Args args) async {
     return;
   }
 
+  if (args.serviceExecute != null) {
+    final payload = <String, dynamic>{
+      'command': args.serviceCommand,
+    };
+    final result = await apiRequestCurl('/services/${args.serviceExecute}/execute', 'POST', jsonEncode(payload), apiKey);
+    final stdoutText = result['stdout'] as String?;
+    final stderrText = result['stderr'] as String?;
+    if (stdoutText != null && stdoutText.isNotEmpty) {
+      stdout.write('$blue$stdoutText$reset');
+    }
+    if (stderrText != null && stderrText.isNotEmpty) {
+      stderr.write('$red$stderrText$reset');
+    }
+    return;
+  }
+
+  if (args.serviceDumpBootstrap != null) {
+    stderr.writeln('Fetching bootstrap script from ${args.serviceDumpBootstrap}...');
+    final payload = <String, dynamic>{
+      'command': 'cat /tmp/bootstrap.sh',
+    };
+    final result = await apiRequestCurl('/services/${args.serviceDumpBootstrap}/execute', 'POST', jsonEncode(payload), apiKey);
+
+    final bootstrap = result['stdout'] as String?;
+    if (bootstrap != null && bootstrap.isNotEmpty) {
+      if (args.serviceDumpFile != null) {
+        try {
+          await File(args.serviceDumpFile!).writeAsString(bootstrap);
+          await Process.run('chmod', ['755', args.serviceDumpFile!]);
+          print('Bootstrap saved to ${args.serviceDumpFile}');
+        } catch (e) {
+          stderr.writeln('${red}Error: Could not write to ${args.serviceDumpFile}: $e$reset');
+          exit(1);
+        }
+      } else {
+        stdout.write(bootstrap);
+      }
+    } else {
+      stderr.writeln('${red}Error: Failed to fetch bootstrap (service not running or no bootstrap file)$reset');
+      exit(1);
+    }
+    return;
+  }
+
   if (args.serviceName != null) {
     final payload = <String, dynamic>{
       'name': args.serviceName!,
@@ -485,14 +533,26 @@ Args parseArgs(List<String> argv) {
       case '--tail':
         args.serviceTail = argv[++i];
         break;
-      case '--sleep':
+      case '--freeze':
         args.serviceSleep = argv[++i];
         break;
-      case '--wake':
+      case '--unfreeze':
         args.serviceWake = argv[++i];
         break;
       case '--destroy':
         args.serviceDestroy = argv[++i];
+        break;
+      case '--execute':
+        args.serviceExecute = argv[++i];
+        break;
+      case '--command':
+        args.serviceCommand = argv[++i];
+        break;
+      case '--dump-bootstrap':
+        args.serviceDumpBootstrap = argv[++i];
+        break;
+      case '--dump-file':
+        args.serviceDumpFile = argv[++i];
         break;
       case '--extend':
         args.keyExtend = true;
@@ -537,9 +597,13 @@ Service options:
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --sleep ID        Freeze service
-  --wake ID         Unfreeze service
+  --freeze ID        Freeze service
+  --unfreeze ID         Unfreeze service
   --destroy ID      Destroy service
+  --execute ID      Execute command in service
+  --command CMD     Command to execute (with --execute)
+  --dump-bootstrap ID   Dump bootstrap script
+  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend          Open browser to extend key

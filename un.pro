@@ -178,6 +178,21 @@ service_destroy(ServiceId) :-
         [ServiceId, ApiKey, ServiceId]),
     shell(Cmd, 0).
 
+% Service dump bootstrap
+service_dump_bootstrap(ServiceId, DumpFile) :-
+    get_api_key(ApiKey),
+    (   DumpFile = ''
+    ->  % No file specified, print to stdout
+        format(atom(Cmd),
+            'echo "Fetching bootstrap script from ~w..." >&2; RESP=$(curl -s -X POST https://api.unsandbox.com/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -d \'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
+            [ServiceId, ServiceId, ApiKey])
+    ;   % File specified, save to file
+        format(atom(Cmd),
+            'echo "Fetching bootstrap script from ~w..." >&2; RESP=$(curl -s -X POST https://api.unsandbox.com/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -d \'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT" > "~w" && chmod 755 "~w" && echo "Bootstrap saved to ~w"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
+            [ServiceId, ServiceId, ApiKey, DumpFile, DumpFile, DumpFile])
+    ),
+    shell(Cmd, 0).
+
 % Service create
 service_create(Name, Ports, Bootstrap, ServiceType) :-
     get_api_key(ApiKey),
@@ -244,16 +259,21 @@ parse_service_args([], Name, Ports, Bootstrap, ServiceType, create) :-
 parse_service_args([], _, _, _, _, Action) :-
     (   Action = list
     ->  service_list
-    ;   write(user_error, 'Error: Use --list, --info, --logs, --sleep, --wake, --destroy, or --name\n'),
+    ;   write(user_error, 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --name\n'),
         halt(1)
     ).
 parse_service_args(['--list'|_], _, _, _, _, _) :- service_list.
 parse_service_args(['-l'|_], _, _, _, _, _) :- service_list.
 parse_service_args(['--info', ServiceId|_], _, _, _, _, _) :- service_info(ServiceId).
 parse_service_args(['--logs', ServiceId|_], _, _, _, _, _) :- service_logs(ServiceId).
-parse_service_args(['--sleep', ServiceId|_], _, _, _, _, _) :- service_sleep(ServiceId).
-parse_service_args(['--wake', ServiceId|_], _, _, _, _, _) :- service_wake(ServiceId).
+parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _) :- service_sleep(ServiceId).
+parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _) :- service_wake(ServiceId).
 parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _) :- service_destroy(ServiceId).
+parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _) :-
+    (   Rest = ['--dump-file', DumpFile|_]
+    ->  service_dump_bootstrap(ServiceId, DumpFile)
+    ;   service_dump_bootstrap(ServiceId, '')
+    ).
 parse_service_args(['--name', Name|Rest], _, Ports, Bootstrap, ServiceType, _) :-
     parse_service_args(Rest, Name, Ports, Bootstrap, ServiceType, create).
 parse_service_args(['--ports', PortsList|Rest], Name, _, Bootstrap, ServiceType, Action) :-

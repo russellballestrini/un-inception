@@ -426,12 +426,12 @@ async function cmdService(args: string[]) {
           logsId = args[++i];
         }
         break;
-      case "--sleep":
+      case "--freeze":
         if (i + 1 < args.length) {
           sleepId = args[++i];
         }
         break;
-      case "--wake":
+      case "--unfreeze":
         if (i + 1 < args.length) {
           wakeId = args[++i];
         }

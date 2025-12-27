@@ -348,6 +348,10 @@ fn cmd_service(
     sleep: Option<&str>,
     wake: Option<&str>,
     destroy: Option<&str>,
+    execute: Option<&str>,
+    command: Option<&str>,
+    dump_bootstrap: Option<&str>,
+    dump_file: Option<&str>,
     network: Option<&str>,
     vcpu: Option<i32>,
     api_key: &str,
@@ -391,6 +395,53 @@ fn cmd_service(
     if let Some(id) = destroy {
         api_request(&format!("/services/{}", id), "DELETE", None, api_key);
         println!("{}Service destroyed: {}{}", GREEN, id, RESET);
+        return;
+    }
+
+    if let Some(id) = execute {
+        let cmd = command.unwrap_or("");
+        let json = format!(r#"{{"command":"{}"}}"#, escape_json(cmd));
+        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(&json), api_key);
+        let stdout_str = extract_json_string(&result, "stdout");
+        let stderr_str = extract_json_string(&result, "stderr");
+        if !stdout_str.is_empty() {
+            print!("{}{}{}", BLUE, stdout_str, RESET);
+        }
+        if !stderr_str.is_empty() {
+            eprint!("{}{}{}", RED, stderr_str, RESET);
+        }
+        return;
+    }
+
+    if let Some(id) = dump_bootstrap {
+        eprintln!("Fetching bootstrap script from {}...", id);
+        let json = r#"{"command":"cat /tmp/bootstrap.sh"}"#;
+        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(json), api_key);
+        let bootstrap = extract_json_string(&result, "stdout");
+
+        if !bootstrap.is_empty() {
+            if let Some(file) = dump_file {
+                match fs::write(file, &bootstrap) {
+                    Ok(_) => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = fs::set_permissions(file, fs::Permissions::from_mode(0o755));
+                        }
+                        println!("Bootstrap saved to {}", file);
+                    }
+                    Err(e) => {
+                        eprintln!("{}Error: Could not write to {}: {}{}", RED, file, e, RESET);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                print!("{}", bootstrap);
+            }
+        } else {
+            eprintln!("{}Error: Failed to fetch bootstrap (service not running or no bootstrap file){}", RED, RESET);
+            process::exit(1);
+        }
         return;
     }
 
@@ -621,9 +672,13 @@ fn main() {
                     args.iter().position(|x| x == "--info").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--logs").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--tail").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--sleep").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--wake").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--freeze").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--unfreeze").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--destroy").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--execute").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--command").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--dump-bootstrap").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--dump-file").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     network.as_deref(),
                     vcpu,
                     &key,

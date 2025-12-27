@@ -402,7 +402,7 @@ let service_command action name ports bootstrap service_type network vcpu =
        Sys.remove tmp_file;
        Printf.printf "%sService sleeping: %s%s\n" green sid reset
      | None ->
-       Printf.fprintf stderr "Error: --sleep requires service ID\n";
+       Printf.fprintf stderr "Error: --freeze requires service ID\n";
        exit 1)
   | "wake" ->
     (match name with
@@ -417,7 +417,7 @@ let service_command action name ports bootstrap service_type network vcpu =
        Sys.remove tmp_file;
        Printf.printf "%sService waking: %s%s\n" green sid reset
      | None ->
-       Printf.fprintf stderr "Error: --wake requires service ID\n";
+       Printf.fprintf stderr "Error: --unfreeze requires service ID\n";
        exit 1)
   | "destroy" ->
     (match name with
@@ -426,6 +426,72 @@ let service_command action name ports bootstrap service_type network vcpu =
        Printf.printf "%sService destroyed: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --destroy requires service ID\n";
+       exit 1)
+  | "execute" ->
+    (match name with
+     | Some sid ->
+       (match bootstrap with
+        | Some cmd ->
+          let json = Printf.sprintf "{\"command\":\"%s\"}" (escape_json cmd) in
+          let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+          let oc = open_out tmp_file in
+          output_string oc json;
+          close_out oc;
+          let curl_cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/execute -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
+            sid api_key tmp_file in
+          let ic = Unix.open_process_in curl_cmd in
+          let rec read_all acc =
+            try let line = input_line ic in read_all (acc ^ line ^ "\n")
+            with End_of_file -> acc
+          in
+          let response = read_all "" in
+          let _ = Unix.close_process_in ic in
+          Sys.remove tmp_file;
+          (match extract_field "stdout" response with
+           | Some s -> Printf.printf "%s%s%s" blue (unescape_json s) reset
+           | None -> ())
+        | None ->
+          Printf.fprintf stderr "Error: --command required with --execute\n";
+          exit 1)
+     | None ->
+       Printf.fprintf stderr "Error: --execute requires service ID\n";
+       exit 1)
+  | "dump_bootstrap" ->
+    (match name with
+     | Some sid ->
+       Printf.fprintf stderr "Fetching bootstrap script from %s...\n" sid;
+       let json = "{\"command\":\"cat /tmp/bootstrap.sh\"}" in
+       let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+       let oc = open_out tmp_file in
+       output_string oc json;
+       close_out oc;
+       let curl_cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/execute -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
+         sid api_key tmp_file in
+       let ic = Unix.open_process_in curl_cmd in
+       let rec read_all acc =
+         try let line = input_line ic in read_all (acc ^ line ^ "\n")
+         with End_of_file -> acc
+       in
+       let response = read_all "" in
+       let _ = Unix.close_process_in ic in
+       Sys.remove tmp_file;
+       (match extract_field "stdout" response with
+        | Some s ->
+          let script = unescape_json s in
+          (match service_type with
+           | Some file ->
+             let oc = open_out file in
+             output_string oc script;
+             close_out oc;
+             Unix.chmod file 0o755;
+             Printf.printf "Bootstrap saved to %s\n" file
+           | None ->
+             Printf.printf "%s" script)
+        | None ->
+          Printf.fprintf stderr "%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s\n" red reset;
+          exit 1)
+     | None ->
+       Printf.fprintf stderr "Error: --dump-bootstrap requires service ID\n";
        exit 1)
   | "create" ->
     (match name with
@@ -488,9 +554,12 @@ let () =
       | "--list" :: rest -> parse_service "list" name ports bootstrap service_type network vcpu rest
       | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap service_type network vcpu rest
       | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap service_type network vcpu rest
-      | "--sleep" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap service_type network vcpu rest
-      | "--wake" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap service_type network vcpu rest
+      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap service_type network vcpu rest
+      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap service_type network vcpu rest
       | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap service_type network vcpu rest
+      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) service_type network vcpu rest
+      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) network vcpu rest
+      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap service_type network vcpu rest
       | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap service_type network vcpu rest
       | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap service_type network vcpu rest
       | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) service_type network vcpu rest

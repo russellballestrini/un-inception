@@ -248,16 +248,16 @@ function Invoke-Service {
         return
     }
 
-    if ($Args -contains "--sleep") {
-        $idx = [array]::IndexOf($Args, "--sleep")
+    if ($Args -contains "--freeze") {
+        $idx = [array]::IndexOf($Args, "--freeze")
         $serviceId = $Args[$idx + 1]
         Invoke-Api -Endpoint "/services/$serviceId/sleep" -Method "POST" -Body "{}"
         Write-Host "`e[32mService sleeping: $serviceId`e[0m"
         return
     }
 
-    if ($Args -contains "--wake") {
-        $idx = [array]::IndexOf($Args, "--wake")
+    if ($Args -contains "--unfreeze") {
+        $idx = [array]::IndexOf($Args, "--unfreeze")
         $serviceId = $Args[$idx + 1]
         Invoke-Api -Endpoint "/services/$serviceId/wake" -Method "POST" -Body "{}"
         Write-Host "`e[32mService waking: $serviceId`e[0m"
@@ -269,6 +269,36 @@ function Invoke-Service {
         $serviceId = $Args[$idx + 1]
         Invoke-Api -Endpoint "/services/$serviceId" -Method "DELETE"
         Write-Host "`e[32mService destroyed: $serviceId`e[0m"
+        return
+    }
+
+    if ($Args -contains "--dump-bootstrap") {
+        $idx = [array]::IndexOf($Args, "--dump-bootstrap")
+        $serviceId = $Args[$idx + 1]
+        Write-Host "Fetching bootstrap script from $serviceId..." -ForegroundColor Yellow
+
+        $payload = @{ command = "cat /tmp/bootstrap.sh" } | ConvertTo-Json
+        $result = Invoke-Api -Endpoint "/services/$serviceId/execute" -Method "POST" -Body $payload
+
+        if ($result.stdout -and $result.stdout.Length -gt 0) {
+            $bootstrap = $result.stdout
+            if ($Args -contains "--dump-file") {
+                $dumpIdx = [array]::IndexOf($Args, "--dump-file")
+                $dumpFile = $Args[$dumpIdx + 1]
+                # Write to file
+                $bootstrap | Set-Content -Path $dumpFile -NoNewline
+                if ($IsLinux -or $IsMacOS) {
+                    & chmod 755 $dumpFile
+                }
+                Write-Host "Bootstrap saved to $dumpFile"
+            } else {
+                # Print to stdout
+                Write-Host $bootstrap -NoNewline
+            }
+        } else {
+            Write-Error "Error: Failed to fetch bootstrap (service not running or no bootstrap file)"
+            exit 1
+        }
         return
     }
 
@@ -324,16 +354,18 @@ Session options:
   --shell NAME    Shell/REPL to use
 
 Service options:
-  --name NAME     Service name
-  --ports PORTS   Comma-separated ports
-  --type TYPE     Service type (minecraft, mumble, teamspeak, source, tcp, udp)
-  --bootstrap CMD Bootstrap command
-  --list, -l      List services
-  --info ID       Get service info
-  --logs ID       Get logs
-  --sleep ID      Freeze service
-  --wake ID       Unfreeze service
-  --destroy ID    Destroy service
+  --name NAME          Service name
+  --ports PORTS        Comma-separated ports
+  --type TYPE          Service type (minecraft, mumble, teamspeak, source, tcp, udp)
+  --bootstrap CMD      Bootstrap command
+  --list, -l           List services
+  --info ID            Get service info
+  --logs ID            Get logs
+  --freeze ID          Freeze service
+  --unfreeze ID        Unfreeze service
+  --destroy ID         Destroy service
+  --dump-bootstrap ID  Dump bootstrap script from service
+  --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)
 
 Key options:
   --extend        Open browser to extend key

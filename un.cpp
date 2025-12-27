@@ -218,7 +218,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& network, int vcpu, const string& api_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const string& api_key) {
     if (list) {
         string cmd = "curl -s -X GET '" + API_BASE + "/services' -H 'Authorization: Bearer " + api_key + "'";
         cout << exec_curl(cmd) << endl;
@@ -261,6 +261,93 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X DELETE '" + API_BASE + "/services/" + destroy + "' -H 'Authorization: Bearer " + api_key + "'";
         exec_curl(cmd);
         cout << GREEN << "Service destroyed: " << destroy << RESET << endl;
+        return;
+    }
+
+    if (!execute.empty()) {
+        ostringstream json;
+        json << "{\"command\":\"" << escape_json(command) << "\"}";
+        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + execute + "/execute' "
+                     "-H 'Content-Type: application/json' "
+                     "-H 'Authorization: Bearer " + api_key + "' "
+                     "-d '" + json.str() + "'";
+        string result = exec_curl(cmd);
+
+        size_t stdout_pos = result.find("\"stdout\":\"");
+        size_t stderr_pos = result.find("\"stderr\":\"");
+
+        if (stdout_pos != string::npos) {
+            stdout_pos += 10;
+            size_t end = result.find("\"", stdout_pos);
+            while (end > 0 && result[end-1] == '\\') end = result.find("\"", end+1);
+            if (end != string::npos) {
+                string out = result.substr(stdout_pos, end - stdout_pos);
+                size_t pos = 0;
+                while ((pos = out.find("\\n", pos)) != string::npos) {
+                    out.replace(pos, 2, "\n");
+                }
+                cout << BLUE << out << RESET;
+            }
+        }
+
+        if (stderr_pos != string::npos) {
+            stderr_pos += 10;
+            size_t end = result.find("\"", stderr_pos);
+            while (end > 0 && result[end-1] == '\\') end = result.find("\"", end+1);
+            if (end != string::npos) {
+                string err = result.substr(stderr_pos, end - stderr_pos);
+                size_t pos = 0;
+                while ((pos = err.find("\\n", pos)) != string::npos) {
+                    err.replace(pos, 2, "\n");
+                }
+                cerr << RED << err << RESET;
+            }
+        }
+        return;
+    }
+
+    if (!dump_bootstrap.empty()) {
+        cerr << "Fetching bootstrap script from " << dump_bootstrap << "..." << endl;
+        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + dump_bootstrap + "/execute' "
+                     "-H 'Content-Type: application/json' "
+                     "-H 'Authorization: Bearer " + api_key + "' "
+                     "-d '{\"command\":\"cat /tmp/bootstrap.sh\"}'";
+        string result = exec_curl(cmd);
+
+        size_t stdout_pos = result.find("\"stdout\":\"");
+        if (stdout_pos != string::npos) {
+            stdout_pos += 10;
+            size_t end = result.find("\"", stdout_pos);
+            while (end > 0 && result[end-1] == '\\') end = result.find("\"", end+1);
+            if (end != string::npos) {
+                string bootstrap_script = result.substr(stdout_pos, end - stdout_pos);
+                size_t pos = 0;
+                while ((pos = bootstrap_script.find("\\n", pos)) != string::npos) {
+                    bootstrap_script.replace(pos, 2, "\n");
+                }
+
+                if (!dump_file.empty()) {
+                    ofstream outfile(dump_file);
+                    if (outfile) {
+                        outfile << bootstrap_script;
+                        outfile.close();
+                        chmod(dump_file.c_str(), 0755);
+                        cout << "Bootstrap saved to " << dump_file << endl;
+                    } else {
+                        cerr << RED << "Error: Could not write to " << dump_file << RESET << endl;
+                        exit(1);
+                    }
+                } else {
+                    cout << bootstrap_script;
+                }
+            } else {
+                cerr << RED << "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" << RESET << endl;
+                exit(1);
+            }
+        } else {
+            cerr << RED << "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" << RESET << endl;
+            exit(1);
+        }
         return;
     }
 
@@ -414,7 +501,7 @@ int main(int argc, char* argv[]) {
     if (cmd_type == "service") {
         string name, ports, type, bootstrap;
         bool list = false;
-        string info, logs, tail, sleep, wake, destroy, network;
+        string info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network;
         int vcpu = 0;
 
         for (int i = 2; i < argc; i++) {
@@ -427,15 +514,19 @@ int main(int argc, char* argv[]) {
             else if (arg == "--info" && i+1 < argc) info = argv[++i];
             else if (arg == "--logs" && i+1 < argc) logs = argv[++i];
             else if (arg == "--tail" && i+1 < argc) tail = argv[++i];
-            else if (arg == "--sleep" && i+1 < argc) sleep = argv[++i];
-            else if (arg == "--wake" && i+1 < argc) wake = argv[++i];
+            else if (arg == "--freeze" && i+1 < argc) sleep = argv[++i];
+            else if (arg == "--unfreeze" && i+1 < argc) wake = argv[++i];
             else if (arg == "--destroy" && i+1 < argc) destroy = argv[++i];
+            else if (arg == "--execute" && i+1 < argc) execute = argv[++i];
+            else if (arg == "--command" && i+1 < argc) command = argv[++i];
+            else if (arg == "--dump-bootstrap" && i+1 < argc) dump_bootstrap = argv[++i];
+            else if (arg == "--dump-file" && i+1 < argc) dump_file = argv[++i];
             else if (arg == "-n" && i+1 < argc) network = argv[++i];
             else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
             else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, network, vcpu, api_key);
+        cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, api_key);
         return 0;
     }
 

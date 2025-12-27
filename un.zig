@@ -121,6 +121,10 @@ pub fn main() !u8 {
         var ports: ?[]const u8 = null;
         var service_type: ?[]const u8 = null;
         var info: ?[]const u8 = null;
+        var execute: ?[]const u8 = null;
+        var command: ?[]const u8 = null;
+        var dump_bootstrap: ?[]const u8 = null;
+        var dump_file: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (mem.eql(u8, args[i], "--list")) {
@@ -137,6 +141,18 @@ pub fn main() !u8 {
             } else if (mem.eql(u8, args[i], "--info") and i + 1 < args.len) {
                 i += 1;
                 info = args[i];
+            } else if (mem.eql(u8, args[i], "--execute") and i + 1 < args.len) {
+                i += 1;
+                execute = args[i];
+            } else if (mem.eql(u8, args[i], "--command") and i + 1 < args.len) {
+                i += 1;
+                command = args[i];
+            } else if (mem.eql(u8, args[i], "--dump-bootstrap") and i + 1 < args.len) {
+                i += 1;
+                dump_bootstrap = args[i];
+            } else if (mem.eql(u8, args[i], "--dump-file") and i + 1 < args.len) {
+                i += 1;
+                dump_file = args[i];
             }
         }
 
@@ -150,6 +166,57 @@ pub fn main() !u8 {
             defer allocator.free(cmd);
             _ = std.c.system(cmd.ptr);
             std.debug.print("\n", .{});
+        } else if (execute) |exec_id| {
+            const cmd_text = command orelse "";
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {s}' -d '{{\"command\":\"{s}\"}}'", .{ API_BASE, exec_id, api_key, cmd_text });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n", .{});
+        } else if (dump_bootstrap) |bootstrap_id| {
+            std.debug.print("Fetching bootstrap script from {s}...\n", .{bootstrap_id});
+            const tmp_file = "/tmp/unsandbox_bootstrap_dump.txt";
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {s}' -d '{{\"command\":\"cat /tmp/bootstrap.sh\"}}' -o {s}", .{ API_BASE, bootstrap_id, api_key, tmp_file });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+
+            // Read the JSON response
+            const json_content = fs.cwd().readFileAlloc(allocator, tmp_file, 1024 * 1024) catch |err| {
+                std.debug.print("\x1b[31mError reading response: {}\x1b[0m\n", .{err});
+                std.fs.cwd().deleteFile(tmp_file) catch {};
+                return 1;
+            };
+            defer allocator.free(json_content);
+            std.fs.cwd().deleteFile(tmp_file) catch {};
+
+            // Extract stdout from JSON (simple string search)
+            const stdout_prefix = "\"stdout\":\"";
+            if (mem.indexOf(u8, json_content, stdout_prefix)) |start_idx| {
+                const value_start = start_idx + stdout_prefix.len;
+                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
+                    const bootstrap_content = json_content[value_start..end_idx];
+
+                    if (dump_file) |file_path| {
+                        const file = try std.fs.cwd().createFile(file_path, .{});
+                        defer file.close();
+                        try file.writeAll(bootstrap_content);
+                        // Set permissions (Unix only)
+                        if (@import("builtin").os.tag != .windows) {
+                            const chmod_cmd = try std.fmt.allocPrint(allocator, "chmod 755 {s}", .{file_path});
+                            defer allocator.free(chmod_cmd);
+                            _ = std.c.system(chmod_cmd.ptr);
+                        }
+                        std.debug.print("Bootstrap saved to {s}\n", .{file_path});
+                    } else {
+                        std.debug.print("{s}", .{bootstrap_content});
+                    }
+                } else {
+                    std.debug.print("\x1b[31mError: Failed to parse bootstrap response\x1b[0m\n", .{});
+                    return 1;
+                }
+            } else {
+                std.debug.print("\x1b[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\x1b[0m\n", .{});
+                return 1;
+            }
         } else if (name) |n| {
             var json_buf: [4096]u8 = undefined;
             var json_stream = std.io.fixedBufferStream(&json_buf);

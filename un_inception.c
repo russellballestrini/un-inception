@@ -640,8 +640,8 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--info") == 0 && i + 1 < argc) info = argv[++i];
             else if (strcmp(argv[i], "--logs") == 0 && i + 1 < argc) logs = argv[++i];
             else if (strcmp(argv[i], "--tail") == 0 && i + 1 < argc) tail = argv[++i];
-            else if (strcmp(argv[i], "--sleep") == 0 && i + 1 < argc) sleep_svc = argv[++i];
-            else if (strcmp(argv[i], "--wake") == 0 && i + 1 < argc) wake = argv[++i];
+            else if (strcmp(argv[i], "--freeze") == 0 && i + 1 < argc) sleep_svc = argv[++i];
+            else if (strcmp(argv[i], "--unfreeze") == 0 && i + 1 < argc) wake = argv[++i];
             else if (strcmp(argv[i], "--destroy") == 0 && i + 1 < argc) destroy = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) network = argv[++i];
             else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) vcpu = atoi(argv[++i]);

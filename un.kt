@@ -94,6 +94,10 @@ data class Args(
     var serviceSleep: String? = null,
     var serviceWake: String? = null,
     var serviceDestroy: String? = null,
+    var serviceExecute: String? = null,
+    var serviceCommand: String? = null,
+    var serviceDumpBootstrap: String? = null,
+    var serviceDumpFile: String? = null,
     var keyExtend: Boolean = false
 )
 
@@ -298,6 +302,51 @@ fun cmdService(args: Args) {
     if (args.serviceDestroy != null) {
         apiRequest("/services/${args.serviceDestroy}", "DELETE", null, apiKey)
         println("${GREEN}Service destroyed: ${args.serviceDestroy}${RESET}")
+        return
+    }
+
+    if (args.serviceExecute != null) {
+        val payload = mutableMapOf<String, Any>("command" to args.serviceCommand!!)
+        val result = apiRequest("/services/${args.serviceExecute}/execute", "POST", payload, apiKey)
+        if (result.containsKey("stdout")) {
+            val stdout = result["stdout"] as? String
+            if (stdout != null && stdout.isNotEmpty()) {
+                print("$BLUE$stdout$RESET")
+            }
+        }
+        if (result.containsKey("stderr")) {
+            val stderr = result["stderr"] as? String
+            if (stderr != null && stderr.isNotEmpty()) {
+                System.err.print("$RED$stderr$RESET")
+            }
+        }
+        return
+    }
+
+    if (args.serviceDumpBootstrap != null) {
+        System.err.println("Fetching bootstrap script from ${args.serviceDumpBootstrap}...")
+        val payload = mutableMapOf<String, Any>("command" to "cat /tmp/bootstrap.sh")
+        val result = apiRequest("/services/${args.serviceDumpBootstrap}/execute", "POST", payload, apiKey)
+
+        val bootstrap = result["stdout"] as? String
+        if (bootstrap != null && bootstrap.isNotEmpty()) {
+            if (args.serviceDumpFile != null) {
+                try {
+                    val file = java.io.File(args.serviceDumpFile!!)
+                    file.writeText(bootstrap)
+                    file.setExecutable(true)
+                    println("Bootstrap saved to ${args.serviceDumpFile}")
+                } catch (e: Exception) {
+                    System.err.println("${RED}Error: Could not write to ${args.serviceDumpFile}: ${e.message}${RESET}")
+                    exitProcess(1)
+                }
+            } else {
+                print(bootstrap)
+            }
+        } else {
+            System.err.println("${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}")
+            exitProcess(1)
+        }
         return
     }
 
@@ -597,9 +646,13 @@ fun parseArgs(args: Array<String>): Args {
             "--info" -> result.serviceInfo = args[++i]
             "--logs" -> result.serviceLogs = args[++i]
             "--tail" -> result.serviceTail = args[++i]
-            "--sleep" -> result.serviceSleep = args[++i]
-            "--wake" -> result.serviceWake = args[++i]
+            "--freeze" -> result.serviceSleep = args[++i]
+            "--unfreeze" -> result.serviceWake = args[++i]
             "--destroy" -> result.serviceDestroy = args[++i]
+            "--execute" -> result.serviceExecute = args[++i]
+            "--command" -> result.serviceCommand = args[++i]
+            "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
+            "--dump-file" -> result.serviceDumpFile = args[++i]
             "--extend" -> result.keyExtend = true
             else -> if (!args[i].startsWith("-")) result.sourceFile = args[i]
         }
@@ -638,9 +691,13 @@ Service options:
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --sleep ID        Freeze service
-  --wake ID         Unfreeze service
+  --freeze ID        Freeze service
+  --unfreeze ID         Unfreeze service
   --destroy ID      Destroy service
+  --execute ID      Execute command in service
+  --command CMD     Command to execute (with --execute)
+  --dump-bootstrap ID   Dump bootstrap script
+  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend          Open browser to extend key

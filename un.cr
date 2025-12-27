@@ -363,6 +363,39 @@ def cmd_service(args)
     return
   end
 
+  if execute_id = args[:execute]?.as?(String)
+    command = args[:command]?.as?(String) || ""
+    payload = JSON.parse({command: command}.to_json)
+    result = api_request("/services/#{execute_id}/execute", api_key, method: "POST", data: payload)
+    if stdout = result["stdout"]?.try(&.as_s?)
+      print BLUE, stdout, RESET
+    end
+    if stderr = result["stderr"]?.try(&.as_s?)
+      print RED, stderr, RESET
+    end
+    return
+  end
+
+  if dump_id = args[:dump_bootstrap]?.as?(String)
+    STDERR.puts "Fetching bootstrap script from #{dump_id}..."
+    payload = JSON.parse({command: "cat /tmp/bootstrap.sh"}.to_json)
+    result = api_request("/services/#{dump_id}/execute", api_key, method: "POST", data: payload)
+
+    if bootstrap = result["stdout"]?.try(&.as_s?)
+      if file_path = args[:dump_file]?.as?(String)
+        File.write(file_path, bootstrap)
+        File.chmod(file_path, 0o755)
+        puts "Bootstrap saved to #{file_path}"
+      else
+        print bootstrap
+      end
+    else
+      STDERR.puts "#{RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)#{RESET}"
+      exit 1
+    end
+    return
+  end
+
   # Create new service
   if name = args[:name]?.as?(String)
     payload = JSON.parse({name: name}.to_json)
@@ -409,7 +442,7 @@ def cmd_service(args)
     return
   end
 
-  STDERR.puts "#{RED}Error: Use --list, --info, --logs, --sleep, --wake, --destroy, or --name to create#{RESET}"
+  STDERR.puts "#{RED}Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --name to create#{RESET}"
   exit 1
 end
 
@@ -430,6 +463,9 @@ def main
     sleep: nil,
     wake: nil,
     destroy: nil,
+    execute: nil,
+    dump_bootstrap: nil,
+    dump_file: nil,
     name: nil,
     ports: nil,
     domains: nil,
@@ -451,9 +487,13 @@ def main
     opts.on("--kill=ID", "Kill session") { |id| args[:kill] = id }
     opts.on("--info=ID", "Get service info") { |id| args[:info] = id }
     opts.on("--logs=ID", "Get service logs") { |id| args[:logs] = id }
-    opts.on("--sleep=ID", "Sleep service") { |id| args[:sleep] = id }
-    opts.on("--wake=ID", "Wake service") { |id| args[:wake] = id }
+    opts.on("--freeze=ID", "Sleep service") { |id| args[:sleep] = id }
+    opts.on("--unfreeze=ID", "Wake service") { |id| args[:wake] = id }
     opts.on("--destroy=ID", "Destroy service") { |id| args[:destroy] = id }
+    opts.on("--execute=ID", "Execute command in service") { |id| args[:execute] = id }
+    opts.on("--command=CMD", "Command to execute (with --execute)") { |cmd| args[:command] = cmd }
+    opts.on("--dump-bootstrap=ID", "Dump bootstrap script") { |id| args[:dump_bootstrap] = id }
+    opts.on("--dump-file=FILE", "File to save bootstrap (with --dump-bootstrap)") { |file| args[:dump_file] = file }
     opts.on("--name=NAME", "Service name") { |n| args[:name] = n }
     opts.on("--ports=PORTS", "Comma-separated ports") { |p| args[:ports] = p }
     opts.on("--domains=DOMAINS", "Comma-separated domains") { |d| args[:domains] = d }

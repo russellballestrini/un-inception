@@ -319,6 +319,8 @@ sub cmd-service(@args) {
     my $sleep-id = '';
     my $wake-id = '';
     my $destroy-id = '';
+    my $dump-bootstrap-id = '';
+    my $dump-file = '';
     my $name = '';
     my $ports = '';
     my $type = '';
@@ -341,17 +343,25 @@ sub cmd-service(@args) {
                 $i++;
                 $logs-id = @args[$i];
             }
-            when '--sleep' {
+            when '--freeze' {
                 $i++;
                 $sleep-id = @args[$i];
             }
-            when '--wake' {
+            when '--unfreeze' {
                 $i++;
                 $wake-id = @args[$i];
             }
             when '--destroy' {
                 $i++;
                 $destroy-id = @args[$i];
+            }
+            when '--dump-bootstrap' {
+                $i++;
+                $dump-bootstrap-id = @args[$i];
+            }
+            when '--dump-file' {
+                $i++;
+                $dump-file = @args[$i];
             }
             when '--name' {
                 $i++;
@@ -425,6 +435,29 @@ sub cmd-service(@args) {
     if $destroy-id {
         api-request("/services/$destroy-id", 'DELETE', :$api-key);
         say "{$GREEN}Service destroyed: $destroy-id{$RESET}";
+        return;
+    }
+
+    if $dump-bootstrap-id {
+        note "Fetching bootstrap script from $dump-bootstrap-id...";
+        my %payload = command => "cat /tmp/bootstrap.sh";
+        my %result = api-request("/services/$dump-bootstrap-id/execute", 'POST', %payload, :$api-key);
+
+        if %result<stdout> && %result<stdout> ne '' {
+            my $bootstrap = %result<stdout>;
+            if $dump-file {
+                # Write to file
+                $dump-file.IO.spurt($bootstrap);
+                run 'chmod', '755', $dump-file;
+                say "Bootstrap saved to $dump-file";
+            } else {
+                # Print to stdout
+                print $bootstrap;
+            }
+        } else {
+            note "{$RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file){$RESET}";
+            exit 1;
+        }
         return;
     }
 

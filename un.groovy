@@ -85,6 +85,10 @@ class Args {
     String serviceSleep = null
     String serviceWake = null
     String serviceDestroy = null
+    String serviceExecute = null
+    String serviceCommand = null
+    String serviceDumpBootstrap = null
+    String serviceDumpFile = null
     Boolean keyExtend = false
 }
 
@@ -408,6 +412,64 @@ def cmdService(args) {
         return
     }
 
+    if (args.serviceExecute) {
+        def json = """{"command":"${args.serviceCommand}"}"""
+        def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST', json, apiKey)
+        def stdoutMatch = output =~ /"stdout":"((?:[^"\\\\]|\\\\.)*)"/
+        def stderrMatch = output =~ /"stderr":"((?:[^"\\\\]|\\\\.)*)"/
+
+        if (stdoutMatch.find()) {
+            def stdout = stdoutMatch.group(1)
+                                   .replace('\\n', '\n')
+                                   .replace('\\t', '\t')
+                                   .replace('\\"', '"')
+                                   .replace('\\\\', '\\')
+            print("${BLUE}${stdout}${RESET}")
+        }
+
+        if (stderrMatch.find()) {
+            def stderr = stderrMatch.group(1)
+                                   .replace('\\n', '\n')
+                                   .replace('\\t', '\t')
+                                   .replace('\\"', '"')
+                                   .replace('\\\\', '\\')
+            System.err.print("${RED}${stderr}${RESET}")
+        }
+        return
+    }
+
+    if (args.serviceDumpBootstrap) {
+        System.err.println("Fetching bootstrap script from ${args.serviceDumpBootstrap}...")
+        def json = """{"command":"cat /tmp/bootstrap.sh"}"""
+        def output = apiRequest("/services/${args.serviceDumpBootstrap}/execute", 'POST', json, apiKey)
+
+        def stdoutMatch = output =~ /"stdout":"((?:[^"\\\\]|\\\\.)*)"/
+        if (stdoutMatch.find()) {
+            def bootstrap = stdoutMatch.group(1)
+                                      .replace('\\n', '\n')
+                                      .replace('\\t', '\t')
+                                      .replace('\\"', '"')
+                                      .replace('\\\\', '\\')
+
+            if (args.serviceDumpFile) {
+                try {
+                    new File(args.serviceDumpFile).text = bootstrap
+                    "chmod 755 ${args.serviceDumpFile}".execute().waitFor()
+                    println("Bootstrap saved to ${args.serviceDumpFile}")
+                } catch (Exception e) {
+                    System.err.println("${RED}Error: Could not write to ${args.serviceDumpFile}: ${e.message}${RESET}")
+                    System.exit(1)
+                }
+            } else {
+                print(bootstrap)
+            }
+        } else {
+            System.err.println("${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}")
+            System.exit(1)
+        }
+        return
+    }
+
     if (args.serviceName) {
         def json = """{"name":"${args.serviceName}""""
         if (args.servicePorts) {
@@ -524,14 +586,26 @@ def parseArgs(argv) {
             case '--tail':
                 args.serviceTail = argv[++i]
                 break
-            case '--sleep':
+            case '--freeze':
                 args.serviceSleep = argv[++i]
                 break
-            case '--wake':
+            case '--unfreeze':
                 args.serviceWake = argv[++i]
                 break
             case '--destroy':
                 args.serviceDestroy = argv[++i]
+                break
+            case '--execute':
+                args.serviceExecute = argv[++i]
+                break
+            case '--command':
+                args.serviceCommand = argv[++i]
+                break
+            case '--dump-bootstrap':
+                args.serviceDumpBootstrap = argv[++i]
+                break
+            case '--dump-file':
+                args.serviceDumpFile = argv[++i]
                 break
             case '--extend':
                 args.keyExtend = true
@@ -575,9 +649,13 @@ Service options:
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --sleep ID        Freeze service
-  --wake ID         Unfreeze service
+  --freeze ID        Freeze service
+  --unfreeze ID         Unfreeze service
   --destroy ID      Destroy service
+  --execute ID      Execute command in service
+  --command CMD     Command to execute (with --execute)
+  --dump-bootstrap ID   Dump bootstrap script
+  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend          Open browser to extend key

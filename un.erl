@@ -128,14 +128,14 @@ service_command(["--logs", ServiceId | _]) ->
     Response = curl_get(ApiKey, "/services/" ++ ServiceId ++ "/logs"),
     io:format("~s~n", [Response]);
 
-service_command(["--sleep", ServiceId | _]) ->
+service_command(["--freeze", ServiceId | _]) ->
     ApiKey = get_api_key(),
     TmpFile = write_temp_file("{}"),
     _ = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/sleep", TmpFile),
     file:delete(TmpFile),
     io:format("\033[32mService sleeping: ~s\033[0m~n", [ServiceId]);
 
-service_command(["--wake", ServiceId | _]) ->
+service_command(["--unfreeze", ServiceId | _]) ->
     ApiKey = get_api_key(),
     TmpFile = write_temp_file("{}"),
     _ = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/wake", TmpFile),
@@ -146,6 +146,49 @@ service_command(["--destroy", ServiceId | _]) ->
     ApiKey = get_api_key(),
     _ = curl_delete(ApiKey, "/services/" ++ ServiceId),
     io:format("\033[32mService destroyed: ~s\033[0m~n", [ServiceId]);
+
+service_command(["--execute", ServiceId, "--command", Command | _]) ->
+    ApiKey = get_api_key(),
+    Json = "{\"command\":\"" ++ escape_json(Command) ++ "\"}",
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/execute", TmpFile),
+    file:delete(TmpFile),
+    case extract_json_field(Response, "stdout") of
+        "" -> ok;
+        Stdout -> io:format("\033[34m~s\033[0m", [Stdout])
+    end;
+
+service_command(["--dump-bootstrap", ServiceId, File | _]) ->
+    ApiKey = get_api_key(),
+    io:format(standard_error, "Fetching bootstrap script from ~s...~n", [ServiceId]),
+    Json = "{\"command\":\"cat /tmp/bootstrap.sh\"}",
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/execute", TmpFile),
+    file:delete(TmpFile),
+    case extract_json_field(Response, "stdout") of
+        "" ->
+            io:format(standard_error, "\033[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\033[0m~n"),
+            halt(1);
+        Script ->
+            file:write_file(File, Script),
+            os:cmd("chmod 755 " ++ File),
+            io:format("Bootstrap saved to ~s~n", [File])
+    end;
+
+service_command(["--dump-bootstrap", ServiceId | _]) ->
+    ApiKey = get_api_key(),
+    io:format(standard_error, "Fetching bootstrap script from ~s...~n", [ServiceId]),
+    Json = "{\"command\":\"cat /tmp/bootstrap.sh\"}",
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/execute", TmpFile),
+    file:delete(TmpFile),
+    case extract_json_field(Response, "stdout") of
+        "" ->
+            io:format(standard_error, "\033[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\033[0m~n"),
+            halt(1);
+        Script ->
+            io:format("~s", [Script])
+    end;
 
 service_command(Args) ->
     case get_service_name(Args) of

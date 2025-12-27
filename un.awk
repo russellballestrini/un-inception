@@ -188,6 +188,47 @@ function service_destroy(id) {
     print GREEN "Service destroyed: " id RESET
 }
 
+function service_dump_bootstrap(id, dump_file) {
+    api_key = get_api_key()
+    print "Fetching bootstrap script from " id "..." > "/dev/stderr"
+
+    # Build the curl command to execute on the service
+    cmd = "curl -s -X POST '" API_BASE "/services/" id "/execute' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " api_key "' " \
+          "-d '{\"command\":\"cat /tmp/bootstrap.sh\"}'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Parse stdout from response
+    if (match(response, /"stdout":"([^"]*)"/, arr)) {
+        stdout = arr[1]
+        # Unescape JSON
+        gsub(/\\n/, "\n", stdout)
+        gsub(/\\t/, "\t", stdout)
+        gsub(/\\"/, "\"", stdout)
+        gsub(/\\\\/, "\\", stdout)
+
+        if (dump_file != "") {
+            # Write to file
+            print stdout > dump_file
+            close(dump_file)
+            system("chmod 755 " dump_file)
+            print "Bootstrap saved to " dump_file
+        } else {
+            # Print to stdout
+            printf "%s", stdout
+        }
+    } else {
+        print RED "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" RESET > "/dev/stderr"
+        exit 1
+    }
+}
+
 function service_create(name, ports, domains, service_type, bootstrap) {
     api_key = get_api_key()
 
@@ -337,6 +378,7 @@ function show_help() {
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD]"
     print "       awk -f un.awk service --destroy ID"
+    print "       awk -f un.awk service --dump-bootstrap ID [--dump-file FILE]"
     print ""
     print "Service options:"
     print "  --name NAME      Service name (required for --create)"
@@ -344,6 +386,8 @@ function show_help() {
     print "  --domains DOMAINS Comma-separated domain names"
     print "  --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
     print "  --bootstrap CMD  Bootstrap command or script"
+    print "  --dump-bootstrap ID  Dump bootstrap script from service"
+    print "  --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)"
     print ""
     print "Requires: UNSANDBOX_API_KEY environment variable"
 }
@@ -390,6 +434,12 @@ END {
             service_list()
         } else if (ARGC >= 4 && ARGV[2] == "--destroy") {
             service_destroy(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--dump-bootstrap") {
+            dump_file = ""
+            if (ARGC >= 6 && ARGV[4] == "--dump-file") {
+                dump_file = ARGV[5]
+            }
+            service_dump_bootstrap(ARGV[3], dump_file)
         } else if (ARGV[2] == "--create") {
             # Parse service creation arguments
             name = ""
