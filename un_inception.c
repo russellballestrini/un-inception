@@ -50,6 +50,7 @@
 #include <unistd.h>
 
 #define API_BASE "https://api.unsandbox.com"
+#define PORTAL_BASE "https://unsandbox.com"
 #define BLUE "\033[34m"
 #define RED "\033[31m"
 #define GREEN "\033[32m"
@@ -312,6 +313,142 @@ void cmd_session(int list, const char *kill, const char *shell, const char *netw
     printf("\n%sSession created%s\n", GREEN, RESET);
 }
 
+void cmd_key(int extend, const char *api_key) {
+    char cmd[4096];
+
+    snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST '%s/keys/validate' "
+        "-H 'Content-Type: application/json' "
+        "-H 'Authorization: Bearer %s'",
+        PORTAL_BASE, api_key);
+
+    FILE *curl = popen(cmd, "r");
+    if (!curl) {
+        fprintf(stderr, "%sError running curl%s\n", RED, RESET);
+        exit(1);
+    }
+
+    char response[16384];
+    size_t resp_len = fread(response, 1, sizeof(response) - 1, curl);
+    response[resp_len] = 0;
+    pclose(curl);
+
+    // Parse JSON response (simple string matching)
+    char *public_key_start = strstr(response, "\"public_key\":\"");
+    char public_key[256] = "";
+    if (public_key_start) {
+        public_key_start += 14;
+        char *end = strchr(public_key_start, '"');
+        if (end) {
+            size_t len = end - public_key_start;
+            if (len < sizeof(public_key)) {
+                strncpy(public_key, public_key_start, len);
+                public_key[len] = 0;
+            }
+        }
+    }
+
+    // Handle --extend flag
+    if (extend) {
+        if (public_key[0]) {
+            printf("%sOpening browser to extend key...%s\n", BLUE, RESET);
+            char open_cmd[512];
+            #ifdef __APPLE__
+                snprintf(open_cmd, sizeof(open_cmd), "open '%s/keys/extend?pk=%s'", PORTAL_BASE, public_key);
+            #elif __linux__
+                snprintf(open_cmd, sizeof(open_cmd), "xdg-open '%s/keys/extend?pk=%s'", PORTAL_BASE, public_key);
+            #else
+                snprintf(open_cmd, sizeof(open_cmd), "start '%s/keys/extend?pk=%s'", PORTAL_BASE, public_key);
+            #endif
+            system(open_cmd);
+            return;
+        } else {
+            fprintf(stderr, "%sError: Could not retrieve public key%s\n", RED, RESET);
+            exit(1);
+        }
+    }
+
+    // Check if expired
+    if (strstr(response, "\"expired\":true")) {
+        printf("%sExpired%s\n", RED, RESET);
+        printf("Public Key: %s\n", public_key[0] ? public_key : "N/A");
+
+        char *tier_start = strstr(response, "\"tier\":\"");
+        if (tier_start) {
+            tier_start += 8;
+            char *end = strchr(tier_start, '"');
+            if (end) printf("Tier: %.*s\n", (int)(end - tier_start), tier_start);
+        }
+
+        char *expires_start = strstr(response, "\"expires_at\":\"");
+        if (expires_start) {
+            expires_start += 14;
+            char *end = strchr(expires_start, '"');
+            if (end) printf("Expired: %.*s\n", (int)(end - expires_start), expires_start);
+        }
+
+        printf("%sTo renew: Visit %s/keys/extend%s\n", YELLOW, PORTAL_BASE, RESET);
+        exit(1);
+    }
+
+    // Valid key
+    printf("%sValid%s\n", GREEN, RESET);
+    printf("Public Key: %s\n", public_key[0] ? public_key : "N/A");
+
+    // Extract and print other fields
+    char *tier_start = strstr(response, "\"tier\":\"");
+    if (tier_start) {
+        tier_start += 8;
+        char *end = strchr(tier_start, '"');
+        if (end) printf("Tier: %.*s\n", (int)(end - tier_start), tier_start);
+    }
+
+    char *status_start = strstr(response, "\"status\":\"");
+    if (status_start) {
+        status_start += 10;
+        char *end = strchr(status_start, '"');
+        if (end) printf("Status: %.*s\n", (int)(end - status_start), status_start);
+    }
+
+    char *expires_start = strstr(response, "\"expires_at\":\"");
+    if (expires_start) {
+        expires_start += 14;
+        char *end = strchr(expires_start, '"');
+        if (end) printf("Expires: %.*s\n", (int)(end - expires_start), expires_start);
+    }
+
+    char *time_rem_start = strstr(response, "\"time_remaining\":\"");
+    if (time_rem_start) {
+        time_rem_start += 18;
+        char *end = strchr(time_rem_start, '"');
+        if (end) printf("Time Remaining: %.*s\n", (int)(end - time_rem_start), time_rem_start);
+    }
+
+    char *rate_start = strstr(response, "\"rate_limit\":");
+    if (rate_start) {
+        rate_start += 13;
+        char *end = strchr(rate_start, ',');
+        if (!end) end = strchr(rate_start, '}');
+        if (end) printf("Rate Limit: %.*s\n", (int)(end - rate_start), rate_start);
+    }
+
+    char *burst_start = strstr(response, "\"burst\":");
+    if (burst_start) {
+        burst_start += 8;
+        char *end = strchr(burst_start, ',');
+        if (!end) end = strchr(burst_start, '}');
+        if (end) printf("Burst: %.*s\n", (int)(end - burst_start), burst_start);
+    }
+
+    char *conc_start = strstr(response, "\"concurrency\":");
+    if (conc_start) {
+        conc_start += 14;
+        char *end = strchr(conc_start, ',');
+        if (!end) end = strchr(conc_start, '}');
+        if (end) printf("Concurrency: %.*s\n", (int)(end - conc_start), conc_start);
+    }
+}
+
 void cmd_service(const char *name, const char *ports, const char *domains, const char *service_type, const char *bootstrap, int list, const char *info, const char *logs, const char *tail, const char *sleep_svc, const char *wake, const char *destroy, const char *network, int vcpu, const char *api_key) {
     char cmd[8192];
 
@@ -438,10 +575,21 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s [options] <source_file>\n", argv[0]);
         fprintf(stderr, "       %s session [options]\n", argv[0]);
         fprintf(stderr, "       %s service [options]\n", argv[0]);
+        fprintf(stderr, "       %s key [options]\n", argv[0]);
         return 1;
     }
 
     // Parse command
+    if (strcmp(argv[1], "key") == 0) {
+        int extend = 0;
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--extend") == 0) extend = 1;
+            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) api_key = argv[++i];
+        }
+        cmd_key(extend, api_key);
+        return 0;
+    }
+
     if (strcmp(argv[1], "session") == 0) {
         int list = 0;
         const char *kill = NULL;

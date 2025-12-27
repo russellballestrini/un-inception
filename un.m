@@ -43,6 +43,7 @@
 #import <Foundation/Foundation.h>
 
 static NSString* API_BASE = @"https://api.unsandbox.com";
+static NSString* PORTAL_BASE = @"https://unsandbox.com";
 static NSString* BLUE = @"\033[34m";
 static NSString* RED = @"\033[31m";
 static NSString* GREEN = @"\033[32m";
@@ -263,6 +264,115 @@ void cmdExecute(NSArray* args) {
     exit(exitCode);
 }
 
+NSDictionary* portalRequest(NSString* endpoint, NSString* method, NSDictionary* data, NSString* apiKey) {
+    NSString* urlString = [PORTAL_BASE stringByAppendingString:endpoint];
+    NSURL* url = [NSURL URLWithString:urlString];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    [request setHTTPMethod:method];
+    [request setValue:[@"Bearer " stringByAppendingString:apiKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setTimeoutInterval:30];
+
+    if (data) {
+        NSError* error = nil;
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:data options:0 error:&error];
+        if (error) {
+            fprintf(stderr, "%sError creating JSON: %s%s\n",
+                    [RED UTF8String], [[error localizedDescription] UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        [request setHTTPBody:jsonData];
+    }
+
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* responseData = [NSURLConnection sendSynchronousRequest:request
+                                                 returningResponse:&response
+                                                             error:&error];
+
+    if (error || [response statusCode] >= 400) {
+        // For key validation, return the parsed JSON even on error
+        if (responseData) {
+            NSDictionary* result = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:&error];
+            if (result) {
+                return result;
+            }
+        }
+        fprintf(stderr, "%sError: HTTP %ld%s\n",
+                [RED UTF8String], (long)[response statusCode], [RESET UTF8String]);
+        if (responseData) {
+            NSString* errMsg = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
+            fprintf(stderr, "%s\n", [errMsg UTF8String]);
+        }
+        exit(1);
+    }
+
+    NSDictionary* result = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:&error];
+    if (error) {
+        fprintf(stderr, "%sError parsing JSON: %s%s\n",
+                [RED UTF8String], [[error localizedDescription] UTF8String], [RESET UTF8String]);
+        exit(1);
+    }
+
+    return result;
+}
+
+void openBrowser(NSString* url) {
+    NSString* command = [NSString stringWithFormat:@"open \"%@\"", url];
+    system([command UTF8String]);
+}
+
+void validateKey(NSString* apiKey, BOOL shouldExtend) {
+    NSDictionary* result = portalRequest(@"/keys/validate", @"POST", @{}, apiKey);
+
+    if ([result[@"expired"] boolValue]) {
+        printf("%sExpired%s\n", [RED UTF8String], [RESET UTF8String]);
+        printf("Public Key: %s\n", [result[@"public_key"] UTF8String] ?: "N/A");
+        printf("Tier: %s\n", [result[@"tier"] UTF8String] ?: "N/A");
+        printf("Expired: %s\n", [result[@"expires_at"] UTF8String] ?: "N/A");
+        printf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n",
+               [YELLOW UTF8String], [RESET UTF8String]);
+
+        if (shouldExtend && result[@"public_key"]) {
+            NSString* extendUrl = [NSString stringWithFormat:@"%@/keys/extend?pk=%@",
+                                   PORTAL_BASE, result[@"public_key"]];
+            printf("\n%sOpening browser to extend key...%s\n", [BLUE UTF8String], [RESET UTF8String]);
+            openBrowser(extendUrl);
+        }
+        exit(1);
+    }
+
+    printf("%sValid%s\n", [GREEN UTF8String], [RESET UTF8String]);
+    printf("Public Key: %s\n", [result[@"public_key"] UTF8String] ?: "N/A");
+    printf("Tier: %s\n", [result[@"tier"] UTF8String] ?: "N/A");
+    printf("Status: %s\n", [result[@"status"] UTF8String] ?: "N/A");
+    printf("Expires: %s\n", [result[@"expires_at"] UTF8String] ?: "N/A");
+    printf("Time Remaining: %s\n", [result[@"time_remaining"] UTF8String] ?: "N/A");
+    printf("Rate Limit: %s\n", [result[@"rate_limit"] UTF8String] ?: "N/A");
+    printf("Burst: %s\n", [result[@"burst"] UTF8String] ?: "N/A");
+    printf("Concurrency: %s\n", [result[@"concurrency"] UTF8String] ?: "N/A");
+
+    if (shouldExtend && result[@"public_key"]) {
+        NSString* extendUrl = [NSString stringWithFormat:@"%@/keys/extend?pk=%@",
+                               PORTAL_BASE, result[@"public_key"]];
+        printf("\n%sOpening browser to extend key...%s\n", [BLUE UTF8String], [RESET UTF8String]);
+        openBrowser(extendUrl);
+    }
+}
+
+void cmdKey(NSArray* args) {
+    NSString* apiKey = getApiKey();
+    BOOL shouldExtend = NO;
+
+    for (NSString* arg in args) {
+        if ([arg isEqualToString:@"--extend"]) {
+            shouldExtend = YES;
+        }
+    }
+
+    validateKey(apiKey, shouldExtend);
+}
+
 void cmdSession(NSArray* args) {
     NSString* apiKey = getApiKey();
     BOOL listMode = NO;
@@ -481,6 +591,7 @@ int main(int argc, const char* argv[]) {
             fprintf(stderr, "Usage: un.m [options] <source_file>\n");
             fprintf(stderr, "       un.m session [options]\n");
             fprintf(stderr, "       un.m service [options]\n");
+            fprintf(stderr, "       un.m key [options]\n");
             return 1;
         }
 
@@ -495,6 +606,8 @@ int main(int argc, const char* argv[]) {
             cmdSession([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else if ([firstArg isEqualToString:@"service"]) {
             cmdService([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"key"]) {
+            cmdKey([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else {
             cmdExecute(args);
         }

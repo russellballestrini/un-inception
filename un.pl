@@ -362,9 +362,22 @@ sub cmd_service {
     exit 1;
 }
 
-sub cmd_key {
-    my ($options) = @_;
-    my $api_key = get_api_key($options->{api_key});
+sub open_browser {
+    my ($url) = @_;
+
+    # Try different browser open commands based on platform
+    if ($^O eq 'darwin') {
+        system('open', $url);
+    } elsif ($^O eq 'MSWin32') {
+        system('start', $url);
+    } else {
+        # Linux/Unix
+        system('xdg-open', $url, '>/dev/null', '2>&1', '&');
+    }
+}
+
+sub validate_key {
+    my ($api_key, $should_extend) = @_;
 
     # Call /keys/validate endpoint
     my $url = "$PORTAL_BASE/keys/validate";
@@ -374,47 +387,48 @@ sub cmd_key {
     $request->header('Content-Type' => 'application/json');
 
     my $response = $ua->request($request);
-
-    unless ($response->is_success) {
-        print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
-        exit 1;
-    }
-
     my $result = decode_json($response->content);
 
-    # Handle different states
-    my $status = $result->{status} || 'unknown';
+    # Handle --extend flag first
+    if ($should_extend) {
+        my $public_key = $result->{public_key};
+        if ($public_key) {
+            my $extend_url = "$PORTAL_BASE/keys/extend?pk=$public_key";
+            print "${BLUE}Opening browser to extend key...${RESET}\n";
+            open_browser($extend_url);
+            return;
+        } else {
+            print STDERR "${RED}Error: Could not retrieve public key${RESET}\n";
+            exit 1;
+        }
+    }
 
-    if ($status eq 'valid') {
-        print "${GREEN}Valid${RESET}\n";
-        print "Public Key: ", ($result->{public_key} // 'N/A'), "\n";
-        print "Tier: ", ($result->{tier} // 'N/A'), "\n";
-        print "Expires: ", ($result->{expires_at} // 'N/A'), "\n";
-    } elsif ($status eq 'expired') {
+    # Check if key is expired
+    if ($result->{expired}) {
         print "${RED}Expired${RESET}\n";
         print "Public Key: ", ($result->{public_key} // 'N/A'), "\n";
         print "Tier: ", ($result->{tier} // 'N/A'), "\n";
-        print "Expired: ", ($result->{expired_at} // 'N/A'), "\n";
+        print "Expired: ", ($result->{expires_at} // 'N/A'), "\n";
         print "${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}\n";
-
-        # Handle --extend flag for expired keys
-        if ($options->{extend} && $result->{public_key}) {
-            my $extend_url = "$PORTAL_BASE/keys/extend?pk=$result->{public_key}";
-            print "\n${BLUE}Opening browser to: $extend_url${RESET}\n";
-            system("xdg-open", $extend_url) if -x "/usr/bin/xdg-open";
-        }
-    } elsif ($status eq 'invalid') {
-        print "${RED}Invalid${RESET}\n";
-    } else {
-        print "${YELLOW}Unknown status: $status${RESET}\n";
+        exit 1;
     }
 
-    # Handle --extend flag for valid keys
-    if ($options->{extend} && $status eq 'valid' && $result->{public_key}) {
-        my $extend_url = "$PORTAL_BASE/keys/extend?pk=$result->{public_key}";
-        print "\n${BLUE}Opening browser to: $extend_url${RESET}\n";
-        system("xdg-open", $extend_url) if -x "/usr/bin/xdg-open";
-    }
+    # Valid key
+    print "${GREEN}Valid${RESET}\n";
+    print "Public Key: ", ($result->{public_key} // 'N/A'), "\n";
+    print "Tier: ", ($result->{tier} // 'N/A'), "\n";
+    print "Status: ", ($result->{status} // 'N/A'), "\n";
+    print "Expires: ", ($result->{expires_at} // 'N/A'), "\n";
+    print "Time Remaining: ", ($result->{time_remaining} // 'N/A'), "\n";
+    print "Rate Limit: ", ($result->{rate_limit} // 'N/A'), "\n";
+    print "Burst: ", ($result->{burst} // 'N/A'), "\n";
+    print "Concurrency: ", ($result->{concurrency} // 'N/A'), "\n";
+}
+
+sub cmd_key {
+    my ($options) = @_;
+    my $api_key = get_api_key($options->{api_key});
+    validate_key($api_key, $options->{extend});
 }
 
 sub main {

@@ -42,6 +42,7 @@
 use JSON::Fast;
 
 constant $API_BASE = "https://api.unsandbox.com";
+constant $PORTAL_BASE = "https://unsandbox.com";
 constant $BLUE = "\e[34m";
 constant $RED = "\e[31m";
 constant $GREEN = "\e[32m";
@@ -462,11 +463,81 @@ sub cmd-service(@args) {
     exit 1;
 }
 
+sub validate-key(Bool $extend) {
+    my $api-key = get-api-key();
+
+    # Build curl command
+    my @args = 'curl', '-s', '-X', 'POST';
+    @args.append: "$PORTAL_BASE/keys/validate";
+    @args.append: '-H', 'Content-Type: application/json';
+    @args.append: '-H', "Authorization: Bearer $api-key";
+
+    my $proc = run |@args, :out, :err;
+    my $body = $proc.out.slurp;
+    my $err-msg = $proc.err.slurp;
+
+    if $proc.exitcode != 0 {
+        say "{$RED}Invalid{$RESET}";
+        note "Reason: $err-msg" if $err-msg;
+        exit 1;
+    }
+
+    my %result = from-json($body);
+
+    # Handle --extend flag
+    if $extend {
+        my $public-key = %result<public_key>;
+        if $public-key {
+            say "{$BLUE}Opening browser to extend key...{$RESET}";
+            run 'xdg-open', "$PORTAL_BASE/keys/extend?pk=$public-key";
+            return;
+        } else {
+            note "{$RED}Error: Could not retrieve public key{$RESET}";
+            exit 1;
+        }
+    }
+
+    # Check if key is expired
+    if %result<expired> {
+        say "{$RED}Expired{$RESET}";
+        say "Public Key: {%result<public_key> // 'N/A'}";
+        say "Tier: {%result<tier> // 'N/A'}";
+        say "Expired: {%result<expires_at> // 'N/A'}";
+        say "{$YELLOW}To renew: Visit https://unsandbox.com/keys/extend{$RESET}";
+        exit 1;
+    }
+
+    # Valid key
+    say "{$GREEN}Valid{$RESET}";
+    say "Public Key: {%result<public_key> // 'N/A'}";
+    say "Tier: {%result<tier> // 'N/A'}";
+    say "Status: {%result<status> // 'N/A'}";
+    say "Expires: {%result<expires_at> // 'N/A'}";
+    say "Time Remaining: {%result<time_remaining> // 'N/A'}";
+    say "Rate Limit: {%result<rate_limit> // 'N/A'}";
+    say "Burst: {%result<burst> // 'N/A'}";
+    say "Concurrency: {%result<concurrency> // 'N/A'}";
+}
+
+sub cmd-key(@args) {
+    my $extend = False;
+
+    # Parse arguments
+    for @args -> $arg {
+        if $arg eq '--extend' {
+            $extend = True;
+        }
+    }
+
+    validate-key($extend);
+}
+
 sub MAIN(*@args) {
     unless @args {
         note "Usage: un.raku [options] <source_file>";
         note "       un.raku session [options]";
         note "       un.raku service [options]";
+        note "       un.raku key [options]";
         exit 1;
     }
 
@@ -476,6 +547,9 @@ sub MAIN(*@args) {
         }
         when 'service' {
             cmd-service(@args[1..*]);
+        }
+        when 'key' {
+            cmd-key(@args[1..*]);
         }
         default {
             cmd-execute(@args);

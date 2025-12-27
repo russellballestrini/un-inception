@@ -41,13 +41,14 @@ program unsandbox_cli
     character(len=1024) :: filename, language, api_key, ext, arg, subcommand
     character(len=256) :: session_id, service_id
     integer :: stat, i, nargs, dot_pos
-    logical :: list_flag, is_session, is_service
+    logical :: list_flag, is_session, is_service, is_key
 
     ! Initialize
     subcommand = ''
     list_flag = .false.
     is_session = .false.
     is_service = .false.
+    is_key = .false.
     session_id = ''
     service_id = ''
 
@@ -57,6 +58,7 @@ program unsandbox_cli
         write(0, '(A)') 'Usage: un.f90 [options] <source_file>'
         write(0, '(A)') '       un.f90 session [options]'
         write(0, '(A)') '       un.f90 service [options]'
+        write(0, '(A)') '       un.f90 key [--extend]'
         stop 1
     end if
 
@@ -69,6 +71,10 @@ program unsandbox_cli
     else if (trim(arg) == 'service') then
         is_service = .true.
         call handle_service()
+        stop 0
+    else if (trim(arg) == 'key') then
+        is_key = .true.
+        call handle_key()
         stop 0
     else
         ! Default execute command
@@ -313,5 +319,105 @@ contains
             stop 1
         end if
     end subroutine handle_service
+
+    subroutine handle_key()
+        character(len=4096) :: full_cmd
+        character(len=256) :: arg
+        integer :: i, stat
+        logical :: extend_mode
+        character(len=32) :: portal_base
+
+        portal_base = 'https://unsandbox.com'
+        extend_mode = .false.
+
+        ! Check for --extend flag
+        do i = 2, command_argument_count()
+            call get_command_argument(i, arg)
+            if (trim(arg) == '--extend') then
+                extend_mode = .true.
+            end if
+        end do
+
+        ! Get API key
+        call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
+        if (stat /= 0 .or. len_trim(api_key) == 0) then
+            write(0, '(A)') 'Error: UNSANDBOX_API_KEY not set'
+            stop 1
+        end if
+
+        if (extend_mode) then
+            ! Validate and extend
+            write(full_cmd, '(30A)') &
+                'resp=$(curl -s -X POST ', trim(portal_base), '/keys/validate ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(api_key), '" ', &
+                '-d "{}"); ', &
+                'status=$(echo "$resp" | jq -r ".status // empty"); ', &
+                'public_key=$(echo "$resp" | jq -r ".public_key // empty"); ', &
+                'tier=$(echo "$resp" | jq -r ".tier // empty"); ', &
+                'expires_at=$(echo "$resp" | jq -r ".expires_at // empty"); ', &
+                'time_remaining=$(echo "$resp" | jq -r ".time_remaining // empty"); ', &
+                'rate_limit=$(echo "$resp" | jq -r ".rate_limit // empty"); ', &
+                'burst=$(echo "$resp" | jq -r ".burst // empty"); ', &
+                'concurrency=$(echo "$resp" | jq -r ".concurrency // empty"); ', &
+                'if [ "$status" = "valid" ]; then ', &
+                'echo -e "\x1b[32mValid\x1b[0m"; ', &
+                'echo "Public Key: $public_key"; ', &
+                'echo "Tier: $tier"; ', &
+                'echo "Status: $status"; ', &
+                'echo "Expires: $expires_at"; ', &
+                '[ -n "$time_remaining" ] && echo "Time Remaining: $time_remaining"; ', &
+                '[ -n "$rate_limit" ] && echo "Rate Limit: $rate_limit"; ', &
+                '[ -n "$burst" ] && echo "Burst: $burst"; ', &
+                '[ -n "$concurrency" ] && echo "Concurrency: $concurrency"; ', &
+                'echo -e "\x1b[34mOpening browser to extend key...\x1b[0m"; ', &
+                'xdg-open "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null || ', &
+                'sensible-browser "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null &; ', &
+                'elif [ "$status" = "expired" ]; then ', &
+                'echo -e "\x1b[31mExpired\x1b[0m"; ', &
+                'echo "Public Key: $public_key"; ', &
+                'echo "Tier: $tier"; ', &
+                'echo "Expired: $expires_at"; ', &
+                'echo -e "\x1b[33mTo renew: Visit ', trim(portal_base), '/keys/extend\x1b[0m"; ', &
+                'echo -e "\x1b[34mOpening browser to extend key...\x1b[0m"; ', &
+                'xdg-open "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null || ', &
+                'sensible-browser "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null &; ', &
+                'else echo -e "\x1b[31mInvalid\x1b[0m"; fi'
+        else
+            ! Validate only
+            write(full_cmd, '(30A)') &
+                'resp=$(curl -s -X POST ', trim(portal_base), '/keys/validate ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(api_key), '" ', &
+                '-d "{}"); ', &
+                'status=$(echo "$resp" | jq -r ".status // empty"); ', &
+                'public_key=$(echo "$resp" | jq -r ".public_key // empty"); ', &
+                'tier=$(echo "$resp" | jq -r ".tier // empty"); ', &
+                'expires_at=$(echo "$resp" | jq -r ".expires_at // empty"); ', &
+                'time_remaining=$(echo "$resp" | jq -r ".time_remaining // empty"); ', &
+                'rate_limit=$(echo "$resp" | jq -r ".rate_limit // empty"); ', &
+                'burst=$(echo "$resp" | jq -r ".burst // empty"); ', &
+                'concurrency=$(echo "$resp" | jq -r ".concurrency // empty"); ', &
+                'if [ "$status" = "valid" ]; then ', &
+                'echo -e "\x1b[32mValid\x1b[0m"; ', &
+                'echo "Public Key: $public_key"; ', &
+                'echo "Tier: $tier"; ', &
+                'echo "Status: $status"; ', &
+                'echo "Expires: $expires_at"; ', &
+                '[ -n "$time_remaining" ] && echo "Time Remaining: $time_remaining"; ', &
+                '[ -n "$rate_limit" ] && echo "Rate Limit: $rate_limit"; ', &
+                '[ -n "$burst" ] && echo "Burst: $burst"; ', &
+                '[ -n "$concurrency" ] && echo "Concurrency: $concurrency"; ', &
+                'elif [ "$status" = "expired" ]; then ', &
+                'echo -e "\x1b[31mExpired\x1b[0m"; ', &
+                'echo "Public Key: $public_key"; ', &
+                'echo "Tier: $tier"; ', &
+                'echo "Expired: $expires_at"; ', &
+                'echo -e "\x1b[33mTo renew: Visit ', trim(portal_base), '/keys/extend\x1b[0m"; ', &
+                'else echo -e "\x1b[31mInvalid\x1b[0m"; fi'
+        end if
+
+        call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
+    end subroutine handle_key
 
 end program unsandbox_cli

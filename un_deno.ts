@@ -39,6 +39,7 @@
 // Full-featured CLI matching un.c/un.py capabilities
 
 const API_BASE = "https://api.unsandbox.com";
+const PORTAL_BASE = "https://unsandbox.com";
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -92,8 +93,10 @@ async function apiRequest(
   method: string,
   data?: unknown,
   apiKey?: string,
+  baseUrl?: string,
 ): Promise<any> {
-  const url = `${API_BASE}${endpoint}`;
+  const base = baseUrl || API_BASE;
+  const url = `${base}${endpoint}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
@@ -328,6 +331,69 @@ async function cmdSession(args: string[]) {
   );
 }
 
+async function cmdKey(args: string[]) {
+  const apiKey = getApiKey();
+  let extend = false;
+
+  // Parse arguments
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--extend") {
+      extend = true;
+    }
+  }
+
+  try {
+    const result = await apiRequest("/keys/validate", "POST", undefined, apiKey, PORTAL_BASE);
+
+    // Handle --extend flag
+    if (extend) {
+      const publicKey = result.public_key;
+      if (publicKey) {
+        const url = `${PORTAL_BASE}/keys/extend?pk=${publicKey}`;
+        console.log(`${BLUE}Opening browser to extend key...${RESET}`);
+        if (Deno.build.os === "darwin") {
+          await new Deno.Command("open", { args: [url] }).output();
+        } else if (Deno.build.os === "linux") {
+          await new Deno.Command("xdg-open", { args: [url] }).output();
+        } else if (Deno.build.os === "windows") {
+          await new Deno.Command("cmd", { args: ["/c", "start", url] }).output();
+        } else {
+          console.log(`${YELLOW}Please open manually: ${url}${RESET}`);
+        }
+        return;
+      } else {
+        console.error(`${RED}Error: Could not retrieve public key${RESET}`);
+        Deno.exit(1);
+      }
+    }
+
+    // Check if key is expired
+    if (result.expired) {
+      console.log(`${RED}Expired${RESET}`);
+      console.log(`Public Key: ${result.public_key || "N/A"}`);
+      console.log(`Tier: ${result.tier || "N/A"}`);
+      console.log(`Expired: ${result.expires_at || "N/A"}`);
+      console.log(`${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}`);
+      Deno.exit(1);
+    }
+
+    // Valid key
+    console.log(`${GREEN}Valid${RESET}`);
+    console.log(`Public Key: ${result.public_key || "N/A"}`);
+    console.log(`Tier: ${result.tier || "N/A"}`);
+    console.log(`Status: ${result.status || "N/A"}`);
+    console.log(`Expires: ${result.expires_at || "N/A"}`);
+    console.log(`Time Remaining: ${result.time_remaining || "N/A"}`);
+    console.log(`Rate Limit: ${result.rate_limit || "N/A"}`);
+    console.log(`Burst: ${result.burst || "N/A"}`);
+    console.log(`Concurrency: ${result.concurrency || "N/A"}`);
+  } catch (e) {
+    console.log(`${RED}Invalid${RESET}`);
+    console.log(`Reason: ${e}`);
+    Deno.exit(1);
+  }
+}
+
 async function cmdService(args: string[]) {
   const apiKey = getApiKey();
   let listMode = false;
@@ -509,6 +575,7 @@ async function main() {
     console.error("Usage: un_deno.ts [options] <source_file>");
     console.error("       un_deno.ts session [options]");
     console.error("       un_deno.ts service [options]");
+    console.error("       un_deno.ts key [options]");
     Deno.exit(1);
   }
 
@@ -518,6 +585,8 @@ async function main() {
     await cmdSession(args.slice(1));
   } else if (firstArg === "service") {
     await cmdService(args.slice(1));
+  } else if (firstArg === "key") {
+    await cmdKey(args.slice(1));
   } else {
     await cmdExecute(args);
   }

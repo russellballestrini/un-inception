@@ -63,13 +63,13 @@ import (
 )
 
 const (
-	APIBase    = "https://api.unsandbox.com"
-	PortalBase = "https://unsandbox.com"
-	Blue       = "\033[34m"
-	Red        = "\033[31m"
-	Green      = "\033[32m"
-	Yellow     = "\033[33m"
-	Reset      = "\033[0m"
+	APIBase     = "https://api.unsandbox.com"
+	PortalBase  = "https://unsandbox.com"
+	Blue        = "\033[34m"
+	Red         = "\033[31m"
+	Green       = "\033[32m"
+	Yellow      = "\033[33m"
+	Reset       = "\033[0m"
 )
 
 var extMap = map[string]string{

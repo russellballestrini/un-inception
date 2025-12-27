@@ -46,6 +46,7 @@ open System.Net
 open System.Text
 
 let apiBase = "https://api.unsandbox.com"
+let portalBase = "https://unsandbox.com"
 let blue = "\x1B[34m"
 let red = "\x1B[31m"
 let green = "\x1B[32m"
@@ -93,6 +94,7 @@ type Args = {
     mutable ServiceSleep: string option
     mutable ServiceWake: string option
     mutable ServiceDestroy: string option
+    mutable KeyExtend: bool
 }
 
 let getApiKey (argsKey: string option) =
@@ -324,6 +326,87 @@ let cmdSession (args: Args) =
         | None -> printfn "%sSession created%s" green reset
         printfn "%s(Interactive sessions require WebSocket - use un2 for full support)%s" yellow reset
 
+let openBrowser (url: string) =
+    try
+        let os = Environment.OSVersion.Platform
+        let cmd =
+            if os = PlatformID.Unix || os = PlatformID.MacOSX then
+                if System.IO.File.Exists("/usr/bin/xdg-open") then
+                    System.Diagnostics.Process.Start("xdg-open", url)
+                else
+                    System.Diagnostics.Process.Start("open", url)
+            else
+                System.Diagnostics.Process.Start("cmd", sprintf "/c start %s" url)
+        cmd.WaitForExit()
+    with ex ->
+        eprintfn "%sError opening browser: %s%s" red ex.Message reset
+
+let cmdKey (args: Args) =
+    let apiKey = getApiKey args.ApiKey
+
+    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
+
+    let request = WebRequest.Create(portalBase + "/keys/validate") :?> HttpWebRequest
+    request.Method <- "POST"
+    request.ContentType <- "application/json"
+    request.Headers.Add("Authorization", sprintf "Bearer %s" apiKey)
+    request.Timeout <- 30000
+
+    try
+        use response = request.GetResponse() :?> HttpWebResponse
+        use reader = new StreamReader(response.GetResponseStream())
+        let responseText = reader.ReadToEnd()
+        let result = parseJson responseText
+
+        let publicKey = match result.TryFind "public_key" with | Some v -> v.ToString() | None -> "N/A"
+        let tier = match result.TryFind "tier" with | Some v -> v.ToString() | None -> "N/A"
+        let status = match result.TryFind "status" with | Some v -> v.ToString() | None -> "N/A"
+        let expiresAt = match result.TryFind "expires_at" with | Some v -> v.ToString() | None -> "N/A"
+        let timeRemaining = match result.TryFind "time_remaining" with | Some v -> v.ToString() | None -> "N/A"
+        let rateLimit = match result.TryFind "rate_limit" with | Some v -> v.ToString() | None -> "N/A"
+        let burst = match result.TryFind "burst" with | Some v -> v.ToString() | None -> "N/A"
+        let concurrency = match result.TryFind "concurrency" with | Some v -> v.ToString() | None -> "N/A"
+        let expired = match result.TryFind "expired" with | Some v -> v.ToString() = "True" | None -> false
+
+        if args.KeyExtend && publicKey <> "N/A" then
+            let extendUrl = sprintf "%s/keys/extend?pk=%s" portalBase publicKey
+            printfn "%sOpening browser to extend key...%s" blue reset
+            openBrowser extendUrl
+        elif expired then
+            printfn "%sExpired%s" red reset
+            printfn "Public Key: %s" publicKey
+            printfn "Tier: %s" tier
+            printfn "Expired: %s" expiresAt
+            printfn "%sTo renew: Visit https://unsandbox.com/keys/extend%s" yellow reset
+            exit 1
+        else
+            printfn "%sValid%s" green reset
+            printfn "Public Key: %s" publicKey
+            printfn "Tier: %s" tier
+            printfn "Status: %s" status
+            printfn "Expires: %s" expiresAt
+            printfn "Time Remaining: %s" timeRemaining
+            printfn "Rate Limit: %s" rateLimit
+            printfn "Burst: %s" burst
+            printfn "Concurrency: %s" concurrency
+    with
+    | :? WebException as ex ->
+        printfn "%sInvalid%s" red reset
+        let errorMsg =
+            if ex.Response <> null then
+                use reader = new StreamReader(ex.Response.GetResponseStream())
+                let body = reader.ReadToEnd()
+                try
+                    let errorResult = parseJson body
+                    match errorResult.TryFind "error" with
+                    | Some err -> err.ToString()
+                    | None -> body
+                with _ -> body
+            else
+                ex.Message
+        printfn "Reason: %s" errorMsg
+        exit 1
+
 let cmdService (args: Args) =
     let apiKey = getApiKey args.ApiKey
 
@@ -406,6 +489,7 @@ let parseArgs (argv: string[]) =
         ServiceSleep = None
         ServiceWake = None
         ServiceDestroy = None
+        KeyExtend = false
     }
 
     let mutable i = 0
@@ -413,6 +497,7 @@ let parseArgs (argv: string[]) =
         match argv.[i] with
         | "session" -> args.Command <- Some "session"
         | "service" -> args.Command <- Some "service"
+        | "key" -> args.Command <- Some "key"
         | "-k" | "--api-key" -> i <- i + 1; args.ApiKey <- Some argv.[i]
         | "-n" | "--network" -> i <- i + 1; args.Network <- Some argv.[i]
         | "-v" | "--vcpu" -> i <- i + 1; args.Vcpu <- int argv.[i]
@@ -437,6 +522,7 @@ let parseArgs (argv: string[]) =
         | "--sleep" -> i <- i + 1; args.ServiceSleep <- Some argv.[i]
         | "--wake" -> i <- i + 1; args.ServiceWake <- Some argv.[i]
         | "--destroy" -> i <- i + 1; args.ServiceDestroy <- Some argv.[i]
+        | "--extend" -> args.KeyExtend <- true
         | arg when not (arg.StartsWith("-")) -> args.SourceFile <- Some arg
         | _ -> ()
         i <- i + 1
@@ -447,6 +533,7 @@ let printHelp () =
     printfn "Usage: un [options] <source_file>"
     printfn "       un session [options]"
     printfn "       un service [options]"
+    printfn "       un key [options]"
     printfn ""
     printfn "Execute options:"
     printfn "  -e KEY=VALUE      Set environment variable"
@@ -474,6 +561,10 @@ let printHelp () =
     printfn "  --sleep ID        Freeze service"
     printfn "  --wake ID         Unfreeze service"
     printfn "  --destroy ID      Destroy service"
+    printfn ""
+    printfn "Key options:"
+    printfn "  --extend          Open browser to extend key"
+    printfn "  -k KEY            API key to validate"
 
 [<EntryPoint>]
 let main argv =
@@ -483,6 +574,7 @@ let main argv =
         match args.Command with
         | Some "session" -> cmdSession args; 0
         | Some "service" -> cmdService args; 0
+        | Some "key" -> cmdKey args; 0
         | _ ->
             match args.SourceFile with
             | Some _ -> cmdExecute args; 0

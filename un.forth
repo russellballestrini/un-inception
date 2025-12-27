@@ -39,6 +39,12 @@
 \ Usage: gforth un.forth <source_file>
 \        gforth un.forth session [options]
 \        gforth un.forth service [options]
+\        gforth un.forth key [options]
+
+\ Constants
+: portal-base ( -- addr len )
+    s" https://unsandbox.com"
+;
 
 \ Extension to language mapping (simple linear search)
 : ext-lang ( addr len -- addr len | 0 0 )
@@ -282,6 +288,77 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
+\ Key validate
+: validate-key ( extend-flag -- )
+    get-api-key
+    s" /tmp/unsandbox_key_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" API_KEY='" r@ write-file throw
+    get-api-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" PORTAL_BASE='" r@ write-file throw
+    portal-base r@ write-file throw
+    s" '" r@ write-line throw
+
+    \ Check if extend flag is set
+    0= if
+        \ Normal validation
+        s" curl -s -X POST $PORTAL_BASE/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $API_KEY\" -o /tmp/unsandbox_key_resp.json" r@ write-line throw
+        s" STATUS=$?" r@ write-line throw
+        s" if [ $STATUS -ne 0 ]; then" r@ write-line throw
+        s"   echo -e '\\x1b[31mInvalid\\x1b[0m'" r@ write-line throw
+        s"   exit 1" r@ write-line throw
+        s" fi" r@ write-line throw
+        s" EXPIRED=$(jq -r '.expired // false' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s" if [ \"$EXPIRED\" = \"true\" ]; then" r@ write-line throw
+        s"   echo -e '\\x1b[31mExpired\\x1b[0m'" r@ write-line throw
+        s"   echo 'Public Key: '$(jq -r '.public_key // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Tier: '$(jq -r '.tier // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Expired: '$(jq -r '.expires_at // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo -e '\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m'" r@ write-line throw
+        s"   rm -f /tmp/unsandbox_key_resp.json" r@ write-line throw
+        s"   exit 1" r@ write-line throw
+        s" else" r@ write-line throw
+        s"   echo -e '\\x1b[32mValid\\x1b[0m'" r@ write-line throw
+        s"   echo 'Public Key: '$(jq -r '.public_key // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Tier: '$(jq -r '.tier // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Status: '$(jq -r '.status // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Expires: '$(jq -r '.expires_at // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Time Remaining: '$(jq -r '.time_remaining // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Rate Limit: '$(jq -r '.rate_limit // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Burst: '$(jq -r '.burst // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s"   echo 'Concurrency: '$(jq -r '.concurrency // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
+        s" fi" r@ write-line throw
+        s" rm -f /tmp/unsandbox_key_resp.json" r@ write-line throw
+    else
+        \ Extend mode
+        s" RESP=$(curl -s -X POST $PORTAL_BASE/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $API_KEY\")" r@ write-line throw
+        s" PUBLIC_KEY=$(echo \"$RESP\" | jq -r '.public_key // \"N/A\"')" r@ write-line throw
+        s" xdg-open \"$PORTAL_BASE/keys/extend?pk=$PUBLIC_KEY\" 2>/dev/null" r@ write-line throw
+    then
+
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_key_cmd.sh && /tmp/unsandbox_key_cmd.sh && rm -f /tmp/unsandbox_key_cmd.sh" system
+;
+
+\ Handle key subcommand
+: handle-key ( -- )
+    argc @ 3 < if
+        0 validate-key
+        0 (bye)
+    then
+
+    2 arg 2dup s" --extend" compare 0= if
+        2drop
+        1 validate-key
+        0 (bye)
+    then
+
+    2drop
+    0 validate-key
+    0 (bye)
+;
+
 \ Handle session subcommand
 : handle-session ( -- )
     argc @ 3 < if
@@ -398,6 +475,7 @@
         s" Usage: gforth un.forth <source_file>" type cr
         s"        gforth un.forth session [options]" type cr
         s"        gforth un.forth service [options]" type cr
+        s"        gforth un.forth key [options]" type cr
         1 (bye)
     then
 
@@ -412,6 +490,11 @@
 
     2dup s" service" compare 0= if
         2drop handle-service
+        0 (bye)
+    then
+
+    2dup s" key" compare 0= if
+        2drop handle-key
         0 (bye)
     then
 

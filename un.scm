@@ -181,33 +181,43 @@
          (status (json-extract-string response "status"))
          (public-key (json-extract-string response "public_key"))
          (tier (json-extract-string response "tier"))
-         (expires-at (json-extract-string response "expires_at")))
+         (valid-through (json-extract-string response "valid_through_datetime"))
+         (valid-for (json-extract-string response "valid_for_human"))
+         (rate-limit (json-extract-string response "rate_per_minute"))
+         (burst (json-extract-string response "burst"))
+         (concurrency (json-extract-string response "concurrency"))
+         (expired-at (json-extract-string response "expired_at_datetime")))
 
     (cond
       ;; Valid key
       ((and status (string=? status "valid"))
-       (format #t "~aValid~a\n" green reset)
-       (when public-key (format #t "Public Key: ~a\n" public-key))
-       (when tier (format #t "Tier: ~a\n" tier))
-       (when expires-at (format #t "Expires: ~a\n" expires-at))
+       (format #t "~aValid~a\n\n" green reset)
+       (when public-key (format #t "Public Key:          ~a\n" public-key))
+       (when tier (format #t "Tier:                ~a\n" tier))
+       (format #t "Status:              valid\n")
+       (when valid-through (format #t "Expires:             ~a\n" valid-through))
+       (when valid-for (format #t "Time Remaining:      ~a\n" valid-for))
+       (when rate-limit (format #t "Rate Limit:          ~a/min\n" rate-limit))
+       (when burst (format #t "Burst:               ~a\n" burst))
+       (when concurrency (format #t "Concurrency:         ~a\n" concurrency))
        (when extend
          (if public-key
              (let ((url (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
-               (format #t "~aOpening browser to extend key...~a\n" yellow reset)
+               (format #t "~aOpening browser to extend key...~a\n" blue reset)
                (open-browser url))
              (format #t "~aError: No public_key in response~a\n" red reset))))
 
       ;; Expired key
       ((and status (string=? status "expired"))
-       (format #t "~aExpired~a\n" red reset)
-       (when public-key (format #t "Public Key: ~a\n" public-key))
-       (when tier (format #t "Tier: ~a\n" tier))
-       (when expires-at (format #t "Expired: ~a\n" expires-at))
-       (format #t "~aTo renew: Visit ~a/keys/extend~a\n" yellow portal-base reset)
+       (format #t "~aExpired~a\n\n" red reset)
+       (when public-key (format #t "Public Key:          ~a\n" public-key))
+       (when tier (format #t "Tier:                ~a\n" tier))
+       (when expired-at (format #t "Expired:             ~a\n" expired-at))
+       (format #t "\n~aTo renew:~a Visit ~a/keys/extend\n" yellow reset portal-base)
        (when extend
          (if public-key
              (let ((url (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
-               (format #t "~aOpening browser...~a\n" yellow reset)
+               (format #t "~aOpening browser...~a\n" blue reset)
                (open-browser url))
              (format #t "~aError: No public_key in response~a\n" red reset))))
 

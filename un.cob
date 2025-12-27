@@ -73,6 +73,9 @@
        01  WS-DOMAINS          PIC X(256).
        01  WS-SERVICE-TYPE     PIC X(64).
        01  WS-BOOTSTRAP        PIC X(2048).
+       01  WS-PORTAL-BASE      PIC X(256) VALUE
+           "https://unsandbox.com".
+       01  WS-EXTEND-FLAG      PIC X(8).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -95,6 +98,11 @@
 
            IF WS-ARG1 = "service"
                PERFORM HANDLE-SERVICE
+               STOP RUN
+           END-IF.
+
+           IF WS-ARG1 = "key"
+               PERFORM HANDLE-KEY
                STOP RUN
            END-IF.
 
@@ -438,6 +446,96 @@
       * Close JSON and add output formatting
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}' | jq -r '.id + "" created""'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       HANDLE-KEY.
+      * Get API key
+           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
+           IF WS-API-KEY = SPACES
+               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Parse key arguments
+           MOVE SPACES TO WS-EXTEND-FLAG.
+           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+
+           IF WS-ARG2 = "--extend"
+               MOVE "true" TO WS-EXTEND-FLAG
+           END-IF.
+
+      * Validate key
+           PERFORM VALIDATE-KEY.
+
+       VALIDATE-KEY.
+      * Build curl command to validate API key
+           STRING "curl -s -X POST "
+               FUNCTION TRIM(WS-PORTAL-BASE)
+               "/keys/validate "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' -o /tmp/unsandbox_key_resp.json; "
+               "STATUS=$?; "
+               "if [ $STATUS -ne 0 ]; then "
+               "echo -e '\x1b[31mInvalid\x1b[0m'; "
+               "exit 1; "
+               "fi; "
+               "EXPIRED=$(jq -r '.expired // false' "
+               "/tmp/unsandbox_key_resp.json); "
+               "PUBLIC_KEY=$(jq -r '.public_key // \"N/A\"' "
+               "/tmp/unsandbox_key_resp.json); "
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-EXTEND-FLAG = "true"
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "xdg-open '"
+                   FUNCTION TRIM(WS-PORTAL-BASE)
+                   "/keys/extend?pk='\"$PUBLIC_KEY\" 2>/dev/null; "
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           ELSE
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "if [ \"$EXPIRED\" = \"true\" ]; then "
+                   "echo -e '\x1b[31mExpired\x1b[0m'; "
+                   "echo 'Public Key: '$PUBLIC_KEY; "
+                   "echo 'Tier: '$(jq -r '.tier // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Expired: '$(jq -r '.expires_at // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo -e '\x1b[33mTo renew: Visit "
+                   "https://unsandbox.com/keys/extend\x1b[0m'; "
+                   "rm -f /tmp/unsandbox_key_resp.json; "
+                   "exit 1; "
+                   "else "
+                   "echo -e '\x1b[32mValid\x1b[0m'; "
+                   "echo 'Public Key: '$PUBLIC_KEY; "
+                   "echo 'Tier: '$(jq -r '.tier // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Status: '$(jq -r '.status // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Expires: '$(jq -r '.expires_at // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Time Remaining: '$(jq -r "
+                   "'.time_remaining // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Rate Limit: '$(jq -r '.rate_limit // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Burst: '$(jq -r '.burst // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "echo 'Concurrency: '$(jq -r '.concurrency // \"N/A\"' "
+                   "/tmp/unsandbox_key_resp.json); "
+                   "fi; "
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "rm -f /tmp/unsandbox_key_resp.json"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

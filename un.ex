@@ -248,13 +248,22 @@ defmodule Un do
     public_key = Map.get(data, "public_key")
     tier = Map.get(data, "tier")
     expires_at = Map.get(data, "expires_at")
+    time_remaining = Map.get(data, "time_remaining")
+    rate_limit = Map.get(data, "rate_limit")
+    burst = Map.get(data, "burst")
+    concurrency = Map.get(data, "concurrency")
 
     case status do
       "valid" ->
         IO.puts("#{@green}Valid#{@reset}")
         IO.puts("Public Key: #{public_key}")
         IO.puts("Tier: #{tier}")
+        IO.puts("Status: #{status}")
         IO.puts("Expires: #{expires_at}")
+        if time_remaining, do: IO.puts("Time Remaining: #{time_remaining}")
+        if rate_limit, do: IO.puts("Rate Limit: #{rate_limit}")
+        if burst, do: IO.puts("Burst: #{burst}")
+        if concurrency, do: IO.puts("Concurrency: #{concurrency}")
 
         if extend do
           open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
@@ -285,13 +294,22 @@ defmodule Un do
     public_key = extract_json_value(response, "public_key")
     tier = extract_json_value(response, "tier")
     expires_at = extract_json_value(response, "expires_at")
+    time_remaining = extract_json_value(response, "time_remaining")
+    rate_limit = extract_json_value(response, "rate_limit")
+    burst = extract_json_value(response, "burst")
+    concurrency = extract_json_value(response, "concurrency")
 
     case status do
       "valid" ->
         IO.puts("#{@green}Valid#{@reset}")
         IO.puts("Public Key: #{public_key}")
         IO.puts("Tier: #{tier}")
+        IO.puts("Status: #{status}")
         IO.puts("Expires: #{expires_at}")
+        if time_remaining, do: IO.puts("Time Remaining: #{time_remaining}")
+        if rate_limit, do: IO.puts("Rate Limit: #{rate_limit}")
+        if burst, do: IO.puts("Burst: #{burst}")
+        if concurrency, do: IO.puts("Concurrency: #{concurrency}")
 
         if extend do
           open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")

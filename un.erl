@@ -201,13 +201,22 @@ parse_and_display_key_status(Response, ShouldExtend) ->
     PublicKey = extract_json_field(Response, "public_key"),
     Tier = extract_json_field(Response, "tier"),
     ExpiresAt = extract_json_field(Response, "expires_at"),
+    TimeRemaining = extract_json_field(Response, "time_remaining"),
+    RateLimit = extract_json_field(Response, "rate_limit"),
+    Burst = extract_json_field(Response, "burst"),
+    Concurrency = extract_json_field(Response, "concurrency"),
 
     case Status of
         "valid" ->
             io:format("\033[32mValid\033[0m~n"),
             io:format("Public Key: ~s~n", [PublicKey]),
             io:format("Tier: ~s~n", [Tier]),
+            io:format("Status: ~s~n", [Status]),
             io:format("Expires: ~s~n", [ExpiresAt]),
+            if TimeRemaining =/= "" -> io:format("Time Remaining: ~s~n", [TimeRemaining]); true -> ok end,
+            if RateLimit =/= "" -> io:format("Rate Limit: ~s~n", [RateLimit]); true -> ok end,
+            if Burst =/= "" -> io:format("Burst: ~s~n", [Burst]); true -> ok end,
+            if Concurrency =/= "" -> io:format("Concurrency: ~s~n", [Concurrency]); true -> ok end,
             if ShouldExtend ->
                 open_extend_page(PublicKey);
             true -> ok

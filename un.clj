@@ -216,27 +216,39 @@
         status (extract-field "status" response)
         public-key (extract-field "public_key" response)
         tier (extract-field "tier" response)
-        expires-at (extract-field "expires_at" response)]
+        valid-through (extract-field "valid_through_datetime" response)
+        valid-for (extract-field "valid_for_human" response)
+        rate-limit (extract-field "rate_per_minute" response)
+        burst (extract-field "burst" response)
+        concurrency (extract-field "concurrency" response)
+        expired-at (extract-field "expired_at_datetime" response)]
     (cond
       (= status "valid")
       (do
-        (println (str green "Valid" reset))
-        (when public-key (println (str "Public Key: " public-key)))
-        (when tier (println (str "Tier: " tier)))
-        (when expires-at (println (str "Expires: " expires-at)))
+        (println (str green "Valid" reset "\n"))
+        (when public-key (println (str "Public Key:          " public-key)))
+        (when tier (println (str "Tier:                " tier)))
+        (println "Status:              valid")
+        (when valid-through (println (str "Expires:             " valid-through)))
+        (when valid-for (println (str "Time Remaining:      " valid-for)))
+        (when rate-limit (println (str "Rate Limit:          " rate-limit "/min")))
+        (when burst (println (str "Burst:               " burst)))
+        (when concurrency (println (str "Concurrency:         " concurrency)))
         (when extend?
           (let [url (str portal-base "/keys/extend?pk=" public-key)]
+            (println (str blue "Opening browser to extend key..." reset))
             (sh "xdg-open" url))))
 
       (= status "expired")
       (do
-        (println (str red "Expired" reset))
-        (when public-key (println (str "Public Key: " public-key)))
-        (when tier (println (str "Tier: " tier)))
-        (when expires-at (println (str "Expired: " expires-at)))
-        (println (str yellow "To renew: Visit " portal-base "/keys/extend" reset))
+        (println (str red "Expired" reset "\n"))
+        (when public-key (println (str "Public Key:          " public-key)))
+        (when tier (println (str "Tier:                " tier)))
+        (when expired-at (println (str "Expired:             " expired-at)))
+        (println (str "\n" yellow "To renew:" reset " Visit " portal-base "/keys/extend"))
         (when extend?
           (let [url (str portal-base "/keys/extend?pk=" public-key)]
+            (println (str blue "Opening browser..." reset))
             (sh "xdg-open" url))))
 
       :else

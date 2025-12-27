@@ -54,6 +54,7 @@ def EXT_MAP = [
 ]
 
 def API_BASE = 'https://api.unsandbox.com'
+def PORTAL_BASE = 'https://unsandbox.com'
 def BLUE = '\033[34m'
 def RED = '\033[31m'
 def GREEN = '\033[32m'
@@ -84,6 +85,7 @@ class Args {
     String serviceSleep = null
     String serviceWake = null
     String serviceDestroy = null
+    Boolean keyExtend = false
 }
 
 def getApiKey(argsKey) {
@@ -274,6 +276,86 @@ def cmdSession(args) {
     println("${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}")
 }
 
+def openBrowser(url) {
+    def osName = System.getProperty('os.name').toLowerCase()
+    try {
+        if (osName.contains('linux')) {
+            Runtime.runtime.exec(['xdg-open', url] as String[])
+        } else if (osName.contains('mac')) {
+            Runtime.runtime.exec(['open', url] as String[])
+        } else if (osName.contains('win')) {
+            Runtime.runtime.exec(['cmd', '/c', 'start', url] as String[])
+        }
+    } catch (Exception e) {
+        System.err.println("${RED}Error opening browser: ${e.message}${RESET}")
+    }
+}
+
+def cmdKey(args) {
+    def apiKey = getApiKey(args.apiKey)
+
+    def curlCmd = ['curl', '-s', '-X', 'POST', "${PORTAL_BASE}/keys/validate",
+                   '-H', 'Content-Type: application/json',
+                   '-H', "Authorization: Bearer ${apiKey}",
+                   '-d', '{}']
+
+    def proc = curlCmd.execute()
+    def output = proc.text
+    proc.waitFor()
+
+    if (proc.exitValue() != 0) {
+        println("${RED}Invalid${RESET}")
+        System.err.println("${RED}Error: Failed to validate key${RESET}")
+        System.exit(1)
+    }
+
+    def publicKeyMatch = output =~ /"public_key":"([^"]+)"/
+    def tierMatch = output =~ /"tier":"([^"]+)"/
+    def statusMatch = output =~ /"status":"([^"]+)"/
+    def expiresAtMatch = output =~ /"expires_at":"([^"]+)"/
+    def timeRemainingMatch = output =~ /"time_remaining":"([^"]+)"/
+    def rateLimitMatch = output =~ /"rate_limit":([0-9.]+)/
+    def burstMatch = output =~ /"burst":([0-9.]+)/
+    def concurrencyMatch = output =~ /"concurrency":([0-9.]+)/
+    def expiredMatch = output =~ /"expired":(true|false)/
+
+    def publicKey = publicKeyMatch.find() ? publicKeyMatch.group(1) : 'N/A'
+    def tier = tierMatch.find() ? tierMatch.group(1) : 'N/A'
+    def status = statusMatch.find() ? statusMatch.group(1) : 'N/A'
+    def expiresAt = expiresAtMatch.find() ? expiresAtMatch.group(1) : 'N/A'
+    def timeRemaining = timeRemainingMatch.find() ? timeRemainingMatch.group(1) : 'N/A'
+    def rateLimit = rateLimitMatch.find() ? rateLimitMatch.group(1) : 'N/A'
+    def burst = burstMatch.find() ? burstMatch.group(1) : 'N/A'
+    def concurrency = concurrencyMatch.find() ? concurrencyMatch.group(1) : 'N/A'
+    def expired = expiredMatch.find() ? expiredMatch.group(1) == 'true' : false
+
+    if (args.keyExtend && publicKey != 'N/A') {
+        def extendUrl = "${PORTAL_BASE}/keys/extend?pk=${publicKey}"
+        println("${BLUE}Opening browser to extend key...${RESET}")
+        openBrowser(extendUrl)
+        return
+    }
+
+    if (expired) {
+        println("${RED}Expired${RESET}")
+        println("Public Key: ${publicKey}")
+        println("Tier: ${tier}")
+        println("Expired: ${expiresAt}")
+        println("${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}")
+        System.exit(1)
+    }
+
+    println("${GREEN}Valid${RESET}")
+    println("Public Key: ${publicKey}")
+    println("Tier: ${tier}")
+    println("Status: ${status}")
+    println("Expires: ${expiresAt}")
+    println("Time Remaining: ${timeRemaining}")
+    println("Rate Limit: ${rateLimit}")
+    println("Burst: ${burst}")
+    println("Concurrency: ${concurrency}")
+}
+
 def cmdService(args) {
     def apiKey = getApiKey(args.apiKey)
 
@@ -378,6 +460,9 @@ def parseArgs(argv) {
             case 'service':
                 args.command = 'service'
                 break
+            case 'key':
+                args.command = 'key'
+                break
             case '-k':
             case '--api-key':
                 args.apiKey = argv[++i]
@@ -448,6 +533,9 @@ def parseArgs(argv) {
             case '--destroy':
                 args.serviceDestroy = argv[++i]
                 break
+            case '--extend':
+                args.keyExtend = true
+                break
             default:
                 if (!argv[i].startsWith('-')) {
                     args.sourceFile = argv[i]
@@ -462,6 +550,7 @@ def printHelp() {
     println '''Usage: groovy un.groovy [options] <source_file>
        groovy un.groovy session [options]
        groovy un.groovy service [options]
+       groovy un.groovy key [options]
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -489,6 +578,10 @@ Service options:
   --sleep ID        Freeze service
   --wake ID         Unfreeze service
   --destroy ID      Destroy service
+
+Key options:
+  --extend          Open browser to extend key
+  -k KEY            API key to validate
 '''
 }
 
@@ -500,6 +593,8 @@ try {
         cmdSession(args)
     } else if (args.command == 'service') {
         cmdService(args)
+    } else if (args.command == 'key') {
+        cmdKey(args)
     } else if (args.sourceFile) {
         cmdExecute(args)
     } else {

@@ -126,17 +126,22 @@ fn extract_json_string(json string, key string) string {
 }
 
 fn cmd_key(extend bool, api_key string) {
-	cmd := "curl -s -X POST '${api_base}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '{}'"
+	cmd := "curl -s -X POST '${portal_base}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '{}'"
 	result := exec_curl(cmd)
 
-	status := extract_json_string(result, 'status')
 	public_key := extract_json_string(result, 'public_key')
 	tier := extract_json_string(result, 'tier')
-	expired_at := extract_json_string(result, 'expired_at')
+	status := extract_json_string(result, 'status')
+	expires_at := extract_json_string(result, 'expires_at')
+	time_remaining := extract_json_string(result, 'time_remaining')
+	rate_limit := extract_json_string(result, 'rate_limit')
+	burst := extract_json_string(result, 'burst')
+	concurrency := extract_json_string(result, 'concurrency')
+	expired := extract_json_string(result, 'expired')
 
 	if extend && public_key != '' {
 		url := '${portal_base}/keys/extend?pk=${public_key}'
-		println('${yellow}Opening browser: ${url}${reset}')
+		println('${blue}Opening browser to extend key...${reset}')
 
 		// Try xdg-open (Linux), open (macOS), or start (Windows)
 		os.execute('xdg-open "${url}"') or {
@@ -149,30 +154,40 @@ fn cmd_key(extend bool, api_key string) {
 		return
 	}
 
-	match status {
-		'valid' {
-			println('${green}Valid${reset}')
-			println('Public Key: ${public_key}')
-			println('Tier: ${tier}')
-			if expired_at != '' {
-				println('Expires: ${expired_at}')
-			}
+	if expired == 'true' {
+		println('${red}Expired${reset}')
+		println('Public Key: ${public_key}')
+		println('Tier: ${tier}')
+		if expires_at != '' {
+			println('Expired: ${expires_at}')
 		}
-		'expired' {
-			println('${red}Expired${reset}')
-			println('Public Key: ${public_key}')
-			println('Tier: ${tier}')
-			if expired_at != '' {
-				println('Expired: ${expired_at}')
-			}
-			println('${yellow}To renew: Visit ${portal_base}/keys/extend${reset}')
-		}
-		'invalid' {
-			println('${red}Invalid${reset}')
-		}
-		else {
-			println('${yellow}Unknown status: ${status}${reset}')
-		}
+		println('${yellow}To renew: Visit https://unsandbox.com/keys/extend${reset}')
+		exit(1)
+	}
+
+	// Valid key
+	println('${green}Valid${reset}')
+	println('Public Key: ${public_key}')
+	if tier != '' {
+		println('Tier: ${tier}')
+	}
+	if status != '' {
+		println('Status: ${status}')
+	}
+	if expires_at != '' {
+		println('Expires: ${expires_at}')
+	}
+	if time_remaining != '' {
+		println('Time Remaining: ${time_remaining}')
+	}
+	if rate_limit != '' {
+		println('Rate Limit: ${rate_limit}')
+	}
+	if burst != '' {
+		println('Burst: ${burst}')
+	}
+	if concurrency != '' {
+		println('Concurrency: ${concurrency}')
 	}
 }
 

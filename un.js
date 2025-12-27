@@ -224,28 +224,31 @@ async function validateKey(apiKey, shouldExtend = false) {
   try {
     const result = await portalRequest("/keys/validate", "POST", {}, apiKey);
 
-    if (result.error || result.status >= 400) {
-      console.log(`${RED}Invalid${RESET}`);
-      console.log(`Reason: ${result.error || 'Unknown error'}`);
-      process.exit(1);
+    // Handle --extend flag first
+    if (shouldExtend) {
+      const public_key = result.public_key;
+      if (public_key) {
+        const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(public_key)}`;
+        console.log(`${BLUE}Opening browser to extend key...${RESET}`);
+        openBrowser(extendUrl);
+        return;
+      } else {
+        console.error(`${RED}Error: Could not retrieve public key${RESET}`);
+        process.exit(1);
+      }
     }
 
+    // Check if key is expired
     if (result.expired) {
       console.log(`${RED}Expired${RESET}`);
       console.log(`Public Key: ${result.public_key || 'N/A'}`);
       console.log(`Tier: ${result.tier || 'N/A'}`);
       console.log(`Expired: ${result.expires_at || 'N/A'}`);
       console.log(`${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}`);
-
-      if (shouldExtend && result.public_key) {
-        const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(result.public_key)}`;
-        console.log(`\nOpening browser to extend key...`);
-        openBrowser(extendUrl);
-      }
-
       process.exit(1);
     }
 
+    // Valid key
     console.log(`${GREEN}Valid${RESET}`);
     console.log(`Public Key: ${result.public_key || 'N/A'}`);
     console.log(`Tier: ${result.tier || 'N/A'}`);
@@ -255,12 +258,6 @@ async function validateKey(apiKey, shouldExtend = false) {
     console.log(`Rate Limit: ${result.rate_limit || 'N/A'}`);
     console.log(`Burst: ${result.burst || 'N/A'}`);
     console.log(`Concurrency: ${result.concurrency || 'N/A'}`);
-
-    if (shouldExtend && result.public_key) {
-      const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(result.public_key)}`;
-      console.log(`\nOpening browser to extend key...`);
-      openBrowser(extendUrl);
-    }
   } catch (error) {
     console.error(`${RED}Error validating key: ${error.message}${RESET}`);
     process.exit(1);

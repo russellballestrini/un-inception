@@ -357,41 +357,52 @@ Future<void> cmdKey(Args args) async {
   try {
     final result = await apiRequestCurl('/keys/validate', 'POST', null, apiKey, baseUrl: portalBase);
 
-    final status = result['status'] as String?;
-    final publicKey = result['public_key'] as String?;
-    final tier = result['tier'] as String?;
-    final expiresAt = result['expires_at'] as String?;
-
-    if (status == 'valid') {
-      print('${green}Valid$reset');
-      if (publicKey != null) print('Public Key: $publicKey');
-      if (tier != null) print('Tier: $tier');
-      if (expiresAt != null) print('Expires: $expiresAt');
-    } else if (status == 'expired') {
-      print('${red}Expired$reset');
-      if (publicKey != null) print('Public Key: $publicKey');
-      if (tier != null) print('Tier: $tier');
-      if (expiresAt != null) print('Expired: $expiresAt');
-      print('${yellow}To renew: Visit $portalBase/keys/extend$reset');
-    } else {
-      print('${red}Invalid$reset');
-    }
-
-    if (args.keyExtend && publicKey != null) {
-      final url = '$portalBase/keys/extend?pk=$publicKey';
-      print('${yellow}Opening: $url$reset');
-      if (Platform.isMacOS) {
-        await Process.run('open', [url]);
-      } else if (Platform.isLinux) {
-        await Process.run('xdg-open', [url]);
-      } else if (Platform.isWindows) {
-        await Process.run('cmd', ['/c', 'start', url]);
+    // Handle --extend flag
+    if (args.keyExtend) {
+      final publicKey = result['public_key'] as String?;
+      if (publicKey != null) {
+        final url = '$portalBase/keys/extend?pk=$publicKey';
+        print('${blue}Opening browser to extend key...$reset');
+        if (Platform.isMacOS) {
+          await Process.run('open', [url]);
+        } else if (Platform.isLinux) {
+          await Process.run('xdg-open', [url]);
+        } else if (Platform.isWindows) {
+          await Process.run('cmd', ['/c', 'start', url]);
+        } else {
+          print('${yellow}Please open manually: $url$reset');
+        }
+        return;
       } else {
-        print('${yellow}Please open manually: $url$reset');
+        stderr.writeln('${red}Error: Could not retrieve public key$reset');
+        exit(1);
       }
     }
+
+    // Check if key is expired
+    final expired = result['expired'] as bool? ?? false;
+    if (expired) {
+      print('${red}Expired$reset');
+      print('Public Key: ${result['public_key'] ?? 'N/A'}');
+      print('Tier: ${result['tier'] ?? 'N/A'}');
+      print('Expired: ${result['expires_at'] ?? 'N/A'}');
+      print('${yellow}To renew: Visit $portalBase/keys/extend$reset');
+      exit(1);
+    }
+
+    // Valid key
+    print('${green}Valid$reset');
+    print('Public Key: ${result['public_key'] ?? 'N/A'}');
+    print('Tier: ${result['tier'] ?? 'N/A'}');
+    print('Status: ${result['status'] ?? 'N/A'}');
+    print('Expires: ${result['expires_at'] ?? 'N/A'}');
+    print('Time Remaining: ${result['time_remaining'] ?? 'N/A'}');
+    print('Rate Limit: ${result['rate_limit'] ?? 'N/A'}');
+    print('Burst: ${result['burst'] ?? 'N/A'}');
+    print('Concurrency: ${result['concurrency'] ?? 'N/A'}');
   } catch (e) {
-    stderr.writeln('${red}Error validating key: $e$reset');
+    print('${red}Invalid$reset');
+    print('Reason: $e');
     exit(1);
   }
 }

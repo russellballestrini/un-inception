@@ -43,6 +43,7 @@
 #   pwsh un.ps1 service [options]
 
 $API_BASE = "https://api.unsandbox.com"
+$PORTAL_BASE = "https://unsandbox.com"
 
 $EXT_MAP = @{
     ".ps1" = "powershell"; ".py" = "python"; ".js" = "javascript"
@@ -68,7 +69,7 @@ function Get-ApiKey {
 }
 
 function Invoke-Api {
-    param($Endpoint, $Method = "GET", $Body = $null)
+    param($Endpoint, $Method = "GET", $Body = $null, $BaseUrl = $null)
 
     $apiKey = Get-ApiKey
     $headers = @{
@@ -76,7 +77,8 @@ function Invoke-Api {
         "Content-Type" = "application/json"
     }
 
-    $uri = "$API_BASE$Endpoint"
+    $base = if ($BaseUrl) { $BaseUrl } else { $API_BASE }
+    $uri = "$base$Endpoint"
 
     try {
         if ($Body) {
@@ -162,6 +164,63 @@ function Invoke-Session {
     $result = Invoke-Api -Endpoint "/sessions" -Method "POST" -Body $payload
     Write-Host "`e[33mSession created (WebSocket required for interactive)`e[0m"
     $result | ConvertTo-Json -Depth 5
+}
+
+function Invoke-Key {
+    param($Args)
+
+    $extend = $Args -contains "--extend"
+
+    try {
+        $result = Invoke-Api -Endpoint "/keys/validate" -Method "POST" -BaseUrl $PORTAL_BASE
+
+        # Handle --extend flag
+        if ($extend) {
+            $publicKey = $result.public_key
+            if ($publicKey) {
+                $url = "$PORTAL_BASE/keys/extend?pk=$publicKey"
+                Write-Host "`e[34mOpening browser to extend key...`e[0m"
+                if ($IsWindows) {
+                    Start-Process $url
+                } elseif ($IsMacOS) {
+                    & open $url
+                } elseif ($IsLinux) {
+                    & xdg-open $url
+                } else {
+                    Write-Host "`e[33mPlease open manually: $url`e[0m"
+                }
+                return
+            } else {
+                Write-Error "Error: Could not retrieve public key"
+                exit 1
+            }
+        }
+
+        # Check if key is expired
+        if ($result.expired) {
+            Write-Host "`e[31mExpired`e[0m"
+            Write-Host "Public Key: $($result.public_key ?? 'N/A')"
+            Write-Host "Tier: $($result.tier ?? 'N/A')"
+            Write-Host "Expired: $($result.expires_at ?? 'N/A')"
+            Write-Host "`e[33mTo renew: Visit $PORTAL_BASE/keys/extend`e[0m"
+            exit 1
+        }
+
+        # Valid key
+        Write-Host "`e[32mValid`e[0m"
+        Write-Host "Public Key: $($result.public_key ?? 'N/A')"
+        Write-Host "Tier: $($result.tier ?? 'N/A')"
+        Write-Host "Status: $($result.status ?? 'N/A')"
+        Write-Host "Expires: $($result.expires_at ?? 'N/A')"
+        Write-Host "Time Remaining: $($result.time_remaining ?? 'N/A')"
+        Write-Host "Rate Limit: $($result.rate_limit ?? 'N/A')"
+        Write-Host "Burst: $($result.burst ?? 'N/A')"
+        Write-Host "Concurrency: $($result.concurrency ?? 'N/A')"
+    } catch {
+        Write-Host "`e[31mInvalid`e[0m"
+        Write-Host "Reason: $($_.Exception.Message)"
+        exit 1
+    }
 }
 
 function Invoke-Service {
@@ -253,6 +312,7 @@ if ($args.Count -eq 0 -or $args[0] -eq "--help" -or $args[0] -eq "-h") {
 Usage: pwsh un.ps1 [options] <source_file>
        pwsh un.ps1 session [options]
        pwsh un.ps1 service [options]
+       pwsh un.ps1 key [options]
 
 Execute options:
   -e KEY=VALUE    Environment variable
@@ -274,6 +334,9 @@ Service options:
   --sleep ID      Freeze service
   --wake ID       Unfreeze service
   --destroy ID    Destroy service
+
+Key options:
+  --extend        Open browser to extend key
 "@
     exit 0
 }
@@ -282,6 +345,8 @@ if ($args[0] -eq "session") {
     Invoke-Session -Args $args[1..($args.Count-1)]
 } elseif ($args[0] -eq "service") {
     Invoke-Service -Args $args[1..($args.Count-1)]
+} elseif ($args[0] -eq "key") {
+    Invoke-Key -Args $args[1..($args.Count-1)]
 } else {
     # Parse execute args
     $sourceFile = $null

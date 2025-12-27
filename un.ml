@@ -276,24 +276,34 @@ let display_key_info response extend =
   let status = extract_json_value response "status" in
   let public_key = extract_json_value response "public_key" in
   let tier = extract_json_value response "tier" in
-  let expires_at = extract_json_value response "expires_at" in
+  let valid_through = extract_json_value response "valid_through_datetime" in
+  let valid_for = extract_json_value response "valid_for_human" in
+  let rate_limit = extract_json_value response "rate_per_minute" in
+  let burst = extract_json_value response "burst" in
+  let concurrency = extract_json_value response "concurrency" in
+  let expired_at = extract_json_value response "expired_at_datetime" in
 
   match status with
   | Some "valid" ->
-    Printf.printf "%sValid%s\n" green reset;
-    (match public_key with Some pk -> Printf.printf "Public Key: %s\n" pk | None -> ());
-    (match tier with Some t -> Printf.printf "Tier: %s\n" t | None -> ());
-    (match expires_at with Some exp -> Printf.printf "Expires: %s\n" exp | None -> ());
+    Printf.printf "%sValid%s\n\n" green reset;
+    (match public_key with Some pk -> Printf.printf "Public Key:          %s\n" pk | None -> ());
+    (match tier with Some t -> Printf.printf "Tier:                %s\n" t | None -> ());
+    Printf.printf "Status:              valid\n";
+    (match valid_through with Some exp -> Printf.printf "Expires:             %s\n" exp | None -> ());
+    (match valid_for with Some vf -> Printf.printf "Time Remaining:      %s\n" vf | None -> ());
+    (match rate_limit with Some r -> Printf.printf "Rate Limit:          %s/min\n" r | None -> ());
+    (match burst with Some b -> Printf.printf "Burst:               %s\n" b | None -> ());
+    (match concurrency with Some c -> Printf.printf "Concurrency:         %s\n" c | None -> ());
     if extend then
       (match public_key with
        | Some pk -> open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base pk)
        | None -> ())
   | Some "expired" ->
-    Printf.printf "%sExpired%s\n" red reset;
-    (match public_key with Some pk -> Printf.printf "Public Key: %s\n" pk | None -> ());
-    (match tier with Some t -> Printf.printf "Tier: %s\n" t | None -> ());
-    (match expires_at with Some exp -> Printf.printf "Expired: %s\n" exp | None -> ());
-    Printf.printf "%sTo renew: Visit %s/keys/extend%s\n" yellow portal_base reset;
+    Printf.printf "%sExpired%s\n\n" red reset;
+    (match public_key with Some pk -> Printf.printf "Public Key:          %s\n" pk | None -> ());
+    (match tier with Some t -> Printf.printf "Tier:                %s\n" t | None -> ());
+    (match expired_at with Some exp -> Printf.printf "Expired:             %s\n" exp | None -> ());
+    Printf.printf "\n%sTo renew:%s Visit %s/keys/extend\n" yellow reset portal_base;
     if extend then
       (match public_key with
        | Some pk -> open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base pk)

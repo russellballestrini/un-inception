@@ -44,6 +44,7 @@
 
 BEGIN {
     API_BASE = "https://api.unsandbox.com"
+    PORTAL_BASE = "https://unsandbox.com"
 
     # Extension to language map
     split("py:python js:javascript ts:typescript rb:ruby php:php pl:perl lua:lua sh:bash go:go rs:rust c:c cpp:cpp java:java kt:kotlin cs:csharp fs:fsharp hs:haskell ml:ocaml clj:clojure scm:scheme lisp:commonlisp erl:erlang ex:elixir jl:julia r:r cr:crystal d:d nim:nim zig:zig v:v dart:dart groovy:groovy f90:fortran cob:cobol pro:prolog forth:forth tcl:tcl raku:raku m:objc awk:awk ps1:powershell", pairs, " ")
@@ -242,10 +243,97 @@ function service_create(name, ports, domains, service_type, bootstrap) {
     print response
 }
 
+function validate_key(api_key, do_extend) {
+    # Call curl to validate key
+    cmd = "curl -s -X POST '" PORTAL_BASE "/keys/validate' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " api_key "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Parse expired status (simple regex check)
+    if (match(response, /"expired":true/)) {
+        print RED "Expired" RESET
+
+        # Extract public_key if present
+        if (match(response, /"public_key":"([^"]+)"/, arr)) {
+            public_key = arr[1]
+            print "Public Key: " public_key
+        }
+
+        # Extract tier
+        if (match(response, /"tier":"([^"]+)"/, arr)) {
+            print "Tier: " arr[1]
+        }
+
+        # Extract expires_at
+        if (match(response, /"expires_at":"([^"]+)"/, arr)) {
+            print "Expired: " arr[1]
+        }
+
+        print YELLOW "To renew: Visit https://unsandbox.com/keys/extend" RESET
+
+        if (do_extend && public_key) {
+            url = PORTAL_BASE "/keys/extend?pk=" public_key
+            print ""
+            print BLUE "Opening browser to: " url RESET
+            system("xdg-open '" url "' 2>/dev/null || open '" url "' 2>/dev/null &")
+        }
+        exit 1
+    }
+
+    # Valid key
+    print GREEN "Valid" RESET
+
+    # Extract and display fields
+    if (match(response, /"public_key":"([^"]+)"/, arr)) {
+        public_key = arr[1]
+        print "Public Key: " public_key
+    }
+    if (match(response, /"tier":"([^"]+)"/, arr)) {
+        print "Tier: " arr[1]
+    }
+    if (match(response, /"status":"([^"]+)"/, arr)) {
+        print "Status: " arr[1]
+    }
+    if (match(response, /"expires_at":"([^"]+)"/, arr)) {
+        print "Expires: " arr[1]
+    }
+    if (match(response, /"time_remaining":"([^"]+)"/, arr)) {
+        print "Time Remaining: " arr[1]
+    }
+    if (match(response, /"rate_limit":"?([^",}]+)"?/, arr)) {
+        print "Rate Limit: " arr[1]
+    }
+    if (match(response, /"burst":"?([^",}]+)"?/, arr)) {
+        print "Burst: " arr[1]
+    }
+    if (match(response, /"concurrency":"?([^",}]+)"?/, arr)) {
+        print "Concurrency: " arr[1]
+    }
+
+    if (do_extend && public_key) {
+        url = PORTAL_BASE "/keys/extend?pk=" public_key
+        print ""
+        print BLUE "Opening browser to: " url RESET
+        system("xdg-open '" url "' 2>/dev/null || open '" url "' 2>/dev/null &")
+    }
+}
+
+function cmd_key(do_extend) {
+    api_key = get_api_key()
+    validate_key(api_key, do_extend)
+}
+
 function show_help() {
     print "Usage: awk -f un.awk <source_file>"
     print "       awk -f un.awk session --list"
     print "       awk -f un.awk session --kill ID"
+    print "       awk -f un.awk key [--extend]"
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD]"
     print "       awk -f un.awk service --destroy ID"
@@ -285,6 +373,15 @@ END {
         } else {
             print "Usage: awk -f un.awk session --list|--kill ID"
         }
+        exit 0
+    }
+
+    if (ARGV[1] == "key") {
+        do_extend = 0
+        if (ARGC >= 3 && ARGV[2] == "--extend") {
+            do_extend = 1
+        }
+        cmd_key(do_extend)
         exit 0
     }
 

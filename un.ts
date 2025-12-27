@@ -186,6 +186,44 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
   });
 }
 
+function portalRequest(endpoint: string, method: string = "GET", data: any = null, apiKey: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(PORTAL_BASE + endpoint);
+    const options: https.RequestOptions = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: method,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          resolve(parsed);
+        } catch (e) {
+          resolve({ error: body, status: res.statusCode });
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(e);
+    });
+
+    if (data) {
+      req.write(JSON.stringify(data));
+    }
+    req.end();
+  });
+}
+
 async function cmdExecute(args: Args): Promise<void> {
   const apiKey = getApiKey(args.apiKey);
 
@@ -381,40 +419,74 @@ async function cmdService(args: Args): Promise<void> {
   process.exit(1);
 }
 
-async function cmdKey(args: Args): Promise<void> {
-  const apiKey = getApiKey(args.apiKey);
+function openBrowser(url: string): void {
+  const { exec } = require('child_process');
+  const platform = process.platform;
+  let command: string;
 
-  // Validate the key
-  const result = await apiRequest("/keys/validate", "POST", {}, apiKey);
+  if (platform === 'darwin') {
+    command = `open "${url}"`;
+  } else if (platform === 'win32') {
+    command = `start "${url}"`;
+  } else {
+    command = `xdg-open "${url}"`;
+  }
 
-  if (result.status === "valid") {
+  exec(command, (error: any) => {
+    if (error) {
+      console.error(`${RED}Error opening browser: ${error.message}${RESET}`);
+      console.log(`Please visit: ${url}`);
+    }
+  });
+}
+
+async function validateKey(apiKey: string, shouldExtend: boolean): Promise<void> {
+  try {
+    const result = await portalRequest("/keys/validate", "POST", {}, apiKey);
+
+    // Handle --extend flag first
+    if (shouldExtend) {
+      const public_key = result.public_key;
+      if (public_key) {
+        const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(public_key)}`;
+        console.log(`${BLUE}Opening browser to extend key...${RESET}`);
+        openBrowser(extendUrl);
+        return;
+      } else {
+        console.error(`${RED}Error: Could not retrieve public key${RESET}`);
+        process.exit(1);
+      }
+    }
+
+    // Check if key is expired
+    if (result.expired) {
+      console.log(`${RED}Expired${RESET}`);
+      console.log(`Public Key: ${result.public_key || 'N/A'}`);
+      console.log(`Tier: ${result.tier || 'N/A'}`);
+      console.log(`Expired: ${result.expires_at || 'N/A'}`);
+      console.log(`${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}`);
+      process.exit(1);
+    }
+
+    // Valid key
     console.log(`${GREEN}Valid${RESET}`);
     console.log(`Public Key: ${result.public_key || 'N/A'}`);
     console.log(`Tier: ${result.tier || 'N/A'}`);
+    console.log(`Status: ${result.status || 'N/A'}`);
     console.log(`Expires: ${result.expires_at || 'N/A'}`);
-
-    // Handle --extend flag
-    if (args.extend && result.public_key) {
-      const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${result.public_key}`;
-      console.log(`\n${BLUE}Opening: ${extendUrl}${RESET}`);
-
-      // Try to open browser using common commands
-      const { exec } = require('child_process');
-      exec(`xdg-open "${extendUrl}" || open "${extendUrl}" || start "${extendUrl}"`, (error: any) => {
-        if (error) {
-          console.error(`${YELLOW}Could not open browser automatically. Visit: ${extendUrl}${RESET}`);
-        }
-      });
-    }
-  } else if (result.status === "expired") {
-    console.log(`${RED}Expired${RESET}`);
-    console.log(`Public Key: ${result.public_key || 'N/A'}`);
-    console.log(`Tier: ${result.tier || 'N/A'}`);
-    console.log(`Expired: ${result.expires_at || 'N/A'}`);
-    console.log(`${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}`);
-  } else {
-    console.log(`${RED}Invalid${RESET}`);
+    console.log(`Time Remaining: ${result.time_remaining || 'N/A'}`);
+    console.log(`Rate Limit: ${result.rate_limit || 'N/A'}`);
+    console.log(`Burst: ${result.burst || 'N/A'}`);
+    console.log(`Concurrency: ${result.concurrency || 'N/A'}`);
+  } catch (error: any) {
+    console.error(`${RED}Error validating key: ${error.message}${RESET}`);
+    process.exit(1);
   }
+}
+
+async function cmdKey(args: Args): Promise<void> {
+  const apiKey = getApiKey(args.apiKey);
+  await validateKey(apiKey, args.extend);
 }
 
 function parseArgs(argv: string[]): Args {

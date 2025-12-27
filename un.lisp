@@ -242,6 +242,14 @@
        (when public-key (format t "Public Key: ~a~%" public-key))
        (when tier (format t "Tier: ~a~%" tier))
        (when expires-at (format t "Expires: ~a~%" expires-at))
+       (let ((time-remaining (parse-json-field response "time_remaining"))
+             (rate-limit (parse-json-field response "rate_limit"))
+             (burst (parse-json-field response "burst"))
+             (concurrency (parse-json-field response "concurrency")))
+         (when time-remaining (format t "Time Remaining: ~a~%" time-remaining))
+         (when rate-limit (format t "Rate Limit: ~a~%" rate-limit))
+         (when burst (format t "Burst: ~a~%" burst))
+         (when concurrency (format t "Concurrency: ~a~%" concurrency)))
        (when extend-flag
          (if public-key
              (let ((extend-url (format nil "~a/keys/extend?pk=~a" *portal-base* public-key)))

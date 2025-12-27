@@ -39,6 +39,9 @@
 
 :- initialization(main, main).
 
+% Constants
+portal_base('https://unsandbox.com').
+
 % Extension to language mapping
 ext_lang('.jl', 'julia').
 ext_lang('.r', 'r').
@@ -198,6 +201,26 @@ service_create(Name, Ports, Bootstrap, ServiceType) :-
         [ApiKey, Json]),
     shell(Cmd, 0).
 
+% Key validate
+validate_key(Extend) :-
+    get_api_key(ApiKey),
+    portal_base(PortalBase),
+    (   Extend = true
+    ->  % Build command for --extend mode
+        format(atom(Cmd),
+            'RESP=$(curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w"); PUBLIC_KEY=$(echo "$RESP" | jq -r ".public_key // \\"N/A\\""); xdg-open "~w/keys/extend?pk=$PUBLIC_KEY" 2>/dev/null',
+            [PortalBase, ApiKey, PortalBase])
+    ;   % Build command for normal validation
+        format(atom(Cmd),
+            'curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -o /tmp/unsandbox_key_resp.json; STATUS=$?; if [ $STATUS -ne 0 ]; then echo -e "\\x1b[31mInvalid\\x1b[0m"; exit 1; fi; EXPIRED=$(jq -r ".expired // false" /tmp/unsandbox_key_resp.json); if [ "$EXPIRED" = "true" ]; then echo -e "\\x1b[31mExpired\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expired: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo -e "\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m"; rm -f /tmp/unsandbox_key_resp.json; exit 1; else echo -e "\\x1b[32mValid\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Status: $(jq -r ".status // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expires: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Time Remaining: $(jq -r ".time_remaining // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Rate Limit: $(jq -r ".rate_limit // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Burst: $(jq -r ".burst // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Concurrency: $(jq -r ".concurrency // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; fi; rm -f /tmp/unsandbox_key_resp.json',
+            [PortalBase, ApiKey])
+    ),
+    shell(Cmd, 0).
+
+% Handle key subcommand
+handle_key(['--extend'|_]) :- validate_key(true).
+handle_key(_) :- validate_key(false).
+
 % Handle session subcommand
 handle_session(['--list'|_]) :- session_list.
 handle_session(['-l'|_]) :- session_list.
@@ -261,6 +284,8 @@ main(Argv) :-
     ->  handle_session(Rest)
     ;   Argv = ['service'|Rest]
     ->  handle_service(Rest)
+    ;   Argv = ['key'|Rest]
+    ->  handle_key(Rest)
     ;   Argv = [Filename|_]
     ->  execute_file(Filename)
     ;   write(user_error, 'Error: Invalid arguments\n'),

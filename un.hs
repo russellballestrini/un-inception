@@ -69,6 +69,9 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 
 -- API constants
+apiBase :: String
+apiBase = "https://api.unsandbox.com"
+
 portalBase :: String
 portalBase = "https://unsandbox.com"
 
@@ -431,7 +434,7 @@ keyCommand opts = do
 validateKey :: String -> IO ()
 validateKey apiKey = do
   let url = portalBase ++ "/keys/validate"
-  (exitCode, stdout, stderr) <- curlPost apiKey url "{}"
+  (exitCode, stdout, stderr) <- curlPostPortal apiKey url "{}"
 
   -- Check if valid:false appears in response
   let isInvalid = "\"valid\":false" `isPrefixOf` dropWhile (/= 'v') stdout
@@ -516,7 +519,7 @@ validateKey apiKey = do
 extendKey :: String -> IO ()
 extendKey apiKey = do
   let url = portalBase ++ "/keys/validate"
-  (exitCode, stdout, _) <- curlPost apiKey url "{}"
+  (exitCode, stdout, _) <- curlPostPortal apiKey url "{}"
 
   case extractJsonString stdout "public_key" of
     Nothing -> do
@@ -532,3 +535,15 @@ extendKey apiKey = do
         ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]
         ""
       return ()
+
+-- HTTP helper for portal API
+curlPostPortal :: String -> String -> String -> IO (ExitCode, String, String)
+curlPostPortal apiKey url body = do
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
+    [ "-s", "-X", "POST"
+    , url
+    , "-H", "Content-Type: application/json"
+    , "-H", "Authorization: Bearer " ++ apiKey
+    , "-d", body
+    ] ""
+  return (exitCode, stdout, stderr)
