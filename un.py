@@ -392,6 +392,31 @@ def cmd_service(args):
             print(f"{RED}{result['stderr']}{RESET}", end='', file=sys.stderr)
         return
 
+    if args.dump_bootstrap:
+        print(f"Fetching bootstrap script from {args.dump_bootstrap}...", file=sys.stderr)
+        payload = {"command": "cat /tmp/bootstrap.sh"}
+        result = api_request(f"/services/{args.dump_bootstrap}/execute", method="POST", data=payload, api_key=api_key)
+
+        if result.get("stdout"):
+            bootstrap = result["stdout"]
+            if args.dump_file:
+                # Write to file
+                try:
+                    with open(args.dump_file, 'w') as f:
+                        f.write(bootstrap)
+                    os.chmod(args.dump_file, 0o755)
+                    print(f"Bootstrap saved to {args.dump_file}")
+                except IOError as e:
+                    print(f"{RED}Error: Could not write to {args.dump_file}: {e}{RESET}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                # Print to stdout
+                print(bootstrap, end='')
+        else:
+            print(f"{RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file){RESET}", file=sys.stderr)
+            sys.exit(1)
+        return
+
     # Create new service
     if args.name:
         payload = {"name": args.name}
@@ -478,11 +503,13 @@ Examples:
     service_parser.add_argument("--info", metavar="ID", help="Get service details")
     service_parser.add_argument("--tail", metavar="ID", help="Get last 9000 lines of logs")
     service_parser.add_argument("--logs", metavar="ID", help="Get all logs")
-    service_parser.add_argument("--sleep", metavar="ID", help="Freeze service")
-    service_parser.add_argument("--wake", metavar="ID", help="Unfreeze service")
+    service_parser.add_argument("--freeze", metavar="ID", help="Freeze service")
+    service_parser.add_argument("--unfreeze", metavar="ID", help="Unfreeze service")
     service_parser.add_argument("--destroy", metavar="ID", help="Destroy service")
     service_parser.add_argument("--execute", metavar="ID", help="Execute command in service")
     service_parser.add_argument("--command", help="Command to execute (with --execute)")
+    service_parser.add_argument("--dump-bootstrap", metavar="ID", help="Dump bootstrap script")
+    service_parser.add_argument("--dump-file", metavar="FILE", help="File to save bootstrap (with --dump-bootstrap)")
     service_parser.add_argument("-n", "--network", choices=["zerotrust", "semitrusted"])
     service_parser.add_argument("-v", "--vcpu", type=int, choices=range(1, 9))
     service_parser.add_argument("-k", "--api-key")

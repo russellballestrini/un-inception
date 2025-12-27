@@ -454,6 +454,35 @@ local function cmd_service(options)
         return
     end
 
+    if options.dump_bootstrap then
+        io.stderr:write("Fetching bootstrap script from " .. options.dump_bootstrap .. "...\n")
+        local payload = { command = "cat /tmp/bootstrap.sh" }
+        local result = api_request("/services/" .. options.dump_bootstrap .. "/execute", "POST", payload, api_key)
+
+        if result.stdout then
+            local bootstrap = result.stdout
+            if options.dump_file then
+                -- Write to file
+                local file = io.open(options.dump_file, "w")
+                if not file then
+                    io.stderr:write(RED .. "Error: Could not write to " .. options.dump_file .. RESET .. "\n")
+                    os.exit(1)
+                end
+                file:write(bootstrap)
+                file:close()
+                os.execute("chmod 755 " .. options.dump_file)
+                print("Bootstrap saved to " .. options.dump_file)
+            else
+                -- Print to stdout
+                io.write(bootstrap)
+            end
+        else
+            io.stderr:write(RED .. "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" .. RESET .. "\n")
+            os.exit(1)
+        end
+        return
+    end
+
     if options.name then
         local payload = { name = options.name }
         if options.ports then
@@ -527,6 +556,8 @@ local function main()
         destroy = nil,
         execute = nil,
         command = nil,
+        dump_bootstrap = nil,
+        dump_file = nil,
         extend = false
     }
 
@@ -597,10 +628,10 @@ local function main()
         elseif a == "--tail" then
             i = i + 1
             options.tail = arg[i]
-        elseif a == "--sleep" then
+        elseif a == "--freeze" then
             i = i + 1
             options.sleep = arg[i]
-        elseif a == "--wake" then
+        elseif a == "--unfreeze" then
             i = i + 1
             options.wake = arg[i]
         elseif a == "--destroy" then
@@ -612,6 +643,12 @@ local function main()
         elseif a == "--command" then
             i = i + 1
             options.command = arg[i]
+        elseif a == "--dump-bootstrap" then
+            i = i + 1
+            options.dump_bootstrap = arg[i]
+        elseif a == "--dump-file" then
+            i = i + 1
+            options.dump_file = arg[i]
         elseif a == "--extend" then
             options.extend = true
         elseif not a:match("^%-") then
@@ -667,11 +704,13 @@ Service options:
   --info ID        Get service details
   --logs ID        Get all logs
   --tail ID        Get last 9000 lines
-  --sleep ID       Freeze service
-  --wake ID        Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+  --dump-bootstrap ID  Dump bootstrap script
+  --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend         Open browser to extend/renew key

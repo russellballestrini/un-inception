@@ -438,6 +438,34 @@ async function cmdService(args) {
     return;
   }
 
+  if (args.dumpBootstrap) {
+    console.error(`Fetching bootstrap script from ${args.dumpBootstrap}...`);
+    const payload = { command: "cat /tmp/bootstrap.sh" };
+    const result = await apiRequest(`/services/${args.dumpBootstrap}/execute`, "POST", payload, apiKey);
+
+    if (result.stdout) {
+      const bootstrap = result.stdout;
+      if (args.dumpFile) {
+        // Write to file
+        try {
+          fs.writeFileSync(args.dumpFile, bootstrap);
+          fs.chmodSync(args.dumpFile, 0o755);
+          console.log(`Bootstrap saved to ${args.dumpFile}`);
+        } catch (e) {
+          console.error(`${RED}Error: Could not write to ${args.dumpFile}: ${e.message}${RESET}`);
+          process.exit(1);
+        }
+      } else {
+        // Print to stdout
+        process.stdout.write(bootstrap);
+      }
+    } else {
+      console.error(`${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}`);
+      process.exit(1);
+    }
+    return;
+  }
+
   if (args.name) {
     const payload = { name: args.name };
     if (args.ports) payload.ports = args.ports.split(',').map(p => parseInt(p.trim()));
@@ -494,6 +522,8 @@ function parseArgs(argv) {
     destroy: null,
     execute: null,
     command_arg: null,
+    dumpBootstrap: null,
+    dumpFile: null,
     extend: false,
   };
 
@@ -570,10 +600,10 @@ function parseArgs(argv) {
     } else if (arg === '--tail' && i + 1 < argv.length) {
       args.tail = argv[++i];
       i++;
-    } else if (arg === '--sleep' && i + 1 < argv.length) {
+    } else if (arg === '--freeze' && i + 1 < argv.length) {
       args.sleep = argv[++i];
       i++;
-    } else if (arg === '--wake' && i + 1 < argv.length) {
+    } else if (arg === '--unfreeze' && i + 1 < argv.length) {
       args.wake = argv[++i];
       i++;
     } else if (arg === '--destroy' && i + 1 < argv.length) {
@@ -584,6 +614,12 @@ function parseArgs(argv) {
       i++;
     } else if (arg === '--command' && i + 1 < argv.length) {
       args.command_arg = argv[++i];
+      i++;
+    } else if (arg === '--dump-bootstrap' && i + 1 < argv.length) {
+      args.dumpBootstrap = argv[++i];
+      i++;
+    } else if (arg === '--dump-file' && i + 1 < argv.length) {
+      args.dumpFile = argv[++i];
       i++;
     } else if (arg === '--extend') {
       args.extend = true;
@@ -648,11 +684,13 @@ Service options:
   --info ID        Get service details
   --logs ID        Get all logs
   --tail ID        Get last 9000 lines
-  --sleep ID       Freeze service
-  --wake ID        Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+  --dump-bootstrap ID  Dump bootstrap script
+  --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend         Open browser to extend key expiration

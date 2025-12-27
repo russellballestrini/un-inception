@@ -449,11 +449,11 @@ cmd_service() {
                 tail="$2"
                 shift 2
                 ;;
-            --sleep)
+            --freeze)
                 sleep="$2"
                 shift 2
                 ;;
-            --wake)
+            --unfreeze)
                 wake="$2"
                 shift 2
                 ;;
@@ -467,6 +467,14 @@ cmd_service() {
                 ;;
             --command)
                 command="$2"
+                shift 2
+                ;;
+            --dump-bootstrap)
+                dump_bootstrap="$2"
+                shift 2
+                ;;
+            --dump-file)
+                dump_file="$2"
                 shift 2
                 ;;
             -n)
@@ -545,6 +553,29 @@ cmd_service() {
         local stderr=$(echo "$result" | jq -r '.stderr // empty')
         [[ -n "$stdout" ]] && echo -e "${BLUE}${stdout}${RESET}"
         [[ -n "$stderr" ]] && echo -e "${RED}${stderr}${RESET}" >&2
+        return
+    fi
+
+    if [[ -n "$dump_bootstrap" ]]; then
+        echo "Fetching bootstrap script from $dump_bootstrap..." >&2
+        local payload=$(jq -n '{command: "cat /tmp/bootstrap.sh"}')
+        local result=$(api_request "/services/$dump_bootstrap/execute" "POST" "$payload" "$api_key")
+        local bootstrap=$(echo "$result" | jq -r '.stdout // empty')
+
+        if [[ -n "$bootstrap" ]]; then
+            if [[ -n "$dump_file" ]]; then
+                # Write to file
+                echo "$bootstrap" > "$dump_file"
+                chmod 755 "$dump_file"
+                echo "Bootstrap saved to $dump_file"
+            else
+                # Print to stdout
+                echo -n "$bootstrap"
+            fi
+        else
+            echo -e "${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}" >&2
+            exit 1
+        fi
         return
     fi
 
@@ -774,11 +805,13 @@ Service options:
   --info ID        Get service details
   --logs ID        Get all logs
   --tail ID        Get last 9000 lines
-  --sleep ID       Freeze service
-  --wake ID        Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+  --dump-bootstrap ID  Dump bootstrap script
+  --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   -k KEY           API key to validate

@@ -436,6 +436,32 @@ function cmd_service($options) {
         return;
     }
 
+    if ($options['dump_bootstrap']) {
+        fwrite(STDERR, "Fetching bootstrap script from {$options['dump_bootstrap']}...\n");
+        $payload = ['command' => 'cat /tmp/bootstrap.sh'];
+        $result = api_request("/services/{$options['dump_bootstrap']}/execute", 'POST', $payload, $api_key);
+
+        if (!empty($result['stdout'])) {
+            $bootstrap = $result['stdout'];
+            if ($options['dump_file']) {
+                // Write to file
+                if (file_put_contents($options['dump_file'], $bootstrap) === false) {
+                    fwrite(STDERR, RED . "Error: Could not write to {$options['dump_file']}" . RESET . "\n");
+                    exit(1);
+                }
+                chmod($options['dump_file'], 0755);
+                echo "Bootstrap saved to {$options['dump_file']}\n";
+            } else {
+                // Print to stdout
+                echo $bootstrap;
+            }
+        } else {
+            fwrite(STDERR, RED . "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" . RESET . "\n");
+            exit(1);
+        }
+        return;
+    }
+
     if ($options['name']) {
         $payload = ['name' => $options['name']];
         if ($options['ports']) {
@@ -500,6 +526,9 @@ function main() {
         'wake' => null,
         'destroy' => null,
         'execute' => null,
+        'command' => null,
+        'dump_bootstrap' => null,
+        'dump_file' => null,
         'extend' => false
     ];
 
@@ -580,10 +609,10 @@ function main() {
             case '--tail':
                 $options['tail'] = $argv[++$i];
                 break;
-            case '--sleep':
+            case '--freeze':
                 $options['sleep'] = $argv[++$i];
                 break;
-            case '--wake':
+            case '--unfreeze':
                 $options['wake'] = $argv[++$i];
                 break;
             case '--destroy':
@@ -594,6 +623,12 @@ function main() {
                 break;
             case '--command':
                 $options['command'] = $argv[++$i];
+                break;
+            case '--dump-bootstrap':
+                $options['dump_bootstrap'] = $argv[++$i];
+                break;
+            case '--dump-file':
+                $options['dump_file'] = $argv[++$i];
                 break;
             case '--extend':
                 $options['extend'] = true;
@@ -651,11 +686,13 @@ Service options:
   --info ID        Get service details
   --logs ID        Get all logs
   --tail ID        Get last 9000 lines
-  --sleep ID       Freeze service
-  --wake ID        Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+  --dump-bootstrap ID  Dump bootstrap script
+  --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   -k KEY           API key (or use UNSANDBOX_API_KEY env var)

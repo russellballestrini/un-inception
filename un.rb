@@ -391,6 +391,34 @@ def cmd_service(options)
     return
   end
 
+  if options[:dump_bootstrap]
+    warn "Fetching bootstrap script from #{options[:dump_bootstrap]}..."
+    payload = { command: 'cat /tmp/bootstrap.sh' }
+    result = api_request("/services/#{options[:dump_bootstrap]}/execute", method: 'POST', data: payload, api_key: api_key)
+
+    if result['stdout']
+      bootstrap = result['stdout']
+      if options[:dump_file]
+        # Write to file
+        begin
+          File.write(options[:dump_file], bootstrap)
+          File.chmod(0755, options[:dump_file])
+          puts "Bootstrap saved to #{options[:dump_file]}"
+        rescue => e
+          warn "#{RED}Error: Could not write to #{options[:dump_file]}: #{e.message}#{RESET}"
+          exit 1
+        end
+      else
+        # Print to stdout
+        print bootstrap
+      end
+    else
+      warn "#{RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)#{RESET}"
+      exit 1
+    end
+    return
+  end
+
   if options[:name]
     payload = { name: options[:name] }
     payload[:ports] = options[:ports].split(',').map(&:to_i) if options[:ports]
@@ -447,6 +475,8 @@ def main
     wake: nil,
     destroy: nil,
     execute: nil,
+    dump_bootstrap: nil,
+    dump_file: nil,
     extend: false
   }
 
@@ -519,10 +549,10 @@ def main
     when '--tail'
       i += 1
       options[:tail] = ARGV[i]
-    when '--sleep'
+    when '--freeze'
       i += 1
       options[:sleep] = ARGV[i]
-    when '--wake'
+    when '--unfreeze'
       i += 1
       options[:wake] = ARGV[i]
     when '--destroy'
@@ -534,6 +564,12 @@ def main
     when '--command'
       i += 1
       options[:command] = ARGV[i]
+    when '--dump-bootstrap'
+      i += 1
+      options[:dump_bootstrap] = ARGV[i]
+    when '--dump-file'
+      i += 1
+      options[:dump_file] = ARGV[i]
     when '--extend'
       options[:extend] = true
     else
@@ -591,11 +627,13 @@ def main
           --info ID        Get service details
           --logs ID        Get all logs
           --tail ID        Get last 9000 lines
-          --sleep ID       Freeze service
-          --wake ID        Unfreeze service
+          --freeze ID       Freeze service
+          --unfreeze ID        Unfreeze service
           --destroy ID     Destroy service
           --execute ID     Execute command in service
           --command CMD    Command to execute (with --execute)
+          --dump-bootstrap ID  Dump bootstrap script
+          --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
         Key options:
           -k KEY           API key (or use UNSANDBOX_API_KEY env var)

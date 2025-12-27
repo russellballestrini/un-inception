@@ -325,6 +325,34 @@ sub cmd_service {
         return;
     }
 
+    if ($options->{dump_bootstrap}) {
+        print STDERR "Fetching bootstrap script from $options->{dump_bootstrap}...\n";
+        my $payload = { command => 'cat /tmp/bootstrap.sh' };
+        my $result = api_request("/services/$options->{dump_bootstrap}/execute", 'POST', $payload, $api_key);
+
+        if ($result->{stdout}) {
+            my $bootstrap = $result->{stdout};
+            if ($options->{dump_file}) {
+                # Write to file
+                open my $fh, '>', $options->{dump_file} or do {
+                    print STDERR "${RED}Error: Could not write to $options->{dump_file}: $!${RESET}\n";
+                    exit 1;
+                };
+                print $fh $bootstrap;
+                close $fh;
+                chmod 0755, $options->{dump_file};
+                print "Bootstrap saved to $options->{dump_file}\n";
+            } else {
+                # Print to stdout
+                print $bootstrap;
+            }
+        } else {
+            print STDERR "${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}\n";
+            exit 1;
+        }
+        return;
+    }
+
     if ($options->{name}) {
         my $payload = { name => $options->{name} };
         if ($options->{ports}) {
@@ -462,6 +490,8 @@ sub main {
         destroy => undef,
         execute => undef,
         command => undef,
+        dump_bootstrap => undef,
+        dump_file => undef,
         extend => 0
     );
 
@@ -514,9 +544,9 @@ sub main {
             $options{logs} = $ARGV[++$i];
         } elsif ($arg eq '--tail') {
             $options{tail} = $ARGV[++$i];
-        } elsif ($arg eq '--sleep') {
+        } elsif ($arg eq '--freeze') {
             $options{sleep} = $ARGV[++$i];
-        } elsif ($arg eq '--wake') {
+        } elsif ($arg eq '--unfreeze') {
             $options{wake} = $ARGV[++$i];
         } elsif ($arg eq '--destroy') {
             $options{destroy} = $ARGV[++$i];
@@ -524,6 +554,10 @@ sub main {
             $options{execute} = $ARGV[++$i];
         } elsif ($arg eq '--command') {
             $options{command} = $ARGV[++$i];
+        } elsif ($arg eq '--dump-bootstrap') {
+            $options{dump_bootstrap} = $ARGV[++$i];
+        } elsif ($arg eq '--dump-file') {
+            $options{dump_file} = $ARGV[++$i];
         } elsif ($arg eq '--extend') {
             $options{extend} = 1;
         } elsif ($arg !~ /^-/) {
@@ -577,11 +611,13 @@ Service options:
   --info ID        Get service details
   --logs ID        Get all logs
   --tail ID        Get last 9000 lines
-  --sleep ID       Freeze service
-  --wake ID        Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+  --dump-bootstrap ID  Dump bootstrap script
+  --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
 Key options:
   --extend         Open browser to extend/renew key

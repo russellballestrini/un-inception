@@ -342,7 +342,7 @@ func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, network string, vcpu int, apiKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, network string, vcpu int, apiKey string) {
 	if serviceList != "" {
 		result := apiRequest("/services", "GET", nil, apiKey)
 		services := result["services"].([]interface{})
@@ -409,6 +409,43 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	if serviceDestroy != "" {
 		apiRequest("/services/"+serviceDestroy, "DELETE", nil, apiKey)
 		fmt.Printf("%sService destroyed: %s%s\n", Green, serviceDestroy, Reset)
+		return
+	}
+
+	if serviceExecute != "" {
+		payload := map[string]interface{}{"command": serviceCommand}
+		result := apiRequest("/services/"+serviceExecute+"/execute", "POST", payload, apiKey)
+		if stdout, ok := result["stdout"].(string); ok {
+			fmt.Printf("%s%s%s", Blue, stdout, Reset)
+		}
+		if stderr, ok := result["stderr"].(string); ok {
+			fmt.Fprintf(os.Stderr, "%s%s%s", Red, stderr, Reset)
+		}
+		return
+	}
+
+	if serviceDumpBootstrap != "" {
+		fmt.Fprintf(os.Stderr, "Fetching bootstrap script from %s...\n", serviceDumpBootstrap)
+		payload := map[string]interface{}{"command": "cat /tmp/bootstrap.sh"}
+		result := apiRequest("/services/"+serviceDumpBootstrap+"/execute", "POST", payload, apiKey)
+
+		if bootstrap, ok := result["stdout"].(string); ok && bootstrap != "" {
+			if serviceDumpFile != "" {
+				// Write to file
+				err := os.WriteFile(serviceDumpFile, []byte(bootstrap), 0755)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%sError: Could not write to %s: %v%s\n", Red, serviceDumpFile, err, Reset)
+					os.Exit(1)
+				}
+				fmt.Printf("Bootstrap saved to %s\n", serviceDumpFile)
+			} else {
+				// Print to stdout
+				fmt.Print(bootstrap)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "%sError: Failed to fetch bootstrap (service not running or no bootstrap file)%s\n", Red, Reset)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -645,6 +682,10 @@ func main() {
 	serviceSleep := serviceCmd.String("sleep", "", "Freeze service")
 	serviceWake := serviceCmd.String("wake", "", "Unfreeze service")
 	serviceDestroy := serviceCmd.String("destroy", "", "Destroy service")
+	serviceExecute := serviceCmd.String("execute", "", "Execute command in service")
+	serviceCommand := serviceCmd.String("command", "", "Command to execute (with -execute)")
+	serviceDumpBootstrap := serviceCmd.String("dump-bootstrap", "", "Dump bootstrap script")
+	serviceDumpFile := serviceCmd.String("dump-file", "", "File to save bootstrap (with -dump-bootstrap)")
 	serviceNetwork := serviceCmd.String("n", "", "Network mode")
 	serviceVcpu := serviceCmd.Int("v", 0, "vCPU count")
 	serviceKey := serviceCmd.String("k", "", "API key")
@@ -684,7 +725,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, net, vc, key)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, net, vc, key)
 			return
 
 		case "key":
