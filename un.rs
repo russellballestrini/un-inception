@@ -51,6 +51,7 @@ use std::process::{self, Command};
 use std::collections::HashMap;
 
 const API_BASE: &str = "https://api.unsandbox.com";
+const PORTAL_BASE: &str = "https://unsandbox.com";
 const BLUE: &str = "\x1b[34m";
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
@@ -453,6 +454,55 @@ fn cmd_service(
     process::exit(1);
 }
 
+fn cmd_key(extend: bool, api_key: &str) {
+    let result = api_request("/keys/validate", "POST", Some("{}"), api_key);
+
+    let status = extract_json_string(&result, "status");
+    let public_key = extract_json_string(&result, "public_key");
+    let tier = extract_json_string(&result, "tier");
+    let expired_at = extract_json_string(&result, "expired_at");
+
+    if extend && !public_key.is_empty() {
+        let url = format!("{}/keys/extend?pk={}", PORTAL_BASE, public_key);
+        println!("{}Opening browser: {}{}", YELLOW, url, RESET);
+
+        // Try xdg-open (Linux), open (macOS), or start (Windows)
+        let _ = Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .or_else(|_| Command::new("open").arg(&url).spawn())
+            .or_else(|_| Command::new("cmd").args(&["/c", "start", &url]).spawn());
+
+        return;
+    }
+
+    match status.as_str() {
+        "valid" => {
+            println!("{}Valid{}", GREEN, RESET);
+            println!("Public Key: {}", public_key);
+            println!("Tier: {}", tier);
+            if !expired_at.is_empty() {
+                println!("Expires: {}", expired_at);
+            }
+        }
+        "expired" => {
+            println!("{}Expired{}", RED, RESET);
+            println!("Public Key: {}", public_key);
+            println!("Tier: {}", tier);
+            if !expired_at.is_empty() {
+                println!("Expired: {}", expired_at);
+            }
+            println!("{}To renew: Visit {}/keys/extend{}", YELLOW, PORTAL_BASE, RESET);
+        }
+        "invalid" => {
+            println!("{}Invalid{}", RED, RESET);
+        }
+        _ => {
+            println!("{}Unknown status: {}{}", YELLOW, status, RESET);
+        }
+    }
+}
+
 // Minimal base64 encoding
 mod base64 {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -491,6 +541,7 @@ fn main() {
         eprintln!("Usage: {} [options] <source_file>", args[0]);
         eprintln!("       {} session [options]", args[0]);
         eprintln!("       {} service [options]", args[0]);
+        eprintln!("       {} key [--extend]", args[0]);
         process::exit(1);
     }
 
@@ -575,6 +626,14 @@ fn main() {
                     args.iter().position(|x| x == "--destroy").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     network.as_deref(),
                     vcpu,
+                    &key,
+                );
+                return;
+            }
+            "key" => {
+                let key = get_api_key(api_key.as_deref());
+                cmd_key(
+                    args.contains(&"--extend".to_string()),
                     &key,
                 );
                 return;

@@ -44,6 +44,7 @@ import 'dart:io';
 import 'dart:convert';
 
 const String apiBase = 'https://api.unsandbox.com';
+const String portalBase = 'https://unsandbox.com';
 const String blue = '\x1B[34m';
 const String red = '\x1B[31m';
 const String green = '\x1B[32m';
@@ -90,6 +91,7 @@ class Args {
   String? serviceSleep;
   String? serviceWake;
   String? serviceDestroy;
+  bool keyExtend = false;
 }
 
 String getApiKey(String? argsKey) {
@@ -114,7 +116,8 @@ String detectLanguage(String filename) {
   return lang;
 }
 
-Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, String? jsonData, String apiKey) async {
+Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, String? jsonData, String apiKey, {String? baseUrl}) async {
+  final base = baseUrl ?? apiBase;
   final tempFile = await File('${Directory.systemTemp.path}/un_request_${DateTime.now().millisecondsSinceEpoch}.json').create();
 
   try {
@@ -122,7 +125,7 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
       await tempFile.writeAsString(jsonData);
     }
 
-    final args = ['curl', '-s', '-X', method, '$apiBase$endpoint',
+    final args = ['curl', '-s', '-X', method, '$base$endpoint',
                   '-H', 'Content-Type: application/json',
                   '-H', 'Authorization: Bearer $apiKey'];
 
@@ -348,6 +351,51 @@ Future<void> cmdService(Args args) async {
   exit(1);
 }
 
+Future<void> cmdKey(Args args) async {
+  final apiKey = getApiKey(args.apiKey);
+
+  try {
+    final result = await apiRequestCurl('/keys/validate', 'POST', null, apiKey, baseUrl: portalBase);
+
+    final status = result['status'] as String?;
+    final publicKey = result['public_key'] as String?;
+    final tier = result['tier'] as String?;
+    final expiresAt = result['expires_at'] as String?;
+
+    if (status == 'valid') {
+      print('${green}Valid$reset');
+      if (publicKey != null) print('Public Key: $publicKey');
+      if (tier != null) print('Tier: $tier');
+      if (expiresAt != null) print('Expires: $expiresAt');
+    } else if (status == 'expired') {
+      print('${red}Expired$reset');
+      if (publicKey != null) print('Public Key: $publicKey');
+      if (tier != null) print('Tier: $tier');
+      if (expiresAt != null) print('Expired: $expiresAt');
+      print('${yellow}To renew: Visit $portalBase/keys/extend$reset');
+    } else {
+      print('${red}Invalid$reset');
+    }
+
+    if (args.keyExtend && publicKey != null) {
+      final url = '$portalBase/keys/extend?pk=$publicKey';
+      print('${yellow}Opening: $url$reset');
+      if (Platform.isMacOS) {
+        await Process.run('open', [url]);
+      } else if (Platform.isLinux) {
+        await Process.run('xdg-open', [url]);
+      } else if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', url]);
+      } else {
+        print('${yellow}Please open manually: $url$reset');
+      }
+    }
+  } catch (e) {
+    stderr.writeln('${red}Error validating key: $e$reset');
+    exit(1);
+  }
+}
+
 Args parseArgs(List<String> argv) {
   final args = Args();
   var i = 0;
@@ -358,6 +406,9 @@ Args parseArgs(List<String> argv) {
         break;
       case 'service':
         args.command = 'service';
+        break;
+      case 'key':
+        args.command = 'key';
         break;
       case '-k':
       case '--api-key':
@@ -432,6 +483,9 @@ Args parseArgs(List<String> argv) {
       case '--destroy':
         args.serviceDestroy = argv[++i];
         break;
+      case '--extend':
+        args.keyExtend = true;
+        break;
       default:
         if (!argv[i].startsWith('-')) {
           args.sourceFile = argv[i];
@@ -447,6 +501,7 @@ void printHelp() {
 Usage: dart un.dart [options] <source_file>
        dart un.dart session [options]
        dart un.dart service [options]
+       dart un.dart key [options]
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -474,6 +529,9 @@ Service options:
   --sleep ID        Freeze service
   --wake ID         Unfreeze service
   --destroy ID      Destroy service
+
+Key options:
+  --extend          Open browser to extend key
 ''');
 }
 
@@ -485,6 +543,8 @@ void main(List<String> arguments) async {
       await cmdSession(args);
     } else if (args.command == 'service') {
       await cmdService(args);
+    } else if (args.command == 'key') {
+      await cmdKey(args);
     } else if (args.sourceFile != null) {
       await cmdExecute(args);
     } else {

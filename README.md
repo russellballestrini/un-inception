@@ -82,6 +82,7 @@ Each implementation supports:
 - **Artifact collection** (`-a -o ./output`)
 - **Interactive sessions** (`session` subcommand)
 - **Persistent services** (`service` subcommand)
+- **API key management** (`key` subcommand)
 - **Network modes** (`-n zerotrust` or `-n semitrusted`)
 
 ## Usage
@@ -104,6 +105,12 @@ Each implementation supports:
 
 # Persistent service
 ./un.py service --name myapp --ports 8080 --bootstrap "python3 -m http.server 8080"
+
+# Check API key status
+./un.py key
+
+# Extend/renew API key (opens browser)
+./un.py key --extend
 ```
 
 ## Testing

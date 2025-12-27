@@ -53,6 +53,8 @@
 (defparameter *yellow* (format nil "~C[33m" #\Escape))
 (defparameter *reset* (format nil "~C[0m" #\Escape))
 
+(defparameter *portal-base* "https://unsandbox.com")
+
 (defparameter *ext-map*
   '((".hs" . "haskell") (".ml" . "ocaml") (".clj" . "clojure")
     (".scm" . "scheme") (".lisp" . "commonlisp") (".erl" . "erlang")
@@ -119,6 +121,16 @@
                  (format nil "https://api.unsandbox.com~a" endpoint)
                  "-H" (format nil "Authorization: Bearer ~a" api-key))))
 
+(defun curl-post-portal (api-key endpoint json-data)
+  (let ((tmp-file (write-temp-file json-data)))
+    (unwind-protect
+         (run-curl (list "curl" "-s" "-X" "POST"
+                        (format nil "~a~a" *portal-base* endpoint)
+                        "-H" "Content-Type: application/json"
+                        "-H" (format nil "Authorization: Bearer ~a" api-key)
+                        "-d" (format nil "@~a" tmp-file)))
+      (delete-file tmp-file))))
+
 (defun get-api-key ()
   (or (uiop:getenv "UNSANDBOX_API_KEY")
       (progn
@@ -183,6 +195,84 @@
         (format t "Error: --name required to create service~%")
         (uiop:quit 1)))))
 
+(defun parse-json-field (json field)
+  "Simple JSON field parser - extracts value for given field"
+  (let* ((field-pattern (format nil "\"~a\":" field))
+         (start (search field-pattern json)))
+    (when start
+      (let* ((value-start (+ start (length field-pattern)))
+             (first-char (char json value-start)))
+        (cond
+          ((char= first-char #\")
+           ;; String value
+           (let ((str-start (1+ value-start)))
+             (loop for i from str-start below (length json)
+                   when (and (char= (char json i) #\")
+                            (not (char= (char json (1- i)) #\\)))
+                   return (subseq json str-start i))))
+          ((char= first-char #\{)
+           ;; Object value - skip for now
+           nil)
+          ((char= first-char #\[)
+           ;; Array value - skip for now
+           nil)
+          (t
+           ;; Number, boolean, or null
+           (let ((end (or (position #\, json :start value-start)
+                         (position #\} json :start value-start)
+                         (length json))))
+             (string-trim '(#\Space #\Tab #\Newline #\Return)
+                         (subseq json value-start end)))))))))
+
+(defun open-browser (url)
+  "Open URL in default browser"
+  (uiop:run-program (list "xdg-open" url) :ignore-error-status t))
+
+(defun validate-key (extend-flag)
+  (let* ((api-key (get-api-key))
+         (response (curl-post-portal api-key "/keys/validate" "{}"))
+         (status (parse-json-field response "status"))
+         (public-key (parse-json-field response "public_key"))
+         (tier (parse-json-field response "tier"))
+         (expires-at (parse-json-field response "expires_at")))
+
+    (cond
+      ((string= status "valid")
+       (format t "~aValid~a~%" *green* *reset*)
+       (when public-key (format t "Public Key: ~a~%" public-key))
+       (when tier (format t "Tier: ~a~%" tier))
+       (when expires-at (format t "Expires: ~a~%" expires-at))
+       (when extend-flag
+         (if public-key
+             (let ((extend-url (format nil "~a/keys/extend?pk=~a" *portal-base* public-key)))
+               (format t "~aOpening browser to extend key...~a~%" *blue* *reset*)
+               (open-browser extend-url))
+             (format t "~aError: No public_key in response~a~%" *red* *reset*))))
+
+      ((string= status "expired")
+       (format t "~aExpired~a~%" *red* *reset*)
+       (when public-key (format t "Public Key: ~a~%" public-key))
+       (when tier (format t "Tier: ~a~%" tier))
+       (when expires-at (format t "Expired: ~a~%" expires-at))
+       (format t "~aTo renew: Visit ~a/keys/extend~a~%" *yellow* *portal-base* *reset*)
+       (when extend-flag
+         (if public-key
+             (let ((extend-url (format nil "~a/keys/extend?pk=~a" *portal-base* public-key)))
+               (format t "~aOpening browser to extend key...~a~%" *blue* *reset*)
+               (open-browser extend-url))
+             (format t "~aError: No public_key in response~a~%" *red* *reset*))))
+
+      ((string= status "invalid")
+       (format t "~aInvalid~a~%" *red* *reset*)
+       (format t "Response: ~a~%" response))
+
+      (t
+       (format t "~aUnknown status~a~%" *red* *reset*)
+       (format t "Response: ~a~%" response)))))
+
+(defun key-cmd (extend-flag)
+  (validate-key extend-flag))
+
 (defun main ()
   (let ((args (uiop:command-line-arguments)))
     (if (null args)
@@ -190,6 +280,7 @@
           (format t "Usage: un.lisp [options] <source_file>~%")
           (format t "       un.lisp session [options]~%")
           (format t "       un.lisp service [options]~%")
+          (format t "       un.lisp key [--extend]~%")
           (uiop:quit 1))
         (cond
           ((string= (first args) "session")
@@ -231,6 +322,9 @@
              (t
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))
+          ((string= (first args) "key")
+           (let ((extend-flag (and (> (length args) 1) (string= (second args) "--extend"))))
+             (key-cmd extend-flag)))
           (t
             (execute-cmd (first args)))))))
 

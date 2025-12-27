@@ -59,6 +59,7 @@ use MIME::Base64;
 use File::Path qw(make_path);
 
 my $API_BASE = 'https://api.unsandbox.com';
+my $PORTAL_BASE = 'https://unsandbox.com';
 my $BLUE = "\033[34m";
 my $RED = "\033[31m";
 my $GREEN = "\033[32m";
@@ -361,6 +362,61 @@ sub cmd_service {
     exit 1;
 }
 
+sub cmd_key {
+    my ($options) = @_;
+    my $api_key = get_api_key($options->{api_key});
+
+    # Call /keys/validate endpoint
+    my $url = "$PORTAL_BASE/keys/validate";
+    my $ua = LWP::UserAgent->new(timeout => 30);
+    my $request = HTTP::Request->new('POST' => $url);
+    $request->header('Authorization' => "Bearer $api_key");
+    $request->header('Content-Type' => 'application/json');
+
+    my $response = $ua->request($request);
+
+    unless ($response->is_success) {
+        print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
+        exit 1;
+    }
+
+    my $result = decode_json($response->content);
+
+    # Handle different states
+    my $status = $result->{status} || 'unknown';
+
+    if ($status eq 'valid') {
+        print "${GREEN}Valid${RESET}\n";
+        print "Public Key: ", ($result->{public_key} // 'N/A'), "\n";
+        print "Tier: ", ($result->{tier} // 'N/A'), "\n";
+        print "Expires: ", ($result->{expires_at} // 'N/A'), "\n";
+    } elsif ($status eq 'expired') {
+        print "${RED}Expired${RESET}\n";
+        print "Public Key: ", ($result->{public_key} // 'N/A'), "\n";
+        print "Tier: ", ($result->{tier} // 'N/A'), "\n";
+        print "Expired: ", ($result->{expired_at} // 'N/A'), "\n";
+        print "${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}\n";
+
+        # Handle --extend flag for expired keys
+        if ($options->{extend} && $result->{public_key}) {
+            my $extend_url = "$PORTAL_BASE/keys/extend?pk=$result->{public_key}";
+            print "\n${BLUE}Opening browser to: $extend_url${RESET}\n";
+            system("xdg-open", $extend_url) if -x "/usr/bin/xdg-open";
+        }
+    } elsif ($status eq 'invalid') {
+        print "${RED}Invalid${RESET}\n";
+    } else {
+        print "${YELLOW}Unknown status: $status${RESET}\n";
+    }
+
+    # Handle --extend flag for valid keys
+    if ($options->{extend} && $status eq 'valid' && $result->{public_key}) {
+        my $extend_url = "$PORTAL_BASE/keys/extend?pk=$result->{public_key}";
+        print "\n${BLUE}Opening browser to: $extend_url${RESET}\n";
+        system("xdg-open", $extend_url) if -x "/usr/bin/xdg-open";
+    }
+}
+
 sub main {
     my %options = (
         command => undef,
@@ -391,13 +447,14 @@ sub main {
         wake => undef,
         destroy => undef,
         execute => undef,
-        command => undef
+        command => undef,
+        extend => 0
     );
 
     for (my $i = 0; $i < @ARGV; $i++) {
         my $arg = $ARGV[$i];
 
-        if ($arg eq 'session' || $arg eq 'service') {
+        if ($arg eq 'session' || $arg eq 'service' || $arg eq 'key') {
             $options{command} = $arg;
         } elsif ($arg eq '-e') {
             push @{$options{env}}, $ARGV[++$i];
@@ -453,6 +510,8 @@ sub main {
             $options{execute} = $ARGV[++$i];
         } elsif ($arg eq '--command') {
             $options{command} = $ARGV[++$i];
+        } elsif ($arg eq '--extend') {
+            $options{extend} = 1;
         } elsif ($arg !~ /^-/) {
             $options{source_file} = $arg;
         }
@@ -462,6 +521,8 @@ sub main {
         cmd_session(\%options);
     } elsif ($options{command} && $options{command} eq 'service') {
         cmd_service(\%options);
+    } elsif ($options{command} && $options{command} eq 'key') {
+        cmd_key(\%options);
     } elsif ($options{source_file}) {
         cmd_execute(\%options);
     } else {
@@ -472,6 +533,7 @@ Usage:
   $0 [options] <source_file>
   $0 session [options]
   $0 service [options]
+  $0 key [options]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -506,6 +568,9 @@ Service options:
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+
+Key options:
+  --extend         Open browser to extend/renew key
 HELP
         exit 1;
     }

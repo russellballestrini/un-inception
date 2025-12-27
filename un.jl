@@ -41,6 +41,7 @@ using HTTP
 using JSON
 using Base64
 using ArgParse
+using Printf
 
 # Extension to language mapping
 const EXT_MAP = Dict(
@@ -67,6 +68,7 @@ const YELLOW = "\033[33m"
 const RESET = "\033[0m"
 
 const API_BASE = "https://api.unsandbox.com"
+const PORTAL_BASE = "https://unsandbox.com"
 
 function detect_language(filename::String)::String
     ext = lowercase(match(r"\.[^.]+$", filename).match)
@@ -334,6 +336,149 @@ function cmd_service(args)
     exit(1)
 end
 
+function validate_key(api_key::String)
+    url = PORTAL_BASE * "/keys/validate"
+    headers = [
+        "Authorization" => "Bearer $api_key",
+        "Content-Type" => "application/json"
+    ]
+
+    try
+        response = HTTP.post(url, headers, "{}", readtimeout=300)
+        data = JSON.parse(String(response.body))
+
+        # Check if valid
+        if get(data, "valid", false)
+            # Print valid key info
+            println("$(GREEN)Valid$(RESET)\n")
+            println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
+            println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
+            println(@sprintf("%-20s %s", "Status:", get(data, "status", "N/A")))
+            println(@sprintf("%-20s %s", "Expires:", get(data, "valid_through_datetime", "N/A")))
+            println(@sprintf("%-20s %s", "Time Remaining:", get(data, "valid_for_human", "N/A")))
+            println(@sprintf("%-20s %s/min", "Rate Limit:", get(data, "rate_per_minute", "N/A")))
+            println(@sprintf("%-20s %s", "Burst:", get(data, "burst", "N/A")))
+            println(@sprintf("%-20s %s", "Concurrency:", get(data, "concurrency", "N/A")))
+            return 0
+        else
+            # Handle invalid response
+            reason = get(data, "reason", "unknown")
+            if reason == "expired"
+                println("$(RED)Expired$(RESET)\n")
+                println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
+                println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
+                expired_at = get(data, "expired_at_datetime", "N/A")
+                expired_ago = get(data, "expired_ago", "")
+                if !isempty(expired_ago)
+                    println(@sprintf("%-20s %s (%s)", "Expired:", expired_at, expired_ago))
+                else
+                    println(@sprintf("%-20s %s", "Expired:", expired_at))
+                end
+                renew_url = get(data, "renew_url", "https://unsandbox.com/pricing")
+                println("\n$(YELLOW)To renew:$(RESET) Visit $renew_url")
+            elseif reason == "invalid_key"
+                println("$(RED)Invalid$(RESET): key not found")
+            elseif reason == "suspended"
+                println("$(RED)Suspended$(RESET): key has been suspended")
+            else
+                println("$(RED)Invalid$(RESET): $reason")
+            end
+            return 1
+        end
+    catch e
+        if isa(e, HTTP.ExceptionRequest.StatusError)
+            # Parse error response from body
+            try
+                data = JSON.parse(String(e.response.body))
+                reason = get(data, "reason", "unknown")
+
+                if reason == "expired"
+                    println("$(RED)Expired$(RESET)\n")
+                    println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
+                    println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
+                    expired_at = get(data, "expired_at_datetime", "N/A")
+                    expired_ago = get(data, "expired_ago", "")
+                    if !isempty(expired_ago)
+                        println(@sprintf("%-20s %s (%s)", "Expired:", expired_at, expired_ago))
+                    else
+                        println(@sprintf("%-20s %s", "Expired:", expired_at))
+                    end
+                    renew_url = get(data, "renew_url", "https://unsandbox.com/pricing")
+                    println("\n$(YELLOW)To renew:$(RESET) Visit $renew_url")
+                elseif reason == "invalid_key"
+                    println("$(RED)Invalid$(RESET): key not found")
+                elseif reason == "suspended"
+                    println("$(RED)Suspended$(RESET): key has been suspended")
+                else
+                    println("$(RED)Invalid$(RESET): $reason")
+                end
+            catch
+                println(stderr, "$(RED)Error: HTTP $(e.status)$(RESET)")
+            end
+            return 1
+        else
+            println(stderr, "$(RED)Error: Request failed: $e$(RESET)")
+            return 1
+        end
+    end
+end
+
+function cmd_key(args)
+    api_key = get_api_key(args["api-key"])
+
+    # Handle --extend flag
+    if args["extend"]
+        # Validate key to get public key
+        url = PORTAL_BASE * "/keys/validate"
+        headers = [
+            "Authorization" => "Bearer $api_key",
+            "Content-Type" => "application/json"
+        ]
+
+        try
+            response = HTTP.post(url, headers, "{}", readtimeout=300)
+            data = JSON.parse(String(response.body))
+
+            public_key = get(data, "public_key", nothing)
+            if public_key === nothing
+                println(stderr, "$(RED)Error: Invalid key or could not retrieve public key$(RESET)")
+                exit(1)
+            end
+
+            # Build extend URL
+            extend_url = "$(PORTAL_BASE)/keys/extend?pk=$(public_key)"
+
+            println("Opening extension page in browser...")
+            println("If browser doesn't open, visit: $extend_url")
+
+            # Try to open browser
+            if Sys.isapple()
+                run(`open $extend_url`)
+            elseif Sys.islinux()
+                try
+                    run(`xdg-open $extend_url`)
+                catch
+                    try
+                        run(`sensible-browser $extend_url`)
+                    catch
+                        # Already printed the URL
+                    end
+                end
+            elseif Sys.iswindows()
+                run(`cmd /c start $extend_url`)
+            end
+
+            exit(0)
+        catch e
+            println(stderr, "$(RED)Error: Failed to validate key: $e$(RESET)")
+            exit(1)
+        end
+    end
+
+    # Default: validate and display key info
+    exit(validate_key(api_key))
+end
+
 function main()
     s = ArgParseSettings(description="Unsandbox CLI - Execute code in secure sandboxes")
 
@@ -363,6 +508,9 @@ function main()
             action = :command
         "service"
             help = "Manage persistent services"
+            action = :command
+        "key"
+            help = "Check API key validity and expiration"
             action = :command
     end
 
@@ -412,16 +560,26 @@ function main()
             help = "API key"
     end
 
+    @add_arg_table! s["key"] begin
+        "--extend"
+            help = "Open browser to extend/renew key"
+            action = :store_true
+        "--api-key", "-k"
+            help = "API key"
+    end
+
     args = parse_args(ARGS, s)
 
     if args["%COMMAND%"] == "session"
         cmd_session(args["session"])
     elseif args["%COMMAND%"] == "service"
         cmd_service(args["service"])
+    elseif args["%COMMAND%"] == "key"
+        cmd_key(args["key"])
     elseif args["source_file"] !== nothing
         cmd_execute(args)
     else
-        println(stderr, "$(RED)Error: Provide source_file or use 'session'/'service' subcommand$(RESET)")
+        println(stderr, "$(RED)Error: Provide source_file or use 'session'/'service'/'key' subcommand$(RESET)")
         exit(1)
     end
 end

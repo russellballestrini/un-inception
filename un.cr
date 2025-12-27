@@ -67,6 +67,7 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 API_BASE = "https://api.unsandbox.com"
+PORTAL_BASE = "https://unsandbox.com"
 
 def detect_language(filename : String) : String
   ext = File.extname(filename).downcase
@@ -231,6 +232,84 @@ def cmd_session(args)
   exit 1
 end
 
+def cmd_key(args)
+  api_key = get_api_key(args[:api_key]?)
+
+  # Validate key
+  url = URI.parse(PORTAL_BASE + "/keys/validate")
+  headers = HTTP::Headers{
+    "Content-Type" => "application/json",
+    "Authorization" => "Bearer #{api_key}"
+  }
+
+  begin
+    response = HTTP::Client.post(url, headers: headers, body: "{}")
+    result = JSON.parse(response.body)
+
+    status = result["status"]?.try(&.as_s?) || "unknown"
+    public_key = result["public_key"]?.try(&.as_s?) || "N/A"
+    tier = result["tier"]?.try(&.as_s?) || "N/A"
+
+    case status
+    when "valid"
+      puts "#{GREEN}Valid#{RESET}"
+      puts "Public Key: #{public_key}"
+      puts "Tier: #{tier}"
+      if expires_at = result["expires_at"]?.try(&.as_s?)
+        puts "Expires: #{expires_at}"
+      end
+
+      # Handle --extend flag
+      if args[:extend]?.as?(Bool)
+        extend_url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
+        puts "\n#{BLUE}Opening browser to extend key...#{RESET}"
+        # Try common browser commands
+        ["xdg-open", "open", "firefox", "chromium", "google-chrome"].each do |browser|
+          if system("which #{browser} > /dev/null 2>&1")
+            system("#{browser} '#{extend_url}' > /dev/null 2>&1 &")
+            break
+          end
+        end
+        puts extend_url
+      end
+
+    when "expired"
+      puts "#{RED}Expired#{RESET}"
+      puts "Public Key: #{public_key}"
+      puts "Tier: #{tier}"
+      if expired_at = result["expires_at"]?.try(&.as_s?)
+        puts "Expired: #{expired_at}"
+      end
+      puts "#{YELLOW}To renew: Visit #{PORTAL_BASE}/keys/extend#{RESET}"
+
+      # Handle --extend flag for expired keys
+      if args[:extend]?.as?(Bool)
+        extend_url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
+        puts "\n#{BLUE}Opening browser to renew key...#{RESET}"
+        ["xdg-open", "open", "firefox", "chromium", "google-chrome"].each do |browser|
+          if system("which #{browser} > /dev/null 2>&1")
+            system("#{browser} '#{extend_url}' > /dev/null 2>&1 &")
+            break
+          end
+        end
+        puts extend_url
+      end
+
+    when "invalid"
+      puts "#{RED}Invalid#{RESET}"
+      STDERR.puts "#{RED}Error: API key is not valid#{RESET}"
+      exit 1
+
+    else
+      puts "#{YELLOW}Unknown status: #{status}#{RESET}"
+    end
+
+  rescue ex
+    STDERR.puts "#{RED}Error: Failed to validate key: #{ex.message}#{RESET}"
+    exit 1
+  end
+end
+
 def cmd_service(args)
   api_key = get_api_key(args[:api_key]?)
 
@@ -355,11 +434,12 @@ def main
     ports: nil,
     domains: nil,
     service_type: nil,
-    bootstrap: nil
+    bootstrap: nil,
+    extend: false
   } of Symbol => (String | Array(String) | Bool | Nil)
 
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr session [options]\n       un.cr service [options]"
+    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr session [options]\n       un.cr service [options]\n       un.cr key [options]"
 
     opts.on("-k API_KEY", "--api-key=API_KEY", "API key") { |k| args[:api_key] = k }
     opts.on("-n NETWORK", "--network=NETWORK", "Network mode") { |n| args[:network] = n }
@@ -379,6 +459,7 @@ def main
     opts.on("--domains=DOMAINS", "Comma-separated domains") { |d| args[:domains] = d }
     opts.on("--type=TYPE", "Service type for SRV records") { |t| args[:service_type] = t }
     opts.on("--bootstrap=CMD", "Bootstrap command/file") { |b| args[:bootstrap] = b }
+    opts.on("--extend", "Open browser to extend/renew key") { args[:extend] = true }
 
     opts.unknown_args do |before, after|
       if before.size > 0
@@ -387,6 +468,8 @@ def main
           args[:command] = "session"
         when "service"
           args[:command] = "service"
+        when "key"
+          args[:command] = "key"
         else
           args[:source_file] = before[0]
         end
@@ -400,6 +483,8 @@ def main
     cmd_session(args)
   elsif args[:command] == "service"
     cmd_service(args)
+  elsif args[:command] == "key"
+    cmd_key(args)
   elsif args[:source_file]
     cmd_execute(args)
   else

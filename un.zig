@@ -52,6 +52,7 @@ const process = std.process;
 const mem = std.mem;
 
 const API_BASE = "https://api.unsandbox.com";
+const PORTAL_BASE = "https://unsandbox.com";
 
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -65,6 +66,7 @@ pub fn main() !u8 {
         std.debug.print("Usage: {s} [options] <source_file>\n", .{args[0]});
         std.debug.print("       {s} session [options]\n", .{args[0]});
         std.debug.print("       {s} service [options]\n", .{args[0]});
+        std.debug.print("       {s} key [--extend]\n", .{args[0]});
         return 1;
     }
 
@@ -167,6 +169,136 @@ pub fn main() !u8 {
             std.debug.print("\x1b[33mCreating service...\x1b[0m\n", .{});
             _ = std.c.system(cmd.ptr);
             std.debug.print("\n", .{});
+        }
+        return 0;
+    }
+
+    // Handle key command
+    if (mem.eql(u8, args[1], "key")) {
+        var extend = false;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            if (mem.eql(u8, args[i], "--extend")) {
+                extend = true;
+            }
+        }
+
+        if (extend) {
+            // First validate to get the public_key
+            const json_file = "/tmp/unsandbox_key_validate.json";
+            const cmd_validate = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer {s}' -o {s}", .{ PORTAL_BASE, api_key, json_file });
+            defer allocator.free(cmd_validate);
+            _ = std.c.system(cmd_validate.ptr);
+
+            // Read the JSON response to extract public_key
+            const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
+                std.debug.print("\x1b[31mError reading validation response: {}\x1b[0m\n", .{err});
+                std.fs.cwd().deleteFile(json_file) catch {};
+                return 1;
+            };
+            defer allocator.free(json_content);
+            std.fs.cwd().deleteFile(json_file) catch {};
+
+            // Simple JSON parsing to find public_key (looking for "public_key":"value")
+            const pk_prefix = "\"public_key\":\"";
+            var public_key: ?[]const u8 = null;
+            if (mem.indexOf(u8, json_content, pk_prefix)) |start_idx| {
+                const value_start = start_idx + pk_prefix.len;
+                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
+                    public_key = json_content[value_start..end_idx];
+                }
+            }
+
+            if (public_key) |pk| {
+                const url = try std.fmt.allocPrint(allocator, "{s}/keys/extend?pk={s}", .{ PORTAL_BASE, pk });
+                defer allocator.free(url);
+                std.debug.print("\x1b[33mOpening browser to extend key...\x1b[0m\n", .{});
+                const open_cmd = try std.fmt.allocPrint(allocator, "xdg-open '{s}' 2>/dev/null || open '{s}' 2>/dev/null || start '{s}' 2>/dev/null", .{ url, url, url });
+                defer allocator.free(open_cmd);
+                _ = std.c.system(open_cmd.ptr);
+            } else {
+                std.debug.print("\x1b[31mError: Could not extract public_key from response\x1b[0m\n", .{});
+                return 1;
+            }
+        } else {
+            // Regular validation
+            const json_file = "/tmp/unsandbox_key_validate.json";
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer {s}' -o {s}", .{ PORTAL_BASE, api_key, json_file });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+
+            // Read and parse the response
+            const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
+                std.debug.print("\x1b[31mError reading validation response: {}\x1b[0m\n", .{err});
+                std.fs.cwd().deleteFile(json_file) catch {};
+                return 1;
+            };
+            defer allocator.free(json_content);
+            std.fs.cwd().deleteFile(json_file) catch {};
+
+            // Simple JSON parsing (looking for specific fields)
+            const status_prefix = "\"status\":\"";
+            var status: ?[]const u8 = null;
+            if (mem.indexOf(u8, json_content, status_prefix)) |start_idx| {
+                const value_start = start_idx + status_prefix.len;
+                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
+                    status = json_content[value_start..end_idx];
+                }
+            }
+
+            if (status == null) {
+                std.debug.print("\x1b[31mError: Invalid response from server\x1b[0m\n", .{});
+                return 1;
+            }
+
+            // Extract other fields
+            var public_key: ?[]const u8 = null;
+            var tier: ?[]const u8 = null;
+            var expires_at: ?[]const u8 = null;
+
+            const pk_prefix = "\"public_key\":\"";
+            if (mem.indexOf(u8, json_content, pk_prefix)) |start_idx| {
+                const value_start = start_idx + pk_prefix.len;
+                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
+                    public_key = json_content[value_start..end_idx];
+                }
+            }
+
+            const tier_prefix = "\"tier\":\"";
+            if (mem.indexOf(u8, json_content, tier_prefix)) |start_idx| {
+                const value_start = start_idx + tier_prefix.len;
+                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
+                    tier = json_content[value_start..end_idx];
+                }
+            }
+
+            const expires_prefix = "\"expires_at\":\"";
+            if (mem.indexOf(u8, json_content, expires_prefix)) |start_idx| {
+                const value_start = start_idx + expires_prefix.len;
+                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
+                    expires_at = json_content[value_start..end_idx];
+                }
+            }
+
+            // Display results based on status
+            if (status) |s| {
+                if (mem.eql(u8, s, "valid")) {
+                    std.debug.print("\x1b[32mValid\x1b[0m\n", .{});
+                    if (public_key) |pk| std.debug.print("Public Key: {s}\n", .{pk});
+                    if (tier) |t| std.debug.print("Tier: {s}\n", .{t});
+                    if (expires_at) |exp| std.debug.print("Expires: {s}\n", .{exp});
+                } else if (mem.eql(u8, s, "expired")) {
+                    std.debug.print("\x1b[31mExpired\x1b[0m\n", .{});
+                    if (public_key) |pk| std.debug.print("Public Key: {s}\n", .{pk});
+                    if (tier) |t| std.debug.print("Tier: {s}\n", .{t});
+                    if (expires_at) |exp| std.debug.print("Expired: {s}\n", .{exp});
+                    std.debug.print("\x1b[33mTo renew: Visit {s}/keys/extend\x1b[0m\n", .{PORTAL_BASE});
+                } else if (mem.eql(u8, s, "invalid")) {
+                    std.debug.print("\x1b[31mInvalid\x1b[0m\n", .{});
+                } else {
+                    std.debug.print("Status: {s}\n", .{s});
+                }
+            }
         }
         return 0;
     }

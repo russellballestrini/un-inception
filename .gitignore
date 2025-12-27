@@ -5,6 +5,14 @@
 *.class
 *.beam
 /un
+/un_go
+/un_rust
+/un_cpp
+/un_d
+/un_nim
+/un_v
+/un_zig
+/Un.class
 
 # Build directories
 _build/

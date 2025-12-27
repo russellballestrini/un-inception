@@ -56,6 +56,7 @@ import * as https from 'https';
 import * as path from 'path';
 
 const API_BASE = "https://api.unsandbox.com";
+const PORTAL_BASE = "https://unsandbox.com";
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -108,6 +109,7 @@ interface Args {
   destroy: string | null;
   execute: string | null;
   command_arg: string | null;
+  extend: boolean;
 }
 
 function getApiKey(argsKey: string | null): string {
@@ -379,6 +381,42 @@ async function cmdService(args: Args): Promise<void> {
   process.exit(1);
 }
 
+async function cmdKey(args: Args): Promise<void> {
+  const apiKey = getApiKey(args.apiKey);
+
+  // Validate the key
+  const result = await apiRequest("/keys/validate", "POST", {}, apiKey);
+
+  if (result.status === "valid") {
+    console.log(`${GREEN}Valid${RESET}`);
+    console.log(`Public Key: ${result.public_key || 'N/A'}`);
+    console.log(`Tier: ${result.tier || 'N/A'}`);
+    console.log(`Expires: ${result.expires_at || 'N/A'}`);
+
+    // Handle --extend flag
+    if (args.extend && result.public_key) {
+      const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${result.public_key}`;
+      console.log(`\n${BLUE}Opening: ${extendUrl}${RESET}`);
+
+      // Try to open browser using common commands
+      const { exec } = require('child_process');
+      exec(`xdg-open "${extendUrl}" || open "${extendUrl}" || start "${extendUrl}"`, (error: any) => {
+        if (error) {
+          console.error(`${YELLOW}Could not open browser automatically. Visit: ${extendUrl}${RESET}`);
+        }
+      });
+    }
+  } else if (result.status === "expired") {
+    console.log(`${RED}Expired${RESET}`);
+    console.log(`Public Key: ${result.public_key || 'N/A'}`);
+    console.log(`Tier: ${result.tier || 'N/A'}`);
+    console.log(`Expired: ${result.expires_at || 'N/A'}`);
+    console.log(`${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}`);
+  } else {
+    console.log(`${RED}Invalid${RESET}`);
+  }
+}
+
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     command: null,
@@ -410,13 +448,14 @@ function parseArgs(argv: string[]): Args {
     destroy: null,
     execute: null,
     command_arg: null,
+    extend: false,
   };
 
   let i = 2;
   while (i < argv.length) {
     const arg = argv[i];
 
-    if (arg === 'session' || arg === 'service') {
+    if (arg === 'session' || arg === 'service' || arg === 'key') {
       args.command = arg;
       i++;
     } else if (arg === '-e' && i + 1 < argv.length) {
@@ -500,6 +539,9 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--command' && i + 1 < argv.length) {
       args.command_arg = argv[++i];
       i++;
+    } else if (arg === '--extend') {
+      args.extend = true;
+      i++;
     } else if (!arg.startsWith('-')) {
       args.sourceFile = arg;
       i++;
@@ -519,6 +561,8 @@ async function main(): Promise<void> {
     await cmdSession(args);
   } else if (args.command === 'service') {
     await cmdService(args);
+  } else if (args.command === 'key') {
+    await cmdKey(args);
   } else if (args.sourceFile) {
     await cmdExecute(args);
   } else {
@@ -528,6 +572,7 @@ Usage:
   ${process.argv[1]} [options] <source_file>
   ${process.argv[1]} session [options]
   ${process.argv[1]} service [options]
+  ${process.argv[1]} key [options]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -562,6 +607,9 @@ Service options:
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+
+Key options:
+  --extend         Open browser to extend key expiration
 `);
     process.exit(1);
   }

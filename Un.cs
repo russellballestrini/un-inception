@@ -49,6 +49,7 @@ using System.Text;
 class Un
 {
     private const string API_BASE = "https://api.unsandbox.com";
+    private const string PORTAL_BASE = "https://unsandbox.com";
     private const string BLUE = "\x1B[34m";
     private const string RED = "\x1B[31m";
     private const string GREEN = "\x1B[32m";
@@ -85,6 +86,10 @@ class Un
             else if (parsedArgs.Command == "service")
             {
                 CmdService(parsedArgs);
+            }
+            else if (parsedArgs.Command == "key")
+            {
+                CmdKey(parsedArgs);
             }
             else if (parsedArgs.SourceFile != null)
             {
@@ -241,6 +246,91 @@ class Un
         var createResult = ApiRequest("/sessions", "POST", payload, apiKey);
         Console.WriteLine($"{GREEN}Session created: {createResult["id"]}{RESET}");
         Console.WriteLine($"{YELLOW}(Interactive sessions require WebSocket - use un2 for full support){RESET}");
+    }
+
+    static void CmdKey(Args args)
+    {
+        string apiKey = GetApiKey(args.ApiKey);
+
+        var result = ApiRequest("/keys/validate", "POST", null, apiKey);
+
+        if (!result.ContainsKey("valid"))
+        {
+            Console.Error.WriteLine($"{RED}Error: Invalid response from server{RESET}");
+            Environment.Exit(1);
+        }
+
+        bool isValid = (bool)result["valid"];
+        bool isExpired = result.ContainsKey("expired") && (bool)result["expired"];
+
+        if (isValid && !isExpired)
+        {
+            Console.WriteLine($"{GREEN}Valid{RESET}");
+            if (result.ContainsKey("public_key"))
+            {
+                Console.WriteLine($"Public Key: {result["public_key"]}");
+            }
+            if (result.ContainsKey("tier"))
+            {
+                Console.WriteLine($"Tier: {result["tier"]}");
+            }
+            if (result.ContainsKey("expires_at"))
+            {
+                Console.WriteLine($"Expires: {result["expires_at"]}");
+            }
+        }
+        else if (isExpired)
+        {
+            Console.WriteLine($"{RED}Expired{RESET}");
+            if (result.ContainsKey("public_key"))
+            {
+                Console.WriteLine($"Public Key: {result["public_key"]}");
+            }
+            if (result.ContainsKey("tier"))
+            {
+                Console.WriteLine($"Tier: {result["tier"]}");
+            }
+            if (result.ContainsKey("expired_at"))
+            {
+                Console.WriteLine($"Expired: {result["expired_at"]}");
+            }
+            Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
+
+            if (args.KeyExtend && result.ContainsKey("public_key"))
+            {
+                string publicKey = (string)result["public_key"];
+                string url = $"{PORTAL_BASE}/keys/extend?pk={publicKey}";
+                Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
+                OpenBrowser(url);
+            }
+        }
+        else
+        {
+            Console.WriteLine($"{RED}Invalid{RESET}");
+        }
+    }
+
+    static void OpenBrowser(string url)
+    {
+        try
+        {
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            else if (Environment.OSVersion.Platform == PlatformID.Unix)
+            {
+                System.Diagnostics.Process.Start("xdg-open", url);
+            }
+            else if (Environment.OSVersion.Platform == PlatformID.MacOSX)
+            {
+                System.Diagnostics.Process.Start("open", url);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"{RED}Failed to open browser: {ex.Message}{RESET}");
+        }
     }
 
     static void CmdService(Args args)
@@ -680,6 +770,7 @@ class Un
         public string ServiceWake = null;
         public string ServiceDestroy = null;
         public string ServiceType = null;
+        public bool KeyExtend = false;
     }
 
     static Args ParseArgs(string[] args)
@@ -690,6 +781,7 @@ class Un
             string arg = args[i];
             if (arg == "session") result.Command = "session";
             else if (arg == "service") result.Command = "service";
+            else if (arg == "key") result.Command = "key";
             else if (arg == "-k" || arg == "--api-key") result.ApiKey = args[++i];
             else if (arg == "-n" || arg == "--network") result.Network = args[++i];
             else if (arg == "-v" || arg == "--vcpu") result.Vcpu = int.Parse(args[++i]);
@@ -714,6 +806,7 @@ class Un
             else if (arg == "--sleep") result.ServiceSleep = args[++i];
             else if (arg == "--wake") result.ServiceWake = args[++i];
             else if (arg == "--destroy") result.ServiceDestroy = args[++i];
+            else if (arg == "--extend") result.KeyExtend = true;
             else if (!arg.StartsWith("-")) result.SourceFile = arg;
         }
         return result;
@@ -724,6 +817,7 @@ class Un
         Console.WriteLine(@"Usage: Un [options] <source_file>
        Un session [options]
        Un service [options]
+       Un key [options]
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -750,6 +844,9 @@ Service options:
   --tail ID         Get last 9000 lines
   --sleep ID        Freeze service
   --wake ID         Unfreeze service
-  --destroy ID      Destroy service");
+  --destroy ID      Destroy service
+
+Key options:
+  --extend          Open browser to extend expired key");
     }
 }

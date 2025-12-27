@@ -54,8 +54,10 @@
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
+const { exec } = require('child_process');
 
 const API_BASE = "https://api.unsandbox.com";
+const PORTAL_BASE = "https://unsandbox.com";
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -150,6 +152,124 @@ function apiRequest(endpoint, method = "GET", data = null, apiKey = null) {
     }
     req.end();
   });
+}
+
+function portalRequest(endpoint, method = "GET", data = null, apiKey = null) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(PORTAL_BASE + endpoint);
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: method,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            resolve(body);
+          }
+        } else {
+          try {
+            const errorBody = JSON.parse(body);
+            resolve({ error: errorBody.error || body, status: res.statusCode });
+          } catch (e) {
+            resolve({ error: body, status: res.statusCode });
+          }
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      reject(e);
+    });
+
+    if (data) {
+      req.write(JSON.stringify(data));
+    }
+    req.end();
+  });
+}
+
+function openBrowser(url) {
+  const platform = process.platform;
+  let command;
+
+  if (platform === 'darwin') {
+    command = `open "${url}"`;
+  } else if (platform === 'win32') {
+    command = `start "${url}"`;
+  } else {
+    command = `xdg-open "${url}"`;
+  }
+
+  exec(command, (error) => {
+    if (error) {
+      console.error(`${RED}Error opening browser: ${error.message}${RESET}`);
+      console.log(`Please visit: ${url}`);
+    }
+  });
+}
+
+async function validateKey(apiKey, shouldExtend = false) {
+  try {
+    const result = await portalRequest("/keys/validate", "POST", {}, apiKey);
+
+    if (result.error || result.status >= 400) {
+      console.log(`${RED}Invalid${RESET}`);
+      console.log(`Reason: ${result.error || 'Unknown error'}`);
+      process.exit(1);
+    }
+
+    if (result.expired) {
+      console.log(`${RED}Expired${RESET}`);
+      console.log(`Public Key: ${result.public_key || 'N/A'}`);
+      console.log(`Tier: ${result.tier || 'N/A'}`);
+      console.log(`Expired: ${result.expires_at || 'N/A'}`);
+      console.log(`${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}`);
+
+      if (shouldExtend && result.public_key) {
+        const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(result.public_key)}`;
+        console.log(`\nOpening browser to extend key...`);
+        openBrowser(extendUrl);
+      }
+
+      process.exit(1);
+    }
+
+    console.log(`${GREEN}Valid${RESET}`);
+    console.log(`Public Key: ${result.public_key || 'N/A'}`);
+    console.log(`Tier: ${result.tier || 'N/A'}`);
+    console.log(`Status: ${result.status || 'N/A'}`);
+    console.log(`Expires: ${result.expires_at || 'N/A'}`);
+    console.log(`Time Remaining: ${result.time_remaining || 'N/A'}`);
+    console.log(`Rate Limit: ${result.rate_limit || 'N/A'}`);
+    console.log(`Burst: ${result.burst || 'N/A'}`);
+    console.log(`Concurrency: ${result.concurrency || 'N/A'}`);
+
+    if (shouldExtend && result.public_key) {
+      const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(result.public_key)}`;
+      console.log(`\nOpening browser to extend key...`);
+      openBrowser(extendUrl);
+    }
+  } catch (error) {
+    console.error(`${RED}Error validating key: ${error.message}${RESET}`);
+    process.exit(1);
+  }
+}
+
+async function cmdKey(args) {
+  const apiKey = getApiKey(args.apiKey);
+  await validateKey(apiKey, args.extend);
 }
 
 async function cmdExecute(args) {
@@ -377,13 +497,14 @@ function parseArgs(argv) {
     destroy: null,
     execute: null,
     command_arg: null,
+    extend: false,
   };
 
   let i = 2;
   while (i < argv.length) {
     const arg = argv[i];
 
-    if (arg === 'session' || arg === 'service') {
+    if (arg === 'session' || arg === 'service' || arg === 'key') {
       args.command = arg;
       i++;
     } else if (arg === '-e' && i + 1 < argv.length) {
@@ -467,6 +588,9 @@ function parseArgs(argv) {
     } else if (arg === '--command' && i + 1 < argv.length) {
       args.command_arg = argv[++i];
       i++;
+    } else if (arg === '--extend') {
+      args.extend = true;
+      i++;
     } else if (!arg.startsWith('-')) {
       args.sourceFile = arg;
       i++;
@@ -486,6 +610,8 @@ async function main() {
     await cmdSession(args);
   } else if (args.command === 'service') {
     await cmdService(args);
+  } else if (args.command === 'key') {
+    await cmdKey(args);
   } else if (args.sourceFile) {
     await cmdExecute(args);
   } else {
@@ -495,6 +621,7 @@ Usage:
   ${process.argv[1]} [options] <source_file>
   ${process.argv[1]} session [options]
   ${process.argv[1]} service [options]
+  ${process.argv[1]} key [options]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -529,6 +656,10 @@ Service options:
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+
+Key options:
+  --extend         Open browser to extend key expiration
+  -k KEY           API key to validate
 `);
     process.exit(1);
   }

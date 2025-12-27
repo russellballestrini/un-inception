@@ -58,8 +58,10 @@ import base64
 import argparse
 import urllib.request
 import urllib.error
+import webbrowser
 
 API_BASE = "https://api.unsandbox.com"
+PORTAL_BASE = "https://unsandbox.com"
 BLUE = "\033[34m"
 RED = "\033[31m"
 GREEN = "\033[32m"
@@ -267,6 +269,73 @@ def cmd_session(args):
     print(f"{YELLOW}(Interactive sessions require WebSocket - use un2 for full support){RESET}")
 
 
+def validate_key(api_key, extend=False):
+    """Validate API key and display information"""
+    url = f"{PORTAL_BASE}/keys/validate"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    req = urllib.request.Request(url, method="POST", headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+
+            # Handle --extend flag
+            if extend:
+                public_key = result.get("public_key")
+                if public_key:
+                    extend_url = f"{PORTAL_BASE}/keys/extend?pk={public_key}"
+                    print(f"{BLUE}Opening browser to extend key...{RESET}")
+                    webbrowser.open(extend_url)
+                    return
+                else:
+                    print(f"{RED}Error: Could not retrieve public key{RESET}", file=sys.stderr)
+                    sys.exit(1)
+
+            # Check if key is expired
+            if result.get("expired", False):
+                print(f"{RED}Expired{RESET}")
+                print(f"Public Key: {result.get('public_key', 'N/A')}")
+                print(f"Tier: {result.get('tier', 'N/A')}")
+                print(f"Expired: {result.get('expires_at', 'N/A')}")
+                print(f"{YELLOW}To renew: Visit https://unsandbox.com/keys/extend{RESET}")
+                sys.exit(1)
+
+            # Valid key
+            print(f"{GREEN}Valid{RESET}")
+            print(f"Public Key: {result.get('public_key', 'N/A')}")
+            print(f"Tier: {result.get('tier', 'N/A')}")
+            print(f"Status: {result.get('status', 'N/A')}")
+            print(f"Expires: {result.get('expires_at', 'N/A')}")
+            print(f"Time Remaining: {result.get('time_remaining', 'N/A')}")
+            print(f"Rate Limit: {result.get('rate_limit', 'N/A')}")
+            print(f"Burst: {result.get('burst', 'N/A')}")
+            print(f"Concurrency: {result.get('concurrency', 'N/A')}")
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8') if e.fp else str(e)
+        try:
+            error_json = json.loads(error_body)
+            reason = error_json.get("error", error_body)
+        except:
+            reason = error_body
+        print(f"{RED}Invalid{RESET}")
+        print(f"Reason: {reason}")
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"{RED}Error: {e.reason}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_key(args):
+    """Validate API key"""
+    api_key = get_api_key(args.key)
+    validate_key(api_key, extend=args.extend)
+
+
 def cmd_service(args):
     """Manage persistent services"""
     api_key = get_api_key(args.api_key)
@@ -380,6 +449,11 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command")
 
+    # Key subcommand
+    key_parser = subparsers.add_parser("key", help="Validate API key")
+    key_parser.add_argument("-k", "--key", help="API key to validate (or set UNSANDBOX_API_KEY)")
+    key_parser.add_argument("--extend", action="store_true", help="Open browser to extend key")
+
     # Session subcommand
     session_parser = subparsers.add_parser("session", help="Interactive shell/REPL sessions")
     session_parser.add_argument("-s", "--shell", help="Shell/REPL to use (default: bash)")
@@ -423,7 +497,9 @@ Examples:
 
     args = parser.parse_args()
 
-    if args.command == "session":
+    if args.command == "key":
+        cmd_key(args)
+    elif args.command == "session":
         cmd_session(args)
     elif args.command == "service":
         cmd_service(args)

@@ -48,6 +48,7 @@ import java.util.Base64;
 
 public class Un {
     private static final String API_BASE = "https://api.unsandbox.com";
+    private static final String PORTAL_BASE = "https://unsandbox.com";
     private static final String BLUE = "\033[34m";
     private static final String RED = "\033[31m";
     private static final String GREEN = "\033[32m";
@@ -78,6 +79,8 @@ public class Un {
                 cmdSession(parsedArgs);
             } else if (parsedArgs.command.equals("service")) {
                 cmdService(parsedArgs);
+            } else if (parsedArgs.command.equals("key")) {
+                cmdKey(parsedArgs);
             } else if (parsedArgs.sourceFile != null) {
                 cmdExecute(parsedArgs);
             } else {
@@ -305,6 +308,108 @@ public class Un {
 
         System.err.println(RED + "Error: Specify --name to create a service, or use --list, --info, etc." + RESET);
         System.exit(1);
+    }
+
+    private static void cmdKey(Args args) throws Exception {
+        String apiKey = getApiKey(args.apiKey);
+
+        if (args.keyExtend) {
+            // First validate to get public_key
+            Map<String, Object> result = validateKey(apiKey);
+            String publicKey = (String) result.get("public_key");
+            if (publicKey == null || publicKey.isEmpty()) {
+                System.err.println(RED + "Error: Could not retrieve public key" + RESET);
+                System.exit(1);
+            }
+
+            String extendUrl = PORTAL_BASE + "/keys/extend?pk=" + urlEncode(publicKey);
+            System.out.println(YELLOW + "Opening browser to extend key:" + RESET);
+            System.out.println(extendUrl);
+
+            // Try to open browser
+            try {
+                String os = System.getProperty("os.name").toLowerCase();
+                if (os.contains("mac")) {
+                    Runtime.getRuntime().exec(new String[]{"open", extendUrl});
+                } else if (os.contains("nix") || os.contains("nux")) {
+                    Runtime.getRuntime().exec(new String[]{"xdg-open", extendUrl});
+                } else if (os.contains("win")) {
+                    Runtime.getRuntime().exec(new String[]{"rundll32", "url.dll,FileProtocolHandler", extendUrl});
+                }
+            } catch (Exception e) {
+                // Browser opening failed, URL already printed
+            }
+            return;
+        }
+
+        // Default: validate key
+        Map<String, Object> result = validateKey(apiKey);
+        Boolean expired = (Boolean) result.get("expired");
+        String publicKey = (String) result.get("public_key");
+        String tier = (String) result.get("tier");
+        String status = (String) result.get("status");
+        String expiresAt = (String) result.get("expires_at");
+        String timeRemaining = (String) result.get("time_remaining");
+        Object rateLimit = result.get("rate_limit");
+        Object burst = result.get("burst");
+        Object concurrency = result.get("concurrency");
+
+        if (expired != null && expired) {
+            System.out.println(RED + "Expired" + RESET);
+            System.out.println("Public Key: " + (publicKey != null ? publicKey : "N/A"));
+            System.out.println("Tier: " + (tier != null ? tier : "N/A"));
+            System.out.println("Expired: " + (expiresAt != null ? expiresAt : "N/A"));
+            System.out.println(YELLOW + "To renew: Visit " + PORTAL_BASE + "/keys/extend" + RESET);
+            System.exit(1);
+        }
+
+        // Valid key
+        System.out.println(GREEN + "Valid" + RESET);
+        System.out.println("Public Key: " + (publicKey != null ? publicKey : "N/A"));
+        System.out.println("Tier: " + (tier != null ? tier : "N/A"));
+        System.out.println("Status: " + (status != null ? status : "N/A"));
+        System.out.println("Expires: " + (expiresAt != null ? expiresAt : "N/A"));
+        System.out.println("Time Remaining: " + (timeRemaining != null ? timeRemaining : "N/A"));
+        System.out.println("Rate Limit: " + (rateLimit != null ? rateLimit : "N/A"));
+        System.out.println("Burst: " + (burst != null ? burst : "N/A"));
+        System.out.println("Concurrency: " + (concurrency != null ? concurrency : "N/A"));
+    }
+
+    private static Map<String, Object> validateKey(String apiKey) throws Exception {
+        URL url = new URL(PORTAL_BASE + "/keys/validate");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setConnectTimeout(30000);
+        conn.setReadTimeout(30000);
+
+        int status = conn.getResponseCode();
+        if (status < 200 || status >= 300) {
+            String error = readStream(conn.getErrorStream());
+            // Try to parse error JSON
+            try {
+                Map<String, Object> errorJson = parseJson(error);
+                String reason = (String) errorJson.getOrDefault("error", error);
+                System.out.println(RED + "Invalid" + RESET);
+                System.out.println("Reason: " + reason);
+            } catch (Exception e) {
+                System.out.println(RED + "Invalid" + RESET);
+                System.out.println("Reason: " + error);
+            }
+            System.exit(1);
+        }
+
+        String response = readStream(conn.getInputStream());
+        return parseJson(response);
+    }
+
+    private static String urlEncode(String s) {
+        try {
+            return URLEncoder.encode(s, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            return s;
+        }
     }
 
     private static String getApiKey(String argsKey) {
@@ -562,6 +667,9 @@ public class Un {
         String serviceSleep = null;
         String serviceWake = null;
         String serviceDestroy = null;
+
+        // Key args
+        boolean keyExtend = false;
     }
 
     private static Args parseArgs(String[] args) {
@@ -572,6 +680,8 @@ public class Un {
                 result.command = "session";
             } else if (arg.equals("service")) {
                 result.command = "service";
+            } else if (arg.equals("key")) {
+                result.command = "key";
             } else if (arg.equals("-k") || arg.equals("--api-key")) {
                 result.apiKey = args[++i];
             } else if (arg.equals("-n") || arg.equals("--network")) {
@@ -613,6 +723,8 @@ public class Un {
                 result.serviceWake = args[++i];
             } else if (arg.equals("--destroy")) {
                 result.serviceDestroy = args[++i];
+            } else if (arg.equals("--extend")) {
+                result.keyExtend = true;
             } else if (!arg.startsWith("-")) {
                 result.sourceFile = arg;
             }
@@ -624,6 +736,7 @@ public class Un {
         System.out.println("Usage: java Un [options] <source_file>");
         System.out.println("       java Un session [options]");
         System.out.println("       java Un service [options]");
+        System.out.println("       java Un key [options]");
         System.out.println();
         System.out.println("Execute options:");
         System.out.println("  -e KEY=VALUE      Set environment variable");
@@ -651,5 +764,8 @@ public class Un {
         System.out.println("  --sleep ID        Freeze service");
         System.out.println("  --wake ID         Unfreeze service");
         System.out.println("  --destroy ID      Destroy service");
+        System.out.println();
+        System.out.println("Key options:");
+        System.out.println("  --extend          Open browser to extend key");
     }
 }

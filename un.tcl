@@ -48,6 +48,7 @@ package require base64
 ::http::register https 443 ::tls::socket
 
 set API_BASE "https://api.unsandbox.com"
+set PORTAL_BASE "https://unsandbox.com"
 set BLUE "\033\[34m"
 set RED "\033\[31m"
 set GREEN "\033\[32m"
@@ -351,6 +352,91 @@ proc cmd_session {args} {
     puts "${::YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${::RESET}"
 }
 
+proc cmd_key {args} {
+    set api_key [get_api_key]
+    set extend_mode 0
+
+    # Parse arguments
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set arg [lindex $args $i]
+        switch -exact -- $arg {
+            --extend {
+                set extend_mode 1
+            }
+        }
+    }
+
+    # POST to /keys/validate with Bearer auth
+    set url "${::PORTAL_BASE}/keys/validate"
+    set headers [list Authorization "Bearer $api_key" Content-Type "application/json"]
+
+    set token [::http::geturl $url -method POST -headers $headers -timeout 30000]
+    set status [::http::status $token]
+    set ncode [::http::ncode $token]
+    set body [::http::data $token]
+    ::http::cleanup $token
+
+    if {$status ne "ok"} {
+        puts stderr "${::RED}Error: Failed to connect to validation endpoint${::RESET}"
+        exit 1
+    }
+
+    if {$ncode == 401 || $ncode == 403} {
+        puts "${::RED}Invalid${::RESET}"
+        puts "Status: Invalid API key"
+        exit 1
+    }
+
+    if {$ncode != 200} {
+        puts stderr "${::RED}Error: HTTP $ncode${::RESET}"
+        puts stderr $body
+        exit 1
+    }
+
+    set result [::json::json2dict $body]
+    set key_status [dict get $result status]
+    set public_key [dict get $result public_key]
+    set tier [dict get $result tier]
+
+    if {$key_status eq "valid"} {
+        puts "${::GREEN}Valid${::RESET}"
+        puts "Public Key: $public_key"
+        puts "Tier: $tier"
+
+        if {[dict exists $result expires_at]} {
+            set expires_at [dict get $result expires_at]
+            puts "Expires: $expires_at"
+        }
+
+        if {$extend_mode} {
+            set extend_url "${::PORTAL_BASE}/keys/extend?pk=${public_key}"
+            puts "${::YELLOW}Opening browser to extend key...${::RESET}"
+            exec xdg-open $extend_url &
+        }
+    } elseif {$key_status eq "expired"} {
+        puts "${::RED}Expired${::RESET}"
+        puts "Public Key: $public_key"
+        puts "Tier: $tier"
+
+        if {[dict exists $result expired_at]} {
+            set expired_at [dict get $result expired_at]
+            puts "Expired: $expired_at"
+        }
+
+        puts "${::YELLOW}To renew: Visit ${::PORTAL_BASE}/keys/extend${::RESET}"
+
+        if {$extend_mode} {
+            set extend_url "${::PORTAL_BASE}/keys/extend?pk=${public_key}"
+            puts "${::YELLOW}Opening browser to extend key...${::RESET}"
+            exec xdg-open $extend_url &
+        }
+    } else {
+        puts "${::RED}Invalid${::RESET}"
+        puts "Status: Unknown key status"
+        exit 1
+    }
+}
+
 proc cmd_service {args} {
     set api_key [get_api_key]
     set list_mode 0
@@ -525,6 +611,7 @@ proc main {argv} {
         puts stderr "Usage: un.tcl \[options\] <source_file>"
         puts stderr "       un.tcl session \[options\]"
         puts stderr "       un.tcl service \[options\]"
+        puts stderr "       un.tcl key \[--extend\]"
         exit 1
     }
 
@@ -534,6 +621,8 @@ proc main {argv} {
         cmd_session [lrange $argv 1 end]
     } elseif {$first_arg eq "service"} {
         cmd_service [lrange $argv 1 end]
+    } elseif {$first_arg eq "key"} {
+        cmd_key [lrange $argv 1 end]
     } else {
         cmd_execute $argv
     }

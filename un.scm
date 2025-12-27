@@ -53,6 +53,8 @@
 (define yellow "\x1b[33m")
 (define reset "\x1b[0m")
 
+(define portal-base "https://unsandbox.com")
+
 (define ext-map
   '((".hs" . "haskell") (".ml" . "ocaml") (".clj" . "clojure")
     (".scm" . "scheme") (".lisp" . "commonlisp") (".erl" . "erlang")
@@ -135,11 +137,85 @@
     (close-pipe port)
     output))
 
+(define (curl-post-portal api-key endpoint json-data)
+  (let* ((tmp-file (write-temp-file json-data))
+         (cmd (format #f "curl -s -X POST ~a~a -H 'Content-Type: application/json' -H 'Authorization: Bearer ~a' -d @~a"
+                      portal-base endpoint api-key tmp-file))
+         (port (open-input-pipe cmd))
+         (output (let loop ((lines '()))
+                   (let ((line (read-line port)))
+                     (if (eof-object? line)
+                         (string-join (reverse lines) "\n")
+                         (loop (cons line lines)))))))
+    (close-pipe port)
+    (delete-file tmp-file)
+    output))
+
 (define (get-api-key)
   (or (getenv "UNSANDBOX_API_KEY")
       (begin
         (display "Error: UNSANDBOX_API_KEY not set\n" (current-error-port))
         (exit 1))))
+
+(define (json-extract-string json key)
+  "Extract string value for key from JSON (simple parser)"
+  (let* ((pattern (format #f "\"~a\":\\s*\"([^\"]*)" key))
+         (cmd (format #f "echo '~a' | grep -oP '~a' | sed 's/\"~a\":\\s*\"//'" json pattern key))
+         (port (open-input-pipe cmd))
+         (result (read-line port)))
+    (close-pipe port)
+    (if (eof-object? result) #f result)))
+
+(define (json-has-field json field)
+  "Check if JSON contains a field"
+  (string-contains json (format #f "\"~a\"" field)))
+
+(define (open-browser url)
+  "Open URL in browser using xdg-open"
+  (let ((cmd (format #f "xdg-open '~a' 2>/dev/null &" url)))
+    (system cmd)))
+
+(define (validate-key-cmd extend)
+  (let* ((api-key (get-api-key))
+         (response (curl-post-portal api-key "/keys/validate" "{}"))
+         (status (json-extract-string response "status"))
+         (public-key (json-extract-string response "public_key"))
+         (tier (json-extract-string response "tier"))
+         (expires-at (json-extract-string response "expires_at")))
+
+    (cond
+      ;; Valid key
+      ((and status (string=? status "valid"))
+       (format #t "~aValid~a\n" green reset)
+       (when public-key (format #t "Public Key: ~a\n" public-key))
+       (when tier (format #t "Tier: ~a\n" tier))
+       (when expires-at (format #t "Expires: ~a\n" expires-at))
+       (when extend
+         (if public-key
+             (let ((url (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
+               (format #t "~aOpening browser to extend key...~a\n" yellow reset)
+               (open-browser url))
+             (format #t "~aError: No public_key in response~a\n" red reset))))
+
+      ;; Expired key
+      ((and status (string=? status "expired"))
+       (format #t "~aExpired~a\n" red reset)
+       (when public-key (format #t "Public Key: ~a\n" public-key))
+       (when tier (format #t "Tier: ~a\n" tier))
+       (when expires-at (format #t "Expired: ~a\n" expires-at))
+       (format #t "~aTo renew: Visit ~a/keys/extend~a\n" yellow portal-base reset)
+       (when extend
+         (if public-key
+             (let ((url (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
+               (format #t "~aOpening browser...~a\n" yellow reset)
+               (open-browser url))
+             (format #t "~aError: No public_key in response~a\n" red reset))))
+
+      ;; Invalid or error
+      (else
+       (format #t "~aInvalid~a\n" red reset)
+       (display response)
+       (newline)))))
 
 (define (execute-cmd file)
   (let* ((api-key (get-api-key))
@@ -212,8 +288,12 @@
         (display "Usage: un.scm [options] <source_file>\n")
         (display "       un.scm session [options]\n")
         (display "       un.scm service [options]\n")
+        (display "       un.scm key [--extend]\n")
         (exit 1))
       (cond
+        ((equal? (car args) "key")
+         (let ((extend (and (> (length args) 1) (equal? (cadr args) "--extend"))))
+           (validate-key-cmd extend)))
         ((equal? (car args) "session")
          (if (and (> (length args) 1) (equal? (cadr args) "--list"))
              (session-cmd "list" #f #f)

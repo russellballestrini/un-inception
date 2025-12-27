@@ -62,6 +62,9 @@ let green = "\x1b[32m"
 let yellow = "\x1b[33m"
 let reset = "\x1b[0m"
 
+(* Portal base URL *)
+let portal_base = "https://unsandbox.com"
+
 (* Extension to language mapping *)
 let ext_to_lang ext =
   match ext with
@@ -118,6 +121,23 @@ let curl_post api_key endpoint json =
   let _ = Unix.close_process_in ic in
   output
 
+let portal_curl_post api_key endpoint json =
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
+    portal_base endpoint api_key tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let output = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  output
+
 let curl_get api_key endpoint =
   let cmd = Printf.sprintf "curl -s https://api.unsandbox.com%s -H 'Authorization: Bearer %s'"
     endpoint api_key in
@@ -146,6 +166,31 @@ let curl_delete api_key endpoint =
   in
   let _ = Unix.close_process_in ic in
   output
+
+(* Extract JSON value - simple regex-based parser *)
+let extract_json_value json_str key =
+  let pattern = "\"" ^ key ^ "\"\\s*:\\s*\"\\([^\"]*\\)\"" in
+  let regex = Str.regexp pattern in
+  try
+    let _ = Str.search_forward regex json_str 0 in
+    Some (Str.matched_group 1 json_str)
+  with Not_found -> None
+
+(* Open browser *)
+let open_browser url =
+  Printf.printf "%sOpening browser: %s%s\n" blue url reset;
+  let _ = match Sys.os_type with
+    | "Unix" | "Cygwin" ->
+      (* Try xdg-open for Linux *)
+      (try Sys.command (Printf.sprintf "xdg-open '%s' 2>/dev/null" url)
+       with _ ->
+         (* Fallback to open for macOS *)
+         try Sys.command (Printf.sprintf "open '%s' 2>/dev/null" url)
+         with _ -> 1)
+    | "Win32" ->
+      Sys.command (Printf.sprintf "start '%s'" url)
+    | _ -> 1
+  in ()
 
 (* Parse JSON response for stdout/stderr/exit_code *)
 let extract_field field json =
@@ -225,6 +270,53 @@ let execute_command file env_vars artifacts out_dir network vcpu =
     | None -> 0
   in
   exit exit_code
+
+(* Display key info *)
+let display_key_info response extend =
+  let status = extract_json_value response "status" in
+  let public_key = extract_json_value response "public_key" in
+  let tier = extract_json_value response "tier" in
+  let expires_at = extract_json_value response "expires_at" in
+
+  match status with
+  | Some "valid" ->
+    Printf.printf "%sValid%s\n" green reset;
+    (match public_key with Some pk -> Printf.printf "Public Key: %s\n" pk | None -> ());
+    (match tier with Some t -> Printf.printf "Tier: %s\n" t | None -> ());
+    (match expires_at with Some exp -> Printf.printf "Expires: %s\n" exp | None -> ());
+    if extend then
+      (match public_key with
+       | Some pk -> open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base pk)
+       | None -> ())
+  | Some "expired" ->
+    Printf.printf "%sExpired%s\n" red reset;
+    (match public_key with Some pk -> Printf.printf "Public Key: %s\n" pk | None -> ());
+    (match tier with Some t -> Printf.printf "Tier: %s\n" t | None -> ());
+    (match expires_at with Some exp -> Printf.printf "Expired: %s\n" exp | None -> ());
+    Printf.printf "%sTo renew: Visit %s/keys/extend%s\n" yellow portal_base reset;
+    if extend then
+      (match public_key with
+       | Some pk -> open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base pk)
+       | None -> ())
+  | Some "invalid" ->
+    Printf.printf "%sInvalid%s\n" red reset
+  | Some s ->
+    Printf.printf "%sUnknown status: %s%s\n" red s reset;
+    Printf.printf "%s\n" response
+  | None ->
+    Printf.printf "%sError: Could not parse response%s\n" red reset;
+    Printf.printf "%s\n" response
+
+(* Validate key command *)
+let validate_key api_key extend =
+  let json = "{}" in
+  let response = portal_curl_post api_key "/keys/validate" json in
+  display_key_info response extend
+
+(* Key command *)
+let key_command extend =
+  let api_key = get_api_key () in
+  validate_key api_key extend
 
 (* Session command *)
 let session_command action shell network vcpu =
@@ -364,7 +456,11 @@ let () =
     Printf.printf "Usage: un.ml [options] <source_file>\n";
     Printf.printf "       un.ml session [options]\n";
     Printf.printf "       un.ml service [options]\n";
+    Printf.printf "       un.ml key [--extend]\n";
     exit 1
+  | "key" :: rest ->
+    let extend = List.mem "--extend" rest in
+    key_command extend
   | "session" :: rest ->
     let rec parse_session action shell network vcpu = function
       | [] -> session_command action shell network vcpu

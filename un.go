@@ -54,18 +54,22 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	APIBase = "https://api.unsandbox.com"
-	Blue    = "\033[34m"
-	Red     = "\033[31m"
-	Green   = "\033[32m"
-	Yellow  = "\033[33m"
-	Reset   = "\033[0m"
+	APIBase    = "https://api.unsandbox.com"
+	PortalBase = "https://unsandbox.com"
+	Blue       = "\033[34m"
+	Red        = "\033[31m"
+	Green      = "\033[32m"
+	Yellow     = "\033[33m"
+	Reset      = "\033[0m"
 )
 
 var extMap = map[string]string{
@@ -454,6 +458,154 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	os.Exit(1)
 }
 
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return fmt.Errorf("unsupported platform")
+	}
+	return cmd.Start()
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	} else if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	} else {
+		return fmt.Sprintf("%dm", minutes)
+	}
+}
+
+func validateKey(apiKey string, extend bool) {
+	url := PortalBase + "/keys/validate"
+	reqBody := bytes.NewBuffer(nil)
+
+	req, err := http.NewRequest("POST", url, reqBody)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError creating request: %v%s\n", Red, err, Reset)
+		os.Exit(1)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError making request: %v%s\n", Red, err, Reset)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError reading response: %v%s\n", Red, err, Reset)
+		os.Exit(1)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "%sError parsing response: %v%s\n", Red, err, Reset)
+		os.Exit(1)
+	}
+
+	if resp.StatusCode >= 400 {
+		// Invalid key
+		fmt.Printf("%sInvalid%s\n", Red, Reset)
+		if reason, ok := result["error"].(string); ok {
+			fmt.Printf("Reason: %s\n", reason)
+		} else if reason, ok := result["message"].(string); ok {
+			fmt.Printf("Reason: %s\n", reason)
+		}
+		os.Exit(1)
+	}
+
+	valid, _ := result["valid"].(bool)
+	expired, _ := result["expired"].(bool)
+	publicKey, _ := result["public_key"].(string)
+	tier, _ := result["tier"].(string)
+	status, _ := result["status"].(string)
+
+	if expired {
+		// Expired key
+		fmt.Printf("%sExpired%s\n", Red, Reset)
+		fmt.Printf("Public Key: %s\n", publicKey)
+		fmt.Printf("Tier: %s\n", tier)
+		if expiresAt, ok := result["expires_at"].(string); ok {
+			fmt.Printf("Expired: %s\n", expiresAt)
+		}
+		fmt.Printf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", Yellow, Reset)
+
+		if extend {
+			extendURL := PortalBase + "/keys/extend?pk=" + publicKey
+			fmt.Printf("\n%sOpening browser to extend key...%s\n", Green, Reset)
+			if err := openBrowser(extendURL); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError opening browser: %v%s\n", Red, err, Reset)
+				fmt.Printf("Please visit: %s\n", extendURL)
+			}
+		}
+		os.Exit(1)
+	}
+
+	if valid {
+		// Valid key
+		fmt.Printf("%sValid%s\n", Green, Reset)
+		fmt.Printf("Public Key: %s\n", publicKey)
+		fmt.Printf("Tier: %s\n", tier)
+		fmt.Printf("Status: %s\n", status)
+
+		if expiresAt, ok := result["expires_at"].(string); ok {
+			fmt.Printf("Expires: %s\n", expiresAt)
+
+			// Calculate time remaining
+			expireTime, err := time.Parse(time.RFC3339, expiresAt)
+			if err == nil {
+				remaining := time.Until(expireTime)
+				if remaining > 0 {
+					fmt.Printf("Time Remaining: %s\n", formatDuration(remaining))
+				}
+			}
+		}
+
+		if rateLimit, ok := result["rate_limit"].(float64); ok {
+			fmt.Printf("Rate Limit: %.0f req/min\n", rateLimit)
+		}
+		if burst, ok := result["burst"].(float64); ok {
+			fmt.Printf("Burst: %.0f req\n", burst)
+		}
+		if concurrency, ok := result["concurrency"].(float64); ok {
+			fmt.Printf("Concurrency: %.0f\n", concurrency)
+		}
+
+		if extend {
+			extendURL := PortalBase + "/keys/extend?pk=" + publicKey
+			fmt.Printf("\n%sOpening browser to extend key...%s\n", Green, Reset)
+			if err := openBrowser(extendURL); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError opening browser: %v%s\n", Red, err, Reset)
+				fmt.Printf("Please visit: %s\n", extendURL)
+			}
+		}
+	} else {
+		// Invalid key
+		fmt.Printf("%sInvalid%s\n", Red, Reset)
+		if reason, ok := result["error"].(string); ok {
+			fmt.Printf("Reason: %s\n", reason)
+		}
+		os.Exit(1)
+	}
+}
+
 func main() {
 	// Common flags
 	apiKey := flag.String("k", "", "API key (or set UNSANDBOX_API_KEY)")
@@ -497,6 +649,11 @@ func main() {
 	serviceVcpu := serviceCmd.Int("v", 0, "vCPU count")
 	serviceKey := serviceCmd.String("k", "", "API key")
 
+	// Key flags
+	keyCmd := flag.NewFlagSet("key", flag.ExitOnError)
+	keyExtend := keyCmd.Bool("extend", false, "Open browser to extend key")
+	keyKey := keyCmd.String("k", "", "API key")
+
 	// Parse
 	flag.Parse()
 
@@ -529,6 +686,12 @@ func main() {
 			}
 			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, net, vc, key)
 			return
+
+		case "key":
+			keyCmd.Parse(os.Args[2:])
+			key := getAPIKey(*keyKey)
+			validateKey(key, *keyExtend)
+			return
 		}
 	}
 
@@ -537,6 +700,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] <source_file>\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "       %s session [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "       %s service [options]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s key [options]\n", os.Args[0])
 		os.Exit(1)
 	}
 

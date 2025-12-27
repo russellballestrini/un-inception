@@ -57,6 +57,7 @@ require 'fileutils'
 require 'optparse'
 
 API_BASE = 'https://api.unsandbox.com'
+PORTAL_BASE = 'https://unsandbox.com'
 BLUE = "\e[34m"
 RED = "\e[31m"
 GREEN = "\e[32m"
@@ -245,6 +246,86 @@ def cmd_session(options)
   puts "#{YELLOW}(Interactive sessions require WebSocket - use un2 for full support)#{RESET}"
 end
 
+def validate_key(api_key)
+  uri = URI("#{PORTAL_BASE}/keys/validate")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.read_timeout = 30
+
+  request = Net::HTTP::Post.new(uri)
+  request['Authorization'] = "Bearer #{api_key}"
+  request['Content-Type'] = 'application/json'
+
+  response = http.request(request)
+
+  begin
+    result = JSON.parse(response.body)
+  rescue JSON::ParserError => e
+    warn "#{RED}Error: Failed to parse response: #{e.message}#{RESET}"
+    exit 1
+  end
+
+  if response.is_a?(Net::HTTPSuccess) && result['valid']
+    puts "#{GREEN}Valid#{RESET}"
+    puts "Public Key: #{result['public_key']}"
+    puts "Tier: #{result['tier']}"
+    puts "Status: #{result['status']}"
+    puts "Expires: #{result['expires_at']}"
+    puts "Time Remaining: #{result['time_remaining']}"
+    puts "Rate Limit: #{result['rate_limit']}"
+    puts "Burst: #{result['burst']}"
+    puts "Concurrency: #{result['concurrency']}"
+    result
+  elsif result['expired']
+    puts "#{RED}Expired#{RESET}"
+    puts "Public Key: #{result['public_key']}"
+    puts "Tier: #{result['tier']}"
+    puts "Expired: #{result['expires_at']}"
+    puts "#{YELLOW}To renew: Visit https://unsandbox.com/keys/extend#{RESET}"
+    result
+  else
+    puts "#{RED}Invalid#{RESET}"
+    puts "Error: #{result['error'] || result['reason'] || 'Unknown error'}"
+    exit 1
+  end
+rescue => e
+  warn "#{RED}Error: #{e.message}#{RESET}"
+  exit 1
+end
+
+def open_browser(url)
+  case RbConfig::CONFIG['host_os']
+  when /mswin|mingw|cygwin/
+    system("start #{url}")
+  when /darwin/
+    system("open #{url}")
+  when /linux|bsd/
+    system("xdg-open #{url}")
+  else
+    puts "#{YELLOW}Please open this URL in your browser:#{RESET}"
+    puts url
+  end
+end
+
+def cmd_key(options)
+  api_key = get_api_key(options[:api_key])
+
+  if options[:extend]
+    result = validate_key(api_key)
+    public_key = result['public_key']
+    if public_key
+      url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
+      puts "#{GREEN}Opening browser to extend key...#{RESET}"
+      open_browser(url)
+    else
+      warn "#{RED}Error: Could not retrieve public key#{RESET}"
+      exit 1
+    end
+  else
+    validate_key(api_key)
+  end
+end
+
 def cmd_service(options)
   api_key = get_api_key(options[:api_key])
 
@@ -366,7 +447,7 @@ def main
     wake: nil,
     destroy: nil,
     execute: nil,
-    command: nil
+    extend: false
   }
 
   # Manual argument parsing
@@ -375,7 +456,7 @@ def main
     arg = ARGV[i]
 
     case arg
-    when 'session', 'service'
+    when 'session', 'service', 'key'
       options[:command] = arg
     when '-e'
       i += 1
@@ -453,6 +534,8 @@ def main
     when '--command'
       i += 1
       options[:command] = ARGV[i]
+    when '--extend'
+      options[:extend] = true
     else
       options[:source_file] = arg unless arg.start_with?('-')
     end
@@ -465,6 +548,8 @@ def main
     cmd_session(options)
   when 'service'
     cmd_service(options)
+  when 'key'
+    cmd_key(options)
   else
     if options[:source_file]
       cmd_execute(options)
@@ -476,6 +561,7 @@ def main
           #{$PROGRAM_NAME} [options] <source_file>
           #{$PROGRAM_NAME} session [options]
           #{$PROGRAM_NAME} service [options]
+          #{$PROGRAM_NAME} key [options]
 
         Execute options:
           -e KEY=VALUE      Environment variable (multiple allowed)
@@ -510,6 +596,10 @@ def main
           --destroy ID     Destroy service
           --execute ID     Execute command in service
           --command CMD    Command to execute (with --execute)
+
+        Key options:
+          -k KEY           API key (or use UNSANDBOX_API_KEY env var)
+          --extend         Validate key and open browser to extend
       HELP
       exit 1
     end

@@ -64,6 +64,7 @@ YELLOW <- "\033[33m"
 RESET <- "\033[0m"
 
 API_BASE <- "https://api.unsandbox.com"
+PORTAL_BASE <- "https://unsandbox.com"
 
 detect_language <- function(filename) {
     ext <- tolower(sub(".*(\\..*)$", "\\1", filename))
@@ -233,6 +234,73 @@ cmd_session <- function(args) {
     quit(status = 1)
 }
 
+cmd_key <- function(args) {
+    api_key <- get_api_key(args$api_key)
+
+    if (!is.null(args$extend) && args$extend) {
+        # First validate to get public_key
+        url <- paste0(PORTAL_BASE, "/keys/validate")
+        headers <- add_headers(
+            `Content-Type` = "application/json",
+            `Authorization` = paste("Bearer", api_key)
+        )
+
+        tryCatch({
+            response <- POST(url, headers, encode = "json", timeout(10))
+            result <- fromJSON(content(response, "text", encoding = "UTF-8"))
+
+            if (!is.null(result$public_key)) {
+                extend_url <- paste0(PORTAL_BASE, "/keys/extend?pk=", result$public_key)
+                cat(sprintf("Opening: %s\n", extend_url))
+                system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", extend_url, extend_url, extend_url))
+            } else {
+                cat(sprintf("%sError: Could not retrieve public key%s\n", RED, RESET), file = stderr())
+                quit(status = 1)
+            }
+        }, error = function(e) {
+            cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
+            quit(status = 1)
+        })
+        return()
+    }
+
+    # Validate key
+    url <- paste0(PORTAL_BASE, "/keys/validate")
+    headers <- add_headers(
+        `Content-Type` = "application/json",
+        `Authorization` = paste("Bearer", api_key)
+    )
+
+    tryCatch({
+        response <- POST(url, headers, encode = "json", timeout(10))
+        result <- fromJSON(content(response, "text", encoding = "UTF-8"))
+
+        status <- if (!is.null(result$status)) result$status else "Unknown"
+
+        if (status == "valid") {
+            cat(sprintf("%sValid%s\n", GREEN, RESET))
+            cat(sprintf("Public Key: %s\n", if (!is.null(result$public_key)) result$public_key else "N/A"))
+            cat(sprintf("Tier: %s\n", if (!is.null(result$tier)) result$tier else "N/A"))
+            if (!is.null(result$expires_at)) {
+                cat(sprintf("Expires: %s\n", result$expires_at))
+            }
+        } else if (status == "expired") {
+            cat(sprintf("%sExpired%s\n", RED, RESET))
+            cat(sprintf("Public Key: %s\n", if (!is.null(result$public_key)) result$public_key else "N/A"))
+            cat(sprintf("Tier: %s\n", if (!is.null(result$tier)) result$tier else "N/A"))
+            if (!is.null(result$expires_at)) {
+                cat(sprintf("Expired: %s\n", result$expires_at))
+            }
+            cat(sprintf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", YELLOW, RESET))
+        } else {
+            cat(sprintf("%sInvalid%s\n", RED, RESET))
+        }
+    }, error = function(e) {
+        cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
+        quit(status = 1)
+    })
+}
+
 cmd_service <- function(args) {
     api_key <- get_api_key(args$api_key)
 
@@ -356,7 +424,8 @@ parse_args <- function() {
         domains = NULL,
         type = NULL,
         bootstrap = NULL,
-        vcpu = NULL
+        vcpu = NULL,
+        extend = FALSE
     )
 
     i <- 1
@@ -368,6 +437,9 @@ parse_args <- function() {
             i <- i + 1
         } else if (arg == "service") {
             result$command <- "service"
+            i <- i + 1
+        } else if (arg == "key") {
+            result$command <- "key"
             i <- i + 1
         } else if (arg %in% c("-k", "--api-key")) {
             i <- i + 1
@@ -443,6 +515,9 @@ parse_args <- function() {
             i <- i + 1
             result$vcpu <- as.integer(args[i])
             i <- i + 1
+        } else if (arg == "--extend") {
+            result$extend <- TRUE
+            i <- i + 1
         } else if (!startsWith(arg, "-")) {
             result$source_file <- arg
             i <- i + 1
@@ -462,12 +537,15 @@ main <- function() {
         cmd_session(args)
     } else if (!is.null(args$command) && args$command == "service") {
         cmd_service(args)
+    } else if (!is.null(args$command) && args$command == "key") {
+        cmd_key(args)
     } else if (!is.null(args$source_file)) {
         cmd_execute(args)
     } else {
         cat("Usage: un.r [options] <source_file>\n", file = stderr())
         cat("       un.r session [options]\n", file = stderr())
         cat("       un.r service [options]\n", file = stderr())
+        cat("       un.r key [options]\n", file = stderr())
         quit(status = 1)
     }
 }

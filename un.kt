@@ -47,6 +47,7 @@ import java.util.Base64
 import kotlin.system.exitProcess
 
 val API_BASE = "https://api.unsandbox.com"
+val PORTAL_BASE = "https://unsandbox.com"
 val BLUE = "\u001B[34m"
 val RED = "\u001B[31m"
 val GREEN = "\u001B[32m"
@@ -92,7 +93,8 @@ data class Args(
     var serviceTail: String? = null,
     var serviceSleep: String? = null,
     var serviceWake: String? = null,
-    var serviceDestroy: String? = null
+    var serviceDestroy: String? = null,
+    var keyExtend: Boolean = false
 )
 
 fun main(args: Array<String>) {
@@ -102,6 +104,7 @@ fun main(args: Array<String>) {
         when (parsedArgs.command) {
             "session" -> cmdSession(parsedArgs)
             "service" -> cmdService(parsedArgs)
+            "key" -> cmdKey(parsedArgs)
             else -> if (parsedArgs.sourceFile != null) {
                 cmdExecute(parsedArgs)
             } else {
@@ -329,6 +332,77 @@ fun cmdService(args: Args) {
     exitProcess(1)
 }
 
+fun cmdKey(args: Args) {
+    val apiKey = getApiKey(args.apiKey)
+
+    val result = validateKey(apiKey)
+    val valid = result["valid"] as? Boolean ?: false
+    val expired = result["expired"] as? Boolean ?: false
+    val publicKey = result["public_key"] as? String ?: ""
+    val tier = result["tier"] as? String ?: ""
+    val expiresAt = result["expires_at"] as? String ?: ""
+
+    if (args.keyExtend) {
+        if (publicKey.isEmpty()) {
+            System.err.println("${RED}Error: Could not retrieve public key${RESET}")
+            exitProcess(1)
+        }
+        val extendUrl = "$PORTAL_BASE/keys/extend?pk=$publicKey"
+        println("${YELLOW}Opening browser to extend key...${RESET}")
+        println(extendUrl)
+
+        // Try to open browser using common commands
+        val osName = System.getProperty("os.name").lowercase()
+        val openCmd = when {
+            osName.contains("mac") || osName.contains("darwin") -> "open"
+            osName.contains("win") -> "start"
+            else -> "xdg-open"
+        }
+
+        try {
+            Runtime.getRuntime().exec(arrayOf(openCmd, extendUrl))
+        } catch (e: Exception) {
+            println("${YELLOW}Could not open browser automatically. Please visit the URL above.${RESET}")
+        }
+        return
+    }
+
+    if (expired) {
+        println("${RED}Status: Expired${RESET}")
+        println("Public Key: $publicKey")
+        println("Tier: $tier")
+        println("Expired: $expiresAt")
+        println("${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}")
+    } else if (valid) {
+        println("${GREEN}Status: Valid${RESET}")
+        println("Public Key: $publicKey")
+        println("Tier: $tier")
+        println("Expires: $expiresAt")
+    } else {
+        println("${RED}Status: Invalid${RESET}")
+        exitProcess(1)
+    }
+}
+
+fun validateKey(apiKey: String): Map<String, Any> {
+    val url = URL("$PORTAL_BASE/keys/validate")
+    val connection = url.openConnection() as HttpURLConnection
+
+    connection.requestMethod = "POST"
+    connection.setRequestProperty("Authorization", "Bearer $apiKey")
+    connection.setRequestProperty("Content-Type", "application/json")
+    connection.connectTimeout = 30000
+    connection.readTimeout = 30000
+
+    if (connection.responseCode !in 200..299) {
+        val error = connection.errorStream?.bufferedReader()?.readText() ?: ""
+        throw RuntimeException("HTTP ${connection.responseCode} - $error")
+    }
+
+    val response = connection.inputStream.bufferedReader().readText()
+    return parseJson(response)
+}
+
 fun getApiKey(argsKey: String?): String {
     val key = argsKey ?: System.getenv("UNSANDBOX_API_KEY")
     if (key.isNullOrEmpty()) {
@@ -500,6 +574,7 @@ fun parseArgs(args: Array<String>): Args {
         when (args[i]) {
             "session" -> result.command = "session"
             "service" -> result.command = "service"
+            "key" -> result.command = "key"
             "-k", "--api-key" -> result.apiKey = args[++i]
             "-n", "--network" -> result.network = args[++i]
             "-v", "--vcpu" -> result.vcpu = args[++i].toInt()
@@ -525,6 +600,7 @@ fun parseArgs(args: Array<String>): Args {
             "--sleep" -> result.serviceSleep = args[++i]
             "--wake" -> result.serviceWake = args[++i]
             "--destroy" -> result.serviceDestroy = args[++i]
+            "--extend" -> result.keyExtend = true
             else -> if (!args[i].startsWith("-")) result.sourceFile = args[i]
         }
         i++
@@ -537,6 +613,7 @@ fun printHelp() {
 Usage: kotlin UnKt [options] <source_file>
        kotlin UnKt session [options]
        kotlin UnKt service [options]
+       kotlin UnKt key [options]
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -564,5 +641,8 @@ Service options:
   --sleep ID        Freeze service
   --wake ID         Unfreeze service
   --destroy ID      Destroy service
+
+Key options:
+  --extend          Open browser to extend key
     """.trimIndent())
 }

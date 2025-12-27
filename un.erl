@@ -46,6 +46,7 @@ main([]) ->
     io:format("Usage: un.erl [options] <source_file>~n"),
     io:format("       un.erl session [options]~n"),
     io:format("       un.erl service [options]~n"),
+    io:format("       un.erl key [options]~n"),
     halt(1);
 
 main(["session" | Rest]) ->
@@ -53,6 +54,9 @@ main(["session" | Rest]) ->
 
 main(["service" | Rest]) ->
     service_command(Rest);
+
+main(["key" | Rest]) ->
+    key_command(Rest);
 
 main(Args) ->
     execute_command(Args).
@@ -173,6 +177,70 @@ service_command(Args) ->
             io:format("~s~n", [Response])
     end.
 
+%% Key command
+key_command(Args) ->
+    ApiKey = get_api_key(),
+    case has_extend_flag(Args) of
+        true ->
+            validate_and_extend_key(ApiKey);
+        false ->
+            validate_key(ApiKey)
+    end.
+
+validate_key(ApiKey) ->
+    Response = curl_post_portal(ApiKey, "/keys/validate", "{}"),
+    parse_and_display_key_status(Response, false).
+
+validate_and_extend_key(ApiKey) ->
+    Response = curl_post_portal(ApiKey, "/keys/validate", "{}"),
+    parse_and_display_key_status(Response, true).
+
+parse_and_display_key_status(Response, ShouldExtend) ->
+    %% Parse JSON response (simple extraction for fields we need)
+    Status = extract_json_field(Response, "status"),
+    PublicKey = extract_json_field(Response, "public_key"),
+    Tier = extract_json_field(Response, "tier"),
+    ExpiresAt = extract_json_field(Response, "expires_at"),
+
+    case Status of
+        "valid" ->
+            io:format("\033[32mValid\033[0m~n"),
+            io:format("Public Key: ~s~n", [PublicKey]),
+            io:format("Tier: ~s~n", [Tier]),
+            io:format("Expires: ~s~n", [ExpiresAt]),
+            if ShouldExtend ->
+                open_extend_page(PublicKey);
+            true -> ok
+            end;
+        "expired" ->
+            io:format("\033[31mExpired\033[0m~n"),
+            io:format("Public Key: ~s~n", [PublicKey]),
+            io:format("Tier: ~s~n", [Tier]),
+            io:format("Expired: ~s~n", [ExpiresAt]),
+            io:format("\033[33mTo renew: Visit https://unsandbox.com/keys/extend\033[0m~n"),
+            if ShouldExtend ->
+                open_extend_page(PublicKey);
+            true -> ok
+            end;
+        "invalid" ->
+            io:format("\033[31mInvalid\033[0m~n"),
+            io:format("The API key is not valid.~n");
+        _ ->
+            io:format("~s~n", [Response])
+    end.
+
+open_extend_page(PublicKey) ->
+    Url = "https://unsandbox.com/keys/extend?pk=" ++ PublicKey,
+    io:format("\033[33mOpening browser to extend key...\033[0m~n"),
+    case os:type() of
+        {unix, darwin} ->
+            os:cmd("open '" ++ Url ++ "'");
+        {unix, _} ->
+            os:cmd("xdg-open '" ++ Url ++ "' 2>/dev/null || sensible-browser '" ++ Url ++ "' 2>/dev/null &");
+        {win32, _} ->
+            os:cmd("start " ++ Url)
+    end.
+
 %% Helpers
 get_api_key() ->
     case os:getenv("UNSANDBOX_API_KEY") of
@@ -250,6 +318,16 @@ curl_post(ApiKey, Endpoint, TmpFile) ->
           " -d @" ++ TmpFile,
     os:cmd(Cmd).
 
+curl_post_portal(ApiKey, Endpoint, Data) ->
+    TmpFile = write_temp_file(Data),
+    Cmd = "curl -s -X POST https://unsandbox.com" ++ Endpoint ++
+          " -H 'Content-Type: application/json'" ++
+          " -H 'Authorization: Bearer " ++ ApiKey ++ "'" ++
+          " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    Result.
+
 curl_get(ApiKey, Endpoint) ->
     Cmd = "curl -s https://api.unsandbox.com" ++ Endpoint ++
           " -H 'Authorization: Bearer " ++ ApiKey ++ "'",
@@ -289,3 +367,30 @@ get_service_bootstrap([_ | Rest]) -> get_service_bootstrap(Rest).
 get_service_type([]) -> undefined;
 get_service_type(["--type", Type | _]) -> Type;
 get_service_type([_ | Rest]) -> get_service_type(Rest).
+
+has_extend_flag([]) -> false;
+has_extend_flag(["--extend" | _]) -> true;
+has_extend_flag([_ | Rest]) -> has_extend_flag(Rest).
+
+%% Simple JSON field extraction (works for simple string fields)
+extract_json_field(Json, Field) ->
+    Pattern = "\"" ++ Field ++ "\":\"",
+    case string:str(Json, Pattern) of
+        0 -> "";
+        Pos ->
+            Start = Pos + length(Pattern),
+            Rest = lists:nthtail(Start - 1, Json),
+            extract_until_quote(Rest)
+    end.
+
+extract_until_quote(Str) ->
+    extract_until_quote(Str, []).
+
+extract_until_quote([], Acc) ->
+    lists:reverse(Acc);
+extract_until_quote([$\" | _], Acc) ->
+    lists:reverse(Acc);
+extract_until_quote([$\\, $\" | Rest], Acc) ->
+    extract_until_quote(Rest, [$\" | Acc]);
+extract_until_quote([C | Rest], Acc) ->
+    extract_until_quote(Rest, [C | Acc]).

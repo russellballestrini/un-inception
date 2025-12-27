@@ -52,6 +52,7 @@ set -euo pipefail
 # Requires: UNSANDBOX_API_KEY environment variable, jq, curl
 
 API_BASE="https://api.unsandbox.com"
+PORTAL_BASE="https://unsandbox.com"
 BLUE="\033[34m"
 RED="\033[31m"
 GREEN="\033[32m"
@@ -591,6 +592,149 @@ cmd_service() {
     exit 1
 }
 
+validate_key() {
+    local api_key="$1"
+    local extend_mode="$2"
+
+    if [[ -z "$api_key" ]]; then
+        echo -e "${RED}Error: API key not provided. Use -k flag or set UNSANDBOX_API_KEY${RESET}" >&2
+        exit 1
+    fi
+
+    # Call portal validation endpoint
+    local response
+    local http_code
+    response=$(curl -s -w "\n%{http_code}" -X POST "${PORTAL_BASE}/keys/validate" \
+        -H "Authorization: Bearer $api_key" \
+        -H "Content-Type: application/json" 2>&1)
+
+    http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | head -n-1)
+
+    if [[ "$http_code" -eq 200 ]]; then
+        # Valid key - parse response
+        if command -v jq &> /dev/null; then
+            # Use jq for parsing
+            local valid=$(echo "$body" | jq -r '.valid // false')
+            local public_key=$(echo "$body" | jq -r '.public_key // "N/A"')
+            local tier=$(echo "$body" | jq -r '.tier // "N/A"')
+            local expires_at=$(echo "$body" | jq -r '.expires_at // "N/A"')
+            local expired=$(echo "$body" | jq -r '.expired // false')
+
+            if [[ "$expired" == "true" ]]; then
+                echo -e "${RED}Expired${RESET}"
+                echo "Public Key: $public_key"
+                echo "Tier: $tier"
+                echo "Expired: $expires_at"
+                echo -e "${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}"
+                exit 1
+            else
+                echo -e "${GREEN}Valid${RESET}"
+                echo "Public Key: $public_key"
+                echo "Tier: $tier"
+                echo "Expires: $expires_at"
+
+                # If extend mode, open browser
+                if [[ "$extend_mode" == "true" ]]; then
+                    local extend_url="${PORTAL_BASE}/keys/extend?pk=${public_key}"
+                    echo -e "\n${BLUE}Opening browser to extend key...${RESET}"
+
+                    # Detect platform and open browser
+                    if command -v xdg-open &> /dev/null; then
+                        xdg-open "$extend_url" &> /dev/null
+                    elif command -v open &> /dev/null; then
+                        open "$extend_url" &> /dev/null
+                    elif command -v start &> /dev/null; then
+                        start "$extend_url" &> /dev/null
+                    else
+                        echo -e "${YELLOW}Cannot detect browser opener. Visit: $extend_url${RESET}"
+                    fi
+                fi
+            fi
+        else
+            # Fallback: use grep/sed for parsing (no jq available)
+            local valid=$(echo "$body" | grep -o '"valid"[[:space:]]*:[[:space:]]*[^,}]*' | sed 's/.*:[[:space:]]*//' | tr -d ' "')
+            local public_key=$(echo "$body" | grep -o '"public_key"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"//' | tr -d '"')
+            local tier=$(echo "$body" | grep -o '"tier"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"//' | tr -d '"')
+            local expires_at=$(echo "$body" | grep -o '"expires_at"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"//' | tr -d '"')
+            local expired=$(echo "$body" | grep -o '"expired"[[:space:]]*:[[:space:]]*[^,}]*' | sed 's/.*:[[:space:]]*//' | tr -d ' "')
+
+            [[ -z "$public_key" ]] && public_key="N/A"
+            [[ -z "$tier" ]] && tier="N/A"
+            [[ -z "$expires_at" ]] && expires_at="N/A"
+
+            if [[ "$expired" == "true" ]]; then
+                echo -e "${RED}Expired${RESET}"
+                echo "Public Key: $public_key"
+                echo "Tier: $tier"
+                echo "Expired: $expires_at"
+                echo -e "${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}"
+                exit 1
+            else
+                echo -e "${GREEN}Valid${RESET}"
+                echo "Public Key: $public_key"
+                echo "Tier: $tier"
+                echo "Expires: $expires_at"
+
+                # If extend mode, open browser
+                if [[ "$extend_mode" == "true" ]]; then
+                    local extend_url="${PORTAL_BASE}/keys/extend?pk=${public_key}"
+                    echo -e "\n${BLUE}Opening browser to extend key...${RESET}"
+
+                    # Detect platform and open browser
+                    if command -v xdg-open &> /dev/null; then
+                        xdg-open "$extend_url" &> /dev/null
+                    elif command -v open &> /dev/null; then
+                        open "$extend_url" &> /dev/null
+                    elif command -v start &> /dev/null; then
+                        start "$extend_url" &> /dev/null
+                    else
+                        echo -e "${YELLOW}Cannot detect browser opener. Visit: $extend_url${RESET}"
+                    fi
+                fi
+            fi
+        fi
+    else
+        # Invalid key or error
+        if command -v jq &> /dev/null; then
+            local error=$(echo "$body" | jq -r '.error // "Unknown error"')
+            echo -e "${RED}Invalid${RESET}"
+            echo "Error: $error"
+        else
+            # Fallback
+            local error=$(echo "$body" | grep -o '"error"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"//' | tr -d '"')
+            [[ -z "$error" ]] && error="Unknown error (HTTP $http_code)"
+            echo -e "${RED}Invalid${RESET}"
+            echo "Error: $error"
+        fi
+        exit 1
+    fi
+}
+
+cmd_key() {
+    local api_key="${UNSANDBOX_API_KEY}"
+    local extend=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -k)
+                api_key="$2"
+                shift 2
+                ;;
+            --extend)
+                extend=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    validate_key "$api_key" "$extend"
+}
+
 # Main
 show_help() {
     cat <<EOF
@@ -600,6 +744,7 @@ Usage:
   $0 [options] <source_file>
   $0 session [options]
   $0 service [options]
+  $0 key [options]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -634,6 +779,10 @@ Service options:
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+
+Key options:
+  -k KEY           API key to validate
+  --extend         Validate and open browser to extend key
 EOF
 }
 
@@ -650,6 +799,9 @@ if [[ "$1" == "session" ]]; then
 elif [[ "$1" == "service" ]]; then
     shift
     cmd_service "$@"
+elif [[ "$1" == "key" ]]; then
+    shift
+    cmd_key "$@"
 else
     cmd_execute "$@"
 fi

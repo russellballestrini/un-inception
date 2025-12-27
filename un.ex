@@ -58,6 +58,8 @@ defmodule Un do
   @yellow "\e[33m"
   @reset "\e[0m"
 
+  @portal_base "https://unsandbox.com"
+
   @ext_map %{
     ".ex" => "elixir", ".exs" => "elixir", ".erl" => "erlang",
     ".py" => "python", ".js" => "javascript", ".ts" => "typescript",
@@ -76,12 +78,14 @@ defmodule Un do
   def main([]), do: print_usage()
   def main(["session" | rest]), do: session_command(rest)
   def main(["service" | rest]), do: service_command(rest)
+  def main(["key" | rest]), do: key_command(rest)
   def main(args), do: execute_command(args)
 
   defp print_usage do
     IO.puts("Usage: un.ex [options] <source_file>")
     IO.puts("       un.ex session [options]")
     IO.puts("       un.ex service [options]")
+    IO.puts("       un.ex key [--extend]")
     System.halt(1)
   end
 
@@ -207,6 +211,134 @@ defmodule Un do
     IO.puts(response)
   end
 
+  # Key command
+  defp key_command(args) do
+    api_key = get_api_key()
+
+    if "--extend" in args do
+      validate_key(api_key, extend: true)
+    else
+      validate_key(api_key, extend: false)
+    end
+  end
+
+  defp validate_key(api_key, extend: extend) do
+    json = "{}"
+    response = portal_curl_post(api_key, "/keys/validate", json)
+
+    # Try to use Jason if available, otherwise fall back to manual parsing
+    try do
+      case Jason.decode(response) do
+        {:ok, data} ->
+          display_key_info(data, extend)
+
+        {:error, _} ->
+          # Fallback if Jason is not available, parse manually
+          display_key_info_manual(response, extend)
+      end
+    rescue
+      UndefinedFunctionError ->
+        # If Jason module doesn't exist, use manual parsing
+        display_key_info_manual(response, extend)
+    end
+  end
+
+  defp display_key_info(data, extend) do
+    status = Map.get(data, "status")
+    public_key = Map.get(data, "public_key")
+    tier = Map.get(data, "tier")
+    expires_at = Map.get(data, "expires_at")
+
+    case status do
+      "valid" ->
+        IO.puts("#{@green}Valid#{@reset}")
+        IO.puts("Public Key: #{public_key}")
+        IO.puts("Tier: #{tier}")
+        IO.puts("Expires: #{expires_at}")
+
+        if extend do
+          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
+        end
+
+      "expired" ->
+        IO.puts("#{@red}Expired#{@reset}")
+        IO.puts("Public Key: #{public_key}")
+        IO.puts("Tier: #{tier}")
+        IO.puts("Expired: #{expires_at}")
+        IO.puts("#{@yellow}To renew: Visit #{@portal_base}/keys/extend#{@reset}")
+
+        if extend do
+          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
+        end
+
+      "invalid" ->
+        IO.puts("#{@red}Invalid#{@reset}")
+
+      _ ->
+        IO.puts("#{@red}Unknown status: #{status}#{@reset}")
+    end
+  end
+
+  defp display_key_info_manual(response, extend) do
+    # Simple manual parsing for JSON response
+    status = extract_json_value(response, "status")
+    public_key = extract_json_value(response, "public_key")
+    tier = extract_json_value(response, "tier")
+    expires_at = extract_json_value(response, "expires_at")
+
+    case status do
+      "valid" ->
+        IO.puts("#{@green}Valid#{@reset}")
+        IO.puts("Public Key: #{public_key}")
+        IO.puts("Tier: #{tier}")
+        IO.puts("Expires: #{expires_at}")
+
+        if extend do
+          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
+        end
+
+      "expired" ->
+        IO.puts("#{@red}Expired#{@reset}")
+        IO.puts("Public Key: #{public_key}")
+        IO.puts("Tier: #{tier}")
+        IO.puts("Expired: #{expires_at}")
+        IO.puts("#{@yellow}To renew: Visit #{@portal_base}/keys/extend#{@reset}")
+
+        if extend do
+          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
+        end
+
+      "invalid" ->
+        IO.puts("#{@red}Invalid#{@reset}")
+
+      _ ->
+        IO.puts("#{@red}Unknown status: #{status}#{@reset}")
+        IO.puts(response)
+    end
+  end
+
+  defp extract_json_value(json_str, key) do
+    case Regex.run(~r/"#{key}"\s*:\s*"([^"]*)"/, json_str) do
+      [_, value] -> value
+      _ -> nil
+    end
+  end
+
+  defp open_browser(url) do
+    IO.puts("#{@blue}Opening browser: #{url}#{@reset}")
+
+    case :os.type() do
+      {:unix, :linux} ->
+        System.cmd("xdg-open", [url], stderr_to_stdout: true)
+      {:unix, :darwin} ->
+        System.cmd("open", [url], stderr_to_stdout: true)
+      {:win32, _} ->
+        System.cmd("cmd", ["/c", "start", url], stderr_to_stdout: true)
+      _ ->
+        IO.puts("#{@yellow}Please open manually: #{url}#{@reset}")
+    end
+  end
+
   # Helpers
   defp get_api_key do
     case System.get_env("UNSANDBOX_API_KEY") do
@@ -237,6 +369,22 @@ defmodule Un do
     {output, _exit} = System.cmd("curl", [
       "-s", "-X", "POST",
       "https://api.unsandbox.com#{endpoint}",
+      "-H", "Content-Type: application/json",
+      "-H", "Authorization: Bearer #{api_key}",
+      "-d", "@#{tmp_file}"
+    ], stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+    output
+  end
+
+  defp portal_curl_post(api_key, endpoint, json) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+    File.write!(tmp_file, json)
+
+    {output, _exit} = System.cmd("curl", [
+      "-s", "-X", "POST",
+      "#{@portal_base}#{endpoint}",
       "-H", "Content-Type: application/json",
       "-H", "Authorization: Bearer #{api_key}",
       "-d", "@#{tmp_file}"

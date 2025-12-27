@@ -46,12 +46,13 @@
 import os
 
 const (
-	api_base = 'https://api.unsandbox.com'
-	blue     = '\x1b[34m'
-	red      = '\x1b[31m'
-	green    = '\x1b[32m'
-	yellow   = '\x1b[33m'
-	reset    = '\x1b[0m'
+	api_base     = 'https://api.unsandbox.com'
+	portal_base  = 'https://unsandbox.com'
+	blue         = '\x1b[34m'
+	red          = '\x1b[31m'
+	green        = '\x1b[32m'
+	yellow       = '\x1b[33m'
+	reset        = '\x1b[0m'
 )
 
 fn detect_language(filename string) !string {
@@ -97,6 +98,82 @@ fn escape_json(s string) string {
 fn exec_curl(cmd string) string {
 	result := os.execute(cmd)
 	return result.output
+}
+
+fn extract_json_string(json string, key string) string {
+	search := '"${key}":"'
+	start_idx := json.index(search) or { return '' }
+	start := start_idx + search.len
+
+	mut end := start
+	for end < json.len {
+		if json[end] == `"` && (end == 0 || json[end - 1] != `\\`) {
+			break
+		}
+		end++
+	}
+
+	if end > start {
+		raw := json[start..end]
+		// Unescape JSON string
+		return raw.replace('\\n', '\n')
+			.replace('\\r', '\r')
+			.replace('\\t', '\t')
+			.replace('\\"', '"')
+			.replace('\\\\', '\\')
+	}
+	return ''
+}
+
+fn cmd_key(extend bool, api_key string) {
+	cmd := "curl -s -X POST '${api_base}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '{}'"
+	result := exec_curl(cmd)
+
+	status := extract_json_string(result, 'status')
+	public_key := extract_json_string(result, 'public_key')
+	tier := extract_json_string(result, 'tier')
+	expired_at := extract_json_string(result, 'expired_at')
+
+	if extend && public_key != '' {
+		url := '${portal_base}/keys/extend?pk=${public_key}'
+		println('${yellow}Opening browser: ${url}${reset}')
+
+		// Try xdg-open (Linux), open (macOS), or start (Windows)
+		os.execute('xdg-open "${url}"') or {
+			os.execute('open "${url}"') or {
+				os.execute('cmd /c start "${url}"') or {
+					eprintln('${red}Error: Could not open browser${reset}')
+				}
+			}
+		}
+		return
+	}
+
+	match status {
+		'valid' {
+			println('${green}Valid${reset}')
+			println('Public Key: ${public_key}')
+			println('Tier: ${tier}')
+			if expired_at != '' {
+				println('Expires: ${expired_at}')
+			}
+		}
+		'expired' {
+			println('${red}Expired${reset}')
+			println('Public Key: ${public_key}')
+			println('Tier: ${tier}')
+			if expired_at != '' {
+				println('Expired: ${expired_at}')
+			}
+			println('${yellow}To renew: Visit ${portal_base}/keys/extend${reset}')
+		}
+		'invalid' {
+			println('${red}Invalid${reset}')
+		}
+		else {
+			println('${yellow}Unknown status: ${status}${reset}')
+		}
+	}
 }
 
 fn cmd_execute(source_file string, envs []string, artifacts bool, network string, vcpu int, api_key string) {
@@ -263,6 +340,7 @@ fn main() {
 		eprintln('Usage: ${os.args[0]} [options] <source_file>')
 		eprintln('       ${os.args[0]} session [options]')
 		eprintln('       ${os.args[0]} service [options]')
+		eprintln('       ${os.args[0]} key [--extend]')
 		exit(1)
 	}
 
@@ -388,6 +466,26 @@ fn main() {
 
 		cmd_service(name, ports, service_type, bootstrap, list, info, logs, tail, sleep, wake, destroy, network,
 			vcpu, api_key)
+		return
+	}
+
+	if os.args[1] == 'key' {
+		mut extend := false
+
+		mut i := 2
+		for i < os.args.len {
+			match os.args[i] {
+				'--extend' { extend = true }
+				'-k' {
+					i++
+					api_key = os.args[i]
+				}
+				else {}
+			}
+			i++
+		}
+
+		cmd_key(extend, api_key)
 		return
 	}
 

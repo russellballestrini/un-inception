@@ -54,6 +54,7 @@ import std.array;
 import std.algorithm;
 
 immutable string API_BASE = "https://api.unsandbox.com";
+immutable string PORTAL_BASE = "https://unsandbox.com";
 immutable string BLUE = "\033[34m";
 immutable string RED = "\033[31m";
 immutable string GREEN = "\033[32m";
@@ -223,6 +224,126 @@ void cmdService(string name, string ports, string bootstrap, string type, bool l
     exit(1);
 }
 
+void openBrowser(string url) {
+    version(linux) {
+        executeShell("xdg-open \"" ~ url ~ "\" 2>/dev/null &");
+    } else version(OSX) {
+        executeShell("open \"" ~ url ~ "\"");
+    } else version(Windows) {
+        executeShell("start \"\" \"" ~ url ~ "\"");
+    } else {
+        stderr.writefln("%sError: Unsupported platform for browser opening%s", RED, RESET);
+    }
+}
+
+string formatDuration(long totalMinutes) {
+    long days = totalMinutes / (24 * 60);
+    long hours = (totalMinutes % (24 * 60)) / 60;
+    long minutes = totalMinutes % 60;
+
+    if (days > 0) {
+        return format("%dd %dh %dm", days, hours, minutes);
+    } else if (hours > 0) {
+        return format("%dh %dm", hours, minutes);
+    } else {
+        return format("%dm", minutes);
+    }
+}
+
+void validateKey(string apiKey, bool extend) {
+    import std.json;
+    import std.datetime;
+
+    string cmd = format(`curl -s -w '\n%%{http_code}' -X POST '%s/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s'`, PORTAL_BASE, apiKey);
+    string response = execCurl(cmd);
+
+    auto lines = response.split("\n");
+    string body = lines.length > 1 ? lines[0..$-1].join("\n") : response;
+    string statusCode = lines.length > 1 ? lines[$-1] : "200";
+
+    JSONValue result;
+    try {
+        result = parseJSON(body);
+    } catch (Exception e) {
+        stderr.writefln("%sError parsing response: %s%s", RED, e.msg, RESET);
+        exit(1);
+    }
+
+    if (statusCode[0] == '4' || statusCode[0] == '5') {
+        // Invalid key
+        writefln("%sInvalid%s", RED, RESET);
+        if ("error" in result) {
+            writefln("Reason: %s", result["error"].str);
+        } else if ("message" in result) {
+            writefln("Reason: %s", result["message"].str);
+        }
+        exit(1);
+    }
+
+    bool valid = result["valid"].type == JSONType.true_;
+    bool expired = result["expired"].type == JSONType.true_;
+    string publicKey = "public_key" in result ? result["public_key"].str : "";
+    string tier = "tier" in result ? result["tier"].str : "";
+    string status = "status" in result ? result["status"].str : "";
+
+    if (expired) {
+        // Expired key
+        writefln("%sExpired%s", RED, RESET);
+        writefln("Public Key: %s", publicKey);
+        writefln("Tier: %s", tier);
+        if ("expires_at" in result) {
+            writefln("Expired: %s", result["expires_at"].str);
+        }
+        writefln("%sTo renew: Visit https://unsandbox.com/keys/extend%s", YELLOW, RESET);
+
+        if (extend) {
+            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ publicKey;
+            writefln("\n%sOpening browser to extend key...%s", GREEN, RESET);
+            openBrowser(extendURL);
+        }
+        exit(1);
+    }
+
+    if (valid) {
+        // Valid key
+        writefln("%sValid%s", GREEN, RESET);
+        writefln("Public Key: %s", publicKey);
+        writefln("Tier: %s", tier);
+        writefln("Status: %s", status);
+
+        if ("expires_at" in result) {
+            string expiresAt = result["expires_at"].str;
+            writefln("Expires: %s", expiresAt);
+
+            // Calculate time remaining (simplified - just show the date)
+            // Full datetime parsing would require additional complexity
+        }
+
+        if ("rate_limit" in result && result["rate_limit"].type != JSONType.null_) {
+            writefln("Rate Limit: %.0f req/min", result["rate_limit"].floating);
+        }
+        if ("burst" in result && result["burst"].type != JSONType.null_) {
+            writefln("Burst: %.0f req", result["burst"].floating);
+        }
+        if ("concurrency" in result && result["concurrency"].type != JSONType.null_) {
+            writefln("Concurrency: %.0f", result["concurrency"].floating);
+        }
+
+        if (extend) {
+            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ publicKey;
+            writefln("\n%sOpening browser to extend key...%s", GREEN, RESET);
+            openBrowser(extendURL);
+        }
+    } else {
+        // Invalid key
+        writefln("%sInvalid%s", RED, RESET);
+        if ("error" in result) {
+            writefln("Reason: %s", result["error"].str);
+        }
+        exit(1);
+    }
+}
+
 int main(string[] args) {
     string apiKey = environment.get("UNSANDBOX_API_KEY", "");
 
@@ -230,6 +351,7 @@ int main(string[] args) {
         stderr.writefln("Usage: %s [options] <source_file>", args[0]);
         stderr.writefln("       %s session [options]", args[0]);
         stderr.writefln("       %s service [options]", args[0]);
+        stderr.writefln("       %s key [options]", args[0]);
         return 1;
     }
 
@@ -278,6 +400,23 @@ int main(string[] args) {
         }
 
         cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, network, vcpu, apiKey);
+        return 0;
+    }
+
+    if (args[1] == "key") {
+        bool extend = false;
+
+        for (size_t i = 2; i < args.length; i++) {
+            if (args[i] == "--extend") extend = true;
+            else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
+        }
+
+        if (apiKey.empty) {
+            stderr.writefln("%sError: UNSANDBOX_API_KEY not set%s", RED, RESET);
+            return 1;
+        }
+
+        validateKey(apiKey, extend);
         return 0;
     }
 

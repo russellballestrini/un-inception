@@ -47,6 +47,7 @@ import os, strutils, osproc, strformat
 
 const
   API_BASE = "https://api.unsandbox.com"
+  PORTAL_BASE = "https://unsandbox.com"
   BLUE = "\x1b[34m"
   RED = "\x1b[31m"
   GREEN = "\x1b[32m"
@@ -188,6 +189,81 @@ proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, l
   stderr.writeLine(RED & "Error: Specify --name to create a service" & RESET)
   quit(1)
 
+proc cmdKey(extend: bool, apiKey: string) =
+  let cmd = fmt"""curl -s -X POST '{PORTAL_BASE}/keys/validate' -H 'Authorization: Bearer {apiKey}'"""
+  let response = execCurl(cmd)
+
+  # Parse JSON response manually (simple approach)
+  if response.contains("\"status\":\"valid\""):
+    echo GREEN & "Valid" & RESET
+    # Extract and display key info
+    if response.contains("\"public_key\":"):
+      let pkStart = response.find("\"public_key\":\"") + 14
+      let pkEnd = response.find("\"", pkStart)
+      if pkEnd > pkStart:
+        let publicKey = response[pkStart..<pkEnd]
+        echo "Public Key: " & publicKey
+        if extend:
+          let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={publicKey}"
+          echo BLUE & "Opening browser to extend key..." & RESET
+          discard execProcess(fmt"xdg-open '{extendUrl}'")
+
+    # Extract tier
+    if response.contains("\"tier\":"):
+      let tierStart = response.find("\"tier\":\"") + 8
+      let tierEnd = response.find("\"", tierStart)
+      if tierEnd > tierStart:
+        echo "Tier: " & response[tierStart..<tierEnd]
+
+    # Extract expires_at
+    if response.contains("\"expires_at\":"):
+      let expiresStart = response.find("\"expires_at\":\"") + 14
+      let expiresEnd = response.find("\"", expiresStart)
+      if expiresEnd > expiresStart:
+        echo "Expires: " & response[expiresStart..<expiresEnd]
+
+  elif response.contains("\"status\":\"expired\""):
+    echo RED & "Expired" & RESET
+
+    # Extract and display key info
+    var publicKey = ""
+    if response.contains("\"public_key\":"):
+      let pkStart = response.find("\"public_key\":\"") + 14
+      let pkEnd = response.find("\"", pkStart)
+      if pkEnd > pkStart:
+        publicKey = response[pkStart..<pkEnd]
+        echo "Public Key: " & publicKey
+
+    # Extract tier
+    if response.contains("\"tier\":"):
+      let tierStart = response.find("\"tier\":\"") + 8
+      let tierEnd = response.find("\"", tierStart)
+      if tierEnd > tierStart:
+        echo "Tier: " & response[tierStart..<tierEnd]
+
+    # Extract expires_at
+    if response.contains("\"expires_at\":"):
+      let expiresStart = response.find("\"expires_at\":\"") + 14
+      let expiresEnd = response.find("\"", expiresStart)
+      if expiresEnd > expiresStart:
+        echo "Expired: " & response[expiresStart..<expiresEnd]
+
+    echo ""
+    echo YELLOW & "To renew: Visit " & PORTAL_BASE & "/keys/extend" & RESET
+
+    if extend and publicKey != "":
+      let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={publicKey}"
+      echo BLUE & "Opening browser to extend key..." & RESET
+      discard execProcess(fmt"xdg-open '{extendUrl}'")
+
+  else:
+    echo RED & "Invalid" & RESET
+    if response.contains("\"error\":"):
+      let errStart = response.find("\"error\":\"") + 9
+      let errEnd = response.find("\"", errStart)
+      if errEnd > errStart:
+        echo "Error: " & response[errStart..<errEnd]
+
 proc main() =
   var apiKey = getEnv("UNSANDBOX_API_KEY", "")
   let args = commandLineParams()
@@ -196,7 +272,19 @@ proc main() =
     stderr.writeLine("Usage: un.nim [options] <source_file>")
     stderr.writeLine("       un.nim session [options]")
     stderr.writeLine("       un.nim service [options]")
+    stderr.writeLine("       un.nim key [options]")
     quit(1)
+
+  if args[0] == "key":
+    var extend = false
+    var i = 1
+    while i < args.len:
+      case args[i]
+      of "--extend": extend = true
+      of "-k": apiKey = args[i+1]; inc i
+      inc i
+    cmdKey(extend, apiKey)
+    return
 
   if args[0] == "session":
     var list = false

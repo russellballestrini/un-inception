@@ -68,6 +68,10 @@ import Control.Monad (when, unless, forM_)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 
+-- API constants
+portalBase :: String
+portalBase = "https://unsandbox.com"
+
 -- ANSI colors
 blue, red, green, yellow, reset :: String
 blue = "\x1b[34m"
@@ -105,7 +109,7 @@ escapeJSON = concatMap escape
     escape c = [c]
 
 -- Parse command line arguments
-data Command = Execute ExecuteOpts | Session SessionOpts | Service ServiceOpts | Help
+data Command = Execute ExecuteOpts | Session SessionOpts | Service ServiceOpts | Key KeyOpts | Help
 
 data ExecuteOpts = ExecuteOpts
   { exFile :: String
@@ -140,11 +144,24 @@ data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
                    | ServiceSleep String | ServiceWake String | ServiceDestroy String
                    | ServiceCreate
 
+data KeyOpts = KeyOpts
+  { keyExtend :: Bool
+  }
+
 -- Parse arguments
 parseArgs :: [String] -> IO Command
 parseArgs ("session":rest) = Session <$> parseSession rest
 parseArgs ("service":rest) = Service <$> parseService rest
+parseArgs ("key":rest) = Key <$> parseKey rest
 parseArgs args = parseExecute args
+
+parseKey :: [String] -> IO KeyOpts
+parseKey args = return $ parseKeyArgs args defaultKeyOpts
+  where
+    defaultKeyOpts = KeyOpts False
+    parseKeyArgs [] opts = opts
+    parseKeyArgs ("--extend":rest) opts = parseKeyArgs rest opts { keyExtend = True }
+    parseKeyArgs (_:rest) opts = parseKeyArgs rest opts
 
 parseSession :: [String] -> IO SessionOpts
 parseSession args = return $ parseSessionArgs args defaultSessionOpts
@@ -208,6 +225,7 @@ main = do
     Execute opts -> executeCommand opts
     Session opts -> sessionCommand opts
     Service opts -> serviceCommand opts
+    Key opts -> keyCommand opts
     Help -> printHelp
 
 printHelp :: IO ()
@@ -216,6 +234,7 @@ printHelp = do
   putStrLn "  un.hs [options] <source_file>         Execute code"
   putStrLn "  un.hs session [options]                Manage sessions"
   putStrLn "  un.hs service [options]                Manage services"
+  putStrLn "  un.hs key [options]                    Validate/extend API key"
   putStrLn ""
   putStrLn "Execute options:"
   putStrLn "  -e KEY=VALUE    Environment variable"
@@ -224,6 +243,9 @@ printHelp = do
   putStrLn "  -o DIR          Output directory"
   putStrLn "  -n MODE         Network mode (zerotrust|semitrusted)"
   putStrLn "  -v N            vCPU count (1-8)"
+  putStrLn ""
+  putStrLn "Key options:"
+  putStrLn "  --extend        Open browser to extend/renew key"
   exitFailure
 
 -- Execute command
@@ -259,7 +281,7 @@ executeCommand opts = do
              ++ envJSON ++ filesJSON ++ artifactsJSON ++ networkJSON ++ vcpuJSON ++ "}"
 
   -- Call API
-  (exitCode, stdout, stderr) <- curlPost apiKey "/execute" json
+  (exitCode, stdout, stderr) <- curlPost apiKey "https://api.unsandbox.com/execute" json
 
   -- Print output
   unless (null stdout) $ putStr $ blue ++ stdout ++ reset
@@ -275,17 +297,17 @@ sessionCommand opts = do
   apiKey <- getApiKey
   case sessAction opts of
     SessionList -> do
-      (_, stdout, _) <- curlGet apiKey "/sessions"
+      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/sessions"
       putStrLn stdout
     SessionKill sid -> do
-      (_, stdout, _) <- curlDelete apiKey ("/sessions/" ++ sid)
+      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/sessions/" ++ sid)
       putStrLn $ green ++ "Session terminated: " ++ sid ++ reset
     SessionCreate -> do
       let shell = maybe "bash" id (sessShell opts)
       let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (sessNetwork opts)
       let vcpuJSON = maybe "" (\v -> ",\"vcpu\":" ++ show v) (sessVcpu opts)
       let json = "{\"shell\":\"" ++ shell ++ "\"" ++ networkJSON ++ vcpuJSON ++ "}"
-      (_, stdout, _) <- curlPost apiKey "/sessions" json
+      (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/sessions" json
       putStrLn $ yellow ++ "Session created (WebSocket required for interactivity)" ++ reset
       putStrLn stdout
 
@@ -295,22 +317,22 @@ serviceCommand opts = do
   apiKey <- getApiKey
   case svcAction opts of
     ServiceList -> do
-      (_, stdout, _) <- curlGet apiKey "/services"
+      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/services"
       putStrLn stdout
     ServiceInfo sid -> do
-      (_, stdout, _) <- curlGet apiKey ("/services/" ++ sid)
+      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/services/" ++ sid)
       putStrLn stdout
     ServiceLogs sid -> do
-      (_, stdout, _) <- curlGet apiKey ("/services/" ++ sid ++ "/logs")
+      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/logs")
       putStrLn stdout
     ServiceSleep sid -> do
-      (_, stdout, _) <- curlPost apiKey ("/services/" ++ sid ++ "/sleep") "{}"
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/sleep") "{}"
       putStrLn $ green ++ "Service sleeping: " ++ sid ++ reset
     ServiceWake sid -> do
-      (_, stdout, _) <- curlPost apiKey ("/services/" ++ sid ++ "/wake") "{}"
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/wake") "{}"
       putStrLn $ green ++ "Service waking: " ++ sid ++ reset
     ServiceDestroy sid -> do
-      (_, stdout, _) <- curlDelete apiKey ("/services/" ++ sid)
+      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/services/" ++ sid)
       putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset
     ServiceCreate -> do
       case svcName opts of
@@ -324,16 +346,16 @@ serviceCommand opts = do
           let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (svcNetwork opts)
           let vcpuJSON = maybe "" (\v -> ",\"vcpu\":" ++ show v) (svcVcpu opts)
           let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ networkJSON ++ vcpuJSON ++ "}"
-          (_, stdout, _) <- curlPost apiKey "/services" json
+          (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/services" json
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout
 
 -- HTTP helpers using curl
 curlPost :: String -> String -> String -> IO (ExitCode, String, String)
-curlPost apiKey endpoint body = do
+curlPost apiKey url body = do
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     [ "-s", "-X", "POST"
-    , "https://api.unsandbox.com" ++ endpoint
+    , url
     , "-H", "Content-Type: application/json"
     , "-H", "Authorization: Bearer " ++ apiKey
     , "-d", body
@@ -341,17 +363,17 @@ curlPost apiKey endpoint body = do
   return (exitCode, stdout, stderr)
 
 curlGet :: String -> String -> IO (ExitCode, String, String)
-curlGet apiKey endpoint =
+curlGet apiKey url =
   readProcessWithExitCode "curl"
-    [ "-s", "https://api.unsandbox.com" ++ endpoint
+    [ "-s", url
     , "-H", "Authorization: Bearer " ++ apiKey
     ] ""
 
 curlDelete :: String -> String -> IO (ExitCode, String, String)
-curlDelete apiKey endpoint =
+curlDelete apiKey url =
   readProcessWithExitCode "curl"
     [ "-s", "-X", "DELETE"
-    , "https://api.unsandbox.com" ++ endpoint
+    , url
     , "-H", "Authorization: Bearer " ++ apiKey
     ] ""
 
@@ -377,3 +399,136 @@ parseExitCode resp =
         Just (_, ':':v) -> Just $ takeWhile isDigit v
         _ -> Nothing
     find f = foldr (\x acc -> if f x then Just x else acc) Nothing
+
+-- Extract JSON string field (simple parser for basic cases)
+extractJsonString :: String -> String -> Maybe String
+extractJsonString json field =
+  case break (== '"') rest of
+    (_, '"':value) ->
+      case break (== '"') value of
+        (v, _) -> Just v
+    _ -> Nothing
+  where
+    needle = "\"" ++ field ++ "\":"
+    rest = case dropWhile (/= '"') $ dropWhile (not . isPrefixOf needle) $ tails json of
+      (_:xs) -> case dropWhile (/= ':') xs of
+        (_:ys) -> dropWhile (`elem` " \t\n") ys
+        _ -> ""
+      _ -> ""
+    tails [] = [[]]
+    tails s@(_:xs) = s : tails xs
+
+-- Key command
+keyCommand :: KeyOpts -> IO ()
+keyCommand opts = do
+  apiKey <- getApiKey
+
+  if keyExtend opts
+    then extendKey apiKey
+    else validateKey apiKey
+
+-- Validate API key and show status
+validateKey :: String -> IO ()
+validateKey apiKey = do
+  let url = portalBase ++ "/keys/validate"
+  (exitCode, stdout, stderr) <- curlPost apiKey url "{}"
+
+  -- Check if valid:false appears in response
+  let isInvalid = "\"valid\":false" `isPrefixOf` dropWhile (/= 'v') stdout
+
+  if exitCode /= ExitSuccess || isInvalid
+    then do
+      -- Parse error response
+      let reason = extractJsonString stdout "reason"
+      case reason of
+        Just "expired" -> do
+          putStrLn $ red ++ "Expired" ++ reset ++ "\n"
+
+          -- Show key details
+          case extractJsonString stdout "public_key" of
+            Just pk -> putStrLn $ "Public Key:          " ++ pk
+            Nothing -> return ()
+
+          case extractJsonString stdout "tier" of
+            Just tier -> putStrLn $ "Tier:                " ++ tier
+            Nothing -> return ()
+
+          case extractJsonString stdout "expired_at_datetime" of
+            Just expiredAt -> do
+              putStr $ "Expired:             " ++ expiredAt
+              case extractJsonString stdout "expired_ago" of
+                Just ago -> putStrLn $ " (" ++ ago ++ ")"
+                Nothing -> putStrLn ""
+            Nothing -> return ()
+
+          putStrLn ""
+          putStrLn $ yellow ++ "To renew:" ++ reset ++ " Visit https://unsandbox.com/keys/extend"
+          exitFailure
+
+        Just "invalid_key" -> do
+          putStrLn $ red ++ "Invalid" ++ reset ++ ": key not found"
+          exitFailure
+
+        Just "suspended" -> do
+          putStrLn $ red ++ "Suspended" ++ reset ++ ": key has been suspended"
+          exitFailure
+
+        _ -> do
+          putStrLn $ red ++ "Invalid key" ++ reset
+          exitFailure
+    else do
+      -- Parse valid response
+      putStrLn $ green ++ "Valid" ++ reset ++ "\n"
+
+      case extractJsonString stdout "public_key" of
+        Just pk -> putStrLn $ "Public Key:          " ++ pk
+        Nothing -> return ()
+
+      case extractJsonString stdout "tier" of
+        Just tier -> putStrLn $ "Tier:                " ++ tier
+        Nothing -> return ()
+
+      case extractJsonString stdout "status" of
+        Just status -> putStrLn $ "Status:              " ++ status
+        Nothing -> return ()
+
+      case extractJsonString stdout "valid_through_datetime" of
+        Just validThrough -> putStrLn $ "Expires:             " ++ validThrough
+        Nothing -> return ()
+
+      case extractJsonString stdout "valid_for_human" of
+        Just validFor -> putStrLn $ "Time Remaining:      " ++ validFor
+        Nothing -> return ()
+
+      case extractJsonString stdout "rate_per_minute" of
+        Just rate -> putStrLn $ "Rate Limit:          " ++ rate ++ "/min"
+        Nothing -> return ()
+
+      case extractJsonString stdout "burst" of
+        Just burst -> putStrLn $ "Burst:               " ++ burst
+        Nothing -> return ()
+
+      case extractJsonString stdout "concurrency" of
+        Just conc -> putStrLn $ "Concurrency:         " ++ conc
+        Nothing -> return ()
+
+-- Extend key (open browser to extend page)
+extendKey :: String -> IO ()
+extendKey apiKey = do
+  let url = portalBase ++ "/keys/validate"
+  (exitCode, stdout, _) <- curlPost apiKey url "{}"
+
+  case extractJsonString stdout "public_key" of
+    Nothing -> do
+      hPutStrLn stderr "Error: Invalid key or could not retrieve public key"
+      exitFailure
+    Just publicKey -> do
+      let extendUrl = portalBase ++ "/keys/extend?pk=" ++ publicKey
+      putStrLn "Opening extension page in browser..."
+      putStrLn $ "If browser doesn't open, visit: " ++ extendUrl
+
+      -- Try to open URL in browser (Linux-specific)
+      _ <- readProcessWithExitCode "sh"
+        ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]
+        ""
+      return ()

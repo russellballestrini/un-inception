@@ -53,6 +53,7 @@
 local json = require("cjson")
 
 local API_BASE = "https://api.unsandbox.com"
+local PORTAL_BASE = "https://unsandbox.com"
 local BLUE = "\27[34m"
 local RED = "\27[31m"
 local GREEN = "\27[32m"
@@ -303,6 +304,91 @@ local function cmd_session(options)
     print(YELLOW .. "(Interactive sessions require WebSocket - use un2 for full support)" .. RESET)
 end
 
+local function cmd_key(options)
+    local api_key = get_api_key(options.api_key)
+
+    if options.extend then
+        -- Get public_key from validation response
+        local url = PORTAL_BASE .. "/keys/validate"
+        local tmpfile = os.tmpname()
+
+        local cmd = "curl -s -X POST " .. shell_escape(url) ..
+                    " -H 'Authorization: Bearer " .. api_key .. "'" ..
+                    " -H 'Content-Type: application/json'" ..
+                    " -w '\\n%{http_code}' -o " .. shell_escape(tmpfile)
+
+        local handle = io.popen(cmd)
+        local http_code = handle:read("*a"):match("(%d+)$")
+        handle:close()
+
+        local file = io.open(tmpfile, "r")
+        local response = file:read("*all")
+        file:close()
+        os.remove(tmpfile)
+
+        if not http_code or tonumber(http_code) < 200 or tonumber(http_code) >= 300 then
+            io.stderr:write(RED .. "Error: HTTP " .. (http_code or "000") .. " - " .. response .. RESET .. "\n")
+            os.exit(1)
+        end
+
+        local result = json.decode(response)
+        local public_key = result.public_key
+
+        if not public_key then
+            io.stderr:write(RED .. "Error: Could not retrieve public key" .. RESET .. "\n")
+            os.exit(1)
+        end
+
+        -- Open browser with extend URL
+        local extend_url = PORTAL_BASE .. "/keys/extend?pk=" .. public_key
+        print(GREEN .. "Opening browser to extend key..." .. RESET)
+        print(extend_url)
+        os.execute("xdg-open " .. shell_escape(extend_url) .. " 2>/dev/null || open " .. shell_escape(extend_url) .. " 2>/dev/null")
+        return
+    end
+
+    -- Validate key (default action)
+    local url = PORTAL_BASE .. "/keys/validate"
+    local tmpfile = os.tmpname()
+
+    local cmd = "curl -s -X POST " .. shell_escape(url) ..
+                " -H 'Authorization: Bearer " .. api_key .. "'" ..
+                " -H 'Content-Type: application/json'" ..
+                " -w '\\n%{http_code}' -o " .. shell_escape(tmpfile)
+
+    local handle = io.popen(cmd)
+    local http_code = handle:read("*a"):match("(%d+)$")
+    handle:close()
+
+    local file = io.open(tmpfile, "r")
+    local response = file:read("*all")
+    file:close()
+    os.remove(tmpfile)
+
+    if not http_code or tonumber(http_code) < 200 or tonumber(http_code) >= 300 then
+        io.stderr:write(RED .. "Error: Invalid API key" .. RESET .. "\n")
+        os.exit(1)
+    end
+
+    local result = json.decode(response)
+
+    if result.status == "valid" then
+        print(GREEN .. "Valid" .. RESET)
+        if result.public_key then print("Public Key: " .. result.public_key) end
+        if result.tier then print("Tier: " .. result.tier) end
+        if result.expires_at then print("Expires: " .. result.expires_at) end
+    elseif result.status == "expired" then
+        print(RED .. "Expired" .. RESET)
+        if result.public_key then print("Public Key: " .. result.public_key) end
+        if result.tier then print("Tier: " .. result.tier) end
+        if result.expired_at then print("Expired: " .. result.expired_at) end
+        print(YELLOW .. "To renew: Visit https://unsandbox.com/keys/extend" .. RESET)
+    else
+        print(RED .. "Invalid" .. RESET)
+        if result.message then print("Message: " .. result.message) end
+    end
+end
+
 local function cmd_service(options)
     local api_key = get_api_key(options.api_key)
 
@@ -440,14 +526,15 @@ local function main()
         wake = nil,
         destroy = nil,
         execute = nil,
-        command = nil
+        command = nil,
+        extend = false
     }
 
     local i = 1
     while i <= #arg do
         local a = arg[i]
 
-        if a == "session" or a == "service" then
+        if a == "session" or a == "service" or a == "key" then
             options.command = a
         elseif a == "-e" then
             i = i + 1
@@ -525,6 +612,8 @@ local function main()
         elseif a == "--command" then
             i = i + 1
             options.command = arg[i]
+        elseif a == "--extend" then
+            options.extend = true
         elseif not a:match("^%-") then
             options.source_file = a
         end
@@ -536,6 +625,8 @@ local function main()
         cmd_session(options)
     elseif options.command == "service" then
         cmd_service(options)
+    elseif options.command == "key" then
+        cmd_key(options)
     elseif options.source_file then
         cmd_execute(options)
     else
@@ -546,6 +637,7 @@ Usage:
   ]] .. arg[0] .. [[ [options] <source_file>
   ]] .. arg[0] .. [[ session [options]
   ]] .. arg[0] .. [[ service [options]
+  ]] .. arg[0] .. [[ key [options]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -580,6 +672,9 @@ Service options:
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+
+Key options:
+  --extend         Open browser to extend/renew key
 ]])
         os.exit(1)
     end

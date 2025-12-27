@@ -55,6 +55,7 @@
 using namespace std;
 
 const string API_BASE = "https://api.unsandbox.com";
+const string PORTAL_BASE = "https://unsandbox.com";
 const string BLUE = "\033[34m";
 const string RED = "\033[31m";
 const string GREEN = "\033[32m";
@@ -294,6 +295,87 @@ void cmd_service(const string& name, const string& ports, const string& type, co
     exit(1);
 }
 
+void cmd_validate_key(bool extend, const string& api_key) {
+    string cmd = "curl -s -X POST '" + PORTAL_BASE + "/keys/validate' "
+                 "-H 'Content-Type: application/json' "
+                 "-H 'Authorization: Bearer " + api_key + "'";
+
+    string result = exec_curl(cmd);
+
+    // Parse JSON response
+    size_t status_pos = result.find("\"status\":\"");
+    size_t public_key_pos = result.find("\"public_key\":\"");
+    size_t tier_pos = result.find("\"tier\":\"");
+    size_t expires_pos = result.find("\"expires_at\":\"");
+
+    if (status_pos == string::npos) {
+        cerr << RED << "Error: Invalid API response" << RESET << endl;
+        exit(1);
+    }
+
+    // Extract status
+    status_pos += 10;
+    size_t status_end = result.find("\"", status_pos);
+    string status = result.substr(status_pos, status_end - status_pos);
+
+    // Extract public_key
+    string public_key;
+    if (public_key_pos != string::npos) {
+        public_key_pos += 14;
+        size_t pk_end = result.find("\"", public_key_pos);
+        public_key = result.substr(public_key_pos, pk_end - public_key_pos);
+    }
+
+    // Extract tier
+    string tier;
+    if (tier_pos != string::npos) {
+        tier_pos += 8;
+        size_t tier_end = result.find("\"", tier_pos);
+        tier = result.substr(tier_pos, tier_end - tier_pos);
+    }
+
+    // Extract expires_at
+    string expires_at;
+    if (expires_pos != string::npos) {
+        expires_pos += 14;
+        size_t expires_end = result.find("\"", expires_pos);
+        expires_at = result.substr(expires_pos, expires_end - expires_pos);
+    }
+
+    if (status == "valid") {
+        cout << GREEN << "Valid" << RESET << endl;
+        if (!public_key.empty()) {
+            cout << "Public Key: " << public_key << endl;
+        }
+        if (!tier.empty()) {
+            cout << "Tier: " << tier << endl;
+        }
+        if (!expires_at.empty()) {
+            cout << "Expires: " << expires_at << endl;
+        }
+    } else if (status == "expired") {
+        cout << RED << "Expired" << RESET << endl;
+        if (!public_key.empty()) {
+            cout << "Public Key: " << public_key << endl;
+        }
+        if (!tier.empty()) {
+            cout << "Tier: " << tier << endl;
+        }
+        if (!expires_at.empty()) {
+            cout << "Expired: " << expires_at << endl;
+        }
+        cout << YELLOW << "To renew: Visit " << PORTAL_BASE << "/keys/extend" << RESET << endl;
+
+        if (extend && !public_key.empty()) {
+            string url = PORTAL_BASE + "/keys/extend?pk=" + public_key;
+            string browser_cmd = "xdg-open '" + url + "' 2>/dev/null || open '" + url + "' 2>/dev/null";
+            system(browser_cmd.c_str());
+        }
+    } else {
+        cout << RED << "Invalid" << RESET << endl;
+    }
+}
+
 int main(int argc, char* argv[]) {
     string api_key = getenv("UNSANDBOX_API_KEY") ? getenv("UNSANDBOX_API_KEY") : "";
 
@@ -301,6 +383,7 @@ int main(int argc, char* argv[]) {
         cerr << "Usage: " << argv[0] << " [options] <source_file>" << endl;
         cerr << "       " << argv[0] << " session [options]" << endl;
         cerr << "       " << argv[0] << " service [options]" << endl;
+        cerr << "       " << argv[0] << " key [options]" << endl;
         return 1;
     }
 
@@ -353,6 +436,19 @@ int main(int argc, char* argv[]) {
         }
 
         cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, network, vcpu, api_key);
+        return 0;
+    }
+
+    if (cmd_type == "key") {
+        bool extend = false;
+
+        for (int i = 2; i < argc; i++) {
+            string arg = argv[i];
+            if (arg == "--extend") extend = true;
+            else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
+        }
+
+        cmd_validate_key(extend, api_key);
         return 0;
     }
 

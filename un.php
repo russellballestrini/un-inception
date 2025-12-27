@@ -53,6 +53,7 @@
  */
 
 const API_BASE = 'https://api.unsandbox.com';
+const PORTAL_BASE = 'https://unsandbox.com';
 const BLUE = "\033[34m";
 const RED = "\033[31m";
 const GREEN = "\033[32m";
@@ -263,6 +264,113 @@ function cmd_session($options) {
     echo YELLOW . "(Interactive sessions require WebSocket - use un2 for full support)" . RESET . "\n";
 }
 
+function validate_key($api_key) {
+    $url = PORTAL_BASE . '/keys/validate';
+    $ch = curl_init($url);
+
+    $headers = [
+        'Authorization: Bearer ' . $api_key,
+        'Content-Type: application/json'
+    ];
+
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_TIMEOUT => 30
+    ]);
+
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+    if ($response === false) {
+        fwrite(STDERR, RED . "Error: " . curl_error($ch) . RESET . "\n");
+        curl_close($ch);
+        exit(1);
+    }
+
+    curl_close($ch);
+
+    $data = json_decode($response, true);
+
+    if ($http_code === 200 && isset($data['valid']) && $data['valid']) {
+        echo GREEN . "Valid" . RESET . "\n\n";
+        echo "Public Key:   " . ($data['public_key'] ?? 'N/A') . "\n";
+        echo "Tier:         " . ($data['tier'] ?? 'N/A') . "\n";
+        echo "Status:       " . ($data['status'] ?? 'N/A') . "\n";
+        echo "Expires:      " . ($data['expires_at'] ?? 'N/A') . "\n";
+        echo "Time Remaining: " . ($data['time_remaining'] ?? 'N/A') . "\n";
+        echo "Rate Limit:   " . ($data['rate_limit'] ?? 'N/A') . " req/min\n";
+        echo "Burst:        " . ($data['burst'] ?? 'N/A') . "\n";
+        echo "Concurrency:  " . ($data['concurrency'] ?? 'N/A') . "\n";
+    } elseif ($http_code === 200 && isset($data['valid']) && !$data['valid'] && isset($data['status']) && $data['status'] === 'expired') {
+        echo RED . "Expired" . RESET . "\n\n";
+        echo "Public Key:   " . ($data['public_key'] ?? 'N/A') . "\n";
+        echo "Tier:         " . ($data['tier'] ?? 'N/A') . "\n";
+        echo "Expired:      " . ($data['expires_at'] ?? 'N/A') . "\n\n";
+        echo YELLOW . "To renew: Visit https://unsandbox.com/keys/extend" . RESET . "\n";
+    } else {
+        echo RED . "Invalid" . RESET . "\n\n";
+        if (isset($data['error'])) {
+            echo "Error: " . $data['error'] . "\n";
+        } elseif (isset($data['reason'])) {
+            echo "Reason: " . $data['reason'] . "\n";
+        } else {
+            echo "HTTP $http_code - $response\n";
+        }
+    }
+}
+
+function cmd_key($options) {
+    $api_key = get_api_key($options['api_key']);
+
+    if ($options['extend']) {
+        // First validate to get public_key
+        $url = PORTAL_BASE . '/keys/validate';
+        $ch = curl_init($url);
+
+        $headers = [
+            'Authorization: Bearer ' . $api_key,
+            'Content-Type: application/json'
+        ];
+
+        curl_setopt_array($ch, [
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_TIMEOUT => 30
+        ]);
+
+        $response = curl_exec($ch);
+        curl_close($ch);
+
+        $data = json_decode($response, true);
+        $public_key = $data['public_key'] ?? null;
+
+        if (!$public_key) {
+            fwrite(STDERR, RED . "Error: Could not retrieve public key" . RESET . "\n");
+            exit(1);
+        }
+
+        $extend_url = PORTAL_BASE . '/keys/extend?pk=' . urlencode($public_key);
+        echo "Opening browser to: $extend_url\n";
+
+        // Detect platform and open browser
+        if (PHP_OS_FAMILY === 'Linux') {
+            exec('xdg-open ' . escapeshellarg($extend_url) . ' > /dev/null 2>&1 &');
+        } elseif (PHP_OS_FAMILY === 'Darwin') {
+            exec('open ' . escapeshellarg($extend_url) . ' > /dev/null 2>&1 &');
+        } elseif (PHP_OS_FAMILY === 'Windows') {
+            exec('start ' . escapeshellarg($extend_url) . ' > NUL 2>&1');
+        } else {
+            echo YELLOW . "Cannot auto-open browser on this platform. Please visit:" . RESET . "\n";
+            echo "$extend_url\n";
+        }
+    } else {
+        validate_key($api_key);
+    }
+}
+
 function cmd_service($options) {
     $api_key = get_api_key($options['api_key']);
 
@@ -392,7 +500,7 @@ function main() {
         'wake' => null,
         'destroy' => null,
         'execute' => null,
-        'command' => null
+        'extend' => false
     ];
 
     for ($i = 1; $i < count($argv); $i++) {
@@ -401,6 +509,7 @@ function main() {
         switch ($arg) {
             case 'session':
             case 'service':
+            case 'key':
                 $options['command'] = $arg;
                 break;
             case '-e':
@@ -486,6 +595,9 @@ function main() {
             case '--command':
                 $options['command'] = $argv[++$i];
                 break;
+            case '--extend':
+                $options['extend'] = true;
+                break;
             default:
                 if (!str_starts_with($arg, '-')) {
                     $options['source_file'] = $arg;
@@ -498,6 +610,8 @@ function main() {
         cmd_session($options);
     } elseif ($options['command'] === 'service') {
         cmd_service($options);
+    } elseif ($options['command'] === 'key') {
+        cmd_key($options);
     } elseif ($options['source_file']) {
         cmd_execute($options);
     } else {
@@ -507,6 +621,7 @@ Usage:
   {$argv[0]} [options] <source_file>
   {$argv[0]} session [options]
   {$argv[0]} service [options]
+  {$argv[0]} key [options]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -541,6 +656,10 @@ Service options:
   --destroy ID     Destroy service
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
+
+Key options:
+  -k KEY           API key (or use UNSANDBOX_API_KEY env var)
+  --extend         Open browser to extend/renew key
 ";
         exit(1);
     }
