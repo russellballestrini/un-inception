@@ -167,6 +167,16 @@ contains
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" ', &
             '--data-binary "$BODY" -o /tmp/unsandbox_resp.json; ', &
+            'RESP=$(cat /tmp/unsandbox_resp.json); ', &
+            'if echo "$RESP" | grep -q "timestamp" && ', &
+            '(echo "$RESP" | grep -Eq "(401|expired|invalid)"); then ', &
+            'echo -e "\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m" >&2; ', &
+            'echo -e "\x1b[33mYour computer'\''s clock may have drifted.\x1b[0m" >&2; ', &
+            'echo "Check your system time and sync with NTP if needed:" >&2; ', &
+            'echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; ', &
+            'echo "  macOS:   sudo sntp -sS time.apple.com" >&2; ', &
+            'echo -e "  Windows: w32tm /resync\x1b[0m" >&2; ', &
+            'rm -f /tmp/unsandbox_resp.json; exit 1; fi; ', &
             'jq -r ".stdout // empty" /tmp/unsandbox_resp.json | ', &
             'sed "s/^/\x1b[34m/" | sed "s/$/\x1b[0m/"; ', &
             'jq -r ".stderr // empty" /tmp/unsandbox_resp.json | ', &

@@ -383,6 +383,28 @@ serviceCommand opts = do
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout
 
+-- Check for clock drift error
+checkClockDriftError :: String -> IO ()
+checkClockDriftError response = do
+  let hasTimestamp = "timestamp" `isPrefixOf` dropWhile (/= 't') response ||
+                     "\"timestamp\"" `isInfixOf` response
+  let has401 = "401" `isInfixOf` response
+  let hasExpired = "expired" `isInfixOf` response
+  let hasInvalid = "invalid" `isInfixOf` response
+
+  when (hasTimestamp && (has401 || hasExpired || hasInvalid)) $ do
+    hPutStrLn stderr $ red ++ "Error: Request timestamp expired (must be within 5 minutes of server time)" ++ reset
+    hPutStrLn stderr $ yellow ++ "Your computer's clock may have drifted." ++ reset
+    hPutStrLn stderr "Check your system time and sync with NTP if needed:"
+    hPutStrLn stderr "  Linux:   sudo ntpdate -s time.nist.gov"
+    hPutStrLn stderr "  macOS:   sudo sntp -sS time.apple.com"
+    hPutStrLn stderr "  Windows: w32tm /resync"
+    exitFailure
+  where
+    isInfixOf needle haystack = any (isPrefixOf needle) (tails haystack)
+    tails [] = [[]]
+    tails s@(_:xs) = s : tails xs
+
 -- HTTP helpers using curl
 curlPost :: String -> String -> String -> IO (ExitCode, String, String)
 curlPost apiKey url body = do
@@ -395,6 +417,8 @@ curlPost apiKey url body = do
      , url
      , "-H", "Content-Type: application/json"
      ] ++ authHeaders ++ ["-d", body]) ""
+  -- Check for clock drift error
+  checkClockDriftError stdout
   return (exitCode, stdout, stderr)
 
 curlGet :: String -> String -> IO (ExitCode, String, String)
@@ -402,16 +426,22 @@ curlGet apiKey url = do
   (publicKey, secretKey) <- getApiKeys
   let path = drop (length "https://api.unsandbox.com") url
   authHeaders <- buildAuthHeaders publicKey secretKey "GET" path ""
-  readProcessWithExitCode "curl"
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", url ] ++ authHeaders) ""
+  -- Check for clock drift error
+  checkClockDriftError stdout
+  return (exitCode, stdout, stderr)
 
 curlDelete :: String -> String -> IO (ExitCode, String, String)
 curlDelete apiKey url = do
   (publicKey, secretKey) <- getApiKeys
   let path = drop (length "https://api.unsandbox.com") url
   authHeaders <- buildAuthHeaders publicKey secretKey "DELETE" path ""
-  readProcessWithExitCode "curl"
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", "-X", "DELETE", url ] ++ authHeaders) ""
+  -- Check for clock drift error
+  checkClockDriftError stdout
+  return (exitCode, stdout, stderr)
 
 -- Get API keys from environment
 getApiKeys :: IO (String, Maybe String)
@@ -615,4 +645,6 @@ curlPostPortal apiKey url body = do
      , url
      , "-H", "Content-Type: application/json"
      ] ++ authHeaders ++ ["-d", body]) ""
+  -- Check for clock drift error
+  checkClockDriftError stdout
   return (exitCode, stdout, stderr)

@@ -101,40 +101,62 @@
             while line do (format out "~a~%" line))
       (uiop:wait-process process))))
 
+(defun check-clock-drift (response)
+  "Check if response indicates clock drift error"
+  (when (and (search "timestamp" response)
+             (or (search "401" response)
+                 (search "expired" response)
+                 (search "invalid" response)))
+    (format t "~aError: Request timestamp expired (must be within 5 minutes of server time)~a~%" *red* *reset*)
+    (format t "~aYour computer's clock may have drifted.~a~%" *yellow* *reset*)
+    (format t "Check your system time and sync with NTP if needed:~%")
+    (format t "  Linux:   sudo ntpdate -s time.nist.gov~%")
+    (format t "  macOS:   sudo sntp -sS time.apple.com~%")
+    (format t "  Windows: w32tm /resync~a~%" *reset*)
+    (uiop:quit 1)))
+
 (defun curl-post (api-key endpoint json-data)
   (let ((tmp-file (write-temp-file json-data)))
     (unwind-protect
          (destructuring-bind (public-key secret-key) (get-api-keys)
-           (let ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
-                 (base-args (list "curl" "-s" "-X" "POST"
-                                 (format nil "https://api.unsandbox.com~a" endpoint)
-                                 "-H" "Content-Type: application/json")))
-             (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
+           (let* ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+                  (base-args (list "curl" "-s" "-X" "POST"
+                                  (format nil "https://api.unsandbox.com~a" endpoint)
+                                  "-H" "Content-Type: application/json"))
+                  (response (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
+             (check-clock-drift response)
+             response))
       (delete-file tmp-file))))
 
 (defun curl-get (api-key endpoint)
   (destructuring-bind (public-key secret-key) (get-api-keys)
-    (let ((auth-headers (build-auth-headers public-key secret-key "GET" endpoint ""))
-          (base-args (list "curl" "-s"
-                          (format nil "https://api.unsandbox.com~a" endpoint))))
-      (run-curl (append base-args auth-headers)))))
+    (let* ((auth-headers (build-auth-headers public-key secret-key "GET" endpoint ""))
+           (base-args (list "curl" "-s"
+                           (format nil "https://api.unsandbox.com~a" endpoint)))
+           (response (run-curl (append base-args auth-headers))))
+      (check-clock-drift response)
+      response)))
 
 (defun curl-delete (api-key endpoint)
   (destructuring-bind (public-key secret-key) (get-api-keys)
-    (let ((auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
-          (base-args (list "curl" "-s" "-X" "DELETE"
-                          (format nil "https://api.unsandbox.com~a" endpoint))))
-      (run-curl (append base-args auth-headers)))))
+    (let* ((auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
+           (base-args (list "curl" "-s" "-X" "DELETE"
+                           (format nil "https://api.unsandbox.com~a" endpoint)))
+           (response (run-curl (append base-args auth-headers))))
+      (check-clock-drift response)
+      response)))
 
 (defun curl-post-portal (api-key endpoint json-data)
   (let ((tmp-file (write-temp-file json-data)))
     (unwind-protect
          (destructuring-bind (public-key secret-key) (get-api-keys)
-           (let ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
-                 (base-args (list "curl" "-s" "-X" "POST"
-                                 (format nil "~a~a" *portal-base* endpoint)
-                                 "-H" "Content-Type: application/json")))
-             (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
+           (let* ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+                  (base-args (list "curl" "-s" "-X" "POST"
+                                  (format nil "~a~a" *portal-base* endpoint)
+                                  "-H" "Content-Type: application/json"))
+                  (response (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
+             (check-clock-drift response)
+             response))
       (delete-file tmp-file))))
 
 (defun get-api-keys ()

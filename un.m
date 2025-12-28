@@ -94,6 +94,24 @@ void getApiKeys(NSString** publicKey, NSString** secretKey) {
     }
 }
 
+void checkClockDrift(NSString* response) {
+    NSString* responseLower = [response lowercaseString];
+    if ([responseLower rangeOfString:@"timestamp"].location != NSNotFound &&
+        ([responseLower rangeOfString:@"401"].location != NSNotFound ||
+         [responseLower rangeOfString:@"expired"].location != NSNotFound ||
+         [responseLower rangeOfString:@"invalid"].location != NSNotFound)) {
+        fprintf(stderr, "%sError: Request timestamp expired (must be within 5 minutes of server time)%s\n",
+                [RED UTF8String], [RESET UTF8String]);
+        fprintf(stderr, "%sYour computer's clock may have drifted.%s\n",
+                [YELLOW UTF8String], [RESET UTF8String]);
+        fprintf(stderr, "Check your system time and sync with NTP if needed:\n");
+        fprintf(stderr, "  Linux:   sudo ntpdate -s time.nist.gov\n");
+        fprintf(stderr, "  macOS:   sudo sntp -sS time.apple.com\n");
+        fprintf(stderr, "  Windows: w32tm /resync%s\n", [RESET UTF8String]);
+        exit(1);
+    }
+}
+
 NSString* hmacSha256Hex(NSString* key, NSString* message) {
     const char* cKey = [key UTF8String];
     const char* cMessage = [message UTF8String];
@@ -170,6 +188,7 @@ NSDictionary* apiRequest(NSString* endpoint, NSString* method, NSDictionary* dat
         if (responseData) {
             NSString* errMsg = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
             fprintf(stderr, "%s\n", [errMsg UTF8String]);
+            checkClockDrift(errMsg);
         }
         exit(1);
     }
@@ -350,6 +369,7 @@ NSDictionary* portalRequest(NSString* endpoint, NSString* method, NSDictionary* 
         if (responseData) {
             NSString* errMsg = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
             fprintf(stderr, "%s\n", [errMsg UTF8String]);
+            checkClockDrift(errMsg);
         }
         exit(1);
     }

@@ -127,6 +127,22 @@
   (let [message (str timestamp ":" method ":" path ":" body)]
     (hmac-sha256 secret-key message)))
 
+(defn check-clock-drift-error [response]
+  (let [has-timestamp (or (str/includes? response "timestamp")
+                          (str/includes? response "\"timestamp\""))
+        has-401 (str/includes? response "401")
+        has-expired (str/includes? response "expired")
+        has-invalid (str/includes? response "invalid")]
+    (when (and has-timestamp (or has-401 has-expired has-invalid))
+      (binding [*out* *err*]
+        (println (str red "Error: Request timestamp expired (must be within 5 minutes of server time)" reset))
+        (println (str yellow "Your computer's clock may have drifted." reset))
+        (println "Check your system time and sync with NTP if needed:")
+        (println "  Linux:   sudo ntpdate -s time.nist.gov")
+        (println "  macOS:   sudo sntp -sS time.apple.com")
+        (println "  Windows: w32tm /resync"))
+      (System/exit 1))))
+
 (defn build-auth-headers [public-key secret-key method path body]
   (if secret-key
     (let [timestamp (str (quot (System/currentTimeMillis) 1000))
@@ -148,6 +164,7 @@
                        ["-d" (str "@" tmp-file)])
           {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
+      (check-clock-drift-error out)
       out)))
 
 (defn curl-get [api-key endpoint]
@@ -155,16 +172,20 @@
         auth-headers (build-auth-headers public-key secret-key "GET" endpoint "")
         args (concat ["curl" "-s"
                       (str "https://api.unsandbox.com" endpoint)]
-                     auth-headers)]
-    (:out (apply sh args))))
+                     auth-headers)
+        result (:out (apply sh args))]
+    (check-clock-drift-error result)
+    result))
 
 (defn curl-delete [api-key endpoint]
   (let [[public-key secret-key] (get-api-keys)
         auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint "")
         args (concat ["curl" "-s" "-X" "DELETE"
                       (str "https://api.unsandbox.com" endpoint)]
-                     auth-headers)]
-    (:out (apply sh args))))
+                     auth-headers)
+        result (:out (apply sh args))]
+    (check-clock-drift-error result)
+    result))
 
 (defn curl-portal-post [api-key endpoint json-data]
   (let [tmp-file (str "/tmp/un_clj_portal_" (rand-int 999999) ".json")
@@ -178,6 +199,7 @@
                        ["-d" (str "@" tmp-file)])
           {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
+      (check-clock-drift-error out)
       out)))
 
 (defn execute-command [file env-vars artifacts out-dir network vcpu]

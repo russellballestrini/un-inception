@@ -322,6 +322,25 @@ make_signature(SecretKey, Timestamp, Method, Path, Body) ->
     Message = Timestamp ++ ":" ++ Method ++ ":" ++ Path ++ ":" ++ Body,
     hmac_sha256(SecretKey, Message).
 
+check_clock_drift_error(Response) ->
+    HasTimestamp = string:str(Response, "timestamp") > 0 orelse string:str(Response, "\"timestamp\"") > 0,
+    Has401 = string:str(Response, "401") > 0,
+    HasExpired = string:str(Response, "expired") > 0,
+    HasInvalid = string:str(Response, "invalid") > 0,
+
+    case HasTimestamp andalso (Has401 orelse HasExpired orelse HasInvalid) of
+        true ->
+            io:format(standard_error, "\033[31mError: Request timestamp expired (must be within 5 minutes of server time)\033[0m~n", []),
+            io:format(standard_error, "\033[33mYour computer's clock may have drifted.\033[0m~n", []),
+            io:format(standard_error, "Check your system time and sync with NTP if needed:~n", []),
+            io:format(standard_error, "  Linux:   sudo ntpdate -s time.nist.gov~n", []),
+            io:format(standard_error, "  macOS:   sudo sntp -sS time.apple.com~n", []),
+            io:format(standard_error, "  Windows: w32tm /resync~n", []),
+            halt(1);
+        false ->
+            ok
+    end.
+
 build_auth_headers(PublicKey, SecretKey, Method, Path, Body) ->
     if
         SecretKey =/= false ->
@@ -404,7 +423,9 @@ curl_post(ApiKey, Endpoint, TmpFile) ->
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
           " -d @" ++ TmpFile,
-    os:cmd(Cmd).
+    Result = os:cmd(Cmd),
+    check_clock_drift_error(Result),
+    Result.
 
 curl_post_portal(ApiKey, Endpoint, Data) ->
     TmpFile = write_temp_file(Data),
@@ -416,6 +437,7 @@ curl_post_portal(ApiKey, Endpoint, Data) ->
           " -d @" ++ TmpFile,
     Result = os:cmd(Cmd),
     file:delete(TmpFile),
+    check_clock_drift_error(Result),
     Result.
 
 curl_get(ApiKey, Endpoint) ->
@@ -423,14 +445,18 @@ curl_get(ApiKey, Endpoint) ->
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "GET", Endpoint, ""),
     Cmd = "curl -s https://api.unsandbox.com" ++ Endpoint ++
           AuthHeaders,
-    os:cmd(Cmd).
+    Result = os:cmd(Cmd),
+    check_clock_drift_error(Result),
+    Result.
 
 curl_delete(ApiKey, Endpoint) ->
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
     Cmd = "curl -s -X DELETE https://api.unsandbox.com" ++ Endpoint ++
           AuthHeaders,
-    os:cmd(Cmd).
+    Result = os:cmd(Cmd),
+    check_clock_drift_error(Result),
+    Result.
 
 %% Argument parsing
 parse_exec_args([], Opts) ->

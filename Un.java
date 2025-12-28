@@ -555,6 +555,18 @@ public class Un {
         int status = conn.getResponseCode();
         if (status < 200 || status >= 300) {
             String error = readStream(conn.getErrorStream());
+
+            // Check for clock drift errors
+            if (error.contains("timestamp") && (status == 401 || error.toLowerCase().contains("expired") || error.toLowerCase().contains("invalid"))) {
+                System.err.println(RED + "Error: Request timestamp expired (must be within 5 minutes of server time)" + RESET);
+                System.err.println(YELLOW + "Your computer's clock may have drifted." + RESET);
+                System.err.println("Check your system time and sync with NTP if needed:");
+                System.err.println("  Linux:   sudo ntpdate -s time.nist.gov");
+                System.err.println("  macOS:   sudo sntp -sS time.apple.com");
+                System.err.println("  Windows: w32tm /resync");
+                System.exit(1);
+            }
+
             throw new Exception("HTTP " + status + " - " + error);
         }
 

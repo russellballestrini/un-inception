@@ -279,6 +279,17 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
                 reader.ReadToEnd()
             else
                 ex.Message
+
+        // Check for clock drift error
+        if errorMsg.Contains("timestamp") && (errorMsg.Contains("401") || errorMsg.Contains("expired") || errorMsg.Contains("invalid")) then
+            eprintfn "%sError: Request timestamp expired (must be within 5 minutes of server time)%s" red reset
+            eprintfn "%sYour computer's clock may have drifted.%s" yellow reset
+            eprintfn "Check your system time and sync with NTP if needed:"
+            eprintfn "  Linux:   sudo ntpdate -s time.nist.gov"
+            eprintfn "  macOS:   sudo sntp -sS time.apple.com"
+            eprintfn "  Windows: w32tm /resync%s" reset
+            exit 1
+
         failwithf "HTTP error - %s" errorMsg
 
 let cmdExecute (args: Args) =
@@ -432,6 +443,17 @@ let cmdKey (args: Args) =
                 with _ -> body
             else
                 ex.Message
+
+        // Check for clock drift error
+        if errorMsg.Contains("timestamp") && (errorMsg.Contains("401") || errorMsg.Contains("expired") || errorMsg.Contains("invalid")) then
+            eprintfn "%sError: Request timestamp expired (must be within 5 minutes of server time)%s" red reset
+            eprintfn "%sYour computer's clock may have drifted.%s" yellow reset
+            eprintfn "Check your system time and sync with NTP if needed:"
+            eprintfn "  Linux:   sudo ntpdate -s time.nist.gov"
+            eprintfn "  macOS:   sudo sntp -sS time.apple.com"
+            eprintfn "  Windows: w32tm /resync%s" reset
+            exit 1
+
         printfn "Reason: %s" errorMsg
         exit 1
 

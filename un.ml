@@ -112,6 +112,31 @@ let escape_json s =
   ) s;
   Buffer.contents buf
 
+(* Check for clock drift errors *)
+let check_clock_drift response =
+  let response_lower = String.lowercase_ascii response in
+  let contains_substring s sub =
+    try
+      let _ = Str.search_forward (Str.regexp_string sub) s 0 in
+      true
+    with Not_found -> false
+  in
+  let has_timestamp = contains_substring response_lower "timestamp" in
+  let has_401 = contains_substring response_lower "401" in
+  let has_expired = contains_substring response_lower "expired" in
+  let has_invalid = contains_substring response_lower "invalid" in
+  let has_error = has_401 || has_expired || has_invalid in
+
+  if has_timestamp && has_error then begin
+    Printf.fprintf stderr "%sError: Request timestamp expired (must be within 5 minutes of server time)%s\n" red reset;
+    Printf.fprintf stderr "%sYour computer's clock may have drifted.\n" yellow;
+    Printf.fprintf stderr "Check your system time and sync with NTP if needed:\n";
+    Printf.fprintf stderr "  Linux:   sudo ntpdate -s time.nist.gov\n";
+    Printf.fprintf stderr "  macOS:   sudo sntp -sS time.apple.com\n";
+    Printf.fprintf stderr "  Windows: w32tm /resync%s\n" reset;
+    exit 1
+  end
+
 (* Execute curl command *)
 let curl_post api_key endpoint json =
   let (public_key, secret_key) = get_api_keys () in
@@ -130,6 +155,7 @@ let curl_post api_key endpoint json =
   let output = read_all "" in
   let _ = Unix.close_process_in ic in
   Sys.remove tmp_file;
+  check_clock_drift output;
   output
 
 let portal_curl_post api_key endpoint json =
@@ -149,6 +175,7 @@ let portal_curl_post api_key endpoint json =
   let output = read_all "" in
   let _ = Unix.close_process_in ic in
   Sys.remove tmp_file;
+  check_clock_drift output;
   output
 
 let curl_get api_key endpoint =
@@ -165,6 +192,7 @@ let curl_get api_key endpoint =
   in
   let output = read_all "" in
   let _ = Unix.close_process_in ic in
+  check_clock_drift output;
   output
 
 let curl_delete api_key endpoint =
@@ -181,6 +209,7 @@ let curl_delete api_key endpoint =
   in
   let output = read_all "" in
   let _ = Unix.close_process_in ic in
+  check_clock_drift output;
   output
 
 (* Extract JSON value - simple regex-based parser *)

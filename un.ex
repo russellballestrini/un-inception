@@ -463,6 +463,7 @@ defmodule Un do
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
+    check_clock_drift(output)
     output
   end
 
@@ -497,6 +498,7 @@ defmodule Un do
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
+    check_clock_drift(output)
     output
   end
 
@@ -511,6 +513,7 @@ defmodule Un do
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
+    check_clock_drift(output)
     output
   end
 
@@ -525,6 +528,7 @@ defmodule Un do
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
+    check_clock_drift(output)
     output
   end
 
@@ -553,6 +557,26 @@ defmodule Un do
 
   defp get_opt([_arg | rest], long, short, default) do
     get_opt(rest, long, short, default)
+  end
+
+  defp check_clock_drift(response) do
+    response_lower = String.downcase(response)
+
+    # Check if response contains "timestamp" and error indicators
+    has_timestamp = String.contains?(response_lower, "timestamp")
+    has_error = String.contains?(response_lower, "401") or
+                String.contains?(response_lower, "expired") or
+                String.contains?(response_lower, "invalid")
+
+    if has_timestamp and has_error do
+      IO.puts(:stderr, "#{@red}Error: Request timestamp expired (must be within 5 minutes of server time)#{@reset}")
+      IO.puts(:stderr, "#{@yellow}Your computer's clock may have drifted.")
+      IO.puts(:stderr, "Check your system time and sync with NTP if needed:")
+      IO.puts(:stderr, "  Linux:   sudo ntpdate -s time.nist.gov")
+      IO.puts(:stderr, "  macOS:   sudo sntp -sS time.apple.com")
+      IO.puts(:stderr, "  Windows: w32tm /resync#{@reset}")
+      System.halt(1)
+    end
   end
 end
 

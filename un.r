@@ -93,6 +93,25 @@ get_api_keys <- function(args_key = NULL) {
     return(list(public_key = public_key, secret_key = secret_key))
 }
 
+check_clock_drift <- function(response_text) {
+    response_lower <- tolower(response_text)
+    has_timestamp <- grepl("timestamp", response_lower, fixed = TRUE)
+    has_401 <- grepl("401", response_lower, fixed = TRUE)
+    has_expired <- grepl("expired", response_lower, fixed = TRUE)
+    has_invalid <- grepl("invalid", response_lower, fixed = TRUE)
+    has_error <- has_401 || has_expired || has_invalid
+
+    if (has_timestamp && has_error) {
+        cat(sprintf("%sError: Request timestamp expired (must be within 5 minutes of server time)%s\n", RED, RESET), file = stderr())
+        cat(sprintf("%sYour computer's clock may have drifted.\n", YELLOW), file = stderr())
+        cat("Check your system time and sync with NTP if needed:\n", file = stderr())
+        cat("  Linux:   sudo ntpdate -s time.nist.gov\n", file = stderr())
+        cat("  macOS:   sudo sntp -sS time.apple.com\n", file = stderr())
+        cat(sprintf("  Windows: w32tm /resync%s\n", RESET), file = stderr())
+        quit(status = 1)
+    }
+}
+
 api_request <- function(endpoint, public_key, secret_key, method = "GET", data = NULL) {
     url <- paste0(API_BASE, endpoint)
     headers <- add_headers(
@@ -129,7 +148,9 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
             stop(paste("Unsupported method:", method))
         }
 
-        result <- fromJSON(content(response, "text", encoding = "UTF-8"))
+        response_text <- content(response, "text", encoding = "UTF-8")
+        check_clock_drift(response_text)
+        result <- fromJSON(response_text)
         return(result)
     }, error = function(e) {
         cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
@@ -292,7 +313,9 @@ cmd_key <- function(args) {
 
         tryCatch({
             response <- POST(url, headers, encode = "json", timeout(10))
-            result <- fromJSON(content(response, "text", encoding = "UTF-8"))
+            response_text <- content(response, "text", encoding = "UTF-8")
+            check_clock_drift(response_text)
+            result <- fromJSON(response_text)
 
             if (!is.null(result$public_key)) {
                 extend_url <- paste0(PORTAL_BASE, "/keys/extend?pk=", result$public_key)
@@ -331,7 +354,9 @@ cmd_key <- function(args) {
 
     tryCatch({
         response <- POST(url, headers, encode = "json", timeout(10))
-        result <- fromJSON(content(response, "text", encoding = "UTF-8"))
+        response_text <- content(response, "text", encoding = "UTF-8")
+        check_clock_drift(response_text)
+        result <- fromJSON(response_text)
 
         status <- if (!is.null(result$status)) result$status else "Unknown"
 

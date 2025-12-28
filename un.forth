@@ -157,7 +157,21 @@
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
     s" MESSAGE=\"$TIMESTAMP:POST:/execute:$BODY\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X POST https://api.unsandbox.com/execute -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" -o /tmp/unsandbox_resp.json; jq -r '.stdout // empty' /tmp/unsandbox_resp.json | sed 's/^/\\x1b[34m/' | sed 's/$/\\x1b[0m/'; jq -r '.stderr // empty' /tmp/unsandbox_resp.json | sed 's/^/\\x1b[31m/' | sed 's/$/\\x1b[0m/' >&2; rm -f /tmp/unsandbox_resp.json" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/execute -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" -o /tmp/unsandbox_resp.json" r@ write-line throw
+    s" RESP=$(cat /tmp/unsandbox_resp.json)" r@ write-line throw
+    s" if echo \"$RESP\" | grep -q \"timestamp\" && (echo \"$RESP\" | grep -Eq \"(401|expired|invalid)\"); then" r@ write-line throw
+    s"   echo -e '\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m' >&2" r@ write-line throw
+    s"   echo -e '\\x1b[33mYour computer'\\''s clock may have drifted.\\x1b[0m' >&2" r@ write-line throw
+    s"   echo 'Check your system time and sync with NTP if needed:' >&2" r@ write-line throw
+    s"   echo '  Linux:   sudo ntpdate -s time.nist.gov' >&2" r@ write-line throw
+    s"   echo '  macOS:   sudo sntp -sS time.apple.com' >&2" r@ write-line throw
+    s"   echo -e '  Windows: w32tm /resync\\x1b[0m' >&2" r@ write-line throw
+    s"   rm -f /tmp/unsandbox_resp.json" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" jq -r '.stdout // empty' /tmp/unsandbox_resp.json | sed 's/^/\\x1b[34m/' | sed 's/$/\\x1b[0m/'" r@ write-line throw
+    s" jq -r '.stderr // empty' /tmp/unsandbox_resp.json | sed 's/^/\\x1b[31m/' | sed 's/$/\\x1b[0m/' >&2" r@ write-line throw
+    s" rm -f /tmp/unsandbox_resp.json" r@ write-line throw
     r> close-file throw
 
     s" chmod +x /tmp/unsandbox_script.sh && /tmp/unsandbox_script.sh && rm -f /tmp/unsandbox_script.sh" system

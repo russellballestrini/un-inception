@@ -605,13 +605,31 @@ class Un
         catch (WebException ex)
         {
             string error = "";
+            int statusCode = 0;
             if (ex.Response != null)
             {
                 using (StreamReader reader = new StreamReader(ex.Response.GetResponseStream()))
                 {
                     error = reader.ReadToEnd();
                 }
+                if (ex.Response is HttpWebResponse httpResponse)
+                {
+                    statusCode = (int)httpResponse.StatusCode;
+                }
             }
+
+            // Check for clock drift errors
+            if (error.Contains("timestamp") && (statusCode == 401 || error.ToLower().Contains("expired") || error.ToLower().Contains("invalid")))
+            {
+                Console.Error.WriteLine($"{RED}Error: Request timestamp expired (must be within 5 minutes of server time){RESET}");
+                Console.Error.WriteLine($"{YELLOW}Your computer's clock may have drifted.{RESET}");
+                Console.Error.WriteLine("Check your system time and sync with NTP if needed:");
+                Console.Error.WriteLine("  Linux:   sudo ntpdate -s time.nist.gov");
+                Console.Error.WriteLine("  macOS:   sudo sntp -sS time.apple.com");
+                Console.Error.WriteLine("  Windows: w32tm /resync");
+                Environment.Exit(1);
+            }
+
             throw new Exception($"HTTP error - {error}");
         }
     }

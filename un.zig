@@ -362,6 +362,21 @@ pub fn main() !u8 {
             defer allocator.free(json_content);
             std.fs.cwd().deleteFile(json_file) catch {};
 
+            // Check for clock drift errors
+            if (mem.indexOf(u8, json_content, "timestamp") != null and
+                (mem.indexOf(u8, json_content, "401") != null or
+                 mem.indexOf(u8, json_content, "expired") != null or
+                 mem.indexOf(u8, json_content, "invalid") != null))
+            {
+                std.debug.print("\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m\n", .{});
+                std.debug.print("\x1b[33mYour computer's clock may have drifted.\x1b[0m\n", .{});
+                std.debug.print("\x1b[33mCheck your system time and sync with NTP if needed:\x1b[0m\n", .{});
+                std.debug.print("\x1b[33m  Linux:   sudo ntpdate -s time.nist.gov\x1b[0m\n", .{});
+                std.debug.print("\x1b[33m  macOS:   sudo sntp -sS time.apple.com\x1b[0m\n", .{});
+                std.debug.print("\x1b[33m  Windows: w32tm /resync\x1b[0m\n", .{});
+                return 1;
+            }
+
             // Simple JSON parsing to find public_key (looking for "public_key":"value")
             const pk_prefix = "\"public_key\":\"";
             var public_key_value: ?[]const u8 = null;
@@ -400,6 +415,21 @@ pub fn main() !u8 {
             };
             defer allocator.free(json_content);
             std.fs.cwd().deleteFile(json_file) catch {};
+
+            // Check for clock drift errors
+            if (mem.indexOf(u8, json_content, "timestamp") != null and
+                (mem.indexOf(u8, json_content, "401") != null or
+                 mem.indexOf(u8, json_content, "expired") != null or
+                 mem.indexOf(u8, json_content, "invalid") != null))
+            {
+                std.debug.print("\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m\n", .{});
+                std.debug.print("\x1b[33mYour computer's clock may have drifted.\x1b[0m\n", .{});
+                std.debug.print("\x1b[33mCheck your system time and sync with NTP if needed:\x1b[0m\n", .{});
+                std.debug.print("\x1b[33m  Linux:   sudo ntpdate -s time.nist.gov\x1b[0m\n", .{});
+                std.debug.print("\x1b[33m  macOS:   sudo sntp -sS time.apple.com\x1b[0m\n", .{});
+                std.debug.print("\x1b[33m  Windows: w32tm /resync\x1b[0m\n", .{});
+                return 1;
+            }
 
             // Simple JSON parsing (looking for specific fields)
             const status_prefix = "\"status\":\"";
@@ -535,14 +565,44 @@ pub fn main() !u8 {
     // Execute with curl
     const auth_headers = try buildAuthCmd(allocator, "POST", "/execute", json_content, public_key, secret_key);
     defer allocator.free(auth_headers);
-    const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/execute' -H 'Content-Type: application/json' {s} -d @{s}", .{ API_BASE, auth_headers, json_file });
+    const response_file = "/tmp/unsandbox_response.json";
+    const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/execute' -H 'Content-Type: application/json' {s} -d @{s} -o {s}", .{ API_BASE, auth_headers, json_file, response_file });
     defer allocator.free(cmd);
 
-    const result = std.c.system(cmd.ptr);
-    std.debug.print("\n", .{});
+    _ = std.c.system(cmd.ptr);
+
+    // Read response to check for clock drift errors
+    const response_content = fs.cwd().readFileAlloc(allocator, response_file, 10 * 1024 * 1024) catch |err| {
+        std.debug.print("\x1b[31mError reading response: {}\x1b[0m\n", .{err});
+        std.fs.cwd().deleteFile(json_file) catch {};
+        std.fs.cwd().deleteFile(response_file) catch {};
+        return 1;
+    };
+    defer allocator.free(response_content);
+
+    // Check for clock drift errors
+    if (mem.indexOf(u8, response_content, "timestamp") != null and
+        (mem.indexOf(u8, response_content, "401") != null or
+         mem.indexOf(u8, response_content, "expired") != null or
+         mem.indexOf(u8, response_content, "invalid") != null))
+    {
+        std.debug.print("\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m\n", .{});
+        std.debug.print("\x1b[33mYour computer's clock may have drifted.\x1b[0m\n", .{});
+        std.debug.print("\x1b[33mCheck your system time and sync with NTP if needed:\x1b[0m\n", .{});
+        std.debug.print("\x1b[33m  Linux:   sudo ntpdate -s time.nist.gov\x1b[0m\n", .{});
+        std.debug.print("\x1b[33m  macOS:   sudo sntp -sS time.apple.com\x1b[0m\n", .{});
+        std.debug.print("\x1b[33m  Windows: w32tm /resync\x1b[0m\n", .{});
+        std.fs.cwd().deleteFile(json_file) catch {};
+        std.fs.cwd().deleteFile(response_file) catch {};
+        return 1;
+    }
+
+    // Print response
+    std.debug.print("{s}\n", .{response_content});
 
     // Cleanup
     std.fs.cwd().deleteFile(json_file) catch {};
+    std.fs.cwd().deleteFile(response_file) catch {};
 
-    return if (result == 0) 0 else 1;
+    return 0;
 }

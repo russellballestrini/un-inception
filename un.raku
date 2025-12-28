@@ -148,6 +148,17 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$public-key!, Str :$sec
         exit 1;
     }
 
+    # Check for clock drift errors
+    if $body.contains('timestamp') && ($body.contains('401') || $body.contains('expired') || $body.contains('invalid')) {
+        note "{$RED}Error: Request timestamp expired (must be within 5 minutes of server time){$RESET}";
+        note "{$YELLOW}Your computer's clock may have drifted.{$RESET}";
+        note "{$YELLOW}Check your system time and sync with NTP if needed:{$RESET}";
+        note "{$YELLOW}  Linux:   sudo ntpdate -s time.nist.gov{$RESET}";
+        note "{$YELLOW}  macOS:   sudo sntp -sS time.apple.com{$RESET}";
+        note "{$YELLOW}  Windows: w32tm /resync{$RESET}";
+        exit 1;
+    }
+
     return from-json($body);
 }
 
