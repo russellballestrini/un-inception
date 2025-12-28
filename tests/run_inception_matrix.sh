@@ -25,10 +25,14 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 # Check requirements
-if [ -z "$UNSANDBOX_API_KEY" ]; then
-    echo -e "${RED}ERROR:${NC} UNSANDBOX_API_KEY not set"
-    echo "Run: source ../../vars.sh"
-    exit 1
+if [ -z "$UNSANDBOX_PUBLIC_KEY" ] || [ -z "$UNSANDBOX_SECRET_KEY" ]; then
+    if [ -z "$UNSANDBOX_API_KEY" ]; then
+        echo -e "${RED}ERROR:${NC} UNSANDBOX authentication not configured"
+        echo "Set HMAC keys: export UNSANDBOX_PUBLIC_KEY=... UNSANDBOX_SECRET_KEY=..."
+        echo "Or legacy key: export UNSANDBOX_API_KEY=..."
+        echo "Run: source ../../vars.sh"
+        exit 1
+    fi
 fi
 
 if [ ! -x "$CLI_DIR/un2" ]; then

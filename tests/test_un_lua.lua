@@ -8,7 +8,7 @@ local has_ltn12, ltn12 = pcall(require, "ltn12")
 local has_json, json = pcall(require, "cjson")
 
 -- Test configuration
-local script_dir = arg[0]:match("(.*/)")
+local script_dir = arg[0]:match("(.*/)") or "./"
 local UN_SCRIPT = script_dir .. "../un.lua"
 local FIB_PY = script_dir .. "../../test/fib.py"
 
@@ -144,9 +144,11 @@ if not status then
     results:failTest('Extension detection: .unknown -> nil', err)
 end
 
--- Test 7: API call test (requires UNSANDBOX_API_KEY)
-if not os.getenv("UNSANDBOX_API_KEY") then
-    results:skipTest('API call test', 'UNSANDBOX_API_KEY not set')
+-- Test 7: API call test (requires UNSANDBOX auth)
+local has_hmac = os.getenv("UNSANDBOX_PUBLIC_KEY") and os.getenv("UNSANDBOX_SECRET_KEY")
+local has_legacy = os.getenv("UNSANDBOX_API_KEY")
+if not (has_hmac or has_legacy) then
+    results:skipTest('API call test', 'UNSANDBOX authentication not set')
 elseif not (has_https and has_ltn12 and has_json) then
     results:skipTest('API call test', 'Required Lua libraries not available (luasocket, luasec, lua-cjson)')
 else
@@ -186,8 +188,8 @@ else
 end
 
 -- Test 8: End-to-end test with fib.py
-if not os.getenv("UNSANDBOX_API_KEY") then
-    results:skipTest('End-to-end fib.py test', 'UNSANDBOX_API_KEY not set')
+if not (has_hmac or has_legacy) then
+    results:skipTest('End-to-end fib.py test', 'UNSANDBOX authentication not set')
 else
     -- Check if fib.py exists
     local file = io.open(FIB_PY, "r")

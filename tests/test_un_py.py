@@ -91,7 +91,7 @@ except Exception as e:
 
 # Test 6: Extension detection for unknown extension
 try:
-    lang = un.detect_language('test.unknown')
+    lang = un.detect_language('test.unknown', exit_on_error=False)
     if lang is None:
         results.pass_test("Extension detection: .unknown -> None")
     else:
@@ -99,9 +99,11 @@ try:
 except Exception as e:
     results.fail_test("Extension detection: .unknown -> None", str(e))
 
-# Test 7: API call test (requires UNSANDBOX_API_KEY)
-if not os.environ.get('UNSANDBOX_API_KEY'):
-    results.skip_test("API call test", "UNSANDBOX_API_KEY not set")
+# Test 7: API call test (requires UNSANDBOX auth)
+has_hmac = os.environ.get('UNSANDBOX_PUBLIC_KEY') and os.environ.get('UNSANDBOX_SECRET_KEY')
+has_legacy = os.environ.get('UNSANDBOX_API_KEY')
+if not (has_hmac or has_legacy):
+    results.skip_test("API call test", "UNSANDBOX authentication not configured")
 else:
     try:
         result = un.execute_code('python', 'print("Hello from API")')
@@ -113,8 +115,10 @@ else:
         results.fail_test("API call test", str(e))
 
 # Test 8: End-to-end test with fib.py
-if not os.environ.get('UNSANDBOX_API_KEY'):
-    results.skip_test("End-to-end fib.py test", "UNSANDBOX_API_KEY not set")
+has_hmac = os.environ.get('UNSANDBOX_PUBLIC_KEY') and os.environ.get('UNSANDBOX_SECRET_KEY')
+has_legacy = os.environ.get('UNSANDBOX_API_KEY')
+if not (has_hmac or has_legacy):
+    results.skip_test("End-to-end fib.py test", "UNSANDBOX authentication not configured")
 elif not os.path.exists(FIB_PY):
     results.skip_test("End-to-end fib.py test", f"fib.py not found at {FIB_PY}")
 else:

@@ -22,12 +22,16 @@ echo -e "${CYAN}║       42 Languages × 3 Test Types = The Matrix             
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check API key
-if [ -z "$UNSANDBOX_API_KEY" ]; then
-    echo -e "${YELLOW}WARNING:${NC} UNSANDBOX_API_KEY not set"
-    echo "Integration and functional tests will be skipped"
-    echo "Run: source ../../vars.sh"
-    echo ""
+# Check API auth keys
+if [ -z "$UNSANDBOX_PUBLIC_KEY" ] || [ -z "$UNSANDBOX_SECRET_KEY" ]; then
+    if [ -z "$UNSANDBOX_API_KEY" ]; then
+        echo -e "${YELLOW}WARNING:${NC} UNSANDBOX authentication not configured"
+        echo "Integration and functional tests will be skipped"
+        echo "Set HMAC keys: export UNSANDBOX_PUBLIC_KEY=... UNSANDBOX_SECRET_KEY=..."
+        echo "Or legacy key: export UNSANDBOX_API_KEY=..."
+        echo "Run: source ../../vars.sh"
+        echo ""
+    fi
 fi
 
 # Counters

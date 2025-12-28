@@ -45,6 +45,8 @@ import java.net.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.Base64;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 public class Un {
     private static final String API_BASE = "https://api.unsandbox.com";
@@ -94,7 +96,9 @@ public class Un {
     }
 
     private static void cmdExecute(Args args) throws Exception {
-        String apiKey = getApiKey(args.apiKey);
+        String[] keys = getApiKeys(args.apiKey);
+        String publicKey = keys[0];
+        String secretKey = keys[1];
         String code = Files.readString(Paths.get(args.sourceFile));
         String language = detectLanguage(args.sourceFile);
 
@@ -137,7 +141,7 @@ public class Un {
             payload.put("vcpu", args.vcpu);
         }
 
-        Map<String, Object> result = apiRequest("/execute", "POST", payload, apiKey);
+        Map<String, Object> result = apiRequest("/execute", "POST", payload, publicKey, secretKey);
 
         String stdout = (String) result.get("stdout");
         String stderr = (String) result.get("stderr");
@@ -168,10 +172,12 @@ public class Un {
     }
 
     private static void cmdSession(Args args) throws Exception {
-        String apiKey = getApiKey(args.apiKey);
+        String[] keys = getApiKeys(args.apiKey);
+        String publicKey = keys[0];
+        String secretKey = keys[1];
 
         if (args.sessionList) {
-            Map<String, Object> result = apiRequest("/sessions", "GET", null, apiKey);
+            Map<String, Object> result = apiRequest("/sessions", "GET", null, publicKey, secretKey);
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> sessions = (List<Map<String, Object>>) result.get("sessions");
             if (sessions == null || sessions.isEmpty()) {
@@ -190,7 +196,7 @@ public class Un {
         }
 
         if (args.sessionKill != null) {
-            apiRequest("/sessions/" + args.sessionKill, "DELETE", null, apiKey);
+            apiRequest("/sessions/" + args.sessionKill, "DELETE", null, publicKey, secretKey);
             System.out.println(GREEN + "Session terminated: " + args.sessionKill + RESET);
             return;
         }
@@ -205,16 +211,18 @@ public class Un {
         }
 
         System.out.println(YELLOW + "Creating session..." + RESET);
-        Map<String, Object> result = apiRequest("/sessions", "POST", payload, apiKey);
+        Map<String, Object> result = apiRequest("/sessions", "POST", payload, publicKey, secretKey);
         System.out.println(GREEN + "Session created: " + result.getOrDefault("id", "N/A") + RESET);
         System.out.println(YELLOW + "(Interactive sessions require WebSocket - use un2 for full support)" + RESET);
     }
 
     private static void cmdService(Args args) throws Exception {
-        String apiKey = getApiKey(args.apiKey);
+        String[] keys = getApiKeys(args.apiKey);
+        String publicKey = keys[0];
+        String secretKey = keys[1];
 
         if (args.serviceList) {
-            Map<String, Object> result = apiRequest("/services", "GET", null, apiKey);
+            Map<String, Object> result = apiRequest("/services", "GET", null, publicKey, secretKey);
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> services = (List<Map<String, Object>>) result.get("services");
             if (services == null || services.isEmpty()) {
@@ -239,37 +247,37 @@ public class Un {
         }
 
         if (args.serviceInfo != null) {
-            Map<String, Object> result = apiRequest("/services/" + args.serviceInfo, "GET", null, apiKey);
+            Map<String, Object> result = apiRequest("/services/" + args.serviceInfo, "GET", null, publicKey, secretKey);
             System.out.println(toJson(result));
             return;
         }
 
         if (args.serviceLogs != null) {
-            Map<String, Object> result = apiRequest("/services/" + args.serviceLogs + "/logs", "GET", null, apiKey);
+            Map<String, Object> result = apiRequest("/services/" + args.serviceLogs + "/logs", "GET", null, publicKey, secretKey);
             System.out.println(result.getOrDefault("logs", ""));
             return;
         }
 
         if (args.serviceTail != null) {
-            Map<String, Object> result = apiRequest("/services/" + args.serviceTail + "/logs?lines=9000", "GET", null, apiKey);
+            Map<String, Object> result = apiRequest("/services/" + args.serviceTail + "/logs?lines=9000", "GET", null, publicKey, secretKey);
             System.out.println(result.getOrDefault("logs", ""));
             return;
         }
 
         if (args.serviceSleep != null) {
-            apiRequest("/services/" + args.serviceSleep + "/sleep", "POST", null, apiKey);
+            apiRequest("/services/" + args.serviceSleep + "/sleep", "POST", null, publicKey, secretKey);
             System.out.println(GREEN + "Service sleeping: " + args.serviceSleep + RESET);
             return;
         }
 
         if (args.serviceWake != null) {
-            apiRequest("/services/" + args.serviceWake + "/wake", "POST", null, apiKey);
+            apiRequest("/services/" + args.serviceWake + "/wake", "POST", null, publicKey, secretKey);
             System.out.println(GREEN + "Service waking: " + args.serviceWake + RESET);
             return;
         }
 
         if (args.serviceDestroy != null) {
-            apiRequest("/services/" + args.serviceDestroy, "DELETE", null, apiKey);
+            apiRequest("/services/" + args.serviceDestroy, "DELETE", null, publicKey, secretKey);
             System.out.println(GREEN + "Service destroyed: " + args.serviceDestroy + RESET);
             return;
         }
@@ -277,7 +285,7 @@ public class Un {
         if (args.serviceExecute != null) {
             Map<String, Object> payload = new HashMap<>();
             payload.put("command", args.serviceCommand);
-            Map<String, Object> result = apiRequest("/services/" + args.serviceExecute + "/execute", "POST", payload, apiKey);
+            Map<String, Object> result = apiRequest("/services/" + args.serviceExecute + "/execute", "POST", payload, publicKey, secretKey);
             String stdout = (String) result.get("stdout");
             String stderr = (String) result.get("stderr");
             if (stdout != null && !stdout.isEmpty()) {
@@ -293,7 +301,7 @@ public class Un {
             System.err.println("Fetching bootstrap script from " + args.serviceDumpBootstrap + "...");
             Map<String, Object> payload = new HashMap<>();
             payload.put("command", "cat /tmp/bootstrap.sh");
-            Map<String, Object> result = apiRequest("/services/" + args.serviceDumpBootstrap + "/execute", "POST", payload, apiKey);
+            Map<String, Object> result = apiRequest("/services/" + args.serviceDumpBootstrap + "/execute", "POST", payload, publicKey, secretKey);
 
             String bootstrap = (String) result.get("stdout");
             if (bootstrap != null && !bootstrap.isEmpty()) {
@@ -340,7 +348,7 @@ public class Un {
                 payload.put("vcpu", args.vcpu);
             }
 
-            Map<String, Object> result = apiRequest("/services", "POST", payload, apiKey);
+            Map<String, Object> result = apiRequest("/services", "POST", payload, publicKey, secretKey);
             System.out.println(GREEN + "Service created: " + result.getOrDefault("id", "N/A") + RESET);
             System.out.println("Name: " + result.getOrDefault("name", "N/A"));
             if (result.containsKey("url")) {
@@ -354,18 +362,20 @@ public class Un {
     }
 
     private static void cmdKey(Args args) throws Exception {
-        String apiKey = getApiKey(args.apiKey);
+        String[] keys = getApiKeys(args.apiKey);
+        String publicKey = keys[0];
+        String secretKey = keys[1];
 
         if (args.keyExtend) {
             // First validate to get public_key
-            Map<String, Object> result = validateKey(apiKey);
-            String publicKey = (String) result.get("public_key");
-            if (publicKey == null || publicKey.isEmpty()) {
+            Map<String, Object> result = validateKey(publicKey, secretKey);
+            String pubKey = (String) result.get("public_key");
+            if (pubKey == null || pubKey.isEmpty()) {
                 System.err.println(RED + "Error: Could not retrieve public key" + RESET);
                 System.exit(1);
             }
 
-            String extendUrl = PORTAL_BASE + "/keys/extend?pk=" + urlEncode(publicKey);
+            String extendUrl = PORTAL_BASE + "/keys/extend?pk=" + urlEncode(pubKey);
             System.out.println(YELLOW + "Opening browser to extend key:" + RESET);
             System.out.println(extendUrl);
 
@@ -386,9 +396,9 @@ public class Un {
         }
 
         // Default: validate key
-        Map<String, Object> result = validateKey(apiKey);
+        Map<String, Object> result = validateKey(publicKey, secretKey);
         Boolean expired = (Boolean) result.get("expired");
-        String publicKey = (String) result.get("public_key");
+        String pubKey = (String) result.get("public_key");
         String tier = (String) result.get("tier");
         String status = (String) result.get("status");
         String expiresAt = (String) result.get("expires_at");
@@ -399,7 +409,7 @@ public class Un {
 
         if (expired != null && expired) {
             System.out.println(RED + "Expired" + RESET);
-            System.out.println("Public Key: " + (publicKey != null ? publicKey : "N/A"));
+            System.out.println("Public Key: " + (pubKey != null ? pubKey : "N/A"));
             System.out.println("Tier: " + (tier != null ? tier : "N/A"));
             System.out.println("Expired: " + (expiresAt != null ? expiresAt : "N/A"));
             System.out.println(YELLOW + "To renew: Visit " + PORTAL_BASE + "/keys/extend" + RESET);
@@ -408,7 +418,7 @@ public class Un {
 
         // Valid key
         System.out.println(GREEN + "Valid" + RESET);
-        System.out.println("Public Key: " + (publicKey != null ? publicKey : "N/A"));
+        System.out.println("Public Key: " + (pubKey != null ? pubKey : "N/A"));
         System.out.println("Tier: " + (tier != null ? tier : "N/A"));
         System.out.println("Status: " + (status != null ? status : "N/A"));
         System.out.println("Expires: " + (expiresAt != null ? expiresAt : "N/A"));
@@ -418,11 +428,20 @@ public class Un {
         System.out.println("Concurrency: " + (concurrency != null ? concurrency : "N/A"));
     }
 
-    private static Map<String, Object> validateKey(String apiKey) throws Exception {
-        URL url = new URL(PORTAL_BASE + "/keys/validate");
+    private static Map<String, Object> validateKey(String publicKey, String secretKey) throws Exception {
+        long timestamp = System.currentTimeMillis() / 1000;
+        String method = "POST";
+        String path = "/keys/validate";
+        String body = "";
+        String signatureData = timestamp + ":" + method + ":" + path + ":" + body;
+        String signature = hmacSha256(secretKey, signatureData);
+
+        URL url = new URL(PORTAL_BASE + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        conn.setRequestMethod(method);
+        conn.setRequestProperty("Authorization", "Bearer " + (publicKey != null ? publicKey : secretKey));
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signature);
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setConnectTimeout(30000);
         conn.setReadTimeout(30000);
@@ -455,13 +474,46 @@ public class Un {
         }
     }
 
-    private static String getApiKey(String argsKey) {
-        String key = argsKey != null ? argsKey : System.getenv("UNSANDBOX_API_KEY");
-        if (key == null || key.isEmpty()) {
-            System.err.println(RED + "Error: UNSANDBOX_API_KEY not set" + RESET);
+    private static String[] getApiKeys(String argsKey) {
+        String publicKey = null;
+        String secretKey = null;
+
+        if (argsKey != null) {
+            // If API key provided via args, use it as secret key for backwards compat
+            secretKey = argsKey;
+            publicKey = System.getenv("UNSANDBOX_PUBLIC_KEY");
+        } else {
+            // Try new-style auth first
+            publicKey = System.getenv("UNSANDBOX_PUBLIC_KEY");
+            secretKey = System.getenv("UNSANDBOX_SECRET_KEY");
+
+            // Fall back to old-style auth
+            if (publicKey == null || secretKey == null) {
+                String apiKey = System.getenv("UNSANDBOX_API_KEY");
+                if (apiKey != null && !apiKey.isEmpty()) {
+                    secretKey = apiKey;
+                }
+            }
+        }
+
+        if (secretKey == null || secretKey.isEmpty()) {
+            System.err.println(RED + "Error: UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set" + RESET);
             System.exit(1);
         }
-        return key;
+
+        return new String[] { publicKey, secretKey };
+    }
+
+    private static String hmacSha256(String secretKey, String data) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        SecretKeySpec keySpec = new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256");
+        mac.init(keySpec);
+        byte[] hash = mac.doFinal(data.getBytes("UTF-8"));
+        StringBuilder hex = new StringBuilder();
+        for (byte b : hash) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
     }
 
     private static String detectLanguage(String filename) throws Exception {
@@ -477,20 +529,26 @@ public class Un {
         return lang;
     }
 
-    private static Map<String, Object> apiRequest(String endpoint, String method, Map<String, Object> data, String apiKey) throws Exception {
+    private static Map<String, Object> apiRequest(String endpoint, String method, Map<String, Object> data, String publicKey, String secretKey) throws Exception {
+        long timestamp = System.currentTimeMillis() / 1000;
+        String body = data != null ? toJson(data) : "";
+        String signatureData = timestamp + ":" + method + ":" + endpoint + ":" + body;
+        String signature = hmacSha256(secretKey, signatureData);
+
         URL url = new URL(API_BASE + endpoint);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod(method);
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        conn.setRequestProperty("Authorization", "Bearer " + (publicKey != null ? publicKey : secretKey));
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signature);
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setConnectTimeout(30000);
         conn.setReadTimeout(300000);
 
         if (data != null) {
             conn.setDoOutput(true);
-            String json = toJson(data);
             try (OutputStream os = conn.getOutputStream()) {
-                os.write(json.getBytes("UTF-8"));
+                os.write(body.getBytes("UTF-8"));
             }
         }
 

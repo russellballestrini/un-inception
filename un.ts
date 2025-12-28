@@ -54,6 +54,7 @@
 import * as fs from 'fs';
 import * as https from 'https';
 import * as path from 'path';
+import * as crypto from 'crypto';
 
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
@@ -112,13 +113,28 @@ interface Args {
   extend: boolean;
 }
 
-function getApiKey(argsKey: string | null): string {
-  const key = argsKey || process.env.UNSANDBOX_API_KEY;
-  if (!key) {
-    console.error(`${RED}Error: UNSANDBOX_API_KEY not set${RESET}`);
-    process.exit(1);
+interface ApiKeys {
+  publicKey: string;
+  secretKey: string;
+}
+
+function getApiKeys(argsKey: string | null): ApiKeys {
+  let publicKey = process.env.UNSANDBOX_PUBLIC_KEY;
+  let secretKey = process.env.UNSANDBOX_SECRET_KEY;
+
+  if (!publicKey || !secretKey) {
+    const oldKey = argsKey || process.env.UNSANDBOX_API_KEY;
+    if (oldKey) {
+      publicKey = oldKey;
+      secretKey = oldKey;
+    } else {
+      console.error(`${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}`);
+      console.error(`${RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility)${RESET}`);
+      process.exit(1);
+    }
   }
-  return key;
+
+  return { publicKey, secretKey };
 }
 
 function detectLanguage(filename: string): string {
@@ -143,15 +159,22 @@ function detectLanguage(filename: string): string {
   return lang;
 }
 
-function apiRequest(endpoint: string, method: string = "GET", data: any = null, apiKey: string): Promise<any> {
+function apiRequest(endpoint: string, method: string = "GET", data: any = null, keys: ApiKeys): Promise<any> {
   return new Promise((resolve, reject) => {
     const url = new URL(API_BASE + endpoint);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = data ? JSON.stringify(data) : '';
+    const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
+    const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
+
     const options: https.RequestOptions = {
       hostname: url.hostname,
       path: url.pathname + url.search,
       method: method,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${keys.publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
         'Content-Type': 'application/json'
       },
       timeout: 300000
@@ -180,21 +203,28 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
     });
 
     if (data) {
-      req.write(JSON.stringify(data));
+      req.write(body);
     }
     req.end();
   });
 }
 
-function portalRequest(endpoint: string, method: string = "GET", data: any = null, apiKey: string): Promise<any> {
+function portalRequest(endpoint: string, method: string = "GET", data: any = null, keys: ApiKeys): Promise<any> {
   return new Promise((resolve, reject) => {
     const url = new URL(PORTAL_BASE + endpoint);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = data ? JSON.stringify(data) : '';
+    const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
+    const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
+
     const options: https.RequestOptions = {
       hostname: url.hostname,
       path: url.pathname + url.search,
       method: method,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${keys.publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
         'Content-Type': 'application/json'
       },
       timeout: 30000
@@ -218,14 +248,14 @@ function portalRequest(endpoint: string, method: string = "GET", data: any = nul
     });
 
     if (data) {
-      req.write(JSON.stringify(data));
+      req.write(body);
     }
     req.end();
   });
 }
 
 async function cmdExecute(args: Args): Promise<void> {
-  const apiKey = getApiKey(args.apiKey);
+  const keys = getApiKeys(args.apiKey);
 
   let code: string;
   try {
@@ -267,7 +297,7 @@ async function cmdExecute(args: Args): Promise<void> {
   if (args.network) payload.network = args.network;
   if (args.vcpu) payload.vcpu = args.vcpu;
 
-  const result = await apiRequest("/execute", "POST", payload, apiKey);
+  const result = await apiRequest("/execute", "POST", payload, keys);
 
   if (result.stdout) process.stdout.write(`${BLUE}${result.stdout}${RESET}`);
   if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
@@ -289,10 +319,10 @@ async function cmdExecute(args: Args): Promise<void> {
 }
 
 async function cmdSession(args: Args): Promise<void> {
-  const apiKey = getApiKey(args.apiKey);
+  const keys = getApiKeys(args.apiKey);
 
   if (args.list) {
-    const result = await apiRequest("/sessions", "GET", null, apiKey);
+    const result = await apiRequest("/sessions", "GET", null, keys);
     const sessions = result.sessions || [];
     if (sessions.length === 0) {
       console.log("No active sessions");
@@ -306,7 +336,7 @@ async function cmdSession(args: Args): Promise<void> {
   }
 
   if (args.kill) {
-    await apiRequest(`/sessions/${args.kill}`, "DELETE", null, apiKey);
+    await apiRequest(`/sessions/${args.kill}`, "DELETE", null, keys);
     console.log(`${GREEN}Session terminated: ${args.kill}${RESET}`);
     return;
   }
@@ -325,16 +355,16 @@ async function cmdSession(args: Args): Promise<void> {
   if (args.audit) payload.audit = true;
 
   console.log(`${YELLOW}Creating session...${RESET}`);
-  const result = await apiRequest("/sessions", "POST", payload, apiKey);
+  const result = await apiRequest("/sessions", "POST", payload, keys);
   console.log(`${GREEN}Session created: ${result.id || 'N/A'}${RESET}`);
   console.log(`${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}`);
 }
 
 async function cmdService(args: Args): Promise<void> {
-  const apiKey = getApiKey(args.apiKey);
+  const keys = getApiKeys(args.apiKey);
 
   if (args.list) {
-    const result = await apiRequest("/services", "GET", null, apiKey);
+    const result = await apiRequest("/services", "GET", null, keys);
     const services = result.services || [];
     if (services.length === 0) {
       console.log("No services");
@@ -350,44 +380,44 @@ async function cmdService(args: Args): Promise<void> {
   }
 
   if (args.info) {
-    const result = await apiRequest(`/services/${args.info}`, "GET", null, apiKey);
+    const result = await apiRequest(`/services/${args.info}`, "GET", null, keys);
     console.log(JSON.stringify(result, null, 2));
     return;
   }
 
   if (args.logs) {
-    const result = await apiRequest(`/services/${args.logs}/logs`, "GET", null, apiKey);
+    const result = await apiRequest(`/services/${args.logs}/logs`, "GET", null, keys);
     console.log(result.logs || "");
     return;
   }
 
   if (args.tail) {
-    const result = await apiRequest(`/services/${args.tail}/logs?lines=9000`, "GET", null, apiKey);
+    const result = await apiRequest(`/services/${args.tail}/logs?lines=9000`, "GET", null, keys);
     console.log(result.logs || "");
     return;
   }
 
   if (args.sleep) {
-    await apiRequest(`/services/${args.sleep}/sleep`, "POST", null, apiKey);
+    await apiRequest(`/services/${args.sleep}/sleep`, "POST", null, keys);
     console.log(`${GREEN}Service sleeping: ${args.sleep}${RESET}`);
     return;
   }
 
   if (args.wake) {
-    await apiRequest(`/services/${args.wake}/wake`, "POST", null, apiKey);
+    await apiRequest(`/services/${args.wake}/wake`, "POST", null, keys);
     console.log(`${GREEN}Service waking: ${args.wake}${RESET}`);
     return;
   }
 
   if (args.destroy) {
-    await apiRequest(`/services/${args.destroy}`, "DELETE", null, apiKey);
+    await apiRequest(`/services/${args.destroy}`, "DELETE", null, keys);
     console.log(`${GREEN}Service destroyed: ${args.destroy}${RESET}`);
     return;
   }
 
   if (args.execute) {
     const payload = { command: args.command_arg };
-    const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, apiKey);
+    const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, keys);
     if (result.stdout) process.stdout.write(`${BLUE}${result.stdout}${RESET}`);
     if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
     return;
@@ -396,7 +426,7 @@ async function cmdService(args: Args): Promise<void> {
   if (args.dumpBootstrap) {
     console.error(`Fetching bootstrap script from ${args.dumpBootstrap}...`);
     const payload = { command: "cat /tmp/bootstrap.sh" };
-    const result = await apiRequest(`/services/${args.dumpBootstrap}/execute`, "POST", payload, apiKey);
+    const result = await apiRequest(`/services/${args.dumpBootstrap}/execute`, "POST", payload, keys);
 
     if (result.stdout) {
       const bootstrap = result.stdout;
@@ -436,7 +466,7 @@ async function cmdService(args: Args): Promise<void> {
     if (args.network) payload.network = args.network;
     if (args.vcpu) payload.vcpu = args.vcpu;
 
-    const result = await apiRequest("/services", "POST", payload, apiKey);
+    const result = await apiRequest("/services", "POST", payload, keys);
     console.log(`${GREEN}Service created: ${result.id || 'N/A'}${RESET}`);
     console.log(`Name: ${result.name || 'N/A'}`);
     if (result.url) console.log(`URL: ${result.url}`);
@@ -468,9 +498,9 @@ function openBrowser(url: string): void {
   });
 }
 
-async function validateKey(apiKey: string, shouldExtend: boolean): Promise<void> {
+async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
   try {
-    const result = await portalRequest("/keys/validate", "POST", {}, apiKey);
+    const result = await portalRequest("/keys/validate", "POST", {}, keys);
 
     // Handle --extend flag first
     if (shouldExtend) {
@@ -513,8 +543,8 @@ async function validateKey(apiKey: string, shouldExtend: boolean): Promise<void>
 }
 
 async function cmdKey(args: Args): Promise<void> {
-  const apiKey = getApiKey(args.apiKey);
-  await validateKey(apiKey, args.extend);
+  const keys = getApiKeys(args.apiKey);
+  await validateKey(keys, args.extend);
 }
 
 function parseArgs(argv: string[]): Args {

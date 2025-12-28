@@ -92,13 +92,24 @@ class Args {
     Boolean keyExtend = false
 }
 
-def getApiKey(argsKey) {
-    def key = argsKey ?: System.getenv('UNSANDBOX_API_KEY')
-    if (!key) {
-        System.err.println("${RED}Error: UNSANDBOX_API_KEY not set${RESET}")
-        System.exit(1)
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+
+def getApiKeys(argsKey) {
+    def publicKey = System.getenv('UNSANDBOX_PUBLIC_KEY')
+    def secretKey = System.getenv('UNSANDBOX_SECRET_KEY')
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    if (!publicKey || !secretKey) {
+        def legacyKey = argsKey ?: System.getenv('UNSANDBOX_API_KEY')
+        if (!legacyKey) {
+            System.err.println("${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}")
+            System.exit(1)
+        }
+        return [legacyKey, null]
     }
-    return key
+
+    return [publicKey, secretKey]
 }
 
 def detectLanguage(filename) {
@@ -116,16 +127,33 @@ def detectLanguage(filename) {
     return language
 }
 
-def apiRequest(endpoint, method, data, apiKey) {
+def apiRequest(endpoint, method, data, publicKey, secretKey) {
     def tempFile = File.createTempFile('un_request_', '.json')
     try {
+        def body = data ?: ""
         if (data) {
             tempFile.text = data
         }
 
         def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
-                       '-H', 'Content-Type: application/json',
-                       '-H', "Authorization: Bearer ${apiKey}"]
+                       '-H', 'Content-Type: application/json']
+
+        // Add HMAC authentication headers if secretKey is provided
+        if (secretKey) {
+            def timestamp = (System.currentTimeMillis() / 1000) as long
+            def message = "${timestamp}:${method}:${endpoint}:${body}"
+
+            def mac = Mac.getInstance("HmacSHA256")
+            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
+            curlCmd += ['-H', "X-Signature: ${signature}"]
+        } else {
+            // Legacy API key authentication
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+        }
 
         if (data) {
             curlCmd += ['-d', "@${tempFile.absolutePath}"]
@@ -147,7 +175,7 @@ def apiRequest(endpoint, method, data, apiKey) {
 }
 
 def cmdExecute(args) {
-    def apiKey = getApiKey(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
     def file = new File(args.sourceFile)
     if (!file.exists()) {
         System.err.println("${RED}Error: File not found: ${args.sourceFile}${RESET}")
@@ -203,7 +231,7 @@ def cmdExecute(args) {
 
     json += '}'
 
-    def output = apiRequest('/execute', 'POST', json, apiKey)
+    def output = apiRequest('/execute', 'POST', json, publicKey, secretKey)
 
     def stdoutMatch = output =~ /"stdout":"((?:[^"\\]|\\.)*)"/
     def stderrMatch = output =~ /"stderr":"((?:[^"\\]|\\.)*)"/
@@ -245,17 +273,17 @@ def cmdExecute(args) {
 }
 
 def cmdSession(args) {
-    def apiKey = getApiKey(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     if (args.sessionList) {
-        def output = apiRequest('/sessions', 'GET', null, apiKey)
+        def output = apiRequest('/sessions', 'GET', null, publicKey, secretKey)
         println("%-40s %-10s %-10s %s".format("ID", "Shell", "Status", "Created"))
         println("No sessions (list parsing not implemented)")
         return
     }
 
     if (args.sessionKill) {
-        apiRequest("/sessions/${args.sessionKill}", 'DELETE', null, apiKey)
+        apiRequest("/sessions/${args.sessionKill}", 'DELETE', null, publicKey, secretKey)
         println("${GREEN}Session terminated: ${args.sessionKill}${RESET}")
         return
     }
@@ -270,7 +298,7 @@ def cmdSession(args) {
     json += '}'
 
     println("${YELLOW}Creating session...${RESET}")
-    def output = apiRequest('/sessions', 'POST', json, apiKey)
+    def output = apiRequest('/sessions', 'POST', json, publicKey, secretKey)
     def idMatch = output =~ /"id":"([^"]+)"/
     if (idMatch.find()) {
         println("${GREEN}Session created: ${idMatch.group(1)}${RESET}")
@@ -296,12 +324,28 @@ def openBrowser(url) {
 }
 
 def cmdKey(args) {
-    def apiKey = getApiKey(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     def curlCmd = ['curl', '-s', '-X', 'POST', "${PORTAL_BASE}/keys/validate",
-                   '-H', 'Content-Type: application/json',
-                   '-H', "Authorization: Bearer ${apiKey}",
-                   '-d', '{}']
+                   '-H', 'Content-Type: application/json']
+
+    // Add HMAC authentication headers if secretKey is provided
+    if (secretKey) {
+        def timestamp = (System.currentTimeMillis() / 1000) as long
+        def message = "${timestamp}:POST:/keys/validate:{}"
+
+        def mac = Mac.getInstance("HmacSHA256")
+        mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+        def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+
+        curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+        curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
+        curlCmd += ['-H', "X-Signature: ${signature}"]
+    } else {
+        curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+    }
+
+    curlCmd += ['-d', '{}']
 
     def proc = curlCmd.execute()
     def output = proc.text
@@ -361,23 +405,23 @@ def cmdKey(args) {
 }
 
 def cmdService(args) {
-    def apiKey = getApiKey(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     if (args.serviceList) {
-        def output = apiRequest('/services', 'GET', null, apiKey)
+        def output = apiRequest('/services', 'GET', null, publicKey, secretKey)
         println("%-20s %-15s %-10s %-15s %s".format("ID", "Name", "Status", "Ports", "Domains"))
         println("No services (list parsing not implemented)")
         return
     }
 
     if (args.serviceInfo) {
-        def output = apiRequest("/services/${args.serviceInfo}", 'GET', null, apiKey)
+        def output = apiRequest("/services/${args.serviceInfo}", 'GET', null, publicKey, secretKey)
         println(output)
         return
     }
 
     if (args.serviceLogs) {
-        def output = apiRequest("/services/${args.serviceLogs}/logs", 'GET', null, apiKey)
+        def output = apiRequest("/services/${args.serviceLogs}/logs", 'GET', null, publicKey, secretKey)
         def logsMatch = output =~ /"logs":"((?:[^"\\]|\\.)*)"/
         if (logsMatch.find()) {
             println(logsMatch.group(1).replace('\\n', '\n'))
@@ -386,7 +430,7 @@ def cmdService(args) {
     }
 
     if (args.serviceTail) {
-        def output = apiRequest("/services/${args.serviceTail}/logs?lines=9000", 'GET', null, apiKey)
+        def output = apiRequest("/services/${args.serviceTail}/logs?lines=9000", 'GET', null, publicKey, secretKey)
         def logsMatch = output =~ /"logs":"((?:[^"\\]|\\.)*)"/
         if (logsMatch.find()) {
             println(logsMatch.group(1).replace('\\n', '\n'))
@@ -395,26 +439,26 @@ def cmdService(args) {
     }
 
     if (args.serviceSleep) {
-        apiRequest("/services/${args.serviceSleep}/sleep", 'POST', null, apiKey)
+        apiRequest("/services/${args.serviceSleep}/sleep", 'POST', null, publicKey, secretKey)
         println("${GREEN}Service sleeping: ${args.serviceSleep}${RESET}")
         return
     }
 
     if (args.serviceWake) {
-        apiRequest("/services/${args.serviceWake}/wake", 'POST', null, apiKey)
+        apiRequest("/services/${args.serviceWake}/wake", 'POST', null, publicKey, secretKey)
         println("${GREEN}Service waking: ${args.serviceWake}${RESET}")
         return
     }
 
     if (args.serviceDestroy) {
-        apiRequest("/services/${args.serviceDestroy}", 'DELETE', null, apiKey)
+        apiRequest("/services/${args.serviceDestroy}", 'DELETE', null, publicKey, secretKey)
         println("${GREEN}Service destroyed: ${args.serviceDestroy}${RESET}")
         return
     }
 
     if (args.serviceExecute) {
         def json = """{"command":"${args.serviceCommand}"}"""
-        def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST', json, apiKey)
+        def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST', json, publicKey, secretKey)
         def stdoutMatch = output =~ /"stdout":"((?:[^"\\\\]|\\\\.)*)"/
         def stderrMatch = output =~ /"stderr":"((?:[^"\\\\]|\\\\.)*)"/
 
@@ -441,7 +485,7 @@ def cmdService(args) {
     if (args.serviceDumpBootstrap) {
         System.err.println("Fetching bootstrap script from ${args.serviceDumpBootstrap}...")
         def json = """{"command":"cat /tmp/bootstrap.sh"}"""
-        def output = apiRequest("/services/${args.serviceDumpBootstrap}/execute", 'POST', json, apiKey)
+        def output = apiRequest("/services/${args.serviceDumpBootstrap}/execute", 'POST', json, publicKey, secretKey)
 
         def stdoutMatch = output =~ /"stdout":"((?:[^"\\\\]|\\\\.)*)"/
         if (stdoutMatch.find()) {
@@ -491,7 +535,7 @@ def cmdService(args) {
         }
         json += '}'
 
-        def output = apiRequest('/services', 'POST', json, apiKey)
+        def output = apiRequest('/services', 'POST', json, publicKey, secretKey)
         def idMatch = output =~ /"id":"([^"]+)"/
         if (idMatch.find()) {
             println("${GREEN}Service created: ${idMatch.group(1)}${RESET}")

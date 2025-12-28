@@ -47,7 +47,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -133,21 +136,38 @@ func detectLanguage(filename string) (string, error) {
 	return "", fmt.Errorf("cannot detect language from extension")
 }
 
-func getAPIKey(keyArg string) string {
-	if keyArg != "" {
-		return keyArg
+func getAPIKeys(keyArg string) (string, string) {
+	publicKey := os.Getenv("UNSANDBOX_PUBLIC_KEY")
+	secretKey := os.Getenv("UNSANDBOX_SECRET_KEY")
+
+	// Fall back to UNSANDBOX_API_KEY for backwards compatibility
+	if publicKey == "" || secretKey == "" {
+		fallbackKey := keyArg
+		if fallbackKey == "" {
+			fallbackKey = os.Getenv("UNSANDBOX_API_KEY")
+		}
+		if fallbackKey == "" {
+			fmt.Fprintf(os.Stderr, "%sError: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)%s\n", Red, Reset)
+			os.Exit(1)
+		}
+		// Use fallback key as both public and secret for backwards compatibility
+		return fallbackKey, fallbackKey
 	}
-	key := os.Getenv("UNSANDBOX_API_KEY")
-	if key == "" {
-		fmt.Fprintf(os.Stderr, "%sError: UNSANDBOX_API_KEY not set%s\n", Red, Reset)
-		os.Exit(1)
-	}
-	return key
+
+	return publicKey, secretKey
 }
 
-func apiRequest(endpoint, method string, data map[string]interface{}, apiKey string) map[string]interface{} {
+func computeHMAC(secretKey, timestamp, method, path, body string) string {
+	message := fmt.Sprintf("%s:%s:%s:%s", timestamp, method, path, body)
+	h := hmac.New(sha256.New, []byte(secretKey))
+	h.Write([]byte(message))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func apiRequest(endpoint, method string, data map[string]interface{}, publicKey, secretKey string) map[string]interface{} {
 	url := APIBase + endpoint
 	var reqBody io.Reader
+	bodyStr := ""
 
 	if data != nil {
 		jsonData, err := json.Marshal(data)
@@ -155,6 +175,7 @@ func apiRequest(endpoint, method string, data map[string]interface{}, apiKey str
 			fmt.Fprintf(os.Stderr, "%sError marshaling JSON: %v%s\n", Red, err, Reset)
 			os.Exit(1)
 		}
+		bodyStr = string(jsonData)
 		reqBody = bytes.NewBuffer(jsonData)
 	}
 
@@ -164,7 +185,13 @@ func apiRequest(endpoint, method string, data map[string]interface{}, apiKey str
 		os.Exit(1)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// HMAC authentication
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	signature := computeHMAC(secretKey, timestamp, method, endpoint, bodyStr)
+
+	req.Header.Set("Authorization", "Bearer "+publicKey)
+	req.Header.Set("X-Timestamp", timestamp)
+	req.Header.Set("X-Signature", signature)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
@@ -195,7 +222,7 @@ func apiRequest(endpoint, method string, data map[string]interface{}, apiKey str
 	return result
 }
 
-func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts bool, outputDir, network string, vcpu int, apiKey string) {
+func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts bool, outputDir, network string, vcpu int, publicKey, secretKey string) {
 	code, err := os.ReadFile(sourceFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%sError reading file: %v%s\n", Red, err, Reset)
@@ -254,7 +281,7 @@ func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts boo
 		payload["vcpu"] = vcpu
 	}
 
-	result := apiRequest("/execute", "POST", payload, apiKey)
+	result := apiRequest("/execute", "POST", payload, publicKey, secretKey)
 
 	// Print output
 	if stdout, ok := result["stdout"].(string); ok && stdout != "" {
@@ -294,9 +321,9 @@ func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts boo
 	os.Exit(exitCode)
 }
 
-func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int, tmux, screen bool, apiKey string) {
+func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int, tmux, screen bool, publicKey, secretKey string) {
 	if sessionList != "" {
-		result := apiRequest("/sessions", "GET", nil, apiKey)
+		result := apiRequest("/sessions", "GET", nil, publicKey, secretKey)
 		sessions := result["sessions"].([]interface{})
 		if len(sessions) == 0 {
 			fmt.Println("No active sessions")
@@ -312,7 +339,7 @@ func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int
 	}
 
 	if sessionKill != "" {
-		apiRequest("/sessions/"+sessionKill, "DELETE", nil, apiKey)
+		apiRequest("/sessions/"+sessionKill, "DELETE", nil, publicKey, secretKey)
 		fmt.Printf("%sSession terminated: %s%s\n", Green, sessionKill, Reset)
 		return
 	}
@@ -338,13 +365,13 @@ func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int
 	}
 
 	fmt.Printf("%sCreating session...%s\n", Yellow, Reset)
-	result := apiRequest("/sessions", "POST", payload, apiKey)
+	result := apiRequest("/sessions", "POST", payload, publicKey, secretKey)
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, network string, vcpu int, apiKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, network string, vcpu int, publicKey, secretKey string) {
 	if serviceList != "" {
-		result := apiRequest("/services", "GET", nil, apiKey)
+		result := apiRequest("/services", "GET", nil, publicKey, secretKey)
 		services := result["services"].([]interface{})
 		if len(services) == 0 {
 			fmt.Println("No services")
@@ -376,45 +403,45 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	}
 
 	if serviceInfo != "" {
-		result := apiRequest("/services/"+serviceInfo, "GET", nil, apiKey)
+		result := apiRequest("/services/"+serviceInfo, "GET", nil, publicKey, secretKey)
 		jsonData, _ := json.MarshalIndent(result, "", "  ")
 		fmt.Println(string(jsonData))
 		return
 	}
 
 	if serviceLogs != "" {
-		result := apiRequest("/services/"+serviceLogs+"/logs", "GET", nil, apiKey)
+		result := apiRequest("/services/"+serviceLogs+"/logs", "GET", nil, publicKey, secretKey)
 		fmt.Print(result["logs"])
 		return
 	}
 
 	if serviceTail != "" {
-		result := apiRequest("/services/"+serviceTail+"/logs?lines=9000", "GET", nil, apiKey)
+		result := apiRequest("/services/"+serviceTail+"/logs?lines=9000", "GET", nil, publicKey, secretKey)
 		fmt.Print(result["logs"])
 		return
 	}
 
 	if serviceSleep != "" {
-		apiRequest("/services/"+serviceSleep+"/sleep", "POST", nil, apiKey)
+		apiRequest("/services/"+serviceSleep+"/sleep", "POST", nil, publicKey, secretKey)
 		fmt.Printf("%sService sleeping: %s%s\n", Green, serviceSleep, Reset)
 		return
 	}
 
 	if serviceWake != "" {
-		apiRequest("/services/"+serviceWake+"/wake", "POST", nil, apiKey)
+		apiRequest("/services/"+serviceWake+"/wake", "POST", nil, publicKey, secretKey)
 		fmt.Printf("%sService waking: %s%s\n", Green, serviceWake, Reset)
 		return
 	}
 
 	if serviceDestroy != "" {
-		apiRequest("/services/"+serviceDestroy, "DELETE", nil, apiKey)
+		apiRequest("/services/"+serviceDestroy, "DELETE", nil, publicKey, secretKey)
 		fmt.Printf("%sService destroyed: %s%s\n", Green, serviceDestroy, Reset)
 		return
 	}
 
 	if serviceExecute != "" {
 		payload := map[string]interface{}{"command": serviceCommand}
-		result := apiRequest("/services/"+serviceExecute+"/execute", "POST", payload, apiKey)
+		result := apiRequest("/services/"+serviceExecute+"/execute", "POST", payload, publicKey, secretKey)
 		if stdout, ok := result["stdout"].(string); ok {
 			fmt.Printf("%s%s%s", Blue, stdout, Reset)
 		}
@@ -427,7 +454,7 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	if serviceDumpBootstrap != "" {
 		fmt.Fprintf(os.Stderr, "Fetching bootstrap script from %s...\n", serviceDumpBootstrap)
 		payload := map[string]interface{}{"command": "cat /tmp/bootstrap.sh"}
-		result := apiRequest("/services/"+serviceDumpBootstrap+"/execute", "POST", payload, apiKey)
+		result := apiRequest("/services/"+serviceDumpBootstrap+"/execute", "POST", payload, publicKey, secretKey)
 
 		if bootstrap, ok := result["stdout"].(string); ok && bootstrap != "" {
 			if serviceDumpFile != "" {
@@ -482,7 +509,7 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 			payload["vcpu"] = vcpu
 		}
 
-		result := apiRequest("/services", "POST", payload, apiKey)
+		result := apiRequest("/services", "POST", payload, publicKey, secretKey)
 		fmt.Printf("%sService created: %s%s\n", Green, result["id"], Reset)
 		fmt.Printf("Name: %s\n", result["name"])
 		if url, ok := result["url"]; ok {
@@ -524,7 +551,7 @@ func formatDuration(d time.Duration) string {
 	}
 }
 
-func validateKey(apiKey string, extend bool) {
+func validateKey(publicKey, secretKey string, extend bool) {
 	url := PortalBase + "/keys/validate"
 	reqBody := bytes.NewBuffer(nil)
 
@@ -534,7 +561,13 @@ func validateKey(apiKey string, extend bool) {
 		os.Exit(1)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// HMAC authentication
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	signature := computeHMAC(secretKey, timestamp, "POST", "/keys/validate", "")
+
+	req.Header.Set("Authorization", "Bearer "+publicKey)
+	req.Header.Set("X-Timestamp", timestamp)
+	req.Header.Set("X-Signature", signature)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
@@ -702,7 +735,7 @@ func main() {
 		switch os.Args[1] {
 		case "session":
 			sessionCmd.Parse(os.Args[2:])
-			key := getAPIKey(*sessionKey)
+			publicKey, secretKey := getAPIKeys(*sessionKey)
 			net := *sessionNetwork
 			if net == "" {
 				net = *network
@@ -711,12 +744,12 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdSession(*sessionList, *sessionKill, *sessionShell, net, vc, *sessionTmux, *sessionScreen, key)
+			cmdSession(*sessionList, *sessionKill, *sessionShell, net, vc, *sessionTmux, *sessionScreen, publicKey, secretKey)
 			return
 
 		case "service":
 			serviceCmd.Parse(os.Args[2:])
-			key := getAPIKey(*serviceKey)
+			publicKey, secretKey := getAPIKeys(*serviceKey)
 			net := *serviceNetwork
 			if net == "" {
 				net = *network
@@ -725,13 +758,13 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, net, vc, key)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, net, vc, publicKey, secretKey)
 			return
 
 		case "key":
 			keyCmd.Parse(os.Args[2:])
-			key := getAPIKey(*keyKey)
-			validateKey(key, *keyExtend)
+			publicKey, secretKey := getAPIKeys(*keyKey)
+			validateKey(publicKey, secretKey, *keyExtend)
 			return
 		}
 	}
@@ -746,6 +779,6 @@ func main() {
 	}
 
 	sourceFile := flag.Arg(0)
-	key := getAPIKey(*apiKey)
-	cmdExecute(sourceFile, envs, files, *artifacts, *outputDir, *network, *vcpu, key)
+	publicKey, secretKey := getAPIKeys(*apiKey)
+	cmdExecute(sourceFile, envs, files, *artifacts, *outputDir, *network, *vcpu, publicKey, secretKey)
 }

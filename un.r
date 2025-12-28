@@ -38,6 +38,7 @@
 
 library(httr)
 library(jsonlite)
+library(digest)
 
 # Extension to language mapping
 ext_map <- list(
@@ -75,28 +76,53 @@ detect_language <- function(filename) {
     return(lang)
 }
 
-get_api_key <- function(args_key = NULL) {
-    key <- if (!is.null(args_key)) args_key else Sys.getenv("UNSANDBOX_API_KEY")
-    if (key == "") {
-        cat(sprintf("%sError: UNSANDBOX_API_KEY not set%s\n", RED, RESET), file = stderr())
+get_api_keys <- function(args_key = NULL) {
+    public_key <- Sys.getenv("UNSANDBOX_PUBLIC_KEY")
+    secret_key <- Sys.getenv("UNSANDBOX_SECRET_KEY")
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if (public_key == "" && Sys.getenv("UNSANDBOX_API_KEY") != "") {
+        public_key <- Sys.getenv("UNSANDBOX_API_KEY")
+        secret_key <- ""
+    }
+
+    if (public_key == "") {
+        cat(sprintf("%sError: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set%s\n", RED, RESET), file = stderr())
         quit(status = 1)
     }
-    return(key)
+    return(list(public_key = public_key, secret_key = secret_key))
 }
 
-api_request <- function(endpoint, api_key, method = "GET", data = NULL) {
+api_request <- function(endpoint, public_key, secret_key, method = "GET", data = NULL) {
     url <- paste0(API_BASE, endpoint)
     headers <- add_headers(
         `Content-Type` = "application/json",
-        `Authorization` = paste("Bearer", api_key)
+        `Authorization` = paste("Bearer", public_key)
     )
+
+    body_content <- ""
+    if (!is.null(data)) {
+        body_content <- toJSON(data, auto_unbox = TRUE)
+    }
+
+    # Add HMAC signature if secret_key is present
+    if (secret_key != "") {
+        timestamp <- as.integer(Sys.time())
+        sig_input <- paste0(timestamp, ":", method, ":", endpoint, ":", body_content)
+        signature <- hmac(sig_input, secret_key, algo = "sha256")
+        headers <- add_headers(
+            `Content-Type` = "application/json",
+            `Authorization` = paste("Bearer", public_key),
+            `X-Timestamp` = as.character(timestamp),
+            `X-Signature` = signature
+        )
+    }
 
     tryCatch({
         if (method == "GET") {
             response <- GET(url, headers, timeout(300))
         } else if (method == "POST") {
-            body <- if (!is.null(data)) toJSON(data, auto_unbox = TRUE) else ""
-            response <- POST(url, headers, body = body, encode = "raw", timeout(300))
+            response <- POST(url, headers, body = body_content, encode = "raw", timeout(300))
         } else if (method == "DELETE") {
             response <- DELETE(url, headers, timeout(300))
         } else {
@@ -112,7 +138,9 @@ api_request <- function(endpoint, api_key, method = "GET", data = NULL) {
 }
 
 cmd_execute <- function(args) {
-    api_key <- get_api_key(args$api_key)
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
 
     filename <- args$source_file
     if (!file.exists(filename)) {
@@ -175,7 +203,7 @@ cmd_execute <- function(args) {
     }
 
     # Execute
-    result <- api_request("/execute", api_key, method = "POST", data = payload)
+    result <- api_request("/execute", public_key, secret_key, method = "POST", data = payload)
 
     # Print output
     if (!is.null(result$stdout) && result$stdout != "") {
@@ -204,10 +232,12 @@ cmd_execute <- function(args) {
 }
 
 cmd_session <- function(args) {
-    api_key <- get_api_key(args$api_key)
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
 
     if (!is.null(args$list) && args$list) {
-        result <- api_request("/sessions", api_key)
+        result <- api_request("/sessions", public_key, secret_key)
         sessions <- if (!is.null(result$sessions)) result$sessions else list()
         if (length(sessions) == 0) {
             cat("No active sessions\n")
@@ -225,7 +255,7 @@ cmd_session <- function(args) {
     }
 
     if (!is.null(args$kill)) {
-        result <- api_request(paste0("/sessions/", args$kill), api_key, method = "DELETE")
+        result <- api_request(paste0("/sessions/", args$kill), public_key, secret_key, method = "DELETE")
         cat(sprintf("%sSession terminated: %s%s\n", GREEN, args$kill, RESET))
         return()
     }
@@ -235,15 +265,30 @@ cmd_session <- function(args) {
 }
 
 cmd_key <- function(args) {
-    api_key <- get_api_key(args$api_key)
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
 
     if (!is.null(args$extend) && args$extend) {
         # First validate to get public_key
         url <- paste0(PORTAL_BASE, "/keys/validate")
         headers <- add_headers(
             `Content-Type` = "application/json",
-            `Authorization` = paste("Bearer", api_key)
+            `Authorization` = paste("Bearer", public_key)
         )
+
+        # Add HMAC signature if secret_key is present
+        if (secret_key != "") {
+            timestamp <- as.integer(Sys.time())
+            sig_input <- paste0(timestamp, ":POST:/keys/validate:")
+            signature <- hmac(sig_input, secret_key, algo = "sha256")
+            headers <- add_headers(
+                `Content-Type` = "application/json",
+                `Authorization` = paste("Bearer", public_key),
+                `X-Timestamp` = as.character(timestamp),
+                `X-Signature` = signature
+            )
+        }
 
         tryCatch({
             response <- POST(url, headers, encode = "json", timeout(10))
@@ -268,8 +313,21 @@ cmd_key <- function(args) {
     url <- paste0(PORTAL_BASE, "/keys/validate")
     headers <- add_headers(
         `Content-Type` = "application/json",
-        `Authorization` = paste("Bearer", api_key)
+        `Authorization` = paste("Bearer", public_key)
     )
+
+    # Add HMAC signature if secret_key is present
+    if (secret_key != "") {
+        timestamp <- as.integer(Sys.time())
+        sig_input <- paste0(timestamp, ":POST:/keys/validate:")
+        signature <- hmac(sig_input, secret_key, algo = "sha256")
+        headers <- add_headers(
+            `Content-Type` = "application/json",
+            `Authorization` = paste("Bearer", public_key),
+            `X-Timestamp` = as.character(timestamp),
+            `X-Signature` = signature
+        )
+    }
 
     tryCatch({
         response <- POST(url, headers, encode = "json", timeout(10))
@@ -302,10 +360,12 @@ cmd_key <- function(args) {
 }
 
 cmd_service <- function(args) {
-    api_key <- get_api_key(args$api_key)
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
 
     if (!is.null(args$list) && args$list) {
-        result <- api_request("/services", api_key)
+        result <- api_request("/services", public_key, secret_key)
         services <- if (!is.null(result$services)) result$services else list()
         if (length(services) == 0) {
             cat("No services\n")
@@ -325,31 +385,31 @@ cmd_service <- function(args) {
     }
 
     if (!is.null(args$info)) {
-        result <- api_request(paste0("/services/", args$info), api_key)
+        result <- api_request(paste0("/services/", args$info), public_key, secret_key)
         cat(toJSON(result, pretty = TRUE, auto_unbox = TRUE), "\n")
         return()
     }
 
     if (!is.null(args$logs)) {
-        result <- api_request(paste0("/services/", args$logs, "/logs"), api_key)
+        result <- api_request(paste0("/services/", args$logs, "/logs"), public_key, secret_key)
         cat(if (!is.null(result$logs)) result$logs else "", "\n")
         return()
     }
 
     if (!is.null(args$sleep)) {
-        result <- api_request(paste0("/services/", args$sleep, "/sleep"), api_key, method = "POST")
+        result <- api_request(paste0("/services/", args$sleep, "/sleep"), public_key, secret_key, method = "POST")
         cat(sprintf("%sService sleeping: %s%s\n", GREEN, args$sleep, RESET))
         return()
     }
 
     if (!is.null(args$wake)) {
-        result <- api_request(paste0("/services/", args$wake, "/wake"), api_key, method = "POST")
+        result <- api_request(paste0("/services/", args$wake, "/wake"), public_key, secret_key, method = "POST")
         cat(sprintf("%sService waking: %s%s\n", GREEN, args$wake, RESET))
         return()
     }
 
     if (!is.null(args$destroy)) {
-        result <- api_request(paste0("/services/", args$destroy), api_key, method = "DELETE")
+        result <- api_request(paste0("/services/", args$destroy), public_key, secret_key, method = "DELETE")
         cat(sprintf("%sService destroyed: %s%s\n", GREEN, args$destroy, RESET))
         return()
     }
@@ -357,7 +417,7 @@ cmd_service <- function(args) {
     if (!is.null(args$dump_bootstrap)) {
         cat(sprintf("Fetching bootstrap script from %s...\n", args$dump_bootstrap), file = stderr())
         payload <- list(command = "cat /tmp/bootstrap.sh")
-        result <- api_request(paste0("/services/", args$dump_bootstrap, "/execute"), api_key, method = "POST", data = payload)
+        result <- api_request(paste0("/services/", args$dump_bootstrap, "/execute"), public_key, secret_key, method = "POST", data = payload)
 
         if (!is.null(result$stdout) && result$stdout != "") {
             bootstrap <- result$stdout
@@ -415,7 +475,7 @@ cmd_service <- function(args) {
             payload$vcpu <- args$vcpu
         }
 
-        result <- api_request("/services", api_key, method = "POST", data = payload)
+        result <- api_request("/services", public_key, secret_key, method = "POST", data = payload)
         cat(sprintf("%sService created: %s%s\n", GREEN, if (!is.null(result$id)) result$id else "N/A", RESET))
         cat(sprintf("Name: %s\n", if (!is.null(result$name)) result$name else "N/A"))
         if (!is.null(result$url)) {

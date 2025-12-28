@@ -40,6 +40,7 @@
 # Full-featured CLI matching un.c/un.py capabilities
 
 use JSON::Fast;
+use Digest::SHA;
 
 constant $API_BASE = "https://api.unsandbox.com";
 constant $PORTAL_BASE = "https://unsandbox.com";
@@ -66,13 +67,21 @@ my %EXT_MAP = (
     m => 'objc'
 );
 
-sub get-api-key() {
-    my $key = %*ENV<UNSANDBOX_API_KEY>;
-    unless $key {
-        note "{$RED}Error: UNSANDBOX_API_KEY not set{$RESET}";
+sub get-api-keys() {
+    my $public-key = %*ENV<UNSANDBOX_PUBLIC_KEY> // '';
+    my $secret-key = %*ENV<UNSANDBOX_SECRET_KEY> // '';
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if !$public-key && %*ENV<UNSANDBOX_API_KEY> {
+        $public-key = %*ENV<UNSANDBOX_API_KEY>;
+        $secret-key = '';
+    }
+
+    unless $public-key {
+        note "{$RED}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set{$RESET}";
         exit 1;
     }
-    return $key;
+    return ($public-key, $secret-key);
 }
 
 sub detect-language(Str $filename --> Str) {
@@ -98,9 +107,10 @@ sub detect-language(Str $filename --> Str) {
     exit 1;
 }
 
-sub api-request(Str $endpoint, Str $method, %data?, Str :$api-key!) {
+sub api-request(Str $endpoint, Str $method, %data?, Str :$public-key!, Str :$secret-key!) {
     my $url = $API_BASE ~ $endpoint;
     my @args = 'curl', '-s';
+    my $body = '';
 
     if $method eq 'GET' {
         @args.append: '-X', 'GET';
@@ -110,11 +120,22 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$api-key!) {
         @args.append: '-X', 'POST';
         @args.append: '-H', 'Content-Type: application/json';
         if %data {
-            @args.append: '-d', to-json(%data);
+            $body = to-json(%data);
+            @args.append: '-d', $body;
         }
     }
 
-    @args.append: '-H', "Authorization: Bearer $api-key";
+    @args.append: '-H', "Authorization: Bearer $public-key";
+
+    # Add HMAC signature if secret-key is present
+    if $secret-key {
+        my $timestamp = now.Int;
+        my $sig-input = "{$timestamp}:{$method}:{$endpoint}:{$body}";
+        my $signature = hmac-hex($sig-input, $secret-key, &sha256);
+        @args.append: '-H', "X-Timestamp: $timestamp";
+        @args.append: '-H', "X-Signature: $signature";
+    }
+
     @args.append: $url;
 
     my $proc = run |@args, :out, :err;
@@ -131,7 +152,7 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$api-key!) {
 }
 
 sub cmd-execute(@args) {
-    my $api-key = get-api-key();
+    my ($public-key, $secret-key) = get-api-keys();
     my $source-file = '';
     my %env-vars;
     my @input-files;
@@ -218,7 +239,7 @@ sub cmd-execute(@args) {
     %payload<vcpu> = $vcpu if $vcpu > 0;
 
     # Execute
-    my %result = api-request('/execute', 'POST', %payload, :$api-key);
+    my %result = api-request('/execute', 'POST', %payload, :$public-key, :$secret-key);
 
     # Print output
     if %result<stdout> {
@@ -245,7 +266,7 @@ sub cmd-execute(@args) {
 }
 
 sub cmd-session(@args) {
-    my $api-key = get-api-key();
+    my ($public-key, $secret-key) = get-api-keys();
     my $list-mode = False;
     my $kill-id = '';
     my $shell = '';
@@ -280,7 +301,7 @@ sub cmd-session(@args) {
     }
 
     if $list-mode {
-        my %result = api-request('/sessions', 'GET', :$api-key);
+        my %result = api-request('/sessions', 'GET', :$public-key, :$secret-key);
         my @sessions = %result<sessions>.list;
         unless @sessions {
             say "No active sessions";
@@ -295,7 +316,7 @@ sub cmd-session(@args) {
     }
 
     if $kill-id {
-        api-request("/sessions/$kill-id", 'DELETE', :$api-key);
+        api-request("/sessions/$kill-id", 'DELETE', :$public-key, :$secret-key);
         say "{$GREEN}Session terminated: $kill-id{$RESET}";
         return;
     }
@@ -306,13 +327,13 @@ sub cmd-session(@args) {
     %payload<vcpu> = $vcpu if $vcpu > 0;
 
     say "{$YELLOW}Creating session...{$RESET}";
-    my %result = api-request('/sessions', 'POST', %payload, :$api-key);
+    my %result = api-request('/sessions', 'POST', %payload, :$public-key, :$secret-key);
     say "{$GREEN}Session created: {%result<id>}{$RESET}";
     say "{$YELLOW}(Interactive sessions require WebSocket - use un2 for full support){$RESET}";
 }
 
 sub cmd-service(@args) {
-    my $api-key = get-api-key();
+    my ($public-key, $secret-key) = get-api-keys();
     my $list-mode = False;
     my $info-id = '';
     my $logs-id = '';
@@ -392,7 +413,7 @@ sub cmd-service(@args) {
     }
 
     if $list-mode {
-        my %result = api-request('/services', 'GET', :$api-key);
+        my %result = api-request('/services', 'GET', :$public-key, :$secret-key);
         my @services = %result<services>.list;
         unless @services {
             say "No services";
@@ -409,31 +430,31 @@ sub cmd-service(@args) {
     }
 
     if $info-id {
-        my %result = api-request("/services/$info-id", 'GET', :$api-key);
+        my %result = api-request("/services/$info-id", 'GET', :$public-key, :$secret-key);
         say to-json(%result, :pretty);
         return;
     }
 
     if $logs-id {
-        my %result = api-request("/services/$logs-id/logs", 'GET', :$api-key);
+        my %result = api-request("/services/$logs-id/logs", 'GET', :$public-key, :$secret-key);
         say %result<logs>;
         return;
     }
 
     if $sleep-id {
-        api-request("/services/$sleep-id/sleep", 'POST', :$api-key);
+        api-request("/services/$sleep-id/sleep", 'POST', :$public-key, :$secret-key);
         say "{$GREEN}Service sleeping: $sleep-id{$RESET}";
         return;
     }
 
     if $wake-id {
-        api-request("/services/$wake-id/wake", 'POST', :$api-key);
+        api-request("/services/$wake-id/wake", 'POST', :$public-key, :$secret-key);
         say "{$GREEN}Service waking: $wake-id{$RESET}";
         return;
     }
 
     if $destroy-id {
-        api-request("/services/$destroy-id", 'DELETE', :$api-key);
+        api-request("/services/$destroy-id", 'DELETE', :$public-key, :$secret-key);
         say "{$GREEN}Service destroyed: $destroy-id{$RESET}";
         return;
     }
@@ -441,7 +462,7 @@ sub cmd-service(@args) {
     if $dump-bootstrap-id {
         note "Fetching bootstrap script from $dump-bootstrap-id...";
         my %payload = command => "cat /tmp/bootstrap.sh";
-        my %result = api-request("/services/$dump-bootstrap-id/execute", 'POST', %payload, :$api-key);
+        my %result = api-request("/services/$dump-bootstrap-id/execute", 'POST', %payload, :$public-key, :$secret-key);
 
         if %result<stdout> && %result<stdout> ne '' {
             my $bootstrap = %result<stdout>;
@@ -485,7 +506,7 @@ sub cmd-service(@args) {
         %payload<network> = $network if $network;
         %payload<vcpu> = $vcpu if $vcpu > 0;
 
-        my %result = api-request('/services', 'POST', %payload, :$api-key);
+        my %result = api-request('/services', 'POST', %payload, :$public-key, :$secret-key);
         say "{$GREEN}Service created: {%result<id>}{$RESET}";
         say "Name: {%result<name>}";
         say "URL: {%result<url>}" if %result<url>;
@@ -497,13 +518,22 @@ sub cmd-service(@args) {
 }
 
 sub validate-key(Bool $extend) {
-    my $api-key = get-api-key();
+    my ($public-key, $secret-key) = get-api-keys();
 
     # Build curl command
     my @args = 'curl', '-s', '-X', 'POST';
     @args.append: "$PORTAL_BASE/keys/validate";
     @args.append: '-H', 'Content-Type: application/json';
-    @args.append: '-H', "Authorization: Bearer $api-key";
+    @args.append: '-H', "Authorization: Bearer $public-key";
+
+    # Add HMAC signature if secret-key is present
+    if $secret-key {
+        my $timestamp = now.Int;
+        my $sig-input = "{$timestamp}:POST:/keys/validate:";
+        my $signature = hmac-hex($sig-input, $secret-key, &sha256);
+        @args.append: '-H', "X-Timestamp: $timestamp";
+        @args.append: '-H', "X-Signature: $signature";
+    }
 
     my $proc = run |@args, :out, :err;
     my $body = $proc.out.slurp;

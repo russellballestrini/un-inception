@@ -133,17 +133,30 @@ async function runTests() {
     results.failTest('Extension detection: .unknown -> undefined', e.message);
   }
 
-  // Test 7: API call test (requires UNSANDBOX_API_KEY)
-  if (!process.env.UNSANDBOX_API_KEY) {
-    results.skipTest('API call test', 'UNSANDBOX_API_KEY not set');
+  // Test 7: API call test (requires UNSANDBOX auth)
+  const hasHMAC = process.env.UNSANDBOX_PUBLIC_KEY && process.env.UNSANDBOX_SECRET_KEY;
+  const hasLegacy = process.env.UNSANDBOX_API_KEY;
+  if (!hasHMAC && !hasLegacy) {
+    results.skipTest('API call test', 'UNSANDBOX authentication not configured');
   } else {
     try {
       const https = require('https');
-      const apiKey = process.env.UNSANDBOX_API_KEY;
+      const crypto = require('crypto');
+
+      // Use HMAC auth if available, otherwise fall back to legacy
+      const publicKey = process.env.UNSANDBOX_PUBLIC_KEY || process.env.UNSANDBOX_API_KEY;
+      const secretKey = process.env.UNSANDBOX_SECRET_KEY || process.env.UNSANDBOX_API_KEY;
+
       const payload = JSON.stringify({
         language: 'python',
         code: 'print("Hello from API")'
       });
+
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const signatureInput = `${timestamp}:POST:/execute:${payload}`;
+      const signature = crypto.createHmac('sha256', secretKey)
+        .update(signatureInput)
+        .digest('hex');
 
       const result = await new Promise((resolve, reject) => {
         const options = {
@@ -151,7 +164,9 @@ async function runTests() {
           path: '/execute',
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'Authorization': `Bearer ${publicKey}`,
+            'X-Timestamp': timestamp,
+            'X-Signature': signature,
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(payload)
           }
@@ -185,8 +200,10 @@ async function runTests() {
   }
 
   // Test 8: End-to-end test with fib.py
-  if (!process.env.UNSANDBOX_API_KEY) {
-    results.skipTest('End-to-end fib.py test', 'UNSANDBOX_API_KEY not set');
+  const hasHMAC2 = process.env.UNSANDBOX_PUBLIC_KEY && process.env.UNSANDBOX_SECRET_KEY;
+  const hasLegacy2 = process.env.UNSANDBOX_API_KEY;
+  if (!hasHMAC2 && !hasLegacy2) {
+    results.skipTest('End-to-end fib.py test', 'UNSANDBOX authentication not configured');
   } else if (!fs.existsSync(FIB_PY)) {
     results.skipTest('End-to-end fib.py test', `fib.py not found at ${FIB_PY}`);
   } else {

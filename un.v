@@ -126,7 +126,10 @@ fn extract_json_string(json string, key string) string {
 }
 
 fn cmd_key(extend bool, api_key string) {
-	cmd := "curl -s -X POST '${portal_base}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '{}'"
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+	body := '{}'
+	cmd := "BODY='${body}'; TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/keys/validate:\\$BODY\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${portal_base}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\" -d \"\\$BODY\""
 	result := exec_curl(cmd)
 
 	public_key := extract_json_string(result, 'public_key')
@@ -229,19 +232,24 @@ fn cmd_execute(source_file string, envs []string, artifacts bool, network string
 	}
 	json += '}'
 
-	cmd := "curl -s -X POST '${api_base}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '${json}'"
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+	cmd := "BODY='${json}'; TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/execute:\\$BODY\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\" -d \"\\$BODY\""
 	println(exec_curl(cmd))
 }
 
 fn cmd_session(list bool, kill string, shell string, network string, vcpu int, tmux bool, screen bool, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
 	if list {
-		cmd := "curl -s -X GET '${api_base}/sessions' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:GET:/sessions:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/sessions' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		println(exec_curl(cmd))
 		return
 	}
 
 	if kill != '' {
-		cmd := "curl -s -X DELETE '${api_base}/sessions/${kill}' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:DELETE:/sessions/${kill}:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/sessions/${kill}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		exec_curl(cmd)
 		println('${green}Session terminated: ${kill}${reset}')
 		return
@@ -264,51 +272,54 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	json += '}'
 
 	println('${yellow}Creating session...${reset}')
-	cmd := "curl -s -X POST '${api_base}/sessions' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '${json}'"
+	cmd := "BODY='${json}'; TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/sessions:\\$BODY\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/sessions' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\" -d \"\\$BODY\""
 	println(exec_curl(cmd))
 }
 
 fn cmd_service(name string, ports string, service_type string, bootstrap string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
 	if list {
-		cmd := "curl -s -X GET '${api_base}/services' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:GET:/services:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/services' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		println(exec_curl(cmd))
 		return
 	}
 
 	if info != '' {
-		cmd := "curl -s -X GET '${api_base}/services/${info}' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:GET:/services/${info}:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/services/${info}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		println(exec_curl(cmd))
 		return
 	}
 
 	if logs != '' {
-		cmd := "curl -s -X GET '${api_base}/services/${logs}/logs' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:GET:/services/${logs}/logs:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/services/${logs}/logs' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		print(exec_curl(cmd))
 		return
 	}
 
 	if tail != '' {
-		cmd := "curl -s -X GET '${api_base}/services/${tail}/logs?lines=9000' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:GET:/services/${tail}/logs:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/services/${tail}/logs?lines=9000' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		print(exec_curl(cmd))
 		return
 	}
 
 	if sleep != '' {
-		cmd := "curl -s -X POST '${api_base}/services/${sleep}/sleep' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/services/${sleep}/sleep:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services/${sleep}/sleep' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		exec_curl(cmd)
 		println('${green}Service sleeping: ${sleep}${reset}')
 		return
 	}
 
 	if wake != '' {
-		cmd := "curl -s -X POST '${api_base}/services/${wake}/wake' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/services/${wake}/wake:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services/${wake}/wake' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		exec_curl(cmd)
 		println('${green}Service waking: ${wake}${reset}')
 		return
 	}
 
 	if destroy != '' {
-		cmd := "curl -s -X DELETE '${api_base}/services/${destroy}' -H 'Authorization: Bearer ${api_key}'"
+		cmd := "TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:DELETE:/services/${destroy}:\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/services/${destroy}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\""
 		exec_curl(cmd)
 		println('${green}Service destroyed: ${destroy}${reset}')
 		return
@@ -316,7 +327,7 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 
 	if execute != '' {
 		json := '{"command":"${escape_json(command)}"}'
-		cmd := "curl -s -X POST '${api_base}/services/${execute}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '${json}'"
+		cmd := "BODY='${json}'; TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/services/${execute}/execute:\\$BODY\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services/${execute}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\" -d \"\\$BODY\""
 		result := exec_curl(cmd)
 
 		stdout_str := extract_json_string(result, 'stdout')
@@ -332,7 +343,8 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 
 	if dump_bootstrap != '' {
 		eprintln('Fetching bootstrap script from ${dump_bootstrap}...')
-		cmd := "curl -s -X POST '${api_base}/services/${dump_bootstrap}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '{\"command\":\"cat /tmp/bootstrap.sh\"}'"
+		json := '{"command":"cat /tmp/bootstrap.sh"}'
+		cmd := "BODY='${json}'; TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/services/${dump_bootstrap}/execute:\\$BODY\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services/${dump_bootstrap}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\" -d \"\\$BODY\""
 		result := exec_curl(cmd)
 
 		bootstrap_script := extract_json_string(result, 'stdout')
@@ -379,7 +391,7 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		json += '}'
 
 		println('${yellow}Creating service...${reset}')
-		cmd := "curl -s -X POST '${api_base}/services' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${api_key}' -d '${json}'"
+		cmd := "BODY='${json}'; TIMESTAMP=\\$(date +%s); MESSAGE=\"\\$TIMESTAMP:POST:/services:\\$BODY\"; SIGNATURE=\\$(echo -n \"\\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \\$TIMESTAMP\" -H \"X-Signature: \\$SIGNATURE\" -d \"\\$BODY\""
 		println(exec_curl(cmd))
 		return
 	}
@@ -388,8 +400,33 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 	exit(1)
 }
 
+fn get_public_key() string {
+	pub_key := os.getenv('UNSANDBOX_PUBLIC_KEY')
+	if pub_key != '' {
+		return pub_key
+	}
+	api_key := os.getenv('UNSANDBOX_API_KEY')
+	if api_key != '' {
+		return api_key
+	}
+	eprintln('${red}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY environment variable not set${reset}')
+	exit(1)
+}
+
+fn get_secret_key() string {
+	sec_key := os.getenv('UNSANDBOX_SECRET_KEY')
+	if sec_key != '' {
+		return sec_key
+	}
+	api_key := os.getenv('UNSANDBOX_API_KEY')
+	if api_key != '' {
+		return api_key
+	}
+	return ''
+}
+
 fn main() {
-	mut api_key := os.getenv('UNSANDBOX_API_KEY')
+	mut api_key := get_public_key()
 
 	if os.args.len < 2 {
 		eprintln('Usage: ${os.args[0]} [options] <source_file>')

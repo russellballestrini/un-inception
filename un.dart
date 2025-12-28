@@ -42,6 +42,7 @@
 
 import 'dart:io';
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 const String apiBase = 'https://api.unsandbox.com';
 const String portalBase = 'https://unsandbox.com';
@@ -98,13 +99,21 @@ class Args {
   bool keyExtend = false;
 }
 
-String getApiKey(String? argsKey) {
-  final key = argsKey ?? Platform.environment['UNSANDBOX_API_KEY'];
-  if (key == null || key.isEmpty) {
-    stderr.writeln('${red}Error: UNSANDBOX_API_KEY not set$reset');
-    exit(1);
+List<String?> getApiKeys(String? argsKey) {
+  final publicKey = Platform.environment['UNSANDBOX_PUBLIC_KEY'];
+  final secretKey = Platform.environment['UNSANDBOX_SECRET_KEY'];
+
+  // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+  if (publicKey == null || publicKey.isEmpty || secretKey == null || secretKey.isEmpty) {
+    final legacyKey = argsKey ?? Platform.environment['UNSANDBOX_API_KEY'];
+    if (legacyKey == null || legacyKey.isEmpty) {
+      stderr.writeln('${red}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set$reset');
+      exit(1);
+    }
+    return [legacyKey, null];
   }
-  return key;
+
+  return [publicKey, secretKey];
 }
 
 String detectLanguage(String filename) {
@@ -120,18 +129,37 @@ String detectLanguage(String filename) {
   return lang;
 }
 
-Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, String? jsonData, String apiKey, {String? baseUrl}) async {
+Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, String? jsonData, String publicKey, String? secretKey, {String? baseUrl}) async {
   final base = baseUrl ?? apiBase;
   final tempFile = await File('${Directory.systemTemp.path}/un_request_${DateTime.now().millisecondsSinceEpoch}.json').create();
 
   try {
+    final body = jsonData ?? '';
     if (jsonData != null) {
       await tempFile.writeAsString(jsonData);
     }
 
     final args = ['curl', '-s', '-X', method, '$base$endpoint',
-                  '-H', 'Content-Type: application/json',
-                  '-H', 'Authorization: Bearer $apiKey'];
+                  '-H', 'Content-Type: application/json'];
+
+    // Add HMAC authentication headers if secretKey is provided
+    if (secretKey != null && secretKey.isNotEmpty) {
+      final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      final message = '$timestamp:$method:$endpoint:$body';
+
+      final key = utf8.encode(secretKey);
+      final bytes = utf8.encode(message);
+      final hmacSha256 = Hmac(sha256, key);
+      final digest = hmacSha256.convert(bytes);
+      final signature = digest.toString();
+
+      args.addAll(['-H', 'Authorization: Bearer $publicKey']);
+      args.addAll(['-H', 'X-Timestamp: $timestamp']);
+      args.addAll(['-H', 'X-Signature: $signature']);
+    } else {
+      // Legacy API key authentication
+      args.addAll(['-H', 'Authorization: Bearer $publicKey']);
+    }
 
     if (jsonData != null) {
       args.addAll(['-d', '@${tempFile.path}']);
@@ -151,7 +179,9 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
 }
 
 Future<void> cmdExecute(Args args) async {
-  final apiKey = getApiKey(args.apiKey);
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
   final code = await File(args.sourceFile!).readAsString();
   final language = detectLanguage(args.sourceFile!);
 
@@ -195,7 +225,7 @@ Future<void> cmdExecute(Args args) async {
     payload['vcpu'] = args.vcpu;
   }
 
-  final result = await apiRequestCurl('/execute', 'POST', jsonEncode(payload), apiKey);
+  final result = await apiRequestCurl('/execute', 'POST', jsonEncode(payload), publicKey, secretKey);
 
   final stdoutText = result['stdout'] as String?;
   final stderrText = result['stderr'] as String?;
@@ -227,10 +257,12 @@ Future<void> cmdExecute(Args args) async {
 }
 
 Future<void> cmdSession(Args args) async {
-  final apiKey = getApiKey(args.apiKey);
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
 
   if (args.sessionList) {
-    final result = await apiRequestCurl('/sessions', 'GET', null, apiKey);
+    final result = await apiRequestCurl('/sessions', 'GET', null, publicKey, secretKey);
     final sessions = result['sessions'] as List? ?? [];
     if (sessions.isEmpty) {
       print('No active sessions');
@@ -245,7 +277,7 @@ Future<void> cmdSession(Args args) async {
   }
 
   if (args.sessionKill != null) {
-    await apiRequestCurl('/sessions/${args.sessionKill}', 'DELETE', null, apiKey);
+    await apiRequestCurl('/sessions/${args.sessionKill}', 'DELETE', null, publicKey, secretKey);
     print('${green}Session terminated: ${args.sessionKill}$reset');
     return;
   }
@@ -261,16 +293,18 @@ Future<void> cmdSession(Args args) async {
   }
 
   print('${yellow}Creating session...$reset');
-  final result = await apiRequestCurl('/sessions', 'POST', jsonEncode(payload), apiKey);
+  final result = await apiRequestCurl('/sessions', 'POST', jsonEncode(payload), publicKey, secretKey);
   print('${green}Session created: ${result['id'] ?? 'N/A'}$reset');
   print('${yellow}(Interactive sessions require WebSocket - use un2 for full support)$reset');
 }
 
 Future<void> cmdService(Args args) async {
-  final apiKey = getApiKey(args.apiKey);
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
 
   if (args.serviceList) {
-    final result = await apiRequestCurl('/services', 'GET', null, apiKey);
+    final result = await apiRequestCurl('/services', 'GET', null, publicKey, secretKey);
     final services = result['services'] as List? ?? [];
     if (services.isEmpty) {
       print('No services');
@@ -287,37 +321,37 @@ Future<void> cmdService(Args args) async {
   }
 
   if (args.serviceInfo != null) {
-    final result = await apiRequestCurl('/services/${args.serviceInfo}', 'GET', null, apiKey);
+    final result = await apiRequestCurl('/services/${args.serviceInfo}', 'GET', null, publicKey, secretKey);
     print(jsonEncode(result));
     return;
   }
 
   if (args.serviceLogs != null) {
-    final result = await apiRequestCurl('/services/${args.serviceLogs}/logs', 'GET', null, apiKey);
+    final result = await apiRequestCurl('/services/${args.serviceLogs}/logs', 'GET', null, publicKey, secretKey);
     print(result['logs'] ?? '');
     return;
   }
 
   if (args.serviceTail != null) {
-    final result = await apiRequestCurl('/services/${args.serviceTail}/logs?lines=9000', 'GET', null, apiKey);
+    final result = await apiRequestCurl('/services/${args.serviceTail}/logs?lines=9000', 'GET', null, publicKey, secretKey);
     print(result['logs'] ?? '');
     return;
   }
 
   if (args.serviceSleep != null) {
-    await apiRequestCurl('/services/${args.serviceSleep}/sleep', 'POST', null, apiKey);
+    await apiRequestCurl('/services/${args.serviceSleep}/sleep', 'POST', null, publicKey, secretKey);
     print('${green}Service sleeping: ${args.serviceSleep}$reset');
     return;
   }
 
   if (args.serviceWake != null) {
-    await apiRequestCurl('/services/${args.serviceWake}/wake', 'POST', null, apiKey);
+    await apiRequestCurl('/services/${args.serviceWake}/wake', 'POST', null, publicKey, secretKey);
     print('${green}Service waking: ${args.serviceWake}$reset');
     return;
   }
 
   if (args.serviceDestroy != null) {
-    await apiRequestCurl('/services/${args.serviceDestroy}', 'DELETE', null, apiKey);
+    await apiRequestCurl('/services/${args.serviceDestroy}', 'DELETE', null, publicKey, secretKey);
     print('${green}Service destroyed: ${args.serviceDestroy}$reset');
     return;
   }
@@ -326,7 +360,7 @@ Future<void> cmdService(Args args) async {
     final payload = <String, dynamic>{
       'command': args.serviceCommand,
     };
-    final result = await apiRequestCurl('/services/${args.serviceExecute}/execute', 'POST', jsonEncode(payload), apiKey);
+    final result = await apiRequestCurl('/services/${args.serviceExecute}/execute', 'POST', jsonEncode(payload), publicKey, secretKey);
     final stdoutText = result['stdout'] as String?;
     final stderrText = result['stderr'] as String?;
     if (stdoutText != null && stdoutText.isNotEmpty) {
@@ -343,7 +377,7 @@ Future<void> cmdService(Args args) async {
     final payload = <String, dynamic>{
       'command': 'cat /tmp/bootstrap.sh',
     };
-    final result = await apiRequestCurl('/services/${args.serviceDumpBootstrap}/execute', 'POST', jsonEncode(payload), apiKey);
+    final result = await apiRequestCurl('/services/${args.serviceDumpBootstrap}/execute', 'POST', jsonEncode(payload), publicKey, secretKey);
 
     final bootstrap = result['stdout'] as String?;
     if (bootstrap != null && bootstrap.isNotEmpty) {
@@ -386,7 +420,7 @@ Future<void> cmdService(Args args) async {
       payload['vcpu'] = args.vcpu;
     }
 
-    final result = await apiRequestCurl('/services', 'POST', jsonEncode(payload), apiKey);
+    final result = await apiRequestCurl('/services', 'POST', jsonEncode(payload), publicKey, secretKey);
     print('${green}Service created: ${result['id'] ?? 'N/A'}$reset');
     print('Name: ${result['name'] ?? 'N/A'}');
     if (result.containsKey('url')) {
@@ -400,10 +434,12 @@ Future<void> cmdService(Args args) async {
 }
 
 Future<void> cmdKey(Args args) async {
-  final apiKey = getApiKey(args.apiKey);
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
 
   try {
-    final result = await apiRequestCurl('/keys/validate', 'POST', null, apiKey, baseUrl: portalBase);
+    final result = await apiRequestCurl('/keys/validate', 'POST', null, publicKey, secretKey, baseUrl: portalBase);
 
     // Handle --extend flag
     if (args.keyExtend) {

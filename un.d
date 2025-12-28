@@ -88,12 +88,43 @@ string escapeJson(string s) {
     return result;
 }
 
+string computeHmac(string secretKey, string message) {
+    import std.process : pipeShell, Redirect, wait;
+    import std.stdio : File;
+
+    auto cmd = format("echo -n '%s' | openssl dgst -sha256 -hmac '%s' -hex 2>/dev/null | sed 's/.*= //'", message, secretKey);
+    auto pipes = pipeShell(cmd, Redirect.stdout);
+    string result = pipes.stdout.readln().strip();
+    wait(pipes.pid);
+    return result;
+}
+
+string getTimestamp() {
+    import std.datetime.systime : Clock;
+    return format("%d", Clock.currTime.toUnixTime());
+}
+
+string buildAuthHeaders(string method, string path, string body, string publicKey, string secretKey) {
+    if (secretKey.empty) {
+        // Legacy mode: use public_key as bearer token
+        return format("-H 'Authorization: Bearer %s'", publicKey);
+    }
+
+    // HMAC mode
+    string timestamp = getTimestamp();
+    string message = format("%s:%s:%s:%s", timestamp, method, path, body);
+    string signature = computeHmac(secretKey, message);
+
+    return format("-H 'Authorization: Bearer %s' -H 'X-Timestamp: %s' -H 'X-Signature: %s'",
+                  publicKey, timestamp, signature);
+}
+
 string execCurl(string cmd) {
     auto result = executeShell(cmd);
     return result.output;
 }
 
-void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network, int vcpu, string apiKey) {
+void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network, int vcpu, string publicKey, string secretKey) {
     string lang = detectLanguage(sourceFile);
     if (lang.empty) {
         stderr.writefln("%sError: Cannot detect language%s", RED, RESET);
@@ -120,21 +151,25 @@ void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network
     if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
     json ~= "}";
 
-    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '%s'`, API_BASE, apiKey, json);
+    string authHeaders = buildAuthHeaders("POST", "/execute", json, publicKey, secretKey);
+    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
     string result = execCurl(cmd);
 
     writeln(result);
 }
 
-void cmdSession(bool list, string kill, string shell, string network, int vcpu, bool tmux, bool screen, string apiKey) {
+void cmdSession(bool list, string kill, string shell, string network, int vcpu, bool tmux, bool screen, string publicKey, string secretKey) {
     if (list) {
-        string cmd = format(`curl -s -X GET '%s/sessions' -H 'Authorization: Bearer %s'`, API_BASE, apiKey);
+        string authHeaders = buildAuthHeaders("GET", "/sessions", "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/sessions' %s`, API_BASE, authHeaders);
         writeln(execCurl(cmd));
         return;
     }
 
     if (!kill.empty) {
-        string cmd = format(`curl -s -X DELETE '%s/sessions/%s' -H 'Authorization: Bearer %s'`, API_BASE, kill, apiKey);
+        string path = format("/sessions/%s", kill);
+        string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X DELETE '%s/sessions/%s' %s`, API_BASE, kill, authHeaders);
         execCurl(cmd);
         writefln("%sSession terminated: %s%s", GREEN, kill, RESET);
         return;
@@ -148,51 +183,65 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     json ~= "}";
 
     writefln("%sCreating session...%s", YELLOW, RESET);
-    string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '%s'`, API_BASE, apiKey, json);
+    string authHeaders = buildAuthHeaders("POST", "/sessions", json, publicKey, secretKey);
+    string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string apiKey) {
+void cmdService(string name, string ports, string bootstrap, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string publicKey, string secretKey) {
     if (list) {
-        string cmd = format(`curl -s -X GET '%s/services' -H 'Authorization: Bearer %s'`, API_BASE, apiKey);
+        string authHeaders = buildAuthHeaders("GET", "/services", "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/services' %s`, API_BASE, authHeaders);
         writeln(execCurl(cmd));
         return;
     }
 
     if (!info.empty) {
-        string cmd = format(`curl -s -X GET '%s/services/%s' -H 'Authorization: Bearer %s'`, API_BASE, info, apiKey);
+        string path = format("/services/%s", info);
+        string authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/services/%s' %s`, API_BASE, info, authHeaders);
         writeln(execCurl(cmd));
         return;
     }
 
     if (!logs.empty) {
-        string cmd = format(`curl -s -X GET '%s/services/%s/logs' -H 'Authorization: Bearer %s'`, API_BASE, logs, apiKey);
+        string path = format("/services/%s/logs", logs);
+        string authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/services/%s/logs' %s`, API_BASE, logs, authHeaders);
         write(execCurl(cmd));
         return;
     }
 
     if (!tail.empty) {
-        string cmd = format(`curl -s -X GET '%s/services/%s/logs?lines=9000' -H 'Authorization: Bearer %s'`, API_BASE, tail, apiKey);
+        string path = format("/services/%s/logs", tail);
+        string authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/services/%s/logs?lines=9000' %s`, API_BASE, tail, authHeaders);
         write(execCurl(cmd));
         return;
     }
 
     if (!sleep.empty) {
-        string cmd = format(`curl -s -X POST '%s/services/%s/sleep' -H 'Authorization: Bearer %s'`, API_BASE, sleep, apiKey);
+        string path = format("/services/%s/sleep", sleep);
+        string authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/services/%s/sleep' %s`, API_BASE, sleep, authHeaders);
         execCurl(cmd);
         writefln("%sService sleeping: %s%s", GREEN, sleep, RESET);
         return;
     }
 
     if (!wake.empty) {
-        string cmd = format(`curl -s -X POST '%s/services/%s/wake' -H 'Authorization: Bearer %s'`, API_BASE, wake, apiKey);
+        string path = format("/services/%s/wake", wake);
+        string authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/services/%s/wake' %s`, API_BASE, wake, authHeaders);
         execCurl(cmd);
         writefln("%sService waking: %s%s", GREEN, wake, RESET);
         return;
     }
 
     if (!destroy.empty) {
-        string cmd = format(`curl -s -X DELETE '%s/services/%s' -H 'Authorization: Bearer %s'`, API_BASE, destroy, apiKey);
+        string path = format("/services/%s", destroy);
+        string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X DELETE '%s/services/%s' %s`, API_BASE, destroy, authHeaders);
         execCurl(cmd);
         writefln("%sService destroyed: %s%s", GREEN, destroy, RESET);
         return;
@@ -200,7 +249,9 @@ void cmdService(string name, string ports, string bootstrap, string type, bool l
 
     if (!execute.empty) {
         string json = format(`{"command":"%s"}`, escapeJson(command));
-        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '%s'`, API_BASE, execute, apiKey, json);
+        string path = format("/services/%s/execute", execute);
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, execute, authHeaders, json);
         string result = execCurl(cmd);
 
         // Simple JSON parsing for stdout/stderr
@@ -229,7 +280,10 @@ void cmdService(string name, string ports, string bootstrap, string type, bool l
 
     if (!dumpBootstrap.empty) {
         stderr.writefln("Fetching bootstrap script from %s...", dumpBootstrap);
-        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '{"command":"cat /tmp/bootstrap.sh"}'`, API_BASE, dumpBootstrap, apiKey);
+        string json = `{"command":"cat /tmp/bootstrap.sh"}`;
+        string path = format("/services/%s/execute", dumpBootstrap);
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, dumpBootstrap, authHeaders, json);
         string result = execCurl(cmd);
 
         import std.algorithm : findSplitAfter;
@@ -283,7 +337,8 @@ void cmdService(string name, string ports, string bootstrap, string type, bool l
         json ~= "}";
 
         writefln("%sCreating service...%s", YELLOW, RESET);
-        string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '%s'`, API_BASE, apiKey, json);
+        string authHeaders = buildAuthHeaders("POST", "/services", json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
         writeln(execCurl(cmd));
         return;
     }
@@ -318,11 +373,12 @@ string formatDuration(long totalMinutes) {
     }
 }
 
-void validateKey(string apiKey, bool extend) {
+void validateKey(string publicKey, string secretKey, bool extend) {
     import std.json;
     import std.datetime;
 
-    string cmd = format(`curl -s -w '\n%%{http_code}' -X POST '%s/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s'`, PORTAL_BASE, apiKey);
+    string authHeaders = buildAuthHeaders("POST", "/keys/validate", "", publicKey, secretKey);
+    string cmd = format(`curl -s -w '\n%%{http_code}' -X POST '%s/keys/validate' -H 'Content-Type: application/json' %s`, PORTAL_BASE, authHeaders);
     string response = execCurl(cmd);
 
     auto lines = response.split("\n");
@@ -413,7 +469,13 @@ void validateKey(string apiKey, bool extend) {
 }
 
 int main(string[] args) {
-    string apiKey = environment.get("UNSANDBOX_API_KEY", "");
+    string publicKey = environment.get("UNSANDBOX_PUBLIC_KEY", "");
+    string secretKey = environment.get("UNSANDBOX_SECRET_KEY", "");
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    if (publicKey.empty) {
+        publicKey = environment.get("UNSANDBOX_API_KEY", "");
+    }
 
     if (args.length < 2) {
         stderr.writefln("Usage: %s [options] <source_file>", args[0]);
@@ -437,10 +499,10 @@ int main(string[] args) {
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
             else if (args[i] == "--tmux") tmux = true;
             else if (args[i] == "--screen") screen = true;
-            else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
+            else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdSession(list, kill, shell, network, vcpu, tmux, screen, apiKey);
+        cmdSession(list, kill, shell, network, vcpu, tmux, screen, publicKey, secretKey);
         return 0;
     }
 
@@ -468,10 +530,10 @@ int main(string[] args) {
             else if (args[i] == "--dump-file" && i+1 < args.length) dumpFile = args[++i];
             else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
-            else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
+            else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, apiKey);
+        cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, publicKey, secretKey);
         return 0;
     }
 
@@ -480,15 +542,15 @@ int main(string[] args) {
 
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--extend") extend = true;
-            else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
+            else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        if (apiKey.empty) {
-            stderr.writefln("%sError: UNSANDBOX_API_KEY not set%s", RED, RESET);
+        if (publicKey.empty) {
+            stderr.writefln("%sError: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set%s", RED, RESET);
             return 1;
         }
 
-        validateKey(apiKey, extend);
+        validateKey(publicKey, secretKey, extend);
         return 0;
     }
 
@@ -503,7 +565,7 @@ int main(string[] args) {
         else if (args[i] == "-a") artifacts = true;
         else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
         else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
-        else if (args[i] == "-k" && i+1 < args.length) apiKey = args[++i];
+        else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         else if (!args[i].startsWith("-")) sourceFile = args[i];
     }
 
@@ -512,6 +574,6 @@ int main(string[] args) {
         return 1;
     }
 
-    cmdExecute(sourceFile, envs, artifacts, network, vcpu, apiKey);
+    cmdExecute(sourceFile, envs, artifacts, network, vcpu, publicKey, secretKey);
     return 0;
 }

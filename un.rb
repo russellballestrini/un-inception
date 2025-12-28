@@ -80,13 +80,23 @@ EXT_MAP = {
   '.tcl' => 'tcl', '.raku' => 'raku', '.m' => 'objc'
 }.freeze
 
-def get_api_key(args_key = nil)
-  key = args_key || ENV['UNSANDBOX_API_KEY']
-  unless key
-    warn "#{RED}Error: UNSANDBOX_API_KEY not set#{RESET}"
-    exit 1
+def get_api_keys(args_key = nil)
+  public_key = ENV['UNSANDBOX_PUBLIC_KEY']
+  secret_key = ENV['UNSANDBOX_SECRET_KEY']
+
+  unless public_key && secret_key
+    old_key = args_key || ENV['UNSANDBOX_API_KEY']
+    if old_key
+      public_key = old_key
+      secret_key = old_key
+    else
+      warn "#{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set#{RESET}"
+      warn "#{RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility)#{RESET}"
+      exit 1
+    end
   end
-  key
+
+  { public_key: public_key, secret_key: secret_key }
 end
 
 def detect_language(filename)
@@ -112,11 +122,18 @@ def detect_language(filename)
   lang
 end
 
-def api_request(endpoint, method: 'GET', data: nil, api_key:)
+def api_request(endpoint, method: 'GET', data: nil, keys:)
+  require 'openssl'
+
   uri = URI("#{API_BASE}#{endpoint}")
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = true
   http.read_timeout = 300
+
+  timestamp = Time.now.to_i.to_s
+  body = data ? JSON.generate(data) : ''
+  message = "#{timestamp}:#{method}:#{uri.path}#{uri.query ? "?#{uri.query}" : ''}:#{body}"
+  signature = OpenSSL::HMAC.hexdigest('SHA256', keys[:secret_key], message)
 
   request = case method
             when 'GET' then Net::HTTP::Get.new(uri)
@@ -125,9 +142,11 @@ def api_request(endpoint, method: 'GET', data: nil, api_key:)
             else raise "Unknown method: #{method}"
             end
 
-  request['Authorization'] = "Bearer #{api_key}"
+  request['Authorization'] = "Bearer #{keys[:public_key]}"
+  request['X-Timestamp'] = timestamp
+  request['X-Signature'] = signature
   request['Content-Type'] = 'application/json'
-  request.body = JSON.generate(data) if data
+  request.body = body if data
 
   response = http.request(request)
   unless response.is_a?(Net::HTTPSuccess)
@@ -142,7 +161,7 @@ rescue => e
 end
 
 def cmd_execute(options)
-  api_key = get_api_key(options[:api_key])
+  keys = get_api_keys(options[:api_key])
 
   unless File.exist?(options[:source_file])
     warn "#{RED}Error: File not found: #{options[:source_file]}#{RESET}"
@@ -181,7 +200,7 @@ def cmd_execute(options)
   payload[:network] = options[:network] if options[:network]
   payload[:vcpu] = options[:vcpu] if options[:vcpu]
 
-  result = api_request('/execute', method: 'POST', data: payload, api_key: api_key)
+  result = api_request('/execute', method: 'POST', data: payload, keys: keys)
 
   print "#{BLUE}#{result['stdout']}#{RESET}" if result['stdout']
   $stderr.print "#{RED}#{result['stderr']}#{RESET}" if result['stderr']
@@ -203,10 +222,10 @@ def cmd_execute(options)
 end
 
 def cmd_session(options)
-  api_key = get_api_key(options[:api_key])
+  keys = get_api_keys(options[:api_key])
 
   if options[:list]
-    result = api_request('/sessions', api_key: api_key)
+    result = api_request('/sessions', keys: keys)
     sessions = result['sessions'] || []
     if sessions.empty?
       puts 'No active sessions'
@@ -222,7 +241,7 @@ def cmd_session(options)
   end
 
   if options[:kill]
-    api_request("/sessions/#{options[:kill]}", method: 'DELETE', api_key: api_key)
+    api_request("/sessions/#{options[:kill]}", method: 'DELETE', keys: keys)
     puts "#{GREEN}Session terminated: #{options[:kill]}#{RESET}"
     return
   end
@@ -241,19 +260,28 @@ def cmd_session(options)
   payload[:audit] = true if options[:audit]
 
   puts "#{YELLOW}Creating session...#{RESET}"
-  result = api_request('/sessions', method: 'POST', data: payload, api_key: api_key)
+  result = api_request('/sessions', method: 'POST', data: payload, keys: keys)
   puts "#{GREEN}Session created: #{result['id'] || 'N/A'}#{RESET}"
   puts "#{YELLOW}(Interactive sessions require WebSocket - use un2 for full support)#{RESET}"
 end
 
-def validate_key(api_key)
+def validate_key(keys)
+  require 'openssl'
+
   uri = URI("#{PORTAL_BASE}/keys/validate")
   http = Net::HTTP.new(uri.host, uri.port)
   http.use_ssl = true
   http.read_timeout = 30
 
+  timestamp = Time.now.to_i.to_s
+  body = ''
+  message = "#{timestamp}:POST:#{uri.path}:#{body}"
+  signature = OpenSSL::HMAC.hexdigest('SHA256', keys[:secret_key], message)
+
   request = Net::HTTP::Post.new(uri)
-  request['Authorization'] = "Bearer #{api_key}"
+  request['Authorization'] = "Bearer #{keys[:public_key]}"
+  request['X-Timestamp'] = timestamp
+  request['X-Signature'] = signature
   request['Content-Type'] = 'application/json'
 
   response = http.request(request)
@@ -308,10 +336,10 @@ def open_browser(url)
 end
 
 def cmd_key(options)
-  api_key = get_api_key(options[:api_key])
+  keys = get_api_keys(options[:api_key])
 
   if options[:extend]
-    result = validate_key(api_key)
+    result = validate_key(keys)
     public_key = result['public_key']
     if public_key
       url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
@@ -322,15 +350,15 @@ def cmd_key(options)
       exit 1
     end
   else
-    validate_key(api_key)
+    validate_key(keys)
   end
 end
 
 def cmd_service(options)
-  api_key = get_api_key(options[:api_key])
+  keys = get_api_keys(options[:api_key])
 
   if options[:list]
-    result = api_request('/services', api_key: api_key)
+    result = api_request('/services', keys: keys)
     services = result['services'] || []
     if services.empty?
       puts 'No services'
@@ -348,44 +376,44 @@ def cmd_service(options)
   end
 
   if options[:info]
-    result = api_request("/services/#{options[:info]}", api_key: api_key)
+    result = api_request("/services/#{options[:info]}", keys: keys)
     puts JSON.pretty_generate(result)
     return
   end
 
   if options[:logs]
-    result = api_request("/services/#{options[:logs]}/logs", api_key: api_key)
+    result = api_request("/services/#{options[:logs]}/logs", keys: keys)
     puts result['logs'] || ''
     return
   end
 
   if options[:tail]
-    result = api_request("/services/#{options[:tail]}/logs?lines=9000", api_key: api_key)
+    result = api_request("/services/#{options[:tail]}/logs?lines=9000", keys: keys)
     puts result['logs'] || ''
     return
   end
 
   if options[:sleep]
-    api_request("/services/#{options[:sleep]}/sleep", method: 'POST', api_key: api_key)
+    api_request("/services/#{options[:sleep]}/sleep", method: 'POST', keys: keys)
     puts "#{GREEN}Service sleeping: #{options[:sleep]}#{RESET}"
     return
   end
 
   if options[:wake]
-    api_request("/services/#{options[:wake]}/wake", method: 'POST', api_key: api_key)
+    api_request("/services/#{options[:wake]}/wake", method: 'POST', keys: keys)
     puts "#{GREEN}Service waking: #{options[:wake]}#{RESET}"
     return
   end
 
   if options[:destroy]
-    api_request("/services/#{options[:destroy]}", method: 'DELETE', api_key: api_key)
+    api_request("/services/#{options[:destroy]}", method: 'DELETE', keys: keys)
     puts "#{GREEN}Service destroyed: #{options[:destroy]}#{RESET}"
     return
   end
 
   if options[:execute]
     payload = { command: options[:command] }
-    result = api_request("/services/#{options[:execute]}/execute", method: 'POST', data: payload, api_key: api_key)
+    result = api_request("/services/#{options[:execute]}/execute", method: 'POST', data: payload, keys: keys)
     print "#{BLUE}#{result['stdout']}#{RESET}" if result['stdout']
     $stderr.print "#{RED}#{result['stderr']}#{RESET}" if result['stderr']
     return
@@ -394,7 +422,7 @@ def cmd_service(options)
   if options[:dump_bootstrap]
     warn "Fetching bootstrap script from #{options[:dump_bootstrap]}..."
     payload = { command: 'cat /tmp/bootstrap.sh' }
-    result = api_request("/services/#{options[:dump_bootstrap]}/execute", method: 'POST', data: payload, api_key: api_key)
+    result = api_request("/services/#{options[:dump_bootstrap]}/execute", method: 'POST', data: payload, keys: keys)
 
     if result['stdout']
       bootstrap = result['stdout']
@@ -434,7 +462,7 @@ def cmd_service(options)
     payload[:network] = options[:network] if options[:network]
     payload[:vcpu] = options[:vcpu] if options[:vcpu]
 
-    result = api_request('/services', method: 'POST', data: payload, api_key: api_key)
+    result = api_request('/services', method: 'POST', data: payload, keys: keys)
     puts "#{GREEN}Service created: #{result['id'] || 'N/A'}#{RESET}"
     puts "Name: #{result['name'] || 'N/A'}"
     puts "URL: #{result['url']}" if result['url']

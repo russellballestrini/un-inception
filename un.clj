@@ -101,41 +101,82 @@
     (or (second (re-find pattern-str json-str))
         (second (re-find pattern-num json-str)))))
 
+(defn get-api-keys []
+  (let [public-key (System/getenv "UNSANDBOX_PUBLIC_KEY")
+        secret-key (System/getenv "UNSANDBOX_SECRET_KEY")
+        api-key (System/getenv "UNSANDBOX_API_KEY")]
+    (cond
+      (and public-key secret-key) [public-key secret-key]
+      api-key [api-key nil]
+      :else (do
+              (binding [*out* *err*]
+                (println "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)"))
+              (System/exit 1)))))
+
 (defn get-api-key []
-  (or (System/getenv "UNSANDBOX_API_KEY")
-      (do (binding [*out* *err*]
-            (println "Error: UNSANDBOX_API_KEY not set"))
-          (System/exit 1))))
+  (first (get-api-keys)))
+
+(defn hmac-sha256 [secret message]
+  (let [mac (javax.crypto.Mac/getInstance "HmacSHA256")
+        secret-key (javax.crypto.spec.SecretKeySpec. (.getBytes secret "UTF-8") "HmacSHA256")]
+    (.init mac secret-key)
+    (let [bytes (.doFinal mac (.getBytes message "UTF-8"))]
+      (apply str (map #(format "%02x" %) bytes)))))
+
+(defn make-signature [secret-key timestamp method path body]
+  (let [message (str timestamp ":" method ":" path ":" body)]
+    (hmac-sha256 secret-key message)))
+
+(defn build-auth-headers [public-key secret-key method path body]
+  (if secret-key
+    (let [timestamp (str (quot (System/currentTimeMillis) 1000))
+          signature (make-signature secret-key timestamp method path body)]
+      ["-H" (str "Authorization: Bearer " public-key)
+       "-H" (str "X-Timestamp: " timestamp)
+       "-H" (str "X-Signature: " signature)])
+    ["-H" (str "Authorization: Bearer " public-key)]))
 
 (defn curl-post [api-key endpoint json-data]
-  (let [tmp-file (str "/tmp/un_clj_" (rand-int 999999) ".json")]
+  (let [tmp-file (str "/tmp/un_clj_" (rand-int 999999) ".json")
+        [public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data)]
     (spit tmp-file json-data)
-    (let [{:keys [out]} (sh "curl" "-s" "-X" "POST"
-                            (str "https://api.unsandbox.com" endpoint)
-                            "-H" "Content-Type: application/json"
-                            "-H" (str "Authorization: Bearer " api-key)
-                            "-d" (str "@" tmp-file))]
+    (let [args (concat ["curl" "-s" "-X" "POST"
+                        (str "https://api.unsandbox.com" endpoint)
+                        "-H" "Content-Type: application/json"]
+                       auth-headers
+                       ["-d" (str "@" tmp-file)])
+          {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
       out)))
 
 (defn curl-get [api-key endpoint]
-  (:out (sh "curl" "-s"
-            (str "https://api.unsandbox.com" endpoint)
-            "-H" (str "Authorization: Bearer " api-key))))
+  (let [[public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "GET" endpoint "")
+        args (concat ["curl" "-s"
+                      (str "https://api.unsandbox.com" endpoint)]
+                     auth-headers)]
+    (:out (apply sh args))))
 
 (defn curl-delete [api-key endpoint]
-  (:out (sh "curl" "-s" "-X" "DELETE"
-            (str "https://api.unsandbox.com" endpoint)
-            "-H" (str "Authorization: Bearer " api-key))))
+  (let [[public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint "")
+        args (concat ["curl" "-s" "-X" "DELETE"
+                      (str "https://api.unsandbox.com" endpoint)]
+                     auth-headers)]
+    (:out (apply sh args))))
 
 (defn curl-portal-post [api-key endpoint json-data]
-  (let [tmp-file (str "/tmp/un_clj_portal_" (rand-int 999999) ".json")]
+  (let [tmp-file (str "/tmp/un_clj_portal_" (rand-int 999999) ".json")
+        [public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data)]
     (spit tmp-file json-data)
-    (let [{:keys [out]} (sh "curl" "-s" "-X" "POST"
-                            (str portal-base endpoint)
-                            "-H" "Content-Type: application/json"
-                            "-H" (str "Authorization: Bearer " api-key)
-                            "-d" (str "@" tmp-file))]
+    (let [args (concat ["curl" "-s" "-X" "POST"
+                        (str portal-base endpoint)
+                        "-H" "Content-Type: application/json"]
+                       auth-headers
+                       ["-d" (str "@" tmp-file)])
+          {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
       out)))
 

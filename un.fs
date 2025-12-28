@@ -44,6 +44,7 @@ open System
 open System.IO
 open System.Net
 open System.Text
+open System.Security.Cryptography
 
 let apiBase = "https://api.unsandbox.com"
 let portalBase = "https://unsandbox.com"
@@ -101,12 +102,19 @@ type Args = {
     mutable KeyExtend: bool
 }
 
-let getApiKey (argsKey: string option) =
-    let key = match argsKey with | Some k -> k | None -> Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY")
-    if String.IsNullOrEmpty(key) then
-        eprintfn "%sError: UNSANDBOX_API_KEY not set%s" red reset
-        exit 1
-    key
+let getApiKeys (argsKey: string option) =
+    let publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY")
+    let secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY")
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    if String.IsNullOrEmpty(publicKey) || String.IsNullOrEmpty(secretKey) then
+        let legacyKey = match argsKey with | Some k -> k | None -> Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY")
+        if String.IsNullOrEmpty(legacyKey) then
+            eprintfn "%sError: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set%s" red reset
+            exit 1
+        (legacyKey, null)
+    else
+        (publicKey, secretKey)
 
 let detectLanguage (filename: string) =
     let dotIndex = filename.LastIndexOf('.')
@@ -222,19 +230,35 @@ let parseJson (json: string) =
 
         result |> Seq.map (fun (k, v) -> k, v) |> Map.ofSeq
 
-let apiRequest (endpoint: string) (method: string) (data: (string * obj) list option) (apiKey: string) =
+let apiRequest (endpoint: string) (method: string) (data: (string * obj) list option) (publicKey: string) (secretKey: string) =
     ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
 
     let request = WebRequest.Create(apiBase + endpoint) :?> HttpWebRequest
     request.Method <- method
     request.ContentType <- "application/json"
-    request.Headers.Add("Authorization", sprintf "Bearer %s" apiKey)
     request.Timeout <- 300000
+
+    let body = match data with | Some d -> toJson (box d) | None -> ""
+
+    // Add HMAC authentication headers if secretKey is provided
+    if not (String.IsNullOrEmpty(secretKey)) then
+        let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let message = sprintf "%d:%s:%s:%s" timestamp method endpoint body
+
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
+        let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message))
+        let signature = BitConverter.ToString(hash).Replace("-", "").ToLower()
+
+        request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+        request.Headers.Add("X-Timestamp", timestamp.ToString())
+        request.Headers.Add("X-Signature", signature)
+    else
+        // Legacy API key authentication
+        request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
 
     match data with
     | Some d ->
-        let json = toJson (box d)
-        let bytes = Encoding.UTF8.GetBytes(json)
+        let bytes = Encoding.UTF8.GetBytes(body)
         request.ContentLength <- int64 bytes.Length
         use stream = request.GetRequestStream()
         stream.Write(bytes, 0, bytes.Length)
@@ -258,7 +282,7 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
         failwithf "HTTP error - %s" errorMsg
 
 let cmdExecute (args: Args) =
-    let apiKey = getApiKey args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
     let code = File.ReadAllText(args.SourceFile.Value)
     let language = detectLanguage args.SourceFile.Value
 
@@ -286,7 +310,7 @@ let cmdExecute (args: Args) =
     if args.Vcpu > 0 then
         payload <- payload @ [("vcpu", box args.Vcpu)]
 
-    let result = apiRequest "/execute" "POST" (Some payload) apiKey
+    let result = apiRequest "/execute" "POST" (Some payload) publicKey secretKey
 
     match result.TryFind "stdout" with
     | Some stdout when not (String.IsNullOrEmpty(stdout.ToString())) ->
@@ -307,14 +331,14 @@ let cmdExecute (args: Args) =
     exit exitCode
 
 let cmdSession (args: Args) =
-    let apiKey = getApiKey args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
 
     if args.SessionList then
-        let result = apiRequest "/sessions" "GET" None apiKey
+        let result = apiRequest "/sessions" "GET" None publicKey secretKey
         printfn "%-40s %-10s %-10s %s" "ID" "Shell" "Status" "Created"
         printfn "No sessions (list parsing not implemented)"
     elif args.SessionKill.IsSome then
-        let result = apiRequest (sprintf "/sessions/%s" args.SessionKill.Value) "DELETE" None apiKey
+        let result = apiRequest (sprintf "/sessions/%s" args.SessionKill.Value) "DELETE" None publicKey secretKey
         printfn "%sSession terminated: %s%s" green args.SessionKill.Value reset
     else
         let mutable payload = [("shell", box (match args.SessionShell with | Some s -> s | None -> "bash"))]
@@ -324,7 +348,7 @@ let cmdSession (args: Args) =
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
         printfn "%sCreating session...%s" yellow reset
-        let result = apiRequest "/sessions" "POST" (Some payload) apiKey
+        let result = apiRequest "/sessions" "POST" (Some payload) publicKey secretKey
         match result.TryFind "id" with
         | Some id -> printfn "%sSession created: %s%s" green (id.ToString()) reset
         | None -> printfn "%sSession created%s" green reset
@@ -412,37 +436,37 @@ let cmdKey (args: Args) =
         exit 1
 
 let cmdService (args: Args) =
-    let apiKey = getApiKey args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
 
     if args.ServiceList then
-        let result = apiRequest "/services" "GET" None apiKey
+        let result = apiRequest "/services" "GET" None publicKey secretKey
         printfn "%-20s %-15s %-10s %-15s %s" "ID" "Name" "Status" "Ports" "Domains"
         printfn "No services (list parsing not implemented)"
     elif args.ServiceInfo.IsSome then
-        let result = apiRequest (sprintf "/services/%s" args.ServiceInfo.Value) "GET" None apiKey
+        let result = apiRequest (sprintf "/services/%s" args.ServiceInfo.Value) "GET" None publicKey secretKey
         printfn "%s" (toJson (box result))
     elif args.ServiceLogs.IsSome then
-        let result = apiRequest (sprintf "/services/%s/logs" args.ServiceLogs.Value) "GET" None apiKey
+        let result = apiRequest (sprintf "/services/%s/logs" args.ServiceLogs.Value) "GET" None publicKey secretKey
         match result.TryFind "logs" with
         | Some logs -> printfn "%s" (logs.ToString())
         | None -> ()
     elif args.ServiceTail.IsSome then
-        let result = apiRequest (sprintf "/services/%s/logs?lines=9000" args.ServiceTail.Value) "GET" None apiKey
+        let result = apiRequest (sprintf "/services/%s/logs?lines=9000" args.ServiceTail.Value) "GET" None publicKey secretKey
         match result.TryFind "logs" with
         | Some logs -> printfn "%s" (logs.ToString())
         | None -> ()
     elif args.ServiceSleep.IsSome then
-        let result = apiRequest (sprintf "/services/%s/sleep" args.ServiceSleep.Value) "POST" None apiKey
+        let result = apiRequest (sprintf "/services/%s/sleep" args.ServiceSleep.Value) "POST" None publicKey secretKey
         printfn "%sService sleeping: %s%s" green args.ServiceSleep.Value reset
     elif args.ServiceWake.IsSome then
-        let result = apiRequest (sprintf "/services/%s/wake" args.ServiceWake.Value) "POST" None apiKey
+        let result = apiRequest (sprintf "/services/%s/wake" args.ServiceWake.Value) "POST" None publicKey secretKey
         printfn "%sService waking: %s%s" green args.ServiceWake.Value reset
     elif args.ServiceDestroy.IsSome then
-        let result = apiRequest (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None apiKey
+        let result = apiRequest (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None publicKey secretKey
         printfn "%sService destroyed: %s%s" green args.ServiceDestroy.Value reset
     elif args.ServiceExecute.IsSome then
         let payload = [("command", box args.ServiceCommand.Value)]
-        let result = apiRequest (sprintf "/services/%s/execute" args.ServiceExecute.Value) "POST" (Some payload) apiKey
+        let result = apiRequest (sprintf "/services/%s/execute" args.ServiceExecute.Value) "POST" (Some payload) publicKey secretKey
         match result.TryFind "stdout" with
         | Some stdout when not (String.IsNullOrEmpty(stdout.ToString())) ->
             printf "%s%s%s" blue (stdout.ToString()) reset
@@ -454,7 +478,7 @@ let cmdService (args: Args) =
     elif args.ServiceDumpBootstrap.IsSome then
         eprintfn "Fetching bootstrap script from %s..." args.ServiceDumpBootstrap.Value
         let payload = [("command", box "cat /tmp/bootstrap.sh")]
-        let result = apiRequest (sprintf "/services/%s/execute" args.ServiceDumpBootstrap.Value) "POST" (Some payload) apiKey
+        let result = apiRequest (sprintf "/services/%s/execute" args.ServiceDumpBootstrap.Value) "POST" (Some payload) publicKey secretKey
 
         match result.TryFind "stdout" with
         | Some bootstrap when not (String.IsNullOrEmpty(bootstrap.ToString())) ->
@@ -485,7 +509,7 @@ let cmdService (args: Args) =
         if args.Vcpu > 0 then
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
-        let result = apiRequest "/services" "POST" (Some payload) apiKey
+        let result = apiRequest "/services" "POST" (Some payload) publicKey secretKey
         match result.TryFind "id" with
         | Some id -> printfn "%sService created: %s%s" green (id.ToString()) reset
         | None -> printfn "%sService created%s" green reset

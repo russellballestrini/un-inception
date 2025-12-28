@@ -55,6 +55,8 @@
        01  WS-FILENAME         PIC X(256).
        01  WS-FILE-STATUS      PIC XX.
        01  WS-API-KEY          PIC X(256).
+       01  WS-PUBLIC-KEY       PIC X(256).
+       01  WS-SECRET-KEY       PIC X(256).
        01  WS-LANGUAGE         PIC X(32).
        01  WS-EXTENSION        PIC X(16).
        01  WS-CURL-CMD         PIC X(4096).
@@ -259,16 +261,46 @@
            END-IF.
 
        MAKE-EXECUTE-REQUEST.
-      * Build curl command using shell
-           STRING "curl -s -X POST https://api.unsandbox.com/execute "
-               "-H 'Content-Type: application/json' "
-               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' --data-binary @- -o /tmp/unsandbox_resp.json "
-               "< <(jq -Rs '{language: """
+      * Get public/secret keys with fallback
+           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
+           IF WS-PUBLIC-KEY NOT = SPACES
+               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
+               IF WS-SECRET-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
+                       UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+           ELSE
+               ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
+               IF WS-PUBLIC-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
+                       "UNSANDBOX_API_KEY not set" UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+               MOVE WS-PUBLIC-KEY TO WS-SECRET-KEY
+           END-IF.
+
+      * Build curl command using shell with HMAC signature
+           STRING "TS=$(date +%s); "
+               "BODY=$(jq -Rs '{language: """
                FUNCTION TRIM(WS-LANGUAGE)
                """, code: .}' < '"
                FUNCTION TRIM(WS-FILENAME)
                "'); "
+               "SIG=$(echo -n \"$TS:POST:/execute:$BODY\" | "
+               "openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST https://api.unsandbox.com/execute "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "--data-binary \"$BODY\" -o /tmp/unsandbox_resp.json; "
                "jq -r '.stdout // empty' /tmp/unsandbox_resp.json | "
                "sed 's/^/\x1b[34m/' | sed 's/$/\x1b[0m/'; "
                "jq -r '.stderr // empty' /tmp/unsandbox_resp.json | "

@@ -45,6 +45,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
 import kotlin.system.exitProcess
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 val API_BASE = "https://api.unsandbox.com"
 val PORTAL_BASE = "https://unsandbox.com"
@@ -123,7 +125,7 @@ fun main(args: Array<String>) {
 }
 
 fun cmdExecute(args: Args) {
-    val apiKey = getApiKey(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
     val code = File(args.sourceFile!!).readText()
     val language = detectLanguage(args.sourceFile!!)
 
@@ -167,7 +169,7 @@ fun cmdExecute(args: Args) {
         payload["vcpu"] = args.vcpu
     }
 
-    val result = apiRequest("/execute", "POST", payload, apiKey)
+    val result = apiRequest("/execute", "POST", payload, publicKey, secretKey)
 
     val stdout = result["stdout"] as? String
     val stderr = result["stderr"] as? String
@@ -198,10 +200,10 @@ fun cmdExecute(args: Args) {
 }
 
 fun cmdSession(args: Args) {
-    val apiKey = getApiKey(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     if (args.sessionList) {
-        val result = apiRequest("/sessions", "GET", null, apiKey)
+        val result = apiRequest("/sessions", "GET", null, publicKey, secretKey)
         @Suppress("UNCHECKED_CAST")
         val sessions = result["sessions"] as? List<Map<String, Any>>
         if (sessions.isNullOrEmpty()) {
@@ -221,7 +223,7 @@ fun cmdSession(args: Args) {
     }
 
     if (args.sessionKill != null) {
-        apiRequest("/sessions/${args.sessionKill}", "DELETE", null, apiKey)
+        apiRequest("/sessions/${args.sessionKill}", "DELETE", null, publicKey, secretKey)
         println("${GREEN}Session terminated: ${args.sessionKill}${RESET}")
         return
     }
@@ -237,16 +239,16 @@ fun cmdSession(args: Args) {
     }
 
     println("${YELLOW}Creating session...${RESET}")
-    val result = apiRequest("/sessions", "POST", payload, apiKey)
+    val result = apiRequest("/sessions", "POST", payload, publicKey, secretKey)
     println("${GREEN}Session created: ${result["id"] ?: "N/A"}${RESET}")
     println("${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}")
 }
 
 fun cmdService(args: Args) {
-    val apiKey = getApiKey(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     if (args.serviceList) {
-        val result = apiRequest("/services", "GET", null, apiKey)
+        val result = apiRequest("/services", "GET", null, publicKey, secretKey)
         @Suppress("UNCHECKED_CAST")
         val services = result["services"] as? List<Map<String, Any>>
         if (services.isNullOrEmpty()) {
@@ -270,44 +272,44 @@ fun cmdService(args: Args) {
     }
 
     if (args.serviceInfo != null) {
-        val result = apiRequest("/services/${args.serviceInfo}", "GET", null, apiKey)
+        val result = apiRequest("/services/${args.serviceInfo}", "GET", null, publicKey, secretKey)
         println(toJson(result))
         return
     }
 
     if (args.serviceLogs != null) {
-        val result = apiRequest("/services/${args.serviceLogs}/logs", "GET", null, apiKey)
+        val result = apiRequest("/services/${args.serviceLogs}/logs", "GET", null, publicKey, secretKey)
         println(result["logs"] ?: "")
         return
     }
 
     if (args.serviceTail != null) {
-        val result = apiRequest("/services/${args.serviceTail}/logs?lines=9000", "GET", null, apiKey)
+        val result = apiRequest("/services/${args.serviceTail}/logs?lines=9000", "GET", null, publicKey, secretKey)
         println(result["logs"] ?: "")
         return
     }
 
     if (args.serviceSleep != null) {
-        apiRequest("/services/${args.serviceSleep}/sleep", "POST", null, apiKey)
+        apiRequest("/services/${args.serviceSleep}/sleep", "POST", null, publicKey, secretKey)
         println("${GREEN}Service sleeping: ${args.serviceSleep}${RESET}")
         return
     }
 
     if (args.serviceWake != null) {
-        apiRequest("/services/${args.serviceWake}/wake", "POST", null, apiKey)
+        apiRequest("/services/${args.serviceWake}/wake", "POST", null, publicKey, secretKey)
         println("${GREEN}Service waking: ${args.serviceWake}${RESET}")
         return
     }
 
     if (args.serviceDestroy != null) {
-        apiRequest("/services/${args.serviceDestroy}", "DELETE", null, apiKey)
+        apiRequest("/services/${args.serviceDestroy}", "DELETE", null, publicKey, secretKey)
         println("${GREEN}Service destroyed: ${args.serviceDestroy}${RESET}")
         return
     }
 
     if (args.serviceExecute != null) {
         val payload = mutableMapOf<String, Any>("command" to args.serviceCommand!!)
-        val result = apiRequest("/services/${args.serviceExecute}/execute", "POST", payload, apiKey)
+        val result = apiRequest("/services/${args.serviceExecute}/execute", "POST", payload, publicKey, secretKey)
         if (result.containsKey("stdout")) {
             val stdout = result["stdout"] as? String
             if (stdout != null && stdout.isNotEmpty()) {
@@ -326,7 +328,7 @@ fun cmdService(args: Args) {
     if (args.serviceDumpBootstrap != null) {
         System.err.println("Fetching bootstrap script from ${args.serviceDumpBootstrap}...")
         val payload = mutableMapOf<String, Any>("command" to "cat /tmp/bootstrap.sh")
-        val result = apiRequest("/services/${args.serviceDumpBootstrap}/execute", "POST", payload, apiKey)
+        val result = apiRequest("/services/${args.serviceDumpBootstrap}/execute", "POST", payload, publicKey, secretKey)
 
         val bootstrap = result["stdout"] as? String
         if (bootstrap != null && bootstrap.isNotEmpty()) {
@@ -368,7 +370,7 @@ fun cmdService(args: Args) {
             payload["vcpu"] = args.vcpu
         }
 
-        val result = apiRequest("/services", "POST", payload, apiKey)
+        val result = apiRequest("/services", "POST", payload, publicKey, secretKey)
         println("${GREEN}Service created: ${result["id"] ?: "N/A"}${RESET}")
         println("Name: ${result["name"] ?: "N/A"}")
         if (result.containsKey("url")) {
@@ -382,21 +384,21 @@ fun cmdService(args: Args) {
 }
 
 fun cmdKey(args: Args) {
-    val apiKey = getApiKey(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
 
-    val result = validateKey(apiKey)
+    val result = validateKey(publicKey, secretKey)
     val valid = result["valid"] as? Boolean ?: false
     val expired = result["expired"] as? Boolean ?: false
-    val publicKey = result["public_key"] as? String ?: ""
+    val pubKey = result["public_key"] as? String ?: ""
     val tier = result["tier"] as? String ?: ""
     val expiresAt = result["expires_at"] as? String ?: ""
 
     if (args.keyExtend) {
-        if (publicKey.isEmpty()) {
+        if (pubKey.isEmpty()) {
             System.err.println("${RED}Error: Could not retrieve public key${RESET}")
             exitProcess(1)
         }
-        val extendUrl = "$PORTAL_BASE/keys/extend?pk=$publicKey"
+        val extendUrl = "$PORTAL_BASE/keys/extend?pk=$pubKey"
         println("${YELLOW}Opening browser to extend key...${RESET}")
         println(extendUrl)
 
@@ -418,13 +420,13 @@ fun cmdKey(args: Args) {
 
     if (expired) {
         println("${RED}Status: Expired${RESET}")
-        println("Public Key: $publicKey")
+        println("Public Key: $pubKey")
         println("Tier: $tier")
         println("Expired: $expiresAt")
         println("${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}")
     } else if (valid) {
         println("${GREEN}Status: Valid${RESET}")
-        println("Public Key: $publicKey")
+        println("Public Key: $pubKey")
         println("Tier: $tier")
         println("Expires: $expiresAt")
     } else {
@@ -433,12 +435,21 @@ fun cmdKey(args: Args) {
     }
 }
 
-fun validateKey(apiKey: String): Map<String, Any> {
-    val url = URL("$PORTAL_BASE/keys/validate")
+fun validateKey(publicKey: String?, secretKey: String): Map<String, Any> {
+    val timestamp = System.currentTimeMillis() / 1000
+    val method = "POST"
+    val path = "/keys/validate"
+    val body = ""
+    val signatureData = "$timestamp:$method:$path:$body"
+    val signature = hmacSha256(secretKey, signatureData)
+
+    val url = URL("$PORTAL_BASE$path")
     val connection = url.openConnection() as HttpURLConnection
 
-    connection.requestMethod = "POST"
-    connection.setRequestProperty("Authorization", "Bearer $apiKey")
+    connection.requestMethod = method
+    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("X-Timestamp", timestamp.toString())
+    connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "application/json")
     connection.connectTimeout = 30000
     connection.readTimeout = 30000
@@ -452,13 +463,39 @@ fun validateKey(apiKey: String): Map<String, Any> {
     return parseJson(response)
 }
 
-fun getApiKey(argsKey: String?): String {
-    val key = argsKey ?: System.getenv("UNSANDBOX_API_KEY")
-    if (key.isNullOrEmpty()) {
-        System.err.println("${RED}Error: UNSANDBOX_API_KEY not set${RESET}")
+fun getApiKeys(argsKey: String?): Pair<String?, String> {
+    var publicKey: String? = null
+    var secretKey: String? = null
+
+    if (argsKey != null) {
+        secretKey = argsKey
+        publicKey = System.getenv("UNSANDBOX_PUBLIC_KEY")
+    } else {
+        publicKey = System.getenv("UNSANDBOX_PUBLIC_KEY")
+        secretKey = System.getenv("UNSANDBOX_SECRET_KEY")
+
+        if (publicKey == null || secretKey == null) {
+            val apiKey = System.getenv("UNSANDBOX_API_KEY")
+            if (apiKey != null && apiKey.isNotEmpty()) {
+                secretKey = apiKey
+            }
+        }
+    }
+
+    if (secretKey.isNullOrEmpty()) {
+        System.err.println("${RED}Error: UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set${RESET}")
         exitProcess(1)
     }
-    return key
+
+    return Pair(publicKey, secretKey)
+}
+
+fun hmacSha256(secretKey: String, data: String): String {
+    val mac = Mac.getInstance("HmacSHA256")
+    val keySpec = SecretKeySpec(secretKey.toByteArray(Charsets.UTF_8), "HmacSHA256")
+    mac.init(keySpec)
+    val hash = mac.doFinal(data.toByteArray(Charsets.UTF_8))
+    return hash.joinToString("") { "%02x".format(it) }
 }
 
 fun detectLanguage(filename: String): String {
@@ -469,20 +506,26 @@ fun detectLanguage(filename: String): String {
     return EXT_MAP[".$ext"] ?: throw RuntimeException("Unsupported file extension: .$ext")
 }
 
-fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, apiKey: String): Map<String, Any> {
+fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, publicKey: String?, secretKey: String): Map<String, Any> {
+    val timestamp = System.currentTimeMillis() / 1000
+    val body = if (data != null) toJson(data) else ""
+    val signatureData = "$timestamp:$method:$endpoint:$body"
+    val signature = hmacSha256(secretKey, signatureData)
+
     val url = URL(API_BASE + endpoint)
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = method
-    connection.setRequestProperty("Authorization", "Bearer $apiKey")
+    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("X-Timestamp", timestamp.toString())
+    connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "application/json")
     connection.connectTimeout = 30000
     connection.readTimeout = 300000
 
     if (data != null) {
         connection.doOutput = true
-        val json = toJson(data)
-        connection.outputStream.use { it.write(json.toByteArray()) }
+        connection.outputStream.use { it.write(body.toByteArray()) }
     }
 
     if (connection.responseCode !in 200..299) {

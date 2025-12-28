@@ -59,22 +59,45 @@ $EXT_MAP = @{
     ".raku" = "raku"; ".m" = "objc"; ".awk" = "awk"
 }
 
-function Get-ApiKey {
-    $key = $env:UNSANDBOX_API_KEY
-    if (-not $key) {
-        Write-Error "Error: UNSANDBOX_API_KEY not set"
+function Get-ApiKeys {
+    $publicKey = $env:UNSANDBOX_PUBLIC_KEY
+    $secretKey = $env:UNSANDBOX_SECRET_KEY
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if (-not $publicKey -and $env:UNSANDBOX_API_KEY) {
+        $publicKey = $env:UNSANDBOX_API_KEY
+        $secretKey = ""
+    }
+
+    if (-not $publicKey) {
+        Write-Error "Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set"
         exit 1
     }
-    return $key
+    return @($publicKey, $secretKey)
 }
 
 function Invoke-Api {
     param($Endpoint, $Method = "GET", $Body = $null, $BaseUrl = $null)
 
-    $apiKey = Get-ApiKey
+    $publicKey, $secretKey = Get-ApiKeys
     $headers = @{
-        "Authorization" = "Bearer $apiKey"
+        "Authorization" = "Bearer $publicKey"
         "Content-Type" = "application/json"
+    }
+
+    # Add HMAC signature if secret key exists
+    if ($secretKey) {
+        $timestamp = [int][double]::Parse((Get-Date -UFormat %s))
+        $bodyContent = if ($Body) { $Body } else { "" }
+        $sigInput = "${timestamp}:${Method}:${Endpoint}:${bodyContent}"
+
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($secretKey)
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sigInput))
+        $signature = [System.BitConverter]::ToString($hash).Replace("-", "").ToLower()
+
+        $headers["X-Timestamp"] = $timestamp.ToString()
+        $headers["X-Signature"] = $signature
     }
 
     $base = if ($BaseUrl) { $BaseUrl } else { $API_BASE }

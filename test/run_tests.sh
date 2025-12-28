@@ -26,11 +26,19 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Check if UNSANDBOX_API_KEY is set
-if [ -z "$UNSANDBOX_API_KEY" ]; then
-    echo -e "${RED}Error: UNSANDBOX_API_KEY environment variable not set${NC}"
-    echo "Please set it with: export UNSANDBOX_API_KEY=usk_your_key_here"
-    exit 1
+# Check if UNSANDBOX auth keys are set (HMAC or legacy)
+if [ -z "$UNSANDBOX_PUBLIC_KEY" ] || [ -z "$UNSANDBOX_SECRET_KEY" ]; then
+    # Fall back to legacy API key
+    if [ -z "$UNSANDBOX_API_KEY" ]; then
+        echo -e "${RED}Error: UNSANDBOX authentication not configured${NC}"
+        echo "Please set HMAC auth keys:"
+        echo "  export UNSANDBOX_PUBLIC_KEY=usk_pub_your_key_here"
+        echo "  export UNSANDBOX_SECRET_KEY=usk_sec_your_key_here"
+        echo ""
+        echo "Or use legacy authentication:"
+        echo "  export UNSANDBOX_API_KEY=usk_your_key_here"
+        exit 1
+    fi
 fi
 
 # Check if un binary exists

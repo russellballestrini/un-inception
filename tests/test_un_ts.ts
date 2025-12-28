@@ -11,12 +11,16 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as https from 'https';
+import * as crypto from 'crypto';
 
 const execFileAsync = promisify(execFile);
 
+// Get script directory - works in both CommonJS and ES modules
+const SCRIPT_DIR = path.dirname(process.argv[1] || __filename);
+
 // Test configuration
-const UN_SCRIPT = path.join(__dirname, '..', 'un.ts');
-const FIB_PY = path.join(__dirname, '..', '..', 'test', 'fib.py');
+const UN_SCRIPT = path.join(SCRIPT_DIR, '..', 'un.ts');
+const FIB_PY = path.join(SCRIPT_DIR, '..', '..', 'test', 'fib.py');
 
 class TestResults {
   passed: number = 0;
@@ -140,26 +144,37 @@ async function runTests(): Promise<void> {
     results.failTest('Extension detection: .unknown -> undefined', (e as Error).message);
   }
 
-  // Test 7: API call test (requires UNSANDBOX_API_KEY)
-  if (!process.env.UNSANDBOX_API_KEY) {
-    results.skipTest('API call test', 'UNSANDBOX_API_KEY not set');
+  // Test 7: API call test (requires UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY)
+  const hasHmac = process.env.UNSANDBOX_PUBLIC_KEY && process.env.UNSANDBOX_SECRET_KEY;
+  const hasLegacy = process.env.UNSANDBOX_API_KEY;
+  if (!hasHmac && !hasLegacy) {
+    results.skipTest('API call test', 'UNSANDBOX authentication not set');
   } else {
     try {
-      const apiKey = process.env.UNSANDBOX_API_KEY;
+      const publicKey = process.env.UNSANDBOX_PUBLIC_KEY || process.env.UNSANDBOX_API_KEY || '';
+      const secretKey = process.env.UNSANDBOX_SECRET_KEY || '';
       const payload = JSON.stringify({
         language: 'python',
         code: 'print("Hello from API")'
       });
 
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const method = 'POST';
+      const apiPath = '/execute';
+      const signatureData = `${timestamp}:${method}:${apiPath}:${payload}`;
+      const signature = crypto.createHmac('sha256', secretKey).update(signatureData).digest('hex');
+
       const result: ExecuteResult = await new Promise((resolve, reject) => {
         const options: https.RequestOptions = {
           hostname: 'api.unsandbox.com',
-          path: '/execute',
-          method: 'POST',
+          path: apiPath,
+          method: method,
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'Authorization': `Bearer ${publicKey}`,
             'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(payload)
+            'Content-Length': Buffer.byteLength(payload),
+            'X-Timestamp': timestamp,
+            'X-Signature': signature
           }
         };
 
@@ -191,8 +206,8 @@ async function runTests(): Promise<void> {
   }
 
   // Test 8: End-to-end test with fib.py
-  if (!process.env.UNSANDBOX_API_KEY) {
-    results.skipTest('End-to-end fib.py test', 'UNSANDBOX_API_KEY not set');
+  if (!hasHmac && !hasLegacy) {
+    results.skipTest('End-to-end fib.py test', 'UNSANDBOX authentication not set');
   } else if (!fs.existsSync(FIB_PY)) {
     results.skipTest('End-to-end fib.py test', `fib.py not found at ${FIB_PY}`);
   } else {

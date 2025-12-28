@@ -20,10 +20,10 @@ print_test() {
 
     if [ "$result" = "true" ]; then
         echo -e "${GREEN}✓ PASS${RESET}: $name"
-        ((PASSED++))
+        PASSED=$((PASSED + 1))
     else
         echo -e "${RED}✗ FAIL${RESET}: $name"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 }
 

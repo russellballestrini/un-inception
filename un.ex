@@ -401,13 +401,37 @@ defmodule Un do
   end
 
   # Helpers
-  defp get_api_key do
-    case System.get_env("UNSANDBOX_API_KEY") do
-      nil ->
-        IO.puts(:stderr, "Error: UNSANDBOX_API_KEY not set")
+  defp get_api_keys do
+    public_key = System.get_env("UNSANDBOX_PUBLIC_KEY")
+    secret_key = System.get_env("UNSANDBOX_SECRET_KEY")
+
+    # Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    api_key = System.get_env("UNSANDBOX_API_KEY")
+
+    cond do
+      public_key && secret_key ->
+        {public_key, secret_key}
+      api_key ->
+        {api_key, nil}
+      true ->
+        IO.puts(:stderr, "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)")
         System.halt(1)
-      key -> key
     end
+  end
+
+  defp get_api_key do
+    {public_key, _} = get_api_keys()
+    public_key
+  end
+
+  defp hmac_sha256(secret, message) do
+    :crypto.mac(:hmac, :sha256, secret, message)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp make_signature(secret_key, timestamp, method, path, body) do
+    message = "#{timestamp}:#{method}:#{path}:#{body}"
+    hmac_sha256(secret_key, message)
   end
 
   defp escape_json(s) do
@@ -427,50 +451,79 @@ defmodule Un do
     tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
     File.write!(tmp_file, json)
 
-    {output, _exit} = System.cmd("curl", [
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
+
+    args = [
       "-s", "-X", "POST",
       "https://api.unsandbox.com#{endpoint}",
-      "-H", "Content-Type: application/json",
-      "-H", "Authorization: Bearer #{api_key}",
-      "-d", "@#{tmp_file}"
-    ], stderr_to_stdout: true)
+      "-H", "Content-Type: application/json"
+    ] ++ headers ++ ["-d", "@#{tmp_file}"]
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
     output
+  end
+
+  defp build_auth_headers(public_key, secret_key, method, path, body) do
+    if secret_key do
+      timestamp = System.system_time(:second) |> Integer.to_string()
+      signature = make_signature(secret_key, timestamp, method, path, body)
+      [
+        "-H", "Authorization: Bearer #{public_key}",
+        "-H", "X-Timestamp: #{timestamp}",
+        "-H", "X-Signature: #{signature}"
+      ]
+    else
+      # Backwards compatibility: use simple bearer token
+      ["-H", "Authorization: Bearer #{public_key}"]
+    end
   end
 
   defp portal_curl_post(api_key, endpoint, json) do
     tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
     File.write!(tmp_file, json)
 
-    {output, _exit} = System.cmd("curl", [
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
+
+    args = [
       "-s", "-X", "POST",
       "#{@portal_base}#{endpoint}",
-      "-H", "Content-Type: application/json",
-      "-H", "Authorization: Bearer #{api_key}",
-      "-d", "@#{tmp_file}"
-    ], stderr_to_stdout: true)
+      "-H", "Content-Type: application/json"
+    ] ++ headers ++ ["-d", "@#{tmp_file}"]
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
     output
   end
 
   defp curl_get(api_key, endpoint) do
-    {output, _exit} = System.cmd("curl", [
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "GET", endpoint, "")
+
+    args = [
       "-s",
-      "https://api.unsandbox.com#{endpoint}",
-      "-H", "Authorization: Bearer #{api_key}"
-    ], stderr_to_stdout: true)
+      "https://api.unsandbox.com#{endpoint}"
+    ] ++ headers
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     output
   end
 
   defp curl_delete(api_key, endpoint) do
-    {output, _exit} = System.cmd("curl", [
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
+
+    args = [
       "-s", "-X", "DELETE",
-      "https://api.unsandbox.com#{endpoint}",
-      "-H", "Authorization: Bearer #{api_key}"
-    ], stderr_to_stdout: true)
+      "https://api.unsandbox.com#{endpoint}"
+    ] ++ headers
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     output
   end

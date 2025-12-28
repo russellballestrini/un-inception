@@ -87,8 +87,8 @@ contains
 
     subroutine handle_execute(fname)
         character(len=*), intent(in) :: fname
-        character(len=2048) :: full_cmd
-        character(len=1024) :: env_opts, file_opts, net_opt
+        character(len=4096) :: full_cmd
+        character(len=1024) :: env_opts, file_opts, net_opt, public_key, secret_key
         integer :: i, arg_idx
         logical :: artifacts, has_env, has_files
 
@@ -131,11 +131,23 @@ contains
             stop 1
         end if
 
-        ! Get API key
-        call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
-        if (stat /= 0 .or. len_trim(api_key) == 0) then
-            write(0, '(A)') 'Error: UNSANDBOX_API_KEY environment variable not set'
-            stop 1
+        ! Get API keys (try new format first, fall back to old)
+        call get_environment_variable('UNSANDBOX_PUBLIC_KEY', public_key, status=stat)
+        if (stat == 0 .and. len_trim(public_key) > 0) then
+            call get_environment_variable('UNSANDBOX_SECRET_KEY', secret_key, status=stat)
+            if (stat /= 0 .or. len_trim(secret_key) == 0) then
+                write(0, '(A)') 'Error: UNSANDBOX_SECRET_KEY not set'
+                stop 1
+            end if
+        else
+            ! Fall back to old-style single key
+            call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
+            if (stat /= 0 .or. len_trim(api_key) == 0) then
+                write(0, '(A)') 'Error: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set'
+                stop 1
+            end if
+            public_key = api_key
+            secret_key = api_key
         end if
 
         ! Parse additional arguments (simple version - only support basic flags)
@@ -144,14 +156,17 @@ contains
         net_opt = ''
         artifacts = .false.
 
-        ! Build curl command
-        write(full_cmd, '(20A)') &
+        ! Build curl command with HMAC auth (use bash to compute signature)
+        write(full_cmd, '(30A)') &
+            'TS=$(date +%s); ', &
+            'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .}'' < "', trim(fname), '"); ', &
+            'SIG=$(echo -n "$TS:POST:/execute:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
             'curl -s -X POST https://api.unsandbox.com/execute ', &
             '-H "Content-Type: application/json" ', &
-            '-H "Authorization: Bearer ', trim(api_key), '" ', &
-            '--data-binary @- -o /tmp/unsandbox_resp.json ', &
-            '< <(jq -Rs ''{language: "', trim(language), '", code: .}'' ', &
-            '< "', trim(fname), '"); ', &
+            '-H "Authorization: Bearer ', trim(public_key), '" ', &
+            '-H "X-Timestamp: $TS" ', &
+            '-H "X-Signature: $SIG" ', &
+            '--data-binary "$BODY" -o /tmp/unsandbox_resp.json; ', &
             'jq -r ".stdout // empty" /tmp/unsandbox_resp.json | ', &
             'sed "s/^/\x1b[34m/" | sed "s/$/\x1b[0m/"; ', &
             'jq -r ".stderr // empty" /tmp/unsandbox_resp.json | ', &
@@ -167,8 +182,9 @@ contains
     end subroutine handle_execute
 
     subroutine handle_session()
-        character(len=2048) :: full_cmd
+        character(len=4096) :: full_cmd
         character(len=256) :: arg, session_id
+        character(len=1024) :: public_key, secret_key
         integer :: i, stat
         logical :: list_mode, kill_mode
 
@@ -189,27 +205,46 @@ contains
             end if
         end do
 
-        ! Get API key
-        call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
-        if (stat /= 0 .or. len_trim(api_key) == 0) then
-            write(0, '(A)') 'Error: UNSANDBOX_API_KEY not set'
-            stop 1
+        ! Get API keys (try new format first, fall back to old)
+        call get_environment_variable('UNSANDBOX_PUBLIC_KEY', public_key, status=stat)
+        if (stat == 0 .and. len_trim(public_key) > 0) then
+            call get_environment_variable('UNSANDBOX_SECRET_KEY', secret_key, status=stat)
+            if (stat /= 0 .or. len_trim(secret_key) == 0) then
+                write(0, '(A)') 'Error: UNSANDBOX_SECRET_KEY not set'
+                stop 1
+            end if
+        else
+            call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
+            if (stat /= 0 .or. len_trim(api_key) == 0) then
+                write(0, '(A)') 'Error: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set'
+                stop 1
+            end if
+            public_key = api_key
+            secret_key = api_key
         end if
 
         if (list_mode) then
-            ! List sessions
-            write(full_cmd, '(10A)') &
+            ! List sessions - GET request with empty body
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/sessions:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X GET https://api.unsandbox.com/sessions ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" | ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | ', &
                 'jq -r ''.sessions[] | "\(.id) \(.shell) \(.status) \(.created_at)"'' ', &
                 '2>/dev/null || echo "No active sessions"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (kill_mode .and. len_trim(session_id) > 0) then
-            ! Kill session
-            write(full_cmd, '(10A)') &
+            ! Kill session - DELETE request with empty body
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:DELETE:/sessions/', trim(session_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X DELETE https://api.unsandbox.com/sessions/', &
                 trim(session_id), ' ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" >/dev/null && ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" >/dev/null && ', &
                 'echo -e "\x1b[32mSession terminated: ', trim(session_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else

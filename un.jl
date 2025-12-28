@@ -42,6 +42,7 @@ using JSON
 using Base64
 using ArgParse
 using Printf
+using SHA
 
 # Extension to language mapping
 const EXT_MAP = Dict(
@@ -75,19 +76,54 @@ function detect_language(filename::String)::String
     return get(EXT_MAP, ext, "unknown")
 end
 
-function get_api_key(args_key=nothing)::String
-    key = something(args_key, get(ENV, "UNSANDBOX_API_KEY", ""))
-    if isempty(key)
-        println(stderr, "$(RED)Error: UNSANDBOX_API_KEY not set$(RESET)")
+function get_api_keys(args_key=nothing)::Tuple{String,String}
+    # Try new-style keys first
+    public_key = something(args_key, get(ENV, "UNSANDBOX_PUBLIC_KEY", ""))
+    secret_key = get(ENV, "UNSANDBOX_SECRET_KEY", "")
+
+    # Fall back to old-style single key for backwards compatibility
+    if isempty(public_key)
+        old_key = get(ENV, "UNSANDBOX_API_KEY", "")
+        if isempty(old_key)
+            println(stderr, "$(RED)Error: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set$(RESET)")
+            exit(1)
+        end
+        # Old-style: use same key for both public and secret
+        return (old_key, old_key)
+    end
+
+    if isempty(secret_key)
+        println(stderr, "$(RED)Error: UNSANDBOX_SECRET_KEY not set$(RESET)")
         exit(1)
     end
-    return key
+
+    return (public_key, secret_key)
 end
 
-function api_request(endpoint::String, api_key::String; method="GET", data=nothing)
+function hmac_sha256_hex(key::String, message::String)::String
+    h = hmac_sha256(Vector{UInt8}(key), Vector{UInt8}(message))
+    return bytes2hex(h)
+end
+
+function compute_signature(secret_key::String, timestamp::Int64, method::String, path::String, body::String)::String
+    message = "$(timestamp):$(method):$(path):$(body)"
+    return hmac_sha256_hex(secret_key, message)
+end
+
+function api_request(endpoint::String, public_key::String, secret_key::String; method="GET", data=nothing)
     url = API_BASE * endpoint
+
+    # Prepare body
+    body = data !== nothing ? JSON.json(data) : ""
+
+    # Generate timestamp and signature
+    timestamp = Int64(floor(time()))
+    signature = compute_signature(secret_key, timestamp, method, endpoint, body)
+
     headers = [
-        "Authorization" => "Bearer $api_key",
+        "Authorization" => "Bearer $public_key",
+        "X-Timestamp" => string(timestamp),
+        "X-Signature" => signature,
         "Content-Type" => "application/json"
     ]
 
@@ -95,7 +131,6 @@ function api_request(endpoint::String, api_key::String; method="GET", data=nothi
         if method == "GET"
             response = HTTP.get(url, headers, readtimeout=300)
         elseif method == "POST"
-            body = data !== nothing ? JSON.json(data) : ""
             response = HTTP.post(url, headers, body, readtimeout=300)
         elseif method == "DELETE"
             response = HTTP.delete(url, headers, readtimeout=300)
@@ -115,7 +150,7 @@ function api_request(endpoint::String, api_key::String; method="GET", data=nothi
 end
 
 function cmd_execute(args)
-    api_key = get_api_key(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"])
 
     filename = args["source_file"]
     if !isfile(filename)
@@ -176,7 +211,7 @@ function cmd_execute(args)
     end
 
     # Execute
-    result = api_request("/execute", api_key, method="POST", data=payload)
+    result = api_request("/execute", public_key, secret_key, method="POST", data=payload)
 
     # Print output
     if haskey(result, "stdout") && !isempty(result["stdout"])
@@ -205,10 +240,10 @@ function cmd_execute(args)
 end
 
 function cmd_session(args)
-    api_key = get_api_key(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"])
 
     if args["list"]
-        result = api_request("/sessions", api_key)
+        result = api_request("/sessions", public_key, secret_key)
         sessions = get(result, "sessions", [])
         if isempty(sessions)
             println("No active sessions")
@@ -226,7 +261,7 @@ function cmd_session(args)
     end
 
     if args["kill"] !== nothing
-        api_request("/sessions/$(args["kill"])", api_key, method="DELETE")
+        api_request("/sessions/$(args["kill"])", public_key, secret_key, method="DELETE")
         println("$(GREEN)Session terminated: $(args["kill"])$(RESET)")
         return
     end
@@ -236,10 +271,10 @@ function cmd_session(args)
 end
 
 function cmd_service(args)
-    api_key = get_api_key(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"])
 
     if args["list"]
-        result = api_request("/services", api_key)
+        result = api_request("/services", public_key, secret_key)
         services = get(result, "services", [])
         if isempty(services)
             println("No services")
@@ -259,31 +294,31 @@ function cmd_service(args)
     end
 
     if args["info"] !== nothing
-        result = api_request("/services/$(args["info"])", api_key)
+        result = api_request("/services/$(args["info"])", public_key, secret_key)
         println(JSON.json(result, 2))
         return
     end
 
     if args["logs"] !== nothing
-        result = api_request("/services/$(args["logs"])/logs", api_key)
+        result = api_request("/services/$(args["logs"])/logs", public_key, secret_key)
         println(get(result, "logs", ""))
         return
     end
 
     if args["sleep"] !== nothing
-        api_request("/services/$(args["sleep"])/sleep", api_key, method="POST")
+        api_request("/services/$(args["sleep"])/sleep", public_key, secret_key, method="POST")
         println("$(GREEN)Service sleeping: $(args["sleep"])$(RESET)")
         return
     end
 
     if args["wake"] !== nothing
-        api_request("/services/$(args["wake"])/wake", api_key, method="POST")
+        api_request("/services/$(args["wake"])/wake", public_key, secret_key, method="POST")
         println("$(GREEN)Service waking: $(args["wake"])$(RESET)")
         return
     end
 
     if args["destroy"] !== nothing
-        api_request("/services/$(args["destroy"])", api_key, method="DELETE")
+        api_request("/services/$(args["destroy"])", public_key, secret_key, method="DELETE")
         println("$(GREEN)Service destroyed: $(args["destroy"])$(RESET)")
         return
     end
@@ -291,7 +326,7 @@ function cmd_service(args)
     if args["dump-bootstrap"] !== nothing
         println(stderr, "Fetching bootstrap script from $(args["dump-bootstrap"])...")
         payload = Dict("command" => "cat /tmp/bootstrap.sh")
-        result = api_request("/services/$(args["dump-bootstrap"])/execute", api_key, method="POST", data=payload)
+        result = api_request("/services/$(args["dump-bootstrap"])/execute", public_key, secret_key, method="POST", data=payload)
 
         if haskey(result, "stdout") && !isempty(result["stdout"])
             bootstrap = result["stdout"]
@@ -351,7 +386,7 @@ function cmd_service(args)
             payload["vcpu"] = args["vcpu"]
         end
 
-        result = api_request("/services", api_key, method="POST", data=payload)
+        result = api_request("/services", public_key, secret_key, method="POST", data=payload)
         println("$(GREEN)Service created: $(get(result, "id", "N/A"))$(RESET)")
         println("Name: $(get(result, "name", "N/A"))")
         if haskey(result, "url")
@@ -452,7 +487,9 @@ function validate_key(api_key::String)
 end
 
 function cmd_key(args)
-    api_key = get_api_key(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"])
+    # For portal validation, we still use public_key as bearer token
+    api_key = public_key
 
     # Handle --extend flag
     if args["extend"]

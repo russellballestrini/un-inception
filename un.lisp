@@ -104,38 +104,75 @@
 (defun curl-post (api-key endpoint json-data)
   (let ((tmp-file (write-temp-file json-data)))
     (unwind-protect
-         (run-curl (list "curl" "-s" "-X" "POST"
-                        (format nil "https://api.unsandbox.com~a" endpoint)
-                        "-H" "Content-Type: application/json"
-                        "-H" (format nil "Authorization: Bearer ~a" api-key)
-                        "-d" (format nil "@~a" tmp-file)))
+         (destructuring-bind (public-key secret-key) (get-api-keys)
+           (let ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+                 (base-args (list "curl" "-s" "-X" "POST"
+                                 (format nil "https://api.unsandbox.com~a" endpoint)
+                                 "-H" "Content-Type: application/json")))
+             (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
       (delete-file tmp-file))))
 
 (defun curl-get (api-key endpoint)
-  (run-curl (list "curl" "-s"
-                 (format nil "https://api.unsandbox.com~a" endpoint)
-                 "-H" (format nil "Authorization: Bearer ~a" api-key))))
+  (destructuring-bind (public-key secret-key) (get-api-keys)
+    (let ((auth-headers (build-auth-headers public-key secret-key "GET" endpoint ""))
+          (base-args (list "curl" "-s"
+                          (format nil "https://api.unsandbox.com~a" endpoint))))
+      (run-curl (append base-args auth-headers)))))
 
 (defun curl-delete (api-key endpoint)
-  (run-curl (list "curl" "-s" "-X" "DELETE"
-                 (format nil "https://api.unsandbox.com~a" endpoint)
-                 "-H" (format nil "Authorization: Bearer ~a" api-key))))
+  (destructuring-bind (public-key secret-key) (get-api-keys)
+    (let ((auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
+          (base-args (list "curl" "-s" "-X" "DELETE"
+                          (format nil "https://api.unsandbox.com~a" endpoint))))
+      (run-curl (append base-args auth-headers)))))
 
 (defun curl-post-portal (api-key endpoint json-data)
   (let ((tmp-file (write-temp-file json-data)))
     (unwind-protect
-         (run-curl (list "curl" "-s" "-X" "POST"
-                        (format nil "~a~a" *portal-base* endpoint)
-                        "-H" "Content-Type: application/json"
-                        "-H" (format nil "Authorization: Bearer ~a" api-key)
-                        "-d" (format nil "@~a" tmp-file)))
+         (destructuring-bind (public-key secret-key) (get-api-keys)
+           (let ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+                 (base-args (list "curl" "-s" "-X" "POST"
+                                 (format nil "~a~a" *portal-base* endpoint)
+                                 "-H" "Content-Type: application/json")))
+             (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
       (delete-file tmp-file))))
 
+(defun get-api-keys ()
+  (let ((public-key (uiop:getenv "UNSANDBOX_PUBLIC_KEY"))
+        (secret-key (uiop:getenv "UNSANDBOX_SECRET_KEY"))
+        (api-key (uiop:getenv "UNSANDBOX_API_KEY")))
+    (cond
+      ((and public-key secret-key) (list public-key secret-key))
+      (api-key (list api-key nil))
+      (t (progn
+           (format t "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)~%")
+           (uiop:quit 1))))))
+
 (defun get-api-key ()
-  (or (uiop:getenv "UNSANDBOX_API_KEY")
-      (progn
-        (format t "Error: UNSANDBOX_API_KEY not set~%")
-        (uiop:quit 1))))
+  (first (get-api-keys)))
+
+(defun hmac-sha256 (secret message)
+  "Compute HMAC-SHA256 using openssl command"
+  (let* ((secret-escaped (uiop:escape-sh-token secret))
+         (message-escaped (uiop:escape-sh-token message))
+         (cmd (format nil "echo -n ~a | openssl dgst -sha256 -hmac ~a | awk '{print $2}'"
+                      message-escaped secret-escaped))
+         (result (string-trim '(#\Space #\Tab #\Newline #\Return)
+                             (uiop:run-program cmd :output :string))))
+    result))
+
+(defun make-signature (secret-key timestamp method path body)
+  (let ((message (format nil "~a:~a:~a:~a" timestamp method path body)))
+    (hmac-sha256 secret-key message)))
+
+(defun build-auth-headers (public-key secret-key method path body)
+  (if secret-key
+      (let* ((timestamp (write-to-string (floor (get-universal-time))))
+             (signature (make-signature secret-key timestamp method path body)))
+        (list "-H" (format nil "Authorization: Bearer ~a" public-key)
+              "-H" (format nil "X-Timestamp: ~a" timestamp)
+              "-H" (format nil "X-Signature: ~a" signature)))
+      (list "-H" (format nil "Authorization: Bearer ~a" public-key))))
 
 (defun execute-cmd (file)
   (let* ((api-key (get-api-key))

@@ -101,8 +101,14 @@
 
 (define (curl-post api-key endpoint json-data)
   (let* ((tmp-file (write-temp-file json-data))
-         (cmd (format #f "curl -s -X POST https://api.unsandbox.com~a -H 'Content-Type: application/json' -H 'Authorization: Bearer ~a' -d @~a"
-                      endpoint api-key tmp-file))
+         (keys (get-api-keys))
+         (public-key (car keys))
+         (secret-key (cadr keys))
+         (auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+         (cmd (string-append "curl -s -X POST https://api.unsandbox.com" endpoint
+                            " -H 'Content-Type: application/json' "
+                            (string-join auth-headers " ")
+                            " -d @" tmp-file))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
                    (let ((line (read-line port)))
@@ -114,8 +120,12 @@
     output))
 
 (define (curl-get api-key endpoint)
-  (let* ((cmd (format #f "curl -s https://api.unsandbox.com~a -H 'Authorization: Bearer ~a'"
-                      endpoint api-key))
+  (let* ((keys (get-api-keys))
+         (public-key (car keys))
+         (secret-key (cadr keys))
+         (auth-headers (build-auth-headers public-key secret-key "GET" endpoint ""))
+         (cmd (string-append "curl -s https://api.unsandbox.com" endpoint
+                            " " (string-join auth-headers " ")))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
                    (let ((line (read-line port)))
@@ -126,8 +136,12 @@
     output))
 
 (define (curl-delete api-key endpoint)
-  (let* ((cmd (format #f "curl -s -X DELETE https://api.unsandbox.com~a -H 'Authorization: Bearer ~a'"
-                      endpoint api-key))
+  (let* ((keys (get-api-keys))
+         (public-key (car keys))
+         (secret-key (cadr keys))
+         (auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
+         (cmd (string-append "curl -s -X DELETE https://api.unsandbox.com" endpoint
+                            " " (string-join auth-headers " ")))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
                    (let ((line (read-line port)))
@@ -139,8 +153,14 @@
 
 (define (curl-post-portal api-key endpoint json-data)
   (let* ((tmp-file (write-temp-file json-data))
-         (cmd (format #f "curl -s -X POST ~a~a -H 'Content-Type: application/json' -H 'Authorization: Bearer ~a' -d @~a"
-                      portal-base endpoint api-key tmp-file))
+         (keys (get-api-keys))
+         (public-key (car keys))
+         (secret-key (cadr keys))
+         (auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+         (cmd (string-append "curl -s -X POST " portal-base endpoint
+                            " -H 'Content-Type: application/json' "
+                            (string-join auth-headers " ")
+                            " -d @" tmp-file))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
                    (let ((line (read-line port)))
@@ -151,11 +171,42 @@
     (delete-file tmp-file)
     output))
 
+(define (get-api-keys)
+  (let ((public-key (getenv "UNSANDBOX_PUBLIC_KEY"))
+        (secret-key (getenv "UNSANDBOX_SECRET_KEY"))
+        (api-key (getenv "UNSANDBOX_API_KEY")))
+    (cond
+      ((and public-key secret-key) (list public-key secret-key))
+      (api-key (list api-key #f))
+      (else (begin
+              (display "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)\n" (current-error-port))
+              (exit 1))))))
+
 (define (get-api-key)
-  (or (getenv "UNSANDBOX_API_KEY")
-      (begin
-        (display "Error: UNSANDBOX_API_KEY not set\n" (current-error-port))
-        (exit 1))))
+  (car (get-api-keys)))
+
+(define (hmac-sha256 secret message)
+  "Compute HMAC-SHA256 using openssl command"
+  (let* ((cmd (format #f "echo -n '~a' | openssl dgst -sha256 -hmac '~a' | awk '{print $2}'"
+                      (string-append (list->string (map (lambda (c) (if (char=? c #\') #\space c)) (string->list message))))
+                      (string-append (list->string (map (lambda (c) (if (char=? c #\') #\space c)) (string->list secret))))))
+         (port (open-input-pipe cmd))
+         (result (read-line port)))
+    (close-pipe port)
+    (string-trim-both result)))
+
+(define (make-signature secret-key timestamp method path body)
+  (let ((message (format #f "~a:~a:~a:~a" timestamp method path body)))
+    (hmac-sha256 secret-key message)))
+
+(define (build-auth-headers public-key secret-key method path body)
+  (if secret-key
+      (let* ((timestamp (number->string (quotient (current-time) 1)))
+             (signature (make-signature secret-key timestamp method path body)))
+        (list "-H" (format #f "Authorization: Bearer ~a" public-key)
+              "-H" (format #f "X-Timestamp: ~a" timestamp)
+              "-H" (format #f "X-Signature: ~a" signature)))
+      (list "-H" (format #f "Authorization: Bearer ~a" public-key))))
 
 (define (json-extract-string json key)
   "Extract string value for key from JSON (simple parser)"

@@ -76,13 +76,23 @@ const EXT_MAP = [
     '.tcl' => 'tcl', '.raku' => 'raku', '.m' => 'objc'
 ];
 
-function get_api_key($args_key = null) {
-    $key = $args_key ?: getenv('UNSANDBOX_API_KEY');
-    if (!$key) {
-        fwrite(STDERR, RED . "Error: UNSANDBOX_API_KEY not set" . RESET . "\n");
-        exit(1);
+function get_api_keys($args_key = null) {
+    $public_key = getenv('UNSANDBOX_PUBLIC_KEY');
+    $secret_key = getenv('UNSANDBOX_SECRET_KEY');
+
+    if (!$public_key || !$secret_key) {
+        $old_key = $args_key ?: getenv('UNSANDBOX_API_KEY');
+        if ($old_key) {
+            $public_key = $old_key;
+            $secret_key = $old_key;
+        } else {
+            fwrite(STDERR, RED . "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set" . RESET . "\n");
+            fwrite(STDERR, RED . "       (or legacy UNSANDBOX_API_KEY for backwards compatibility)" . RESET . "\n");
+            exit(1);
+        }
     }
-    return $key;
+
+    return ['public_key' => $public_key, 'secret_key' => $secret_key];
 }
 
 function detect_language($filename) {
@@ -109,12 +119,23 @@ function detect_language($filename) {
     return $lang;
 }
 
-function api_request($endpoint, $method = 'GET', $data = null, $api_key = null) {
+function api_request($endpoint, $method = 'GET', $data = null, $keys = null) {
     $url = API_BASE . $endpoint;
     $ch = curl_init($url);
 
+    $timestamp = (string)time();
+    $body = $data ? json_encode($data) : '';
+
+    // Parse URL to get path and query
+    $parsed_url = parse_url($url);
+    $path = $parsed_url['path'] . (isset($parsed_url['query']) ? '?' . $parsed_url['query'] : '');
+    $message = "$timestamp:$method:$path:$body";
+    $signature = hash_hmac('sha256', $message, $keys['secret_key']);
+
     $headers = [
-        'Authorization: Bearer ' . $api_key,
+        'Authorization: Bearer ' . $keys['public_key'],
+        'X-Timestamp: ' . $timestamp,
+        'X-Signature: ' . $signature,
         'Content-Type: application/json'
     ];
 
@@ -126,7 +147,7 @@ function api_request($endpoint, $method = 'GET', $data = null, $api_key = null) 
     ]);
 
     if ($data) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
     }
 
     $response = curl_exec($ch);
@@ -149,7 +170,7 @@ function api_request($endpoint, $method = 'GET', $data = null, $api_key = null) 
 }
 
 function cmd_execute($options) {
-    $api_key = get_api_key($options['api_key']);
+    $keys = get_api_keys($options['api_key']);
 
     if (!file_exists($options['source_file'])) {
         fwrite(STDERR, RED . "Error: File not found: {$options['source_file']}" . RESET . "\n");
@@ -193,7 +214,7 @@ function cmd_execute($options) {
     if ($options['network']) $payload['network'] = $options['network'];
     if ($options['vcpu']) $payload['vcpu'] = $options['vcpu'];
 
-    $result = api_request('/execute', 'POST', $payload, $api_key);
+    $result = api_request('/execute', 'POST', $payload, $keys);
 
     if (!empty($result['stdout'])) {
         echo BLUE . $result['stdout'] . RESET;
@@ -221,10 +242,10 @@ function cmd_execute($options) {
 }
 
 function cmd_session($options) {
-    $api_key = get_api_key($options['api_key']);
+    $keys = get_api_keys($options['api_key']);
 
     if ($options['list']) {
-        $result = api_request('/sessions', 'GET', null, $api_key);
+        $result = api_request('/sessions', 'GET', null, $keys);
         $sessions = $result['sessions'] ?? [];
         if (empty($sessions)) {
             echo "No active sessions\n";
@@ -240,7 +261,7 @@ function cmd_session($options) {
     }
 
     if ($options['kill']) {
-        api_request("/sessions/{$options['kill']}", 'DELETE', null, $api_key);
+        api_request("/sessions/{$options['kill']}", 'DELETE', null, $keys);
         echo GREEN . "Session terminated: {$options['kill']}" . RESET . "\n";
         return;
     }
@@ -259,17 +280,27 @@ function cmd_session($options) {
     if ($options['audit']) $payload['audit'] = true;
 
     echo YELLOW . "Creating session..." . RESET . "\n";
-    $result = api_request('/sessions', 'POST', $payload, $api_key);
+    $result = api_request('/sessions', 'POST', $payload, $keys);
     echo GREEN . "Session created: " . ($result['id'] ?? 'N/A') . RESET . "\n";
     echo YELLOW . "(Interactive sessions require WebSocket - use un2 for full support)" . RESET . "\n";
 }
 
-function validate_key($api_key) {
+function validate_key($keys) {
     $url = PORTAL_BASE . '/keys/validate';
     $ch = curl_init($url);
 
+    $timestamp = (string)time();
+    $body = '';
+
+    $parsed_url = parse_url($url);
+    $path = $parsed_url['path'];
+    $message = "$timestamp:POST:$path:$body";
+    $signature = hash_hmac('sha256', $message, $keys['secret_key']);
+
     $headers = [
-        'Authorization: Bearer ' . $api_key,
+        'Authorization: Bearer ' . $keys['public_key'],
+        'X-Timestamp: ' . $timestamp,
+        'X-Signature: ' . $signature,
         'Content-Type: application/json'
     ];
 
@@ -322,15 +353,25 @@ function validate_key($api_key) {
 }
 
 function cmd_key($options) {
-    $api_key = get_api_key($options['api_key']);
+    $keys = get_api_keys($options['api_key']);
 
     if ($options['extend']) {
         // First validate to get public_key
         $url = PORTAL_BASE . '/keys/validate';
         $ch = curl_init($url);
 
+        $timestamp = (string)time();
+        $body = '';
+
+        $parsed_url = parse_url($url);
+        $path = $parsed_url['path'];
+        $message = "$timestamp:POST:$path:$body";
+        $signature = hash_hmac('sha256', $message, $keys['secret_key']);
+
         $headers = [
-            'Authorization: Bearer ' . $api_key,
+            'Authorization: Bearer ' . $keys['public_key'],
+            'X-Timestamp: ' . $timestamp,
+            'X-Signature: ' . $signature,
             'Content-Type: application/json'
         ];
 
@@ -367,15 +408,15 @@ function cmd_key($options) {
             echo "$extend_url\n";
         }
     } else {
-        validate_key($api_key);
+        validate_key($keys);
     }
 }
 
 function cmd_service($options) {
-    $api_key = get_api_key($options['api_key']);
+    $keys = get_api_keys($options['api_key']);
 
     if ($options['list']) {
-        $result = api_request('/services', 'GET', null, $api_key);
+        $result = api_request('/services', 'GET', null, $keys);
         $services = $result['services'] ?? [];
         if (empty($services)) {
             echo "No services\n";
@@ -393,44 +434,44 @@ function cmd_service($options) {
     }
 
     if ($options['info']) {
-        $result = api_request("/services/{$options['info']}", 'GET', null, $api_key);
+        $result = api_request("/services/{$options['info']}", 'GET', null, $keys);
         echo json_encode($result, JSON_PRETTY_PRINT) . "\n";
         return;
     }
 
     if ($options['logs']) {
-        $result = api_request("/services/{$options['logs']}/logs", 'GET', null, $api_key);
+        $result = api_request("/services/{$options['logs']}/logs", 'GET', null, $keys);
         echo $result['logs'] ?? '';
         return;
     }
 
     if ($options['tail']) {
-        $result = api_request("/services/{$options['tail']}/logs?lines=9000", 'GET', null, $api_key);
+        $result = api_request("/services/{$options['tail']}/logs?lines=9000", 'GET', null, $keys);
         echo $result['logs'] ?? '';
         return;
     }
 
     if ($options['sleep']) {
-        api_request("/services/{$options['sleep']}/sleep", 'POST', null, $api_key);
+        api_request("/services/{$options['sleep']}/sleep", 'POST', null, $keys);
         echo GREEN . "Service sleeping: {$options['sleep']}" . RESET . "\n";
         return;
     }
 
     if ($options['wake']) {
-        api_request("/services/{$options['wake']}/wake", 'POST', null, $api_key);
+        api_request("/services/{$options['wake']}/wake", 'POST', null, $keys);
         echo GREEN . "Service waking: {$options['wake']}" . RESET . "\n";
         return;
     }
 
     if ($options['destroy']) {
-        api_request("/services/{$options['destroy']}", 'DELETE', null, $api_key);
+        api_request("/services/{$options['destroy']}", 'DELETE', null, $keys);
         echo GREEN . "Service destroyed: {$options['destroy']}" . RESET . "\n";
         return;
     }
 
     if ($options['execute']) {
         $payload = ['command' => $options['command']];
-        $result = api_request("/services/{$options['execute']}/execute", 'POST', $payload, $api_key);
+        $result = api_request("/services/{$options['execute']}/execute", 'POST', $payload, $keys);
         if (!empty($result['stdout'])) echo BLUE . $result['stdout'] . RESET;
         if (!empty($result['stderr'])) fwrite(STDERR, RED . $result['stderr'] . RESET);
         return;
@@ -439,7 +480,7 @@ function cmd_service($options) {
     if ($options['dump_bootstrap']) {
         fwrite(STDERR, "Fetching bootstrap script from {$options['dump_bootstrap']}...\n");
         $payload = ['command' => 'cat /tmp/bootstrap.sh'];
-        $result = api_request("/services/{$options['dump_bootstrap']}/execute", 'POST', $payload, $api_key);
+        $result = api_request("/services/{$options['dump_bootstrap']}/execute", 'POST', $payload, $keys);
 
         if (!empty($result['stdout'])) {
             $bootstrap = $result['stdout'];
@@ -483,7 +524,7 @@ function cmd_service($options) {
         if ($options['network']) $payload['network'] = $options['network'];
         if ($options['vcpu']) $payload['vcpu'] = $options['vcpu'];
 
-        $result = api_request('/services', 'POST', $payload, $api_key);
+        $result = api_request('/services', 'POST', $payload, $keys);
         echo GREEN . "Service created: " . ($result['id'] ?? 'N/A') . RESET . "\n";
         echo "Name: " . ($result['name'] ?? 'N/A') . "\n";
         if (!empty($result['url'])) echo "URL: {$result['url']}\n";

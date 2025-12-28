@@ -49,6 +49,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{self, Command};
 use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const API_BASE: &str = "https://api.unsandbox.com";
 const PORTAL_BASE: &str = "https://unsandbox.com";
@@ -109,14 +110,38 @@ fn detect_language(filename: &str) -> Option<&'static str> {
     }
 }
 
-fn get_api_key(key_arg: Option<&str>) -> String {
-    if let Some(k) = key_arg {
-        return k.to_string();
+fn get_api_keys(key_arg: Option<&str>) -> (String, String) {
+    let public_key = env::var("UNSANDBOX_PUBLIC_KEY").ok();
+    let secret_key = env::var("UNSANDBOX_SECRET_KEY").ok();
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    if public_key.is_none() || secret_key.is_none() {
+        let fallback_key = if let Some(k) = key_arg {
+            k.to_string()
+        } else {
+            env::var("UNSANDBOX_API_KEY").unwrap_or_else(|_| {
+                eprintln!("{}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat){}", RED, RESET);
+                process::exit(1);
+            })
+        };
+        return (fallback_key.clone(), fallback_key);
     }
-    env::var("UNSANDBOX_API_KEY").unwrap_or_else(|_| {
-        eprintln!("{}Error: UNSANDBOX_API_KEY not set{}", RED, RESET);
-        process::exit(1);
-    })
+
+    (public_key.unwrap(), secret_key.unwrap())
+}
+
+fn compute_hmac(secret_key: &str, timestamp: &str, method: &str, path: &str, body: &str) -> String {
+    use std::process::Command;
+    let message = format!("{}:{}:{}:{}", timestamp, method, path, body);
+
+    // Use openssl for HMAC-SHA256
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("printf '%s' '{}' | openssl dgst -sha256 -hmac '{}' | cut -d' ' -f2", message, secret_key))
+        .output()
+        .expect("Failed to compute HMAC");
+
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 fn escape_json(s: &str) -> String {
@@ -163,8 +188,18 @@ fn extract_json_int(json: &str, key: &str) -> i32 {
     1
 }
 
-fn api_request(endpoint: &str, method: &str, body: Option<&str>, api_key: &str) -> String {
+fn api_request(endpoint: &str, method: &str, body: Option<&str>, public_key: &str, secret_key: &str) -> String {
     let url = format!("{}{}", API_BASE, endpoint);
+    let body_str = body.unwrap_or("");
+
+    // Compute HMAC signature
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    let signature = compute_hmac(secret_key, &timestamp, method, endpoint, body_str);
+
     let mut cmd = Command::new("curl");
     cmd.arg("-s")
         .arg("-X")
@@ -173,7 +208,11 @@ fn api_request(endpoint: &str, method: &str, body: Option<&str>, api_key: &str) 
         .arg("-H")
         .arg("Content-Type: application/json")
         .arg("-H")
-        .arg(format!("Authorization: Bearer {}", api_key));
+        .arg(format!("Authorization: Bearer {}", public_key))
+        .arg("-H")
+        .arg(format!("X-Timestamp: {}", timestamp))
+        .arg("-H")
+        .arg(format!("X-Signature: {}", signature));
 
     if let Some(b) = body {
         cmd.arg("-d").arg(b);
@@ -200,7 +239,8 @@ fn cmd_execute(
     output_dir: Option<&str>,
     network: Option<&str>,
     vcpu: Option<i32>,
-    api_key: &str,
+    public_key: &str,
+    secret_key: &str,
 ) {
     let code = fs::read_to_string(source_file).unwrap_or_else(|e| {
         eprintln!("{}Error reading file: {}{}", RED, e, RESET);
@@ -265,7 +305,7 @@ fn cmd_execute(
 
     json.push('}');
 
-    let result = api_request("/execute", "POST", Some(&json), api_key);
+    let result = api_request("/execute", "POST", Some(&json), public_key, secret_key);
 
     // Print output
     let stdout_str = extract_json_string(&result, "stdout");
@@ -295,16 +335,17 @@ fn cmd_session(
     vcpu: Option<i32>,
     tmux: bool,
     screen: bool,
-    api_key: &str,
+    public_key: &str,
+    secret_key: &str,
 ) {
     if list {
-        let result = api_request("/sessions", "GET", None, api_key);
+        let result = api_request("/sessions", "GET", None, public_key, secret_key);
         println!("{}", result);
         return;
     }
 
     if let Some(id) = kill {
-        api_request(&format!("/sessions/{}", id), "DELETE", None, api_key);
+        api_request(&format!("/sessions/{}", id), "DELETE", None, public_key, secret_key);
         println!("{}Session terminated: {}{}", GREEN, id, RESET);
         return;
     }
@@ -330,7 +371,7 @@ fn cmd_session(
     json.push('}');
 
     println!("{}Creating session...{}", YELLOW, RESET);
-    let result = api_request("/sessions", "POST", Some(&json), api_key);
+    let result = api_request("/sessions", "POST", Some(&json), public_key, secret_key);
     let id = extract_json_string(&result, "id");
     println!("{}Session created: {}{}", GREEN, id, RESET);
 }
@@ -354,46 +395,47 @@ fn cmd_service(
     dump_file: Option<&str>,
     network: Option<&str>,
     vcpu: Option<i32>,
-    api_key: &str,
+    public_key: &str,
+    secret_key: &str,
 ) {
     if list {
-        let result = api_request("/services", "GET", None, api_key);
+        let result = api_request("/services", "GET", None, public_key, secret_key);
         println!("{}", result);
         return;
     }
 
     if let Some(id) = info {
-        let result = api_request(&format!("/services/{}", id), "GET", None, api_key);
+        let result = api_request(&format!("/services/{}", id), "GET", None, public_key, secret_key);
         println!("{}", result);
         return;
     }
 
     if let Some(id) = logs {
-        let result = api_request(&format!("/services/{}/logs", id), "GET", None, api_key);
+        let result = api_request(&format!("/services/{}/logs", id), "GET", None, public_key, secret_key);
         println!("{}", extract_json_string(&result, "logs"));
         return;
     }
 
     if let Some(id) = tail {
-        let result = api_request(&format!("/services/{}/logs?lines=9000", id), "GET", None, api_key);
+        let result = api_request(&format!("/services/{}/logs?lines=9000", id), "GET", None, public_key, secret_key);
         println!("{}", extract_json_string(&result, "logs"));
         return;
     }
 
     if let Some(id) = sleep {
-        api_request(&format!("/services/{}/sleep", id), "POST", None, api_key);
+        api_request(&format!("/services/{}/sleep", id), "POST", None, public_key, secret_key);
         println!("{}Service sleeping: {}{}", GREEN, id, RESET);
         return;
     }
 
     if let Some(id) = wake {
-        api_request(&format!("/services/{}/wake", id), "POST", None, api_key);
+        api_request(&format!("/services/{}/wake", id), "POST", None, public_key, secret_key);
         println!("{}Service waking: {}{}", GREEN, id, RESET);
         return;
     }
 
     if let Some(id) = destroy {
-        api_request(&format!("/services/{}", id), "DELETE", None, api_key);
+        api_request(&format!("/services/{}", id), "DELETE", None, public_key, secret_key);
         println!("{}Service destroyed: {}{}", GREEN, id, RESET);
         return;
     }
@@ -401,7 +443,7 @@ fn cmd_service(
     if let Some(id) = execute {
         let cmd = command.unwrap_or("");
         let json = format!(r#"{{"command":"{}"}}"#, escape_json(cmd));
-        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(&json), api_key);
+        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(&json), public_key, secret_key);
         let stdout_str = extract_json_string(&result, "stdout");
         let stderr_str = extract_json_string(&result, "stderr");
         if !stdout_str.is_empty() {
@@ -416,7 +458,7 @@ fn cmd_service(
     if let Some(id) = dump_bootstrap {
         eprintln!("Fetching bootstrap script from {}...", id);
         let json = r#"{"command":"cat /tmp/bootstrap.sh"}"#;
-        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(json), api_key);
+        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(json), public_key, secret_key);
         let bootstrap = extract_json_string(&result, "stdout");
 
         if !bootstrap.is_empty() {
@@ -495,7 +537,7 @@ fn cmd_service(
 
         json.push('}');
 
-        let result = api_request("/services", "POST", Some(&json), api_key);
+        let result = api_request("/services", "POST", Some(&json), public_key, secret_key);
         let id = extract_json_string(&result, "id");
         println!("{}Service created: {}{}", GREEN, id, RESET);
         return;
@@ -505,8 +547,8 @@ fn cmd_service(
     process::exit(1);
 }
 
-fn cmd_key(extend: bool, api_key: &str) {
-    let result = api_request("/keys/validate", "POST", Some("{}"), api_key);
+fn cmd_key(extend: bool, public_key: &str, secret_key: &str) {
+    let result = api_request("/keys/validate", "POST", Some("{}"), public_key, secret_key);
 
     let status = extract_json_string(&result, "status");
     let public_key = extract_json_string(&result, "public_key");
@@ -647,7 +689,7 @@ fn main() {
                 }
             }
             "session" => {
-                let key = get_api_key(api_key.as_deref());
+                let (public_key, secret_key) = get_api_keys(api_key.as_deref());
                 cmd_session(
                     args.contains(&"--list".to_string()),
                     args.iter().position(|x| x == "--kill").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
@@ -656,12 +698,13 @@ fn main() {
                     vcpu,
                     args.contains(&"--tmux".to_string()),
                     args.contains(&"--screen".to_string()),
-                    &key,
+                    &public_key,
+                    &secret_key,
                 );
                 return;
             }
             "service" => {
-                let key = get_api_key(api_key.as_deref());
+                let (public_key, secret_key) = get_api_keys(api_key.as_deref());
                 cmd_service(
                     args.iter().position(|x| x == "--name").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--ports").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
@@ -681,15 +724,17 @@ fn main() {
                     args.iter().position(|x| x == "--dump-file").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     network.as_deref(),
                     vcpu,
-                    &key,
+                    &public_key,
+                    &secret_key,
                 );
                 return;
             }
             "key" => {
-                let key = get_api_key(api_key.as_deref());
+                let (public_key, secret_key) = get_api_keys(api_key.as_deref());
                 cmd_key(
                     args.contains(&"--extend".to_string()),
-                    &key,
+                    &public_key,
+                    &secret_key,
                 );
                 return;
             }
@@ -704,7 +749,7 @@ fn main() {
 
     // Execute mode
     if let Some(file) = source_file {
-        let key = get_api_key(api_key.as_deref());
+        let (public_key, secret_key) = get_api_keys(api_key.as_deref());
         cmd_execute(
             &file,
             envs,
@@ -713,7 +758,8 @@ fn main() {
             output_dir.as_deref(),
             network.as_deref(),
             vcpu,
-            &key,
+            &public_key,
+            &secret_key,
         );
     } else {
         eprintln!("{}Error: No source file specified{}", RED, RESET);

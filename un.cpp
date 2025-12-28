@@ -50,6 +50,7 @@
 #include <vector>
 #include <map>
 #include <cstdlib>
+#include <ctime>
 #include <sys/stat.h>
 
 using namespace std;
@@ -111,7 +112,37 @@ string exec_curl(const string& cmd) {
     return result;
 }
 
-void cmd_execute(const string& source_file, const vector<string>& envs, const vector<string>& files, bool artifacts, const string& network, int vcpu, const string& api_key) {
+string compute_hmac(const string& secret_key, const string& message) {
+    string cmd = "echo -n '" + message + "' | openssl dgst -sha256 -hmac '" + secret_key + "' -hex | sed 's/.*= //'";
+    string result = exec_curl(cmd);
+    // Trim newline
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
+        result.pop_back();
+    }
+    return result;
+}
+
+string get_timestamp() {
+    return to_string(time(nullptr));
+}
+
+string build_auth_headers(const string& method, const string& path, const string& body, const string& public_key, const string& secret_key) {
+    if (secret_key.empty()) {
+        // Legacy mode: use public_key as bearer token
+        return "-H 'Authorization: Bearer " + public_key + "'";
+    }
+
+    // HMAC mode
+    string timestamp = get_timestamp();
+    string message = timestamp + ":" + method + ":" + path + ":" + body;
+    string signature = compute_hmac(secret_key, message);
+
+    return "-H 'Authorization: Bearer " + public_key + "' "
+           "-H 'X-Timestamp: " + timestamp + "' "
+           "-H 'X-Signature: " + signature + "'";
+}
+
+void cmd_execute(const string& source_file, const vector<string>& envs, const vector<string>& files, bool artifacts, const string& network, int vcpu, const string& public_key, const string& secret_key) {
     string lang = detect_language(source_file);
     if (lang.empty()) {
         cerr << RED << "Error: Cannot detect language" << RESET << endl;
@@ -140,9 +171,10 @@ void cmd_execute(const string& source_file, const vector<string>& envs, const ve
     if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
     json << "}";
 
+    string auth_headers = build_auth_headers("POST", "/execute", json.str(), public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
                  "-H 'Content-Type: application/json' "
-                 "-H 'Authorization: Bearer " + api_key + "' "
+                 + auth_headers + " "
                  "-d '" + json.str() + "'";
 
     string result = exec_curl(cmd);
@@ -188,15 +220,17 @@ void cmd_execute(const string& source_file, const vector<string>& envs, const ve
     exit(exit_code);
 }
 
-void cmd_session(bool list, const string& kill, const string& shell, const string& network, int vcpu, bool tmux, bool screen, const string& api_key) {
+void cmd_session(bool list, const string& kill, const string& shell, const string& network, int vcpu, bool tmux, bool screen, const string& public_key, const string& secret_key) {
     if (list) {
-        string cmd = "curl -s -X GET '" + API_BASE + "/sessions' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("GET", "/sessions", "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/sessions' " + auth_headers;
         cout << exec_curl(cmd) << endl;
         return;
     }
 
     if (!kill.empty()) {
-        string cmd = "curl -s -X DELETE '" + API_BASE + "/sessions/" + kill + "' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("DELETE", "/sessions/" + kill, "", public_key, secret_key);
+        string cmd = "curl -s -X DELETE '" + API_BASE + "/sessions/" + kill + "' " + auth_headers;
         exec_curl(cmd);
         cout << GREEN << "Session terminated: " << kill << RESET << endl;
         return;
@@ -211,54 +245,62 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     json << "}";
 
     cout << YELLOW << "Creating session..." << RESET << endl;
+    string auth_headers = build_auth_headers("POST", "/sessions", json.str(), public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/sessions' "
                  "-H 'Content-Type: application/json' "
-                 "-H 'Authorization: Bearer " + api_key + "' "
+                 + auth_headers + " "
                  "-d '" + json.str() + "'";
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const string& api_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const string& public_key, const string& secret_key) {
     if (list) {
-        string cmd = "curl -s -X GET '" + API_BASE + "/services' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("GET", "/services", "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/services' " + auth_headers;
         cout << exec_curl(cmd) << endl;
         return;
     }
 
     if (!info.empty()) {
-        string cmd = "curl -s -X GET '" + API_BASE + "/services/" + info + "' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("GET", "/services/" + info, "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/services/" + info + "' " + auth_headers;
         cout << exec_curl(cmd) << endl;
         return;
     }
 
     if (!logs.empty()) {
-        string cmd = "curl -s -X GET '" + API_BASE + "/services/" + logs + "/logs' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("GET", "/services/" + logs + "/logs", "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/services/" + logs + "/logs' " + auth_headers;
         exec_curl(cmd);
         return;
     }
 
     if (!tail.empty()) {
-        string cmd = "curl -s -X GET '" + API_BASE + "/services/" + tail + "/logs?lines=9000' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("GET", "/services/" + tail + "/logs?lines=9000", "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/services/" + tail + "/logs?lines=9000' " + auth_headers;
         exec_curl(cmd);
         return;
     }
 
     if (!sleep.empty()) {
-        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + sleep + "/sleep' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("POST", "/services/" + sleep + "/sleep", "", public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + sleep + "/sleep' " + auth_headers;
         exec_curl(cmd);
         cout << GREEN << "Service sleeping: " << sleep << RESET << endl;
         return;
     }
 
     if (!wake.empty()) {
-        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + wake + "/wake' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("POST", "/services/" + wake + "/wake", "", public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + wake + "/wake' " + auth_headers;
         exec_curl(cmd);
         cout << GREEN << "Service waking: " << wake << RESET << endl;
         return;
     }
 
     if (!destroy.empty()) {
-        string cmd = "curl -s -X DELETE '" + API_BASE + "/services/" + destroy + "' -H 'Authorization: Bearer " + api_key + "'";
+        string auth_headers = build_auth_headers("DELETE", "/services/" + destroy, "", public_key, secret_key);
+        string cmd = "curl -s -X DELETE '" + API_BASE + "/services/" + destroy + "' " + auth_headers;
         exec_curl(cmd);
         cout << GREEN << "Service destroyed: " << destroy << RESET << endl;
         return;
@@ -267,9 +309,10 @@ void cmd_service(const string& name, const string& ports, const string& type, co
     if (!execute.empty()) {
         ostringstream json;
         json << "{\"command\":\"" << escape_json(command) << "\"}";
+        string auth_headers = build_auth_headers("POST", "/services/" + execute + "/execute", json.str(), public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + "/services/" + execute + "/execute' "
                      "-H 'Content-Type: application/json' "
-                     "-H 'Authorization: Bearer " + api_key + "' "
+                     + auth_headers + " "
                      "-d '" + json.str() + "'";
         string result = exec_curl(cmd);
 
@@ -308,10 +351,12 @@ void cmd_service(const string& name, const string& ports, const string& type, co
 
     if (!dump_bootstrap.empty()) {
         cerr << "Fetching bootstrap script from " << dump_bootstrap << "..." << endl;
+        string json_body = "{\"command\":\"cat /tmp/bootstrap.sh\"}";
+        string auth_headers = build_auth_headers("POST", "/services/" + dump_bootstrap + "/execute", json_body, public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + "/services/" + dump_bootstrap + "/execute' "
                      "-H 'Content-Type: application/json' "
-                     "-H 'Authorization: Bearer " + api_key + "' "
-                     "-d '{\"command\":\"cat /tmp/bootstrap.sh\"}'";
+                     + auth_headers + " "
+                     "-d '" + json_body + "'";
         string result = exec_curl(cmd);
 
         size_t stdout_pos = result.find("\"stdout\":\"");
@@ -370,9 +415,10 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         json << "}";
 
         cout << YELLOW << "Creating service..." << RESET << endl;
+        string auth_headers = build_auth_headers("POST", "/services", json.str(), public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + "/services' "
                      "-H 'Content-Type: application/json' "
-                     "-H 'Authorization: Bearer " + api_key + "' "
+                     + auth_headers + " "
                      "-d '" + json.str() + "'";
         cout << exec_curl(cmd) << endl;
         return;
@@ -382,10 +428,11 @@ void cmd_service(const string& name, const string& ports, const string& type, co
     exit(1);
 }
 
-void cmd_validate_key(bool extend, const string& api_key) {
+void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("POST", "/keys/validate", "", public_key, secret_key);
     string cmd = "curl -s -X POST '" + PORTAL_BASE + "/keys/validate' "
                  "-H 'Content-Type: application/json' "
-                 "-H 'Authorization: Bearer " + api_key + "'";
+                 + auth_headers;
 
     string result = exec_curl(cmd);
 
@@ -464,7 +511,13 @@ void cmd_validate_key(bool extend, const string& api_key) {
 }
 
 int main(int argc, char* argv[]) {
-    string api_key = getenv("UNSANDBOX_API_KEY") ? getenv("UNSANDBOX_API_KEY") : "";
+    string public_key = getenv("UNSANDBOX_PUBLIC_KEY") ? getenv("UNSANDBOX_PUBLIC_KEY") : "";
+    string secret_key = getenv("UNSANDBOX_SECRET_KEY") ? getenv("UNSANDBOX_SECRET_KEY") : "";
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    if (public_key.empty()) {
+        public_key = getenv("UNSANDBOX_API_KEY") ? getenv("UNSANDBOX_API_KEY") : "";
+    }
 
     if (argc < 2) {
         cerr << "Usage: " << argv[0] << " [options] <source_file>" << endl;
@@ -491,10 +544,10 @@ int main(int argc, char* argv[]) {
             else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
             else if (arg == "--tmux") tmux = true;
             else if (arg == "--screen") screen = true;
-            else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
+            else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_session(list, kill, shell, network, vcpu, tmux, screen, api_key);
+        cmd_session(list, kill, shell, network, vcpu, tmux, screen, public_key, secret_key);
         return 0;
     }
 
@@ -523,10 +576,10 @@ int main(int argc, char* argv[]) {
             else if (arg == "--dump-file" && i+1 < argc) dump_file = argv[++i];
             else if (arg == "-n" && i+1 < argc) network = argv[++i];
             else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
-            else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
+            else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, api_key);
+        cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, public_key, secret_key);
         return 0;
     }
 
@@ -536,10 +589,10 @@ int main(int argc, char* argv[]) {
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
             if (arg == "--extend") extend = true;
-            else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
+            else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_validate_key(extend, api_key);
+        cmd_validate_key(extend, public_key, secret_key);
         return 0;
     }
 
@@ -556,7 +609,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "-a") artifacts = true;
         else if (arg == "-n" && i+1 < argc) network = argv[++i];
         else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
-        else if (arg == "-k" && i+1 < argc) api_key = argv[++i];
+        else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         else if (arg[0] != '-') source_file = arg;
     }
 
@@ -565,6 +618,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    cmd_execute(source_file, envs, files, artifacts, network, vcpu, api_key);
+    cmd_execute(source_file, envs, files, artifacts, network, vcpu, public_key, secret_key);
     return 0;
 }

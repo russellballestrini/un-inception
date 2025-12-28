@@ -43,7 +43,7 @@
 #   un.nim session --list
 #   un.nim service --name web --ports 8080
 
-import os, strutils, osproc, strformat
+import os, strutils, osproc, strformat, times
 
 const
   API_BASE = "https://api.unsandbox.com"
@@ -76,10 +76,29 @@ proc escapeJson(s: string): string =
     of '\t': result.add("\\t")
     else: result.add(c)
 
+proc computeHmac(secretKey: string, message: string): string =
+  let cmd = fmt"echo -n '{message}' | openssl dgst -sha256 -hmac '{secretKey}' -hex 2>/dev/null | sed 's/.*= //'"
+  result = execProcess(cmd).strip()
+
+proc getTimestamp(): string =
+  result = $toUnix(getTime())
+
+proc buildAuthHeaders(meth: string, path: string, body: string, publicKey: string, secretKey: string): string =
+  if secretKey == "":
+    # Legacy mode: use public_key as bearer token
+    return fmt"-H 'Authorization: Bearer {publicKey}'"
+
+  # HMAC mode
+  let timestamp = getTimestamp()
+  let message = fmt"{timestamp}:{meth}:{path}:{body}"
+  let signature = computeHmac(secretKey, message)
+
+  return fmt"-H 'Authorization: Bearer {publicKey}' -H 'X-Timestamp: {timestamp}' -H 'X-Signature: {signature}'"
+
 proc execCurl(cmd: string): string =
   result = execProcess(cmd)
 
-proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network: string, vcpu: int, apiKey: string) =
+proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network: string, vcpu: int, publicKey: string, secretKey: string) =
   let lang = detectLanguage(sourceFile)
   if lang == "":
     stderr.writeLine(RED & "Error: Cannot detect language" & RESET)
@@ -102,17 +121,21 @@ proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network:
   if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
   json.add("}")
 
-  let cmd = fmt"""curl -s -X POST '{API_BASE}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
+  let authHeaders = buildAuthHeaders("POST", "/execute", json, publicKey, secretKey)
+  let cmd = fmt"""curl -s -X POST '{API_BASE}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, screen: bool, apiKey: string) =
+proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, screen: bool, publicKey: string, secretKey: string) =
   if list:
-    let cmd = fmt"""curl -s -X GET '{API_BASE}/sessions' -H 'Authorization: Bearer {apiKey}'"""
+    let authHeaders = buildAuthHeaders("GET", "/sessions", "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/sessions' {authHeaders}"""
     echo execCurl(cmd)
     return
 
   if kill != "":
-    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/sessions/{kill}' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/sessions/{kill}"
+    let authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/sessions/{kill}' {authHeaders}"""
     discard execCurl(cmd)
     echo GREEN & "Session terminated: " & kill & RESET
     return
@@ -125,51 +148,67 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   json.add("}")
 
   echo YELLOW & "Creating session..." & RESET
-  let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
+  let authHeaders = buildAuthHeaders("POST", "/sessions", json, publicKey, secretKey)
+  let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, apiKey: string) =
+proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, publicKey: string, secretKey: string) =
   if list:
-    let cmd = fmt"""curl -s -X GET '{API_BASE}/services' -H 'Authorization: Bearer {apiKey}'"""
+    let authHeaders = buildAuthHeaders("GET", "/services", "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/services' {authHeaders}"""
     echo execCurl(cmd)
     return
 
   if info != "":
-    let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{info}' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/services/{info}"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{info}' {authHeaders}"""
     echo execCurl(cmd)
     return
 
   if logs != "":
-    let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{logs}/logs' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/services/{logs}/logs"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{logs}/logs' {authHeaders}"""
     stdout.write(execCurl(cmd))
     return
 
   if tail != "":
-    let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{tail}/logs?lines=9000' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/services/{tail}/logs"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{tail}/logs?lines=9000' {authHeaders}"""
     stdout.write(execCurl(cmd))
     return
 
   if sleep != "":
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{sleep}/sleep' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/services/{sleep}/sleep"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{sleep}/sleep' {authHeaders}"""
     discard execCurl(cmd)
     echo GREEN & "Service sleeping: " & sleep & RESET
     return
 
   if wake != "":
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{wake}/wake' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/services/{wake}/wake"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{wake}/wake' {authHeaders}"""
     discard execCurl(cmd)
     echo GREEN & "Service waking: " & wake & RESET
     return
 
   if destroy != "":
-    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/services/{destroy}' -H 'Authorization: Bearer {apiKey}'"""
+    let path = fmt"/services/{destroy}"
+    let authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/services/{destroy}' {authHeaders}"""
     discard execCurl(cmd)
     echo GREEN & "Service destroyed: " & destroy & RESET
     return
 
   if execute != "":
     let json = fmt"""{"command":"{escapeJson(command)}"}"""
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{execute}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
+    let path = fmt"/services/{execute}/execute"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
     let result = execCurl(cmd)
 
     # Simple parsing for stdout/stderr
@@ -202,7 +241,10 @@ proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, l
 
   if dumpBootstrap != "":
     stderr.writeLine("Fetching bootstrap script from " & dumpBootstrap & "...")
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{dumpBootstrap}/execute' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{{"command":"cat /tmp/bootstrap.sh"}}'"""
+    let json = """{"command":"cat /tmp/bootstrap.sh"}"""
+    let path = fmt"/services/{dumpBootstrap}/execute"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{dumpBootstrap}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
     let result = execCurl(cmd)
 
     let stdoutStart = result.find("\"stdout\":\"")
@@ -252,15 +294,17 @@ proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, l
     json.add("}")
 
     echo YELLOW & "Creating service..." & RESET
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services' -H 'Content-Type: application/json' -H 'Authorization: Bearer {apiKey}' -d '{json}'"""
+    let authHeaders = buildAuthHeaders("POST", "/services", json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
     echo execCurl(cmd)
     return
 
   stderr.writeLine(RED & "Error: Specify --name to create a service" & RESET)
   quit(1)
 
-proc cmdKey(extend: bool, apiKey: string) =
-  let cmd = fmt"""curl -s -X POST '{PORTAL_BASE}/keys/validate' -H 'Authorization: Bearer {apiKey}'"""
+proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
+  let authHeaders = buildAuthHeaders("POST", "/keys/validate", "", publicKey, secretKey)
+  let cmd = fmt"""curl -s -X POST '{PORTAL_BASE}/keys/validate' {authHeaders}"""
   let response = execCurl(cmd)
 
   # Parse JSON response manually (simple approach)
@@ -271,10 +315,10 @@ proc cmdKey(extend: bool, apiKey: string) =
       let pkStart = response.find("\"public_key\":\"") + 14
       let pkEnd = response.find("\"", pkStart)
       if pkEnd > pkStart:
-        let publicKey = response[pkStart..<pkEnd]
-        echo "Public Key: " & publicKey
+        let pubKey = response[pkStart..<pkEnd]
+        echo "Public Key: " & pubKey
         if extend:
-          let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={publicKey}"
+          let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={pubKey}"
           echo BLUE & "Opening browser to extend key..." & RESET
           discard execProcess(fmt"xdg-open '{extendUrl}'")
 
@@ -296,13 +340,13 @@ proc cmdKey(extend: bool, apiKey: string) =
     echo RED & "Expired" & RESET
 
     # Extract and display key info
-    var publicKey = ""
+    var pubKey = ""
     if response.contains("\"public_key\":"):
       let pkStart = response.find("\"public_key\":\"") + 14
       let pkEnd = response.find("\"", pkStart)
       if pkEnd > pkStart:
-        publicKey = response[pkStart..<pkEnd]
-        echo "Public Key: " & publicKey
+        pubKey = response[pkStart..<pkEnd]
+        echo "Public Key: " & pubKey
 
     # Extract tier
     if response.contains("\"tier\":"):
@@ -321,8 +365,8 @@ proc cmdKey(extend: bool, apiKey: string) =
     echo ""
     echo YELLOW & "To renew: Visit " & PORTAL_BASE & "/keys/extend" & RESET
 
-    if extend and publicKey != "":
-      let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={publicKey}"
+    if extend and pubKey != "":
+      let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={pubKey}"
       echo BLUE & "Opening browser to extend key..." & RESET
       discard execProcess(fmt"xdg-open '{extendUrl}'")
 
@@ -335,7 +379,13 @@ proc cmdKey(extend: bool, apiKey: string) =
         echo "Error: " & response[errStart..<errEnd]
 
 proc main() =
-  var apiKey = getEnv("UNSANDBOX_API_KEY", "")
+  var publicKey = getEnv("UNSANDBOX_PUBLIC_KEY", "")
+  var secretKey = getEnv("UNSANDBOX_SECRET_KEY", "")
+
+  # Fall back to UNSANDBOX_API_KEY for backwards compatibility
+  if publicKey == "":
+    publicKey = getEnv("UNSANDBOX_API_KEY", "")
+
   let args = commandLineParams()
 
   if args.len < 1:
@@ -351,9 +401,9 @@ proc main() =
     while i < args.len:
       case args[i]
       of "--extend": extend = true
-      of "-k": apiKey = args[i+1]; inc i
+      of "-k": publicKey = args[i+1]; inc i
       inc i
-    cmdKey(extend, apiKey)
+    cmdKey(extend, publicKey, secretKey)
     return
 
   if args[0] == "session":
@@ -371,9 +421,9 @@ proc main() =
       of "-v": vcpu = parseInt(args[i+1]); inc i
       of "--tmux": tmux = true
       of "--screen": screen = true
-      of "-k": apiKey = args[i+1]; inc i
+      of "-k": publicKey = args[i+1]; inc i
       inc i
-    cmdSession(list, kill, shell, network, vcpu, tmux, screen, apiKey)
+    cmdSession(list, kill, shell, network, vcpu, tmux, screen, publicKey, secretKey)
     return
 
   if args[0] == "service":
@@ -401,9 +451,9 @@ proc main() =
       of "--dump-file": dumpFile = args[i+1]; inc i
       of "-n": network = args[i+1]; inc i
       of "-v": vcpu = parseInt(args[i+1]); inc i
-      of "-k": apiKey = args[i+1]; inc i
+      of "-k": publicKey = args[i+1]; inc i
       inc i
-    cmdService(name, ports, bootstrap, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, apiKey)
+    cmdService(name, ports, bootstrap, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, publicKey, secretKey)
     return
 
   # Execute mode
@@ -418,7 +468,7 @@ proc main() =
     of "-a": artifacts = true
     of "-n": network = args[i+1]; inc i
     of "-v": vcpu = parseInt(args[i+1]); inc i
-    of "-k": apiKey = args[i+1]; inc i
+    of "-k": publicKey = args[i+1]; inc i
     else:
       if not args[i].startsWith("-"):
         sourceFile = args[i]
@@ -428,7 +478,7 @@ proc main() =
     stderr.writeLine(RED & "Error: No source file specified" & RESET)
     quit(1)
 
-  cmdExecute(sourceFile, envs, artifacts, network, vcpu, apiKey)
+  cmdExecute(sourceFile, envs, artifacts, network, vcpu, publicKey, secretKey)
 
 when isMainModule:
   main()

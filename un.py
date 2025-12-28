@@ -59,6 +59,9 @@ import argparse
 import urllib.request
 import urllib.error
 import webbrowser
+import hmac
+import hashlib
+import time
 
 API_BASE = "https://api.unsandbox.com"
 PORTAL_BASE = "https://unsandbox.com"
@@ -86,16 +89,28 @@ EXT_MAP = {
 }
 
 
-def get_api_key(args_key=None):
-    """Get API key from args or environment"""
-    key = args_key or os.environ.get("UNSANDBOX_API_KEY")
-    if not key:
-        print(f"{RED}Error: UNSANDBOX_API_KEY not set{RESET}", file=sys.stderr)
-        sys.exit(1)
-    return key
+def get_api_keys(args_key=None):
+    """Get API keys from args or environment. Returns (public_key, secret_key)."""
+    # Try new split key format first
+    public_key = os.environ.get("UNSANDBOX_PUBLIC_KEY")
+    secret_key = os.environ.get("UNSANDBOX_SECRET_KEY")
+
+    # Fall back to old single key format for backwards compatibility
+    if not public_key or not secret_key:
+        old_key = args_key or os.environ.get("UNSANDBOX_API_KEY")
+        if old_key:
+            # Old format: use the key as secret, derive public from it or use as-is
+            public_key = old_key
+            secret_key = old_key
+        else:
+            print(f"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}", file=sys.stderr)
+            print(f"{RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility){RESET}", file=sys.stderr)
+            sys.exit(1)
+
+    return public_key, secret_key
 
 
-def detect_language(filename):
+def detect_language(filename, exit_on_error=True):
     """Detect language from file extension"""
     ext = os.path.splitext(filename)[1].lower()
     lang = EXT_MAP.get(ext)
@@ -114,22 +129,52 @@ def detect_language(filename):
                     if 'php' in first_line: return 'php'
         except:
             pass
-        print(f"{RED}Error: Cannot detect language for {filename}{RESET}", file=sys.stderr)
-        sys.exit(1)
+        if exit_on_error:
+            print(f"{RED}Error: Cannot detect language for {filename}{RESET}", file=sys.stderr)
+            sys.exit(1)
+        return None
     return lang
 
 
-def api_request(endpoint, method="GET", data=None, api_key=None):
-    """Make API request and return response"""
+def read_file(filepath):
+    """Read file contents - helper for tests"""
+    with open(filepath, 'r') as f:
+        return f.read()
+
+
+def execute_code(language, code, public_key=None, secret_key=None):
+    """Execute code and return result - helper for tests"""
+    if not public_key:
+        public_key, secret_key = get_api_keys()
+    return api_request("/execute", method="POST", data={"language": language, "code": code}, public_key=public_key, secret_key=secret_key)
+
+
+def api_request(endpoint, method="GET", data=None, public_key=None, secret_key=None):
+    """Make API request with HMAC authentication"""
     url = f"{API_BASE}{endpoint}"
+
+    # Prepare body
+    body = json.dumps(data) if data else ""
+
+    # Generate HMAC signature
+    timestamp = str(int(time.time()))
+    signature_input = f"{timestamp}:{method}:{endpoint}:{body}"
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        signature_input.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": timestamp,
+        "X-Signature": signature,
         "Content-Type": "application/json"
     }
 
     req = urllib.request.Request(url, method=method, headers=headers)
     if data:
-        req.data = json.dumps(data).encode('utf-8')
+        req.data = body.encode('utf-8')
 
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
@@ -145,7 +190,7 @@ def api_request(endpoint, method="GET", data=None, api_key=None):
 
 def cmd_execute(args):
     """Execute source code"""
-    api_key = get_api_key(args.api_key)
+    public_key, secret_key = get_api_keys(args.api_key)
 
     # Read source file
     try:
@@ -199,7 +244,7 @@ def cmd_execute(args):
         payload["vcpu"] = args.vcpu
 
     # Execute
-    result = api_request("/execute", method="POST", data=payload, api_key=api_key)
+    result = api_request("/execute", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
 
     # Print output
     if result.get("stdout"):
@@ -225,10 +270,10 @@ def cmd_execute(args):
 
 def cmd_session(args):
     """Manage interactive sessions"""
-    api_key = get_api_key(args.api_key)
+    public_key, secret_key = get_api_keys(args.api_key)
 
     if args.list:
-        result = api_request("/sessions", api_key=api_key)
+        result = api_request("/sessions", public_key=public_key, secret_key=secret_key)
         sessions = result.get("sessions", [])
         if not sessions:
             print("No active sessions")
@@ -239,7 +284,7 @@ def cmd_session(args):
         return
 
     if args.kill:
-        result = api_request(f"/sessions/{args.kill}", method="DELETE", api_key=api_key)
+        result = api_request(f"/sessions/{args.kill}", method="DELETE", public_key=public_key, secret_key=secret_key)
         print(f"{GREEN}Session terminated: {args.kill}{RESET}")
         return
 
@@ -264,16 +309,30 @@ def cmd_session(args):
         payload["audit"] = True
 
     print(f"{YELLOW}Creating session...{RESET}")
-    result = api_request("/sessions", method="POST", data=payload, api_key=api_key)
+    result = api_request("/sessions", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
     print(f"{GREEN}Session created: {result.get('id', 'N/A')}{RESET}")
     print(f"{YELLOW}(Interactive sessions require WebSocket - use un2 for full support){RESET}")
 
 
-def validate_key(api_key, extend=False):
+def validate_key(public_key, secret_key, extend=False):
     """Validate API key and display information"""
     url = f"{PORTAL_BASE}/keys/validate"
+
+    # Generate HMAC signature for portal request
+    timestamp = str(int(time.time()))
+    endpoint = "/keys/validate"
+    body = ""
+    signature_input = f"{timestamp}:POST:{endpoint}:{body}"
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        signature_input.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": timestamp,
+        "X-Signature": signature,
         "Content-Type": "application/json"
     }
 
@@ -332,16 +391,16 @@ def validate_key(api_key, extend=False):
 
 def cmd_key(args):
     """Validate API key"""
-    api_key = get_api_key(args.key)
-    validate_key(api_key, extend=args.extend)
+    public_key, secret_key = get_api_keys(args.key)
+    validate_key(public_key, secret_key, extend=args.extend)
 
 
 def cmd_service(args):
     """Manage persistent services"""
-    api_key = get_api_key(args.api_key)
+    public_key, secret_key = get_api_keys(args.api_key)
 
     if args.list:
-        result = api_request("/services", api_key=api_key)
+        result = api_request("/services", public_key=public_key, secret_key=secret_key)
         services = result.get("services", [])
         if not services:
             print("No services")
@@ -354,38 +413,38 @@ def cmd_service(args):
         return
 
     if args.info:
-        result = api_request(f"/services/{args.info}", api_key=api_key)
+        result = api_request(f"/services/{args.info}", public_key=public_key, secret_key=secret_key)
         print(json.dumps(result, indent=2))
         return
 
     if args.logs:
-        result = api_request(f"/services/{args.logs}/logs", api_key=api_key)
+        result = api_request(f"/services/{args.logs}/logs", public_key=public_key, secret_key=secret_key)
         print(result.get("logs", ""))
         return
 
     if args.tail:
-        result = api_request(f"/services/{args.tail}/logs?lines=9000", api_key=api_key)
+        result = api_request(f"/services/{args.tail}/logs?lines=9000", public_key=public_key, secret_key=secret_key)
         print(result.get("logs", ""))
         return
 
     if args.sleep:
-        result = api_request(f"/services/{args.sleep}/sleep", method="POST", api_key=api_key)
+        result = api_request(f"/services/{args.sleep}/sleep", method="POST", public_key=public_key, secret_key=secret_key)
         print(f"{GREEN}Service sleeping: {args.sleep}{RESET}")
         return
 
     if args.wake:
-        result = api_request(f"/services/{args.wake}/wake", method="POST", api_key=api_key)
+        result = api_request(f"/services/{args.wake}/wake", method="POST", public_key=public_key, secret_key=secret_key)
         print(f"{GREEN}Service waking: {args.wake}{RESET}")
         return
 
     if args.destroy:
-        result = api_request(f"/services/{args.destroy}", method="DELETE", api_key=api_key)
+        result = api_request(f"/services/{args.destroy}", method="DELETE", public_key=public_key, secret_key=secret_key)
         print(f"{GREEN}Service destroyed: {args.destroy}{RESET}")
         return
 
     if args.execute:
         payload = {"command": args.command}
-        result = api_request(f"/services/{args.execute}/execute", method="POST", data=payload, api_key=api_key)
+        result = api_request(f"/services/{args.execute}/execute", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
         if result.get("stdout"):
             print(f"{BLUE}{result['stdout']}{RESET}", end='')
         if result.get("stderr"):
@@ -395,7 +454,7 @@ def cmd_service(args):
     if args.dump_bootstrap:
         print(f"Fetching bootstrap script from {args.dump_bootstrap}...", file=sys.stderr)
         payload = {"command": "cat /tmp/bootstrap.sh"}
-        result = api_request(f"/services/{args.dump_bootstrap}/execute", method="POST", data=payload, api_key=api_key)
+        result = api_request(f"/services/{args.dump_bootstrap}/execute", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
 
         if result.get("stdout"):
             bootstrap = result["stdout"]
@@ -438,7 +497,7 @@ def cmd_service(args):
         if args.vcpu:
             payload["vcpu"] = args.vcpu
 
-        result = api_request("/services", method="POST", data=payload, api_key=api_key)
+        result = api_request("/services", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
         print(f"{GREEN}Service created: {result.get('id', 'N/A')}{RESET}")
         print(f"Name: {result.get('name', 'N/A')}")
         if result.get('url'):

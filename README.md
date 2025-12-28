@@ -11,8 +11,9 @@ The UN CLI written in every language it can execute. **42 implementations, one u
 git clone https://github.com/russellballestrini/un-inception.git
 cd un-inception
 
-# Set your API key
-export UNSANDBOX_API_KEY=your_key_here
+# Set your API keys (HMAC authentication)
+export UNSANDBOX_PUBLIC_KEY="unsb-pk-xxxx-xxxx-xxxx-xxxx"
+export UNSANDBOX_SECRET_KEY="unsb-sk-xxxxx-xxxxx-xxxxx-xxxxx"
 
 # Run any implementation
 python3 un.py test/fib.py
@@ -23,6 +24,41 @@ go run un.go test/fib.py
 # They all produce the same output:
 # fib(10) = 55
 ```
+
+## HMAC Authentication
+
+All implementations use HMAC-SHA256 for request signing:
+
+```
+Authorization: Bearer {public_key}
+X-Timestamp: {unix_seconds}
+X-Signature: HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
+```
+
+### HMAC Dependencies by Language
+
+| Language | HMAC Library | Notes |
+|----------|--------------|-------|
+| **Python** | `hmac`, `hashlib` | Standard library |
+| **JavaScript** | `crypto` | Node.js built-in |
+| **TypeScript** | `crypto` | Node.js built-in |
+| **Ruby** | `openssl` | Standard library |
+| **Go** | `crypto/hmac`, `crypto/sha256` | Standard library |
+| **Rust** | `hmac`, `sha2` | Crates (add to Cargo.toml) |
+| **PHP** | `hash_hmac()` | Built-in function |
+| **Perl** | `Digest::SHA` | Core module |
+| **Lua** | `openssl` CLI | Shells out to `openssl dgst` |
+| **Bash** | `openssl` CLI | Uses `openssl dgst -sha256 -hmac` |
+| **C/C++** | OpenSSL | Link with `-lssl -lcrypto` |
+| **Java** | `javax.crypto` | Standard library |
+| **C#** | `System.Security.Cryptography` | .NET built-in |
+| **Haskell** | `cryptonite` | Hackage package |
+| **Clojure** | `buddy-core` | Clojars dependency |
+| **Erlang/Elixir** | `:crypto` | OTP built-in |
+| **Julia** | `SHA` | Standard library |
+| **R** | `openssl` | CRAN package |
+
+Most languages have HMAC-SHA256 in their standard library. Languages without native support (Lua, Bash, AWK) shell out to the `openssl` command-line tool.
 
 ## Implementations
 
@@ -121,8 +157,34 @@ Each implementation supports:
 # Output: fib(10) = 55
 
 # Run the full test matrix (requires API key)
-./tests/run_matrix.sh
+./tests/run_all_tests.sh
 ```
+
+## The Inception Matrix
+
+**Use un to run un inside un!** Don't have a language installed locally? Run its implementation through unsandbox using `un` (the C implementation):
+
+```bash
+# Pass API keys via -e so the inner un.* can call the API
+# Use -n semitrusted so inner script can reach api.unsandbox.com
+
+# Don't have PHP? Run un.php through unsandbox!
+un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY un.php test/fib.py
+
+# Don't have Julia? Run un.jl through unsandbox!
+un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY un.jl test/fib.py
+
+# Test ALL implementations regardless of local interpreters
+for impl in un.py un.js un.rb un.go un.php un.pl un.lua; do
+    echo "Testing $impl..."
+    un -n semitrusted \
+       -e UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY \
+       -e UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY \
+       "$impl" test/fib.py
+done
+```
+
+This is the **inception** - each layer executes through unsandbox's remote API, so you can test any implementation using `un` (the canonical C implementation) as the runner.
 
 ## Links
 

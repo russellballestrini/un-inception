@@ -60,15 +60,32 @@ BEGIN {
     RESET = "\033[0m"
 }
 
-function get_api_key() {
-    cmd = "echo $UNSANDBOX_API_KEY"
-    cmd | getline api_key
+function get_api_keys(    public_key, secret_key, cmd) {
+    # Get public key
+    cmd = "echo -n $UNSANDBOX_PUBLIC_KEY"
+    cmd | getline public_key
     close(cmd)
-    if (api_key == "") {
-        print RED "Error: UNSANDBOX_API_KEY not set" RESET > "/dev/stderr"
+
+    # Get secret key
+    cmd = "echo -n $UNSANDBOX_SECRET_KEY"
+    cmd | getline secret_key
+    close(cmd)
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if (public_key == "") {
+        cmd = "echo -n $UNSANDBOX_API_KEY"
+        cmd | getline public_key
+        close(cmd)
+        secret_key = ""
+    }
+
+    if (public_key == "") {
+        print RED "Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set" RESET > "/dev/stderr"
         exit 1
     }
-    return api_key
+
+    GLOBAL_PUBLIC_KEY = public_key
+    GLOBAL_SECRET_KEY = secret_key
 }
 
 function get_extension(filename) {
@@ -88,8 +105,9 @@ function escape_json(s) {
     return s
 }
 
-function execute(filename) {
-    api_key = get_api_key()
+function execute(filename    , api_key) {
+    get_api_keys()
+    api_key = GLOBAL_PUBLIC_KEY
 
     # Get extension and language
     ext = get_extension(filename)
@@ -119,10 +137,27 @@ function execute(filename) {
     print json > tmp
     close(tmp)
 
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        # HMAC signature: timestamp:METHOD:path:body
+        sig_input = timestamp ":POST:/execute:" json
+        sig_tmp = "/tmp/un_awk_sig_" PROCINFO["pid"]
+        print sig_input > sig_tmp
+        close(sig_tmp)
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        system("rm -f " sig_tmp)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
     # Call curl
     cmd = "curl -s -X POST '" API_BASE "/execute' " \
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " api_key "' " \
+          sig_headers \
           "-d '@" tmp "'"
 
     response = ""
@@ -160,43 +195,94 @@ function execute(filename) {
     }
 }
 
-function session_list() {
-    api_key = get_api_key()
-    cmd = "curl -s '" API_BASE "/sessions' -H 'Authorization: Bearer " api_key "'"
+function session_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:/sessions:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE "/sessions' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
     while ((cmd | getline line) > 0) print line
     close(cmd)
 }
 
-function session_kill(id) {
-    api_key = get_api_key()
-    cmd = "curl -s -X DELETE '" API_BASE "/sessions/" id "' -H 'Authorization: Bearer " api_key "'"
+function session_kill(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/sessions/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
     system(cmd)
     print GREEN "Session terminated: " id RESET
 }
 
-function service_list() {
-    api_key = get_api_key()
-    cmd = "curl -s '" API_BASE "/services' -H 'Authorization: Bearer " api_key "'"
+function service_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:/services:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE "/services' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
     while ((cmd | getline line) > 0) print line
     close(cmd)
 }
 
-function service_destroy(id) {
-    api_key = get_api_key()
-    cmd = "curl -s -X DELETE '" API_BASE "/services/" id "' -H 'Authorization: Bearer " api_key "'"
+function service_destroy(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/services/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
     system(cmd)
     print GREEN "Service destroyed: " id RESET
 }
 
-function service_dump_bootstrap(id, dump_file) {
-    api_key = get_api_key()
+function service_dump_bootstrap(id, dump_file    , endpoint, json_body, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
     print "Fetching bootstrap script from " id "..." > "/dev/stderr"
 
+    endpoint = "/services/" id "/execute"
+    json_body = "{\"command\":\"cat /tmp/bootstrap.sh\"}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json_body
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
     # Build the curl command to execute on the service
-    cmd = "curl -s -X POST '" API_BASE "/services/" id "/execute' " \
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
           "-H 'Content-Type: application/json' " \
-          "-H 'Authorization: Bearer " api_key "' " \
-          "-d '{\"command\":\"cat /tmp/bootstrap.sh\"}'"
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '" json_body "'"
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -229,8 +315,8 @@ function service_dump_bootstrap(id, dump_file) {
     }
 }
 
-function service_create(name, ports, domains, service_type, bootstrap) {
-    api_key = get_api_key()
+function service_create(name, ports, domains, service_type, bootstrap    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
 
     # Build JSON payload
     json = "{\"name\":\"" escape_json(name) "\""
@@ -265,10 +351,22 @@ function service_create(name, ports, domains, service_type, bootstrap) {
     print json > tmp
     close(tmp)
 
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:/services:" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
     # Call curl
     cmd = "curl -s -X POST '" API_BASE "/services' " \
           "-H 'Content-Type: application/json' " \
-          "-H 'Authorization: Bearer " api_key "' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
           "-d '@" tmp "'"
 
     response = ""
@@ -284,11 +382,24 @@ function service_create(name, ports, domains, service_type, bootstrap) {
     print response
 }
 
-function validate_key(api_key, do_extend) {
+function validate_key(do_extend    , timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:/keys/validate:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
     # Call curl to validate key
     cmd = "curl -s -X POST '" PORTAL_BASE "/keys/validate' " \
           "-H 'Content-Type: application/json' " \
-          "-H 'Authorization: Bearer " api_key "'"
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -366,8 +477,7 @@ function validate_key(api_key, do_extend) {
 }
 
 function cmd_key(do_extend) {
-    api_key = get_api_key()
-    validate_key(api_key, do_extend)
+    validate_key(do_extend)
 }
 
 function show_help() {

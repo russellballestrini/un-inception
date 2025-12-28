@@ -40,11 +40,15 @@ run_test() {
     echo ""
 }
 
-# Check for API key
-if [ -z "$UNSANDBOX_API_KEY" ]; then
-    echo "⚠  WARNING: UNSANDBOX_API_KEY not set"
-    echo "   Integration and functional tests will be skipped"
-    echo ""
+# Check for API auth keys
+if [ -z "$UNSANDBOX_PUBLIC_KEY" ] || [ -z "$UNSANDBOX_SECRET_KEY" ]; then
+    if [ -z "$UNSANDBOX_API_KEY" ]; then
+        echo "⚠  WARNING: UNSANDBOX authentication not configured"
+        echo "   Integration and functional tests will be skipped"
+        echo "   Set HMAC keys: export UNSANDBOX_PUBLIC_KEY=... UNSANDBOX_SECRET_KEY=..."
+        echo "   Or legacy key: export UNSANDBOX_API_KEY=..."
+        echo ""
+    fi
 fi
 
 # Run tests for each language

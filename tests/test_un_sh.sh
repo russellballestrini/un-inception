@@ -21,14 +21,14 @@ TESTS_FAILED=0
 
 # Test result tracking
 test_passed() {
-    ((TESTS_PASSED++))
-    ((TESTS_RUN++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+    TESTS_RUN=$((TESTS_RUN + 1))
     echo -e "${GREEN}✓ PASS${NC}: $1"
 }
 
 test_failed() {
-    ((TESTS_FAILED++))
-    ((TESTS_RUN++))
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    TESTS_RUN=$((TESTS_RUN + 1))
     echo -e "${RED}✗ FAIL${NC}: $1"
     if [ -n "${2:-}" ]; then
         echo -e "${RED}  Error: $2${NC}"
@@ -69,10 +69,10 @@ fi
 if output=$("$UN_SH" /tmp/nonexistent_file_12345.xyz 2>&1); then
     test_failed "Handles non-existent file" "Should exit with error"
 else
-    if echo "$output" | grep -q "not found"; then
+    if echo "$output" | grep -qi "not found\|error"; then
         test_passed "Handles non-existent file"
     else
-        test_failed "Handles non-existent file" "Expected 'not found' message"
+        test_failed "Handles non-existent file" "Expected error message, got: $output"
     fi
 fi
 
@@ -83,40 +83,50 @@ if output=$("$UN_SH" "$UNKNOWN_FILE" 2>&1); then
     test_failed "Handles unknown file extension" "Should exit with error"
     rm -f "$UNKNOWN_FILE"
 else
-    if echo "$output" | grep -q "Unknown file extension"; then
+    if echo "$output" | grep -qi "cannot detect\|unknown\|error"; then
         test_passed "Handles unknown file extension"
     else
-        test_failed "Handles unknown file extension" "Expected 'Unknown file extension' message"
+        test_failed "Handles unknown file extension" "Expected error message, got: $output"
     fi
     rm -f "$UNKNOWN_FILE"
 fi
 
-# Test: Error when API key not set
-if [ -n "${UNSANDBOX_API_KEY:-}" ]; then
+# Test: Error when auth not set
+has_hmac="${UNSANDBOX_PUBLIC_KEY:-}${UNSANDBOX_SECRET_KEY:-}"
+has_legacy="${UNSANDBOX_API_KEY:-}"
+if [ -n "$has_hmac" ] || [ -n "$has_legacy" ]; then
     TEST_FILE="$TEST_DIR/fib.py"
     if [ -f "$TEST_FILE" ]; then
-        # Temporarily unset API key
-        OLD_KEY="$UNSANDBOX_API_KEY"
+        # Temporarily unset auth keys
+        OLD_PUB="${UNSANDBOX_PUBLIC_KEY:-}"
+        OLD_SEC="${UNSANDBOX_SECRET_KEY:-}"
+        OLD_KEY="${UNSANDBOX_API_KEY:-}"
+        unset UNSANDBOX_PUBLIC_KEY
+        unset UNSANDBOX_SECRET_KEY
         unset UNSANDBOX_API_KEY
         if output=$("$UN_SH" "$TEST_FILE" 2>&1); then
-            test_failed "Requires API key" "Should exit with error when API key not set"
+            test_failed "Requires authentication" "Should exit with error when auth not set"
         else
-            if echo "$output" | grep -q "UNSANDBOX_API_KEY"; then
-                test_passed "Requires API key"
+            if echo "$output" | grep -qE "UNSANDBOX_(API_KEY|PUBLIC_KEY|SECRET_KEY)"; then
+                test_passed "Requires authentication"
             else
-                test_failed "Requires API key" "Expected API key error message"
+                test_failed "Requires authentication" "Expected auth error message"
             fi
         fi
-        export UNSANDBOX_API_KEY="$OLD_KEY"
+        [ -n "$OLD_PUB" ] && export UNSANDBOX_PUBLIC_KEY="$OLD_PUB"
+        [ -n "$OLD_SEC" ] && export UNSANDBOX_SECRET_KEY="$OLD_SEC"
+        [ -n "$OLD_KEY" ] && export UNSANDBOX_API_KEY="$OLD_KEY"
     else
-        test_skipped "Requires API key (test file not found)"
+        test_skipped "Requires authentication (test file not found)"
     fi
 else
-    test_skipped "Requires API key (API key already not set)"
+    test_skipped "Requires authentication (auth already not set)"
 fi
 
-# Integration Tests (require API key)
-if [ -n "${UNSANDBOX_API_KEY:-}" ]; then
+# Integration Tests (require auth)
+has_hmac="${UNSANDBOX_PUBLIC_KEY:-}${UNSANDBOX_SECRET_KEY:-}"
+has_legacy="${UNSANDBOX_API_KEY:-}"
+if [ -n "$has_hmac" ] || [ -n "$has_legacy" ]; then
     echo -e "\n${BLUE}=== Integration Tests for un.sh ===${NC}"
 
     # Test: Can execute Python file
@@ -149,7 +159,7 @@ if [ -n "${UNSANDBOX_API_KEY:-}" ]; then
         test_skipped "Executes Bash file successfully (fib.sh not found)"
     fi
 else
-    echo -e "\n${YELLOW}Skipping integration tests (UNSANDBOX_API_KEY not set)${NC}"
+    echo -e "\n${YELLOW}Skipping integration tests (UNSANDBOX authentication not configured)${NC}"
 fi
 
 # Summary

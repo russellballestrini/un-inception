@@ -41,6 +41,7 @@ require "http/client"
 require "json"
 require "base64"
 require "option_parser"
+require "openssl/hmac"
 
 # Extension to language mapping
 EXT_MAP = {
@@ -74,28 +75,51 @@ def detect_language(filename : String) : String
   EXT_MAP.fetch(ext, "unknown")
 end
 
-def get_api_key(args_key : String?) : String
-  key = args_key || ENV["UNSANDBOX_API_KEY"]?
-  if key.nil? || key.empty?
-    STDERR.puts "#{RED}Error: UNSANDBOX_API_KEY not set#{RESET}"
-    exit 1
+def get_api_keys(args_key : String?) : {String, String?}
+  public_key = ENV["UNSANDBOX_PUBLIC_KEY"]?
+  secret_key = ENV["UNSANDBOX_SECRET_KEY"]?
+
+  # Fall back to UNSANDBOX_API_KEY for backwards compatibility
+  if public_key.nil? || public_key.empty? || secret_key.nil? || secret_key.empty?
+    legacy_key = args_key || ENV["UNSANDBOX_API_KEY"]?
+    if legacy_key.nil? || legacy_key.empty?
+      STDERR.puts "#{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set#{RESET}"
+      exit 1
+    end
+    return {legacy_key, nil}
   end
-  key
+
+  {public_key, secret_key}
 end
 
-def api_request(endpoint : String, api_key : String, method = "GET", data : JSON::Any? = nil)
+def api_request(endpoint : String, public_key : String, secret_key : String?, method = "GET", data : JSON::Any? = nil)
   url = URI.parse(API_BASE + endpoint)
   headers = HTTP::Headers{
-    "Content-Type" => "application/json",
-    "Authorization" => "Bearer #{api_key}"
+    "Content-Type" => "application/json"
   }
+
+  body = data ? data.to_json : ""
+
+  # Add HMAC authentication headers if secret_key is provided
+  if secret_key && !secret_key.empty?
+    timestamp = Time.utc.to_unix.to_s
+    message = "#{timestamp}:#{method}:#{endpoint}:#{body}"
+
+    signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
+
+    headers["Authorization"] = "Bearer #{public_key}"
+    headers["X-Timestamp"] = timestamp
+    headers["X-Signature"] = signature
+  else
+    # Legacy API key authentication
+    headers["Authorization"] = "Bearer #{public_key}"
+  end
 
   begin
     response = case method
     when "GET"
       HTTP::Client.get(url, headers: headers)
     when "POST"
-      body = data ? data.to_json : ""
       HTTP::Client.post(url, headers: headers, body: body)
     when "DELETE"
       HTTP::Client.delete(url, headers: headers)
@@ -112,7 +136,7 @@ def api_request(endpoint : String, api_key : String, method = "GET", data : JSON
 end
 
 def cmd_execute(args)
-  api_key = get_api_key(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?)
 
   filename = args[:source_file].as(String)
   unless File.exists?(filename)
@@ -173,7 +197,7 @@ def cmd_execute(args)
   end
 
   # Execute
-  result = api_request("/execute", api_key, method: "POST", data: payload)
+  result = api_request("/execute", public_key, secret_key, method: "POST", data: payload)
 
   # Print output
   if stdout = result["stdout"]?.try(&.as_s?)
@@ -202,10 +226,10 @@ def cmd_execute(args)
 end
 
 def cmd_session(args)
-  api_key = get_api_key(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?)
 
   if args[:list]?.as?(Bool)
-    result = api_request("/sessions", api_key)
+    result = api_request("/sessions", public_key, secret_key)
     sessions = result["sessions"]?.try(&.as_a?) || [] of JSON::Any
     if sessions.empty?
       puts "No active sessions"
@@ -223,7 +247,7 @@ def cmd_session(args)
   end
 
   if kill_id = args[:kill]?.as?(String)
-    api_request("/sessions/#{kill_id}", api_key, method: "DELETE")
+    api_request("/sessions/#{kill_id}", public_key, secret_key, method: "DELETE")
     puts "#{GREEN}Session terminated: #{kill_id}#{RESET}"
     return
   end
@@ -233,17 +257,33 @@ def cmd_session(args)
 end
 
 def cmd_key(args)
-  api_key = get_api_key(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?)
 
   # Validate key
   url = URI.parse(PORTAL_BASE + "/keys/validate")
   headers = HTTP::Headers{
-    "Content-Type" => "application/json",
-    "Authorization" => "Bearer #{api_key}"
+    "Content-Type" => "application/json"
   }
 
+  body = "{}"
+
+  # Add HMAC authentication headers if secret_key is provided
+  if secret_key && !secret_key.empty?
+    timestamp = Time.utc.to_unix.to_s
+    message = "#{timestamp}:POST:/keys/validate:#{body}"
+
+    signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
+
+    headers["Authorization"] = "Bearer #{public_key}"
+    headers["X-Timestamp"] = timestamp
+    headers["X-Signature"] = signature
+  else
+    # Legacy API key authentication
+    headers["Authorization"] = "Bearer #{public_key}"
+  end
+
   begin
-    response = HTTP::Client.post(url, headers: headers, body: "{}")
+    response = HTTP::Client.post(url, headers: headers, body: body)
     result = JSON.parse(response.body)
 
     status = result["status"]?.try(&.as_s?) || "unknown"
@@ -311,10 +351,10 @@ def cmd_key(args)
 end
 
 def cmd_service(args)
-  api_key = get_api_key(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?)
 
   if args[:list]?.as?(Bool)
-    result = api_request("/services", api_key)
+    result = api_request("/services", public_key, secret_key)
     services = result["services"]?.try(&.as_a?) || [] of JSON::Any
     if services.empty?
       puts "No services"
@@ -334,31 +374,31 @@ def cmd_service(args)
   end
 
   if info_id = args[:info]?.as?(String)
-    result = api_request("/services/#{info_id}", api_key)
+    result = api_request("/services/#{info_id}", public_key, secret_key)
     puts result.to_pretty_json
     return
   end
 
   if logs_id = args[:logs]?.as?(String)
-    result = api_request("/services/#{logs_id}/logs", api_key)
+    result = api_request("/services/#{logs_id}/logs", public_key, secret_key)
     puts result["logs"]?.try(&.as_s?) || ""
     return
   end
 
   if sleep_id = args[:sleep]?.as?(String)
-    api_request("/services/#{sleep_id}/sleep", api_key, method: "POST")
+    api_request("/services/#{sleep_id}/sleep", public_key, secret_key, method: "POST")
     puts "#{GREEN}Service sleeping: #{sleep_id}#{RESET}"
     return
   end
 
   if wake_id = args[:wake]?.as?(String)
-    api_request("/services/#{wake_id}/wake", api_key, method: "POST")
+    api_request("/services/#{wake_id}/wake", public_key, secret_key, method: "POST")
     puts "#{GREEN}Service waking: #{wake_id}#{RESET}"
     return
   end
 
   if destroy_id = args[:destroy]?.as?(String)
-    api_request("/services/#{destroy_id}", api_key, method: "DELETE")
+    api_request("/services/#{destroy_id}", public_key, secret_key, method: "DELETE")
     puts "#{GREEN}Service destroyed: #{destroy_id}#{RESET}"
     return
   end
@@ -366,7 +406,7 @@ def cmd_service(args)
   if execute_id = args[:execute]?.as?(String)
     command = args[:command]?.as?(String) || ""
     payload = JSON.parse({command: command}.to_json)
-    result = api_request("/services/#{execute_id}/execute", api_key, method: "POST", data: payload)
+    result = api_request("/services/#{execute_id}/execute", public_key, secret_key, method: "POST", data: payload)
     if stdout = result["stdout"]?.try(&.as_s?)
       print BLUE, stdout, RESET
     end
@@ -379,7 +419,7 @@ def cmd_service(args)
   if dump_id = args[:dump_bootstrap]?.as?(String)
     STDERR.puts "Fetching bootstrap script from #{dump_id}..."
     payload = JSON.parse({command: "cat /tmp/bootstrap.sh"}.to_json)
-    result = api_request("/services/#{dump_id}/execute", api_key, method: "POST", data: payload)
+    result = api_request("/services/#{dump_id}/execute", public_key, secret_key, method: "POST", data: payload)
 
     if bootstrap = result["stdout"]?.try(&.as_s?)
       if file_path = args[:dump_file]?.as?(String)
@@ -433,7 +473,7 @@ def cmd_service(args)
     end
 
     # Create service
-    result = api_request("/services", api_key, method: "POST", data: payload)
+    result = api_request("/services", public_key, secret_key, method: "POST", data: payload)
     puts "#{GREEN}Service created: #{result["id"]?.try(&.as_s?) || "N/A"}#{RESET}"
     puts "Name: #{result["name"]?.try(&.as_s?) || "N/A"}"
     if url = result["url"]?.try(&.as_s?)

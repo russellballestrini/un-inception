@@ -57,6 +57,7 @@ use LWP::UserAgent;
 use HTTP::Request;
 use MIME::Base64;
 use File::Path qw(make_path);
+use Digest::SHA qw(hmac_sha256_hex);
 
 my $API_BASE = 'https://api.unsandbox.com';
 my $PORTAL_BASE = 'https://unsandbox.com';
@@ -84,12 +85,20 @@ my %EXT_MAP = (
 
 sub get_api_key {
     my ($args_key) = @_;
-    my $key = $args_key || $ENV{'UNSANDBOX_API_KEY'};
-    unless ($key) {
-        print STDERR "${RED}Error: UNSANDBOX_API_KEY not set${RESET}\n";
+    my $public_key = $ENV{'UNSANDBOX_PUBLIC_KEY'} || '';
+    my $secret_key = $ENV{'UNSANDBOX_SECRET_KEY'} || '';
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if (!$public_key && $ENV{'UNSANDBOX_API_KEY'}) {
+        $public_key = $ENV{'UNSANDBOX_API_KEY'};
+        $secret_key = '';
+    }
+
+    unless ($public_key) {
+        print STDERR "${RED}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set${RESET}\n";
         exit 1;
     }
-    return $key;
+    return ($public_key, $secret_key);
 }
 
 sub detect_language {
@@ -117,17 +126,28 @@ sub detect_language {
 }
 
 sub api_request {
-    my ($endpoint, $method, $data, $api_key) = @_;
+    my ($endpoint, $method, $data, $public_key, $secret_key) = @_;
     $method //= 'GET';
 
     my $url = "$API_BASE$endpoint";
     my $ua = LWP::UserAgent->new(timeout => 300);
     my $request = HTTP::Request->new($method => $url);
-    $request->header('Authorization' => "Bearer $api_key");
+    $request->header('Authorization' => "Bearer $public_key");
     $request->header('Content-Type' => 'application/json');
 
+    my $body = '';
     if ($data) {
-        $request->content(encode_json($data));
+        $body = encode_json($data);
+        $request->content($body);
+    }
+
+    # Add HMAC signature if secret_key is present
+    if ($secret_key) {
+        my $timestamp = time();
+        my $sig_input = "${timestamp}:${method}:${endpoint}:${body}";
+        my $signature = hmac_sha256_hex($sig_input, $secret_key);
+        $request->header('X-Timestamp' => $timestamp);
+        $request->header('X-Signature' => $signature);
     }
 
     my $response = $ua->request($request);
@@ -142,7 +162,7 @@ sub api_request {
 
 sub cmd_execute {
     my ($options) = @_;
-    my $api_key = get_api_key($options->{api_key});
+    my ($public_key, $secret_key) = get_api_key($options->{api_key});
 
     unless (-e $options->{source_file}) {
         print STDERR "${RED}Error: File not found: $options->{source_file}${RESET}\n";
@@ -190,7 +210,7 @@ sub cmd_execute {
     $payload->{network} = $options->{network} if $options->{network};
     $payload->{vcpu} = $options->{vcpu} if $options->{vcpu};
 
-    my $result = api_request('/execute', 'POST', $payload, $api_key);
+    my $result = api_request('/execute', 'POST', $payload, $public_key, $secret_key);
 
     print "${BLUE}$result->{stdout}${RESET}" if $result->{stdout};
     print STDERR "${RED}$result->{stderr}${RESET}" if $result->{stderr};
@@ -215,10 +235,10 @@ sub cmd_execute {
 
 sub cmd_session {
     my ($options) = @_;
-    my $api_key = get_api_key($options->{api_key});
+    my ($public_key, $secret_key) = get_api_key($options->{api_key});
 
     if ($options->{list}) {
-        my $result = api_request('/sessions', 'GET', undef, $api_key);
+        my $result = api_request('/sessions', 'GET', undef, $public_key, $secret_key);
         my $sessions = $result->{sessions} || [];
         if (@$sessions == 0) {
             print "No active sessions\n";
@@ -234,7 +254,7 @@ sub cmd_session {
     }
 
     if ($options->{kill}) {
-        api_request("/sessions/$options->{kill}", 'DELETE', undef, $api_key);
+        api_request("/sessions/$options->{kill}", 'DELETE', undef, $public_key, $secret_key);
         print "${GREEN}Session terminated: $options->{kill}${RESET}\n";
         return;
     }
@@ -253,17 +273,17 @@ sub cmd_session {
     $payload->{audit} = JSON::PP::true if $options->{audit};
 
     print "${YELLOW}Creating session...${RESET}\n";
-    my $result = api_request('/sessions', 'POST', $payload, $api_key);
+    my $result = api_request('/sessions', 'POST', $payload, $public_key, $secret_key);
     print "${GREEN}Session created: ", ($result->{id} // 'N/A'), "${RESET}\n";
     print "${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}\n";
 }
 
 sub cmd_service {
     my ($options) = @_;
-    my $api_key = get_api_key($options->{api_key});
+    my ($public_key, $secret_key) = get_api_key($options->{api_key});
 
     if ($options->{list}) {
-        my $result = api_request('/services', 'GET', undef, $api_key);
+        my $result = api_request('/services', 'GET', undef, $public_key, $secret_key);
         my $services = $result->{services} || [];
         if (@$services == 0) {
             print "No services\n";
@@ -281,45 +301,45 @@ sub cmd_service {
     }
 
     if ($options->{info}) {
-        my $result = api_request("/services/$options->{info}", 'GET', undef, $api_key);
+        my $result = api_request("/services/$options->{info}", 'GET', undef, $public_key, $secret_key);
         print encode_json($result);
         print "\n";
         return;
     }
 
     if ($options->{logs}) {
-        my $result = api_request("/services/$options->{logs}/logs", 'GET', undef, $api_key);
+        my $result = api_request("/services/$options->{logs}/logs", 'GET', undef, $public_key, $secret_key);
         print $result->{logs} // '';
         return;
     }
 
     if ($options->{tail}) {
-        my $result = api_request("/services/$options->{tail}/logs?lines=9000", 'GET', undef, $api_key);
+        my $result = api_request("/services/$options->{tail}/logs?lines=9000", 'GET', undef, $public_key, $secret_key);
         print $result->{logs} // '';
         return;
     }
 
     if ($options->{sleep}) {
-        api_request("/services/$options->{sleep}/sleep", 'POST', undef, $api_key);
+        api_request("/services/$options->{sleep}/sleep", 'POST', undef, $public_key, $secret_key);
         print "${GREEN}Service sleeping: $options->{sleep}${RESET}\n";
         return;
     }
 
     if ($options->{wake}) {
-        api_request("/services/$options->{wake}/wake", 'POST', undef, $api_key);
+        api_request("/services/$options->{wake}/wake", 'POST', undef, $public_key, $secret_key);
         print "${GREEN}Service waking: $options->{wake}${RESET}\n";
         return;
     }
 
     if ($options->{destroy}) {
-        api_request("/services/$options->{destroy}", 'DELETE', undef, $api_key);
+        api_request("/services/$options->{destroy}", 'DELETE', undef, $public_key, $secret_key);
         print "${GREEN}Service destroyed: $options->{destroy}${RESET}\n";
         return;
     }
 
     if ($options->{execute}) {
         my $payload = { command => $options->{command} };
-        my $result = api_request("/services/$options->{execute}/execute", 'POST', $payload, $api_key);
+        my $result = api_request("/services/$options->{execute}/execute", 'POST', $payload, $public_key, $secret_key);
         print "${BLUE}$result->{stdout}${RESET}" if $result->{stdout};
         print STDERR "${RED}$result->{stderr}${RESET}" if $result->{stderr};
         return;
@@ -328,7 +348,7 @@ sub cmd_service {
     if ($options->{dump_bootstrap}) {
         print STDERR "Fetching bootstrap script from $options->{dump_bootstrap}...\n";
         my $payload = { command => 'cat /tmp/bootstrap.sh' };
-        my $result = api_request("/services/$options->{dump_bootstrap}/execute", 'POST', $payload, $api_key);
+        my $result = api_request("/services/$options->{dump_bootstrap}/execute", 'POST', $payload, $public_key, $secret_key);
 
         if ($result->{stdout}) {
             my $bootstrap = $result->{stdout};
@@ -379,7 +399,7 @@ sub cmd_service {
         $payload->{network} = $options->{network} if $options->{network};
         $payload->{vcpu} = $options->{vcpu} if $options->{vcpu};
 
-        my $result = api_request('/services', 'POST', $payload, $api_key);
+        my $result = api_request('/services', 'POST', $payload, $public_key, $secret_key);
         print "${GREEN}Service created: ", ($result->{id} // 'N/A'), "${RESET}\n";
         print "Name: ", ($result->{name} // 'N/A'), "\n";
         print "URL: $result->{url}\n" if $result->{url};
@@ -405,14 +425,23 @@ sub open_browser {
 }
 
 sub validate_key {
-    my ($api_key, $should_extend) = @_;
+    my ($public_key, $secret_key, $should_extend) = @_;
 
     # Call /keys/validate endpoint
     my $url = "$PORTAL_BASE/keys/validate";
     my $ua = LWP::UserAgent->new(timeout => 30);
     my $request = HTTP::Request->new('POST' => $url);
-    $request->header('Authorization' => "Bearer $api_key");
+    $request->header('Authorization' => "Bearer $public_key");
     $request->header('Content-Type' => 'application/json');
+
+    # Add HMAC signature if secret_key is present
+    if ($secret_key) {
+        my $timestamp = time();
+        my $sig_input = "${timestamp}:POST:/keys/validate:";
+        my $signature = hmac_sha256_hex($sig_input, $secret_key);
+        $request->header('X-Timestamp' => $timestamp);
+        $request->header('X-Signature' => $signature);
+    }
 
     my $response = $ua->request($request);
     my $result = decode_json($response->content);
@@ -455,8 +484,8 @@ sub validate_key {
 
 sub cmd_key {
     my ($options) = @_;
-    my $api_key = get_api_key($options->{api_key});
-    validate_key($api_key, $options->{extend});
+    my ($public_key, $secret_key) = get_api_key($options->{api_key});
+    validate_key($public_key, $secret_key, $options->{extend});
 }
 
 sub main {

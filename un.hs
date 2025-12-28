@@ -62,11 +62,15 @@ import System.Process (readProcessWithExitCode)
 import System.IO (hPutStrLn, stderr)
 import System.Directory (createDirectoryIfMissing, setPermissions, getPermissions, setOwnerExecutable)
 import Data.List (isPrefixOf, intercalate)
-import Data.Char (isDigit)
+import Data.Char (isDigit, ord)
 import Text.Printf (printf)
 import Control.Monad (when, unless, forM_)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Base64 as B64
+import Crypto.Hash.SHA256 (hmac)
+import Numeric (showHex)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 
 -- API constants
 apiBase :: String
@@ -382,39 +386,77 @@ serviceCommand opts = do
 -- HTTP helpers using curl
 curlPost :: String -> String -> String -> IO (ExitCode, String, String)
 curlPost apiKey url body = do
+  (publicKey, secretKey) <- getApiKeys
+  -- Extract path from URL
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "POST" path body
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
-    [ "-s", "-X", "POST"
-    , url
-    , "-H", "Content-Type: application/json"
-    , "-H", "Authorization: Bearer " ++ apiKey
-    , "-d", body
-    ] ""
+    ([ "-s", "-X", "POST"
+     , url
+     , "-H", "Content-Type: application/json"
+     ] ++ authHeaders ++ ["-d", body]) ""
   return (exitCode, stdout, stderr)
 
 curlGet :: String -> String -> IO (ExitCode, String, String)
-curlGet apiKey url =
+curlGet apiKey url = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "GET" path ""
   readProcessWithExitCode "curl"
-    [ "-s", url
-    , "-H", "Authorization: Bearer " ++ apiKey
-    ] ""
+    ([ "-s", url ] ++ authHeaders) ""
 
 curlDelete :: String -> String -> IO (ExitCode, String, String)
-curlDelete apiKey url =
+curlDelete apiKey url = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "DELETE" path ""
   readProcessWithExitCode "curl"
-    [ "-s", "-X", "DELETE"
-    , url
-    , "-H", "Authorization: Bearer " ++ apiKey
-    ] ""
+    ([ "-s", "-X", "DELETE", url ] ++ authHeaders) ""
 
--- Get API key from environment
+-- Get API keys from environment
+getApiKeys :: IO (String, Maybe String)
+getApiKeys = do
+  publicKey <- lookupEnv "UNSANDBOX_PUBLIC_KEY"
+  secretKey <- lookupEnv "UNSANDBOX_SECRET_KEY"
+  apiKey <- lookupEnv "UNSANDBOX_API_KEY"
+  case (publicKey, secretKey, apiKey) of
+    (Just pk, Just sk, _) -> return (pk, Just sk)
+    (_, _, Just ak) -> return (ak, Nothing)
+    _ -> do
+      hPutStrLn stderr "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)"
+      exitFailure
+
 getApiKey :: IO String
 getApiKey = do
-  maybeKey <- lookupEnv "UNSANDBOX_API_KEY"
-  case maybeKey of
-    Nothing -> do
-      hPutStrLn stderr "Error: UNSANDBOX_API_KEY not set"
-      exitFailure
-    Just key -> return key
+  (publicKey, _) <- getApiKeys
+  return publicKey
+
+-- HMAC-SHA256
+hmacSha256 :: String -> String -> String
+hmacSha256 secret message =
+  let secretBS = BSC.pack secret
+      messageBS = BSC.pack message
+      mac = hmac secretBS messageBS
+  in concatMap (printf "%02x") (BS.unpack mac)
+
+makeSignature :: String -> String -> String -> String -> String -> String
+makeSignature secretKey timestamp method path body =
+  let message = timestamp ++ ":" ++ method ++ ":" ++ path ++ ":" ++ body
+  in hmacSha256 secretKey message
+
+buildAuthHeaders :: String -> Maybe String -> String -> String -> String -> IO [String]
+buildAuthHeaders publicKey maybeSecretKey method path body =
+  case maybeSecretKey of
+    Just secretKey -> do
+      now <- getPOSIXTime
+      let timestamp = show (floor now :: Integer)
+      let signature = makeSignature secretKey timestamp method path body
+      return [ "-H", "Authorization: Bearer " ++ publicKey
+             , "-H", "X-Timestamp: " ++ timestamp
+             , "-H", "X-Signature: " ++ signature
+             ]
+    Nothing ->
+      return ["-H", "Authorization: Bearer " ++ publicKey]
 
 -- Parse exit code from JSON response
 parseExitCode :: String -> Int
@@ -565,11 +607,12 @@ extendKey apiKey = do
 -- HTTP helper for portal API
 curlPostPortal :: String -> String -> String -> IO (ExitCode, String, String)
 curlPostPortal apiKey url body = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length portalBase) url
+  authHeaders <- buildAuthHeaders publicKey secretKey "POST" path body
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
-    [ "-s", "-X", "POST"
-    , url
-    , "-H", "Content-Type: application/json"
-    , "-H", "Authorization: Bearer " ++ apiKey
-    , "-d", body
-    ] ""
+    ([ "-s", "-X", "POST"
+     , url
+     , "-H", "Content-Type: application/json"
+     ] ++ authHeaders ++ ["-d", body]) ""
   return (exitCode, stdout, stderr)

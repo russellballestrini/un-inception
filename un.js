@@ -55,6 +55,7 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const { exec } = require('child_process');
+const crypto = require('crypto');
 
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
@@ -80,13 +81,25 @@ const EXT_MAP = {
   ".tcl": "tcl", ".raku": "raku", ".m": "objc",
 };
 
-function getApiKey(argsKey) {
-  const key = argsKey || process.env.UNSANDBOX_API_KEY;
-  if (!key) {
-    console.error(`${RED}Error: UNSANDBOX_API_KEY not set${RESET}`);
-    process.exit(1);
+function getApiKeys(argsKey) {
+  // Try new split key format first
+  let publicKey = process.env.UNSANDBOX_PUBLIC_KEY;
+  let secretKey = process.env.UNSANDBOX_SECRET_KEY;
+
+  // Fall back to old single key format for backwards compatibility
+  if (!publicKey || !secretKey) {
+    const oldKey = argsKey || process.env.UNSANDBOX_API_KEY;
+    if (oldKey) {
+      publicKey = oldKey;
+      secretKey = oldKey;
+    } else {
+      console.error(`${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}`);
+      console.error(`${RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility)${RESET}`);
+      process.exit(1);
+    }
   }
-  return key;
+
+  return { publicKey, secretKey };
 }
 
 function detectLanguage(filename) {
@@ -111,32 +124,45 @@ function detectLanguage(filename) {
   return lang;
 }
 
-function apiRequest(endpoint, method = "GET", data = null, apiKey = null) {
+function apiRequest(endpoint, method = "GET", data = null, publicKey = null, secretKey = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(API_BASE + endpoint);
+
+    // Prepare body
+    const body = data ? JSON.stringify(data) : "";
+
+    // Generate HMAC signature
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signatureInput = `${timestamp}:${method}:${endpoint}:${body}`;
+    const signature = crypto.createHmac('sha256', secretKey)
+      .update(signatureInput)
+      .digest('hex');
+
     const options = {
       hostname: url.hostname,
       path: url.pathname + url.search,
       method: method,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
         'Content-Type': 'application/json'
       },
       timeout: 300000
     };
 
     const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
+      let responseBody = '';
+      res.on('data', chunk => responseBody += chunk);
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
-            resolve(JSON.parse(body));
+            resolve(JSON.parse(responseBody));
           } catch (e) {
-            resolve(body);
+            resolve(responseBody);
           }
         } else {
-          console.error(`${RED}Error: HTTP ${res.statusCode} - ${body}${RESET}`);
+          console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
           process.exit(1);
         }
       });
@@ -148,42 +174,55 @@ function apiRequest(endpoint, method = "GET", data = null, apiKey = null) {
     });
 
     if (data) {
-      req.write(JSON.stringify(data));
+      req.write(body);
     }
     req.end();
   });
 }
 
-function portalRequest(endpoint, method = "GET", data = null, apiKey = null) {
+function portalRequest(endpoint, method = "GET", data = null, publicKey = null, secretKey = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(PORTAL_BASE + endpoint);
+
+    // Prepare body
+    const body = data ? JSON.stringify(data) : "";
+
+    // Generate HMAC signature
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signatureInput = `${timestamp}:${method}:${endpoint}:${body}`;
+    const signature = crypto.createHmac('sha256', secretKey)
+      .update(signatureInput)
+      .digest('hex');
+
     const options = {
       hostname: url.hostname,
       path: url.pathname + url.search,
       method: method,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
         'Content-Type': 'application/json'
       },
       timeout: 30000
     };
 
     const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
+      let responseBody = '';
+      res.on('data', chunk => responseBody += chunk);
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
-            resolve(JSON.parse(body));
+            resolve(JSON.parse(responseBody));
           } catch (e) {
-            resolve(body);
+            resolve(responseBody);
           }
         } else {
           try {
-            const errorBody = JSON.parse(body);
-            resolve({ error: errorBody.error || body, status: res.statusCode });
+            const errorBody = JSON.parse(responseBody);
+            resolve({ error: errorBody.error || responseBody, status: res.statusCode });
           } catch (e) {
-            resolve({ error: body, status: res.statusCode });
+            resolve({ error: responseBody, status: res.statusCode });
           }
         }
       });
@@ -194,7 +233,7 @@ function portalRequest(endpoint, method = "GET", data = null, apiKey = null) {
     });
 
     if (data) {
-      req.write(JSON.stringify(data));
+      req.write(body);
     }
     req.end();
   });
@@ -220,9 +259,9 @@ function openBrowser(url) {
   });
 }
 
-async function validateKey(apiKey, shouldExtend = false) {
+async function validateKey(publicKey, secretKey, shouldExtend = false) {
   try {
-    const result = await portalRequest("/keys/validate", "POST", {}, apiKey);
+    const result = await portalRequest("/keys/validate", "POST", {}, publicKey, secretKey);
 
     // Handle --extend flag first
     if (shouldExtend) {
@@ -265,12 +304,12 @@ async function validateKey(apiKey, shouldExtend = false) {
 }
 
 async function cmdKey(args) {
-  const apiKey = getApiKey(args.apiKey);
-  await validateKey(apiKey, args.extend);
+  const { publicKey, secretKey } = getApiKeys(args.apiKey);
+  await validateKey(publicKey, secretKey, args.extend);
 }
 
 async function cmdExecute(args) {
-  const apiKey = getApiKey(args.apiKey);
+  const { publicKey, secretKey } = getApiKeys(args.apiKey);
 
   let code;
   try {
@@ -312,7 +351,7 @@ async function cmdExecute(args) {
   if (args.network) payload.network = args.network;
   if (args.vcpu) payload.vcpu = args.vcpu;
 
-  const result = await apiRequest("/execute", "POST", payload, apiKey);
+  const result = await apiRequest("/execute", "POST", payload, publicKey, secretKey);
 
   if (result.stdout) process.stdout.write(`${BLUE}${result.stdout}${RESET}`);
   if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
@@ -334,10 +373,10 @@ async function cmdExecute(args) {
 }
 
 async function cmdSession(args) {
-  const apiKey = getApiKey(args.apiKey);
+  const { publicKey, secretKey } = getApiKeys(args.apiKey);
 
   if (args.list) {
-    const result = await apiRequest("/sessions", "GET", null, apiKey);
+    const result = await apiRequest("/sessions", "GET", null, publicKey, secretKey);
     const sessions = result.sessions || [];
     if (sessions.length === 0) {
       console.log("No active sessions");
@@ -351,7 +390,7 @@ async function cmdSession(args) {
   }
 
   if (args.kill) {
-    await apiRequest(`/sessions/${args.kill}`, "DELETE", null, apiKey);
+    await apiRequest(`/sessions/${args.kill}`, "DELETE", null, publicKey, secretKey);
     console.log(`${GREEN}Session terminated: ${args.kill}${RESET}`);
     return;
   }
@@ -370,16 +409,16 @@ async function cmdSession(args) {
   if (args.audit) payload.audit = true;
 
   console.log(`${YELLOW}Creating session...${RESET}`);
-  const result = await apiRequest("/sessions", "POST", payload, apiKey);
+  const result = await apiRequest("/sessions", "POST", payload, publicKey, secretKey);
   console.log(`${GREEN}Session created: ${result.id || 'N/A'}${RESET}`);
   console.log(`${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}`);
 }
 
 async function cmdService(args) {
-  const apiKey = getApiKey(args.apiKey);
+  const { publicKey, secretKey } = getApiKeys(args.apiKey);
 
   if (args.list) {
-    const result = await apiRequest("/services", "GET", null, apiKey);
+    const result = await apiRequest("/services", "GET", null, publicKey, secretKey);
     const services = result.services || [];
     if (services.length === 0) {
       console.log("No services");
@@ -395,44 +434,44 @@ async function cmdService(args) {
   }
 
   if (args.info) {
-    const result = await apiRequest(`/services/${args.info}`, "GET", null, apiKey);
+    const result = await apiRequest(`/services/${args.info}`, "GET", null, publicKey, secretKey);
     console.log(JSON.stringify(result, null, 2));
     return;
   }
 
   if (args.logs) {
-    const result = await apiRequest(`/services/${args.logs}/logs`, "GET", null, apiKey);
+    const result = await apiRequest(`/services/${args.logs}/logs`, "GET", null, publicKey, secretKey);
     console.log(result.logs || "");
     return;
   }
 
   if (args.tail) {
-    const result = await apiRequest(`/services/${args.tail}/logs?lines=9000`, "GET", null, apiKey);
+    const result = await apiRequest(`/services/${args.tail}/logs?lines=9000`, "GET", null, publicKey, secretKey);
     console.log(result.logs || "");
     return;
   }
 
   if (args.sleep) {
-    await apiRequest(`/services/${args.sleep}/sleep`, "POST", null, apiKey);
+    await apiRequest(`/services/${args.sleep}/sleep`, "POST", null, publicKey, secretKey);
     console.log(`${GREEN}Service sleeping: ${args.sleep}${RESET}`);
     return;
   }
 
   if (args.wake) {
-    await apiRequest(`/services/${args.wake}/wake`, "POST", null, apiKey);
+    await apiRequest(`/services/${args.wake}/wake`, "POST", null, publicKey, secretKey);
     console.log(`${GREEN}Service waking: ${args.wake}${RESET}`);
     return;
   }
 
   if (args.destroy) {
-    await apiRequest(`/services/${args.destroy}`, "DELETE", null, apiKey);
+    await apiRequest(`/services/${args.destroy}`, "DELETE", null, publicKey, secretKey);
     console.log(`${GREEN}Service destroyed: ${args.destroy}${RESET}`);
     return;
   }
 
   if (args.execute) {
     const payload = { command: args.command };
-    const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, apiKey);
+    const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, publicKey, secretKey);
     if (result.stdout) process.stdout.write(`${BLUE}${result.stdout}${RESET}`);
     if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
     return;
@@ -441,7 +480,7 @@ async function cmdService(args) {
   if (args.dumpBootstrap) {
     console.error(`Fetching bootstrap script from ${args.dumpBootstrap}...`);
     const payload = { command: "cat /tmp/bootstrap.sh" };
-    const result = await apiRequest(`/services/${args.dumpBootstrap}/execute`, "POST", payload, apiKey);
+    const result = await apiRequest(`/services/${args.dumpBootstrap}/execute`, "POST", payload, publicKey, secretKey);
 
     if (result.stdout) {
       const bootstrap = result.stdout;
@@ -481,7 +520,7 @@ async function cmdService(args) {
     if (args.network) payload.network = args.network;
     if (args.vcpu) payload.vcpu = args.vcpu;
 
-    const result = await apiRequest("/services", "POST", payload, apiKey);
+    const result = await apiRequest("/services", "POST", payload, publicKey, secretKey);
     console.log(`${GREEN}Service created: ${result.id || 'N/A'}${RESET}`);
     console.log(`Name: ${result.name || 'N/A'}`);
     if (result.url) console.log(`URL: ${result.url}`);

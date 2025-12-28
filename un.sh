@@ -130,27 +130,60 @@ api_request() {
     local endpoint="$1"
     local method="${2:-GET}"
     local data="${3:-}"
-    local api_key="${4:-${UNSANDBOX_API_KEY}}"
+    local public_key="${4:-${UNSANDBOX_PUBLIC_KEY:-}}"
+    local secret_key="${5:-${UNSANDBOX_SECRET_KEY:-}}"
 
-    if [[ -z "$api_key" ]]; then
-        echo -e "${RED}Error: UNSANDBOX_API_KEY not set${RESET}" >&2
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if [[ -z "$public_key" ]] && [[ -n "${UNSANDBOX_API_KEY:-}" ]]; then
+        public_key="${UNSANDBOX_API_KEY}"
+        secret_key=""
+    fi
+
+    if [[ -z "$public_key" ]]; then
+        echo -e "${RED}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set${RESET}" >&2
         exit 1
     fi
 
     local url="${API_BASE}${endpoint}"
-    local tmpfile=$(mktemp)
+    local timestamp=$(date +%s)
+    local body="${data:-}"
+
+    # Build HMAC signature: timestamp:METHOD:path:body
+    local sig_input="${timestamp}:${method}:${endpoint}:${body}"
+    local signature=""
+
+    if [[ -n "$secret_key" ]]; then
+        signature=$(echo -n "$sig_input" | openssl dgst -sha256 -hmac "$secret_key" | sed 's/^.* //')
+    fi
 
     if [[ -n "$data" ]]; then
         local response
-        response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
-            -H "Authorization: Bearer $api_key" \
-            -H "Content-Type: application/json" \
-            -d "$data" 2>&1)
+        if [[ -n "$signature" ]]; then
+            response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
+                -H "Authorization: Bearer $public_key" \
+                -H "X-Timestamp: $timestamp" \
+                -H "X-Signature: $signature" \
+                -H "Content-Type: application/json" \
+                -d "$data" 2>&1)
+        else
+            response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
+                -H "Authorization: Bearer $public_key" \
+                -H "Content-Type: application/json" \
+                -d "$data" 2>&1)
+        fi
     else
         local response
-        response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
-            -H "Authorization: Bearer $api_key" \
-            -H "Content-Type: application/json" 2>&1)
+        if [[ -n "$signature" ]]; then
+            response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
+                -H "Authorization: Bearer $public_key" \
+                -H "X-Timestamp: $timestamp" \
+                -H "X-Signature: $signature" \
+                -H "Content-Type: application/json" 2>&1)
+        else
+            response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
+                -H "Authorization: Bearer $public_key" \
+                -H "Content-Type: application/json" 2>&1)
+        fi
     fi
 
     local http_code=$(echo "$response" | tail -n1)
@@ -172,7 +205,7 @@ cmd_execute() {
     local output_dir="."
     local network=""
     local vcpu=""
-    local api_key="${UNSANDBOX_API_KEY}"
+    local api_key="${UNSANDBOX_API_KEY:-}"
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -300,7 +333,7 @@ cmd_session() {
     local screen=false
     local network=""
     local vcpu=""
-    local api_key="${UNSANDBOX_API_KEY}"
+    local api_key="${UNSANDBOX_API_KEY:-}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -409,7 +442,7 @@ cmd_service() {
     local command=""
     local network=""
     local vcpu=""
-    local api_key="${UNSANDBOX_API_KEY}"
+    local api_key="${UNSANDBOX_API_KEY:-}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -743,7 +776,7 @@ validate_key() {
 }
 
 cmd_key() {
-    local api_key="${UNSANDBOX_API_KEY}"
+    local api_key="${UNSANDBOX_API_KEY:-}"
     local extend=false
 
     # Parse arguments

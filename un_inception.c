@@ -48,6 +48,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
 
 #define API_BASE "https://api.unsandbox.com"
 #define PORTAL_BASE "https://unsandbox.com"
@@ -56,6 +57,7 @@
 #define GREEN "\033[32m"
 #define YELLOW "\033[33m"
 #define RESET "\033[0m"
+#define MAX_CMD_LEN 16384
 
 const char* detect_language(const char *filename) {
     const char *ext = strrchr(filename, '.');
@@ -113,7 +115,54 @@ void escape_json_char(FILE *out, char c) {
     }
 }
 
-void cmd_execute(const char *source_file, char **envs, int env_count, char **files, int file_count, int artifacts, const char *output_dir, const char *network, int vcpu, const char *api_key) {
+char* compute_hmac(const char *secret_key, const char *message) {
+    char cmd[MAX_CMD_LEN];
+    snprintf(cmd, sizeof(cmd), "echo -n '%s' | openssl dgst -sha256 -hmac '%s' -hex | sed 's/.*= //'", message, secret_key);
+
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe) return NULL;
+
+    static char result[128];
+    if (fgets(result, sizeof(result), pipe)) {
+        // Trim newline
+        size_t len = strlen(result);
+        while (len > 0 && (result[len-1] == '\n' || result[len-1] == '\r')) {
+            result[--len] = '\0';
+        }
+    }
+    pclose(pipe);
+    return result;
+}
+
+void get_timestamp(char *buffer, size_t bufsize) {
+    snprintf(buffer, bufsize, "%ld", (long)time(NULL));
+}
+
+void build_auth_headers(char *buffer, size_t bufsize, const char *method, const char *path, const char *body, const char *public_key, const char *secret_key) {
+    if (!secret_key || secret_key[0] == '\0') {
+        // Legacy mode: use public_key as bearer token
+        snprintf(buffer, bufsize, "-H 'Authorization: Bearer %s'", public_key);
+        return;
+    }
+
+    // HMAC mode
+    char timestamp[32];
+    get_timestamp(timestamp, sizeof(timestamp));
+
+    char message[MAX_CMD_LEN];
+    snprintf(message, sizeof(message), "%s:%s:%s:%s", timestamp, method, path, body ? body : "");
+
+    char *signature = compute_hmac(secret_key, message);
+    if (!signature) {
+        fprintf(stderr, "%sError computing HMAC signature%s\n", RED, RESET);
+        exit(1);
+    }
+
+    snprintf(buffer, bufsize, "-H 'Authorization: Bearer %s' -H 'X-Timestamp: %s' -H 'X-Signature: %s'",
+             public_key, timestamp, signature);
+}
+
+void cmd_execute(const char *source_file, char **envs, int env_count, char **files, int file_count, int artifacts, const char *output_dir, const char *network, int vcpu, const char *public_key, const char *secret_key) {
     const char *language = detect_language(source_file);
     if (!language) {
         fprintf(stderr, "%sError: Cannot detect language%s\n", RED, RESET);
@@ -179,13 +228,16 @@ void cmd_execute(const char *source_file, char **envs, int env_count, char **fil
     fclose(jsonf);
 
     // Make API request using curl
-    char cmd[8192];
+    char auth_headers[1024];
+    build_auth_headers(auth_headers, sizeof(auth_headers), "POST", "/execute", json_body, public_key, secret_key);
+
+    char cmd[MAX_CMD_LEN];
     snprintf(cmd, sizeof(cmd),
         "curl -s -X POST '%s/execute' "
         "-H 'Content-Type: application/json' "
-        "-H 'Authorization: Bearer %s' "
+        "%s "
         "-d @- << 'EOF'\n%s\nEOF",
-        API_BASE, api_key, json_body);
+        API_BASE, auth_headers, json_body);
 
     FILE *curl = popen(cmd, "r");
     if (!curl) {
@@ -262,22 +314,27 @@ void cmd_execute(const char *source_file, char **envs, int env_count, char **fil
     exit(exit_code);
 }
 
-void cmd_session(int list, const char *kill, const char *shell, const char *network, int vcpu, int tmux, int screen, const char *api_key) {
-    char cmd[4096];
+void cmd_session(int list, const char *kill, const char *shell, const char *network, int vcpu, int tmux, int screen, const char *public_key, const char *secret_key) {
+    char cmd[8192];
+    char auth_headers[1024];
 
     if (list) {
+        build_auth_headers(auth_headers, sizeof(auth_headers), "GET", "/sessions", "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X GET '%s/sessions' -H 'Authorization: Bearer %s'",
-            API_BASE, api_key);
+            "curl -s -X GET '%s/sessions' %s",
+            API_BASE, auth_headers);
         system(cmd);
         printf("\n");
         return;
     }
 
     if (kill) {
+        char path[512];
+        snprintf(path, sizeof(path), "/sessions/%s", kill);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "DELETE", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X DELETE '%s/sessions/%s' -H 'Authorization: Bearer %s'",
-            API_BASE, kill, api_key);
+            "curl -s -X DELETE '%s/sessions/%s' %s",
+            API_BASE, kill, auth_headers);
         system(cmd);
         printf("%sSession terminated: %s%s\n", GREEN, kill, RESET);
         return;
@@ -305,22 +362,25 @@ void cmd_session(int list, const char *kill, const char *shell, const char *netw
     strcat(json, "}");
 
     printf("%sCreating session...%s\n", YELLOW, RESET);
+    build_auth_headers(auth_headers, sizeof(auth_headers), "POST", "/sessions", json, public_key, secret_key);
     snprintf(cmd, sizeof(cmd),
         "curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' "
-        "-H 'Authorization: Bearer %s' -d '%s'",
-        API_BASE, api_key, json);
+        "%s -d '%s'",
+        API_BASE, auth_headers, json);
     system(cmd);
     printf("\n%sSession created%s\n", GREEN, RESET);
 }
 
-void cmd_key(int extend, const char *api_key) {
-    char cmd[4096];
+void cmd_key(int extend, const char *public_key, const char *secret_key) {
+    char cmd[8192];
+    char auth_headers[1024];
 
+    build_auth_headers(auth_headers, sizeof(auth_headers), "POST", "/keys/validate", "", public_key, secret_key);
     snprintf(cmd, sizeof(cmd),
         "curl -s -X POST '%s/keys/validate' "
         "-H 'Content-Type: application/json' "
-        "-H 'Authorization: Bearer %s'",
-        PORTAL_BASE, api_key);
+        "%s",
+        PORTAL_BASE, auth_headers);
 
     FILE *curl = popen(cmd, "r");
     if (!curl) {
@@ -449,65 +509,85 @@ void cmd_key(int extend, const char *api_key) {
     }
 }
 
-void cmd_service(const char *name, const char *ports, const char *domains, const char *service_type, const char *bootstrap, int list, const char *info, const char *logs, const char *tail, const char *sleep_svc, const char *wake, const char *destroy, const char *network, int vcpu, const char *api_key) {
-    char cmd[8192];
+void cmd_service(const char *name, const char *ports, const char *domains, const char *service_type, const char *bootstrap, int list, const char *info, const char *logs, const char *tail, const char *sleep_svc, const char *wake, const char *destroy, const char *network, int vcpu, const char *public_key, const char *secret_key) {
+    char cmd[16384];
+    char auth_headers[1024];
 
     if (list) {
+        build_auth_headers(auth_headers, sizeof(auth_headers), "GET", "/services", "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X GET '%s/services' -H 'Authorization: Bearer %s'",
-            API_BASE, api_key);
+            "curl -s -X GET '%s/services' %s",
+            API_BASE, auth_headers);
         system(cmd);
         printf("\n");
         return;
     }
 
     if (info) {
+        char path[512];
+        snprintf(path, sizeof(path), "/services/%s", info);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "GET", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X GET '%s/services/%s' -H 'Authorization: Bearer %s'",
-            API_BASE, info, api_key);
+            "curl -s -X GET '%s/services/%s' %s",
+            API_BASE, info, auth_headers);
         system(cmd);
         printf("\n");
         return;
     }
 
     if (logs) {
+        char path[512];
+        snprintf(path, sizeof(path), "/services/%s/logs", logs);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "GET", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X GET '%s/services/%s/logs' -H 'Authorization: Bearer %s'",
-            API_BASE, logs, api_key);
+            "curl -s -X GET '%s/services/%s/logs' %s",
+            API_BASE, logs, auth_headers);
         system(cmd);
         return;
     }
 
     if (tail) {
+        char path[512];
+        snprintf(path, sizeof(path), "/services/%s/logs", tail);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "GET", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X GET '%s/services/%s/logs?lines=9000' -H 'Authorization: Bearer %s'",
-            API_BASE, tail, api_key);
+            "curl -s -X GET '%s/services/%s/logs?lines=9000' %s",
+            API_BASE, tail, auth_headers);
         system(cmd);
         return;
     }
 
     if (sleep_svc) {
+        char path[512];
+        snprintf(path, sizeof(path), "/services/%s/sleep", sleep_svc);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "POST", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X POST '%s/services/%s/sleep' -H 'Authorization: Bearer %s'",
-            API_BASE, sleep_svc, api_key);
+            "curl -s -X POST '%s/services/%s/sleep' %s",
+            API_BASE, sleep_svc, auth_headers);
         system(cmd);
         printf("%sService sleeping: %s%s\n", GREEN, sleep_svc, RESET);
         return;
     }
 
     if (wake) {
+        char path[512];
+        snprintf(path, sizeof(path), "/services/%s/wake", wake);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "POST", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X POST '%s/services/%s/wake' -H 'Authorization: Bearer %s'",
-            API_BASE, wake, api_key);
+            "curl -s -X POST '%s/services/%s/wake' %s",
+            API_BASE, wake, auth_headers);
         system(cmd);
         printf("%sService waking: %s%s\n", GREEN, wake, RESET);
         return;
     }
 
     if (destroy) {
+        char path[512];
+        snprintf(path, sizeof(path), "/services/%s", destroy);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "DELETE", path, "", public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
-            "curl -s -X DELETE '%s/services/%s' -H 'Authorization: Bearer %s'",
-            API_BASE, destroy, api_key);
+            "curl -s -X DELETE '%s/services/%s' %s",
+            API_BASE, destroy, auth_headers);
         system(cmd);
         printf("%sService destroyed: %s%s\n", GREEN, destroy, RESET);
         return;
@@ -551,10 +631,11 @@ void cmd_service(const char *name, const char *ports, const char *domains, const
         strcat(json, "}");
 
         printf("%sCreating service...%s\n", YELLOW, RESET);
+        build_auth_headers(auth_headers, sizeof(auth_headers), "POST", "/services", json, public_key, secret_key);
         snprintf(cmd, sizeof(cmd),
             "curl -s -X POST '%s/services' -H 'Content-Type: application/json' "
-            "-H 'Authorization: Bearer %s' -d '%s'",
-            API_BASE, api_key, json);
+            "%s -d '%s'",
+            API_BASE, auth_headers, json);
         system(cmd);
         printf("\n%sService created%s\n", GREEN, RESET);
         return;
@@ -565,10 +646,15 @@ void cmd_service(const char *name, const char *ports, const char *domains, const
 }
 
 int main(int argc, char *argv[]) {
-    const char *api_key = getenv("UNSANDBOX_API_KEY");
-    if (!api_key && argc > 1 && strcmp(argv[1], "session") != 0 && strcmp(argv[1], "service") != 0) {
-        fprintf(stderr, "%sError: UNSANDBOX_API_KEY not set%s\n", RED, RESET);
-        return 1;
+    const char *public_key = getenv("UNSANDBOX_PUBLIC_KEY");
+    const char *secret_key = getenv("UNSANDBOX_SECRET_KEY");
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    if (!public_key) {
+        public_key = getenv("UNSANDBOX_API_KEY");
+    }
+    if (!secret_key) {
+        secret_key = "";
     }
 
     if (argc < 2) {
@@ -584,9 +670,9 @@ int main(int argc, char *argv[]) {
         int extend = 0;
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--extend") == 0) extend = 1;
-            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) api_key = argv[++i];
+            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) public_key = argv[++i];
         }
-        cmd_key(extend, api_key);
+        cmd_key(extend, public_key, secret_key);
         return 0;
     }
 
@@ -607,10 +693,10 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) vcpu = atoi(argv[++i]);
             else if (strcmp(argv[i], "--tmux") == 0) tmux = 1;
             else if (strcmp(argv[i], "--screen") == 0) screen = 1;
-            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) api_key = argv[++i];
+            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) public_key = argv[++i];
         }
 
-        cmd_session(list, kill, shell, network, vcpu, tmux, screen, api_key);
+        cmd_session(list, kill, shell, network, vcpu, tmux, screen, public_key, secret_key);
         return 0;
     }
 
@@ -645,10 +731,10 @@ int main(int argc, char *argv[]) {
             else if (strcmp(argv[i], "--destroy") == 0 && i + 1 < argc) destroy = argv[++i];
             else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) network = argv[++i];
             else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) vcpu = atoi(argv[++i]);
-            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) api_key = argv[++i];
+            else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, domains, service_type, bootstrap, list, info, logs, tail, sleep_svc, wake, destroy, network, vcpu, api_key);
+        cmd_service(name, ports, domains, service_type, bootstrap, list, info, logs, tail, sleep_svc, wake, destroy, network, vcpu, public_key, secret_key);
         return 0;
     }
 
@@ -677,7 +763,7 @@ int main(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-v") == 0 && i + 1 < argc) {
             vcpu = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
-            api_key = argv[++i];
+            public_key = argv[++i];
         } else if (!source_file && argv[i][0] != '-') {
             source_file = argv[i];
         }
@@ -688,6 +774,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    cmd_execute(source_file, envs, env_count, files, file_count, artifacts, output_dir, network, vcpu, api_key);
+    cmd_execute(source_file, envs, env_count, files, file_count, artifacts, output_dir, network, vcpu, public_key, secret_key);
     return 0;
 }

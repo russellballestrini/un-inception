@@ -294,12 +294,44 @@ open_extend_page(PublicKey) ->
     end.
 
 %% Helpers
+get_api_keys() ->
+    PublicKey = os:getenv("UNSANDBOX_PUBLIC_KEY"),
+    SecretKey = os:getenv("UNSANDBOX_SECRET_KEY"),
+    ApiKey = os:getenv("UNSANDBOX_API_KEY"),
+
+    if
+        PublicKey =/= false andalso SecretKey =/= false ->
+            {PublicKey, SecretKey};
+        ApiKey =/= false ->
+            {ApiKey, false};
+        true ->
+            io:format("Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)~n"),
+            halt(1)
+    end.
+
 get_api_key() ->
-    case os:getenv("UNSANDBOX_API_KEY") of
-        false ->
-            io:format("Error: UNSANDBOX_API_KEY not set~n"),
-            halt(1);
-        Key -> Key
+    {PublicKey, _} = get_api_keys(),
+    PublicKey.
+
+hmac_sha256(Secret, Message) ->
+    string:lowercase(
+        lists:flatten([io_lib:format("~2.16.0b", [X]) || X <- binary_to_list(crypto:mac(hmac, sha256, Secret, Message))])
+    ).
+
+make_signature(SecretKey, Timestamp, Method, Path, Body) ->
+    Message = Timestamp ++ ":" ++ Method ++ ":" ++ Path ++ ":" ++ Body,
+    hmac_sha256(SecretKey, Message).
+
+build_auth_headers(PublicKey, SecretKey, Method, Path, Body) ->
+    if
+        SecretKey =/= false ->
+            Timestamp = integer_to_list(erlang:system_time(second)),
+            Signature = make_signature(SecretKey, Timestamp, Method, Path, Body),
+            " -H 'Authorization: Bearer " ++ PublicKey ++ "'"
+            ++ " -H 'X-Timestamp: " ++ Timestamp ++ "'"
+            ++ " -H 'X-Signature: " ++ Signature ++ "'";
+        true ->
+            " -H 'Authorization: Bearer " ++ PublicKey ++ "'"
     end.
 
 ext_to_lang(".hs") -> {ok, "haskell"};
@@ -364,30 +396,40 @@ write_temp_file(Data) ->
     TmpFile.
 
 curl_post(ApiKey, Endpoint, TmpFile) ->
+    {ok, Body} = file:read_file(TmpFile),
+    BodyStr = binary_to_list(Body),
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, BodyStr),
     Cmd = "curl -s -X POST https://api.unsandbox.com" ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
-          " -H 'Authorization: Bearer " ++ ApiKey ++ "'" ++
+          AuthHeaders ++
           " -d @" ++ TmpFile,
     os:cmd(Cmd).
 
 curl_post_portal(ApiKey, Endpoint, Data) ->
     TmpFile = write_temp_file(Data),
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Data),
     Cmd = "curl -s -X POST https://unsandbox.com" ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
-          " -H 'Authorization: Bearer " ++ ApiKey ++ "'" ++
+          AuthHeaders ++
           " -d @" ++ TmpFile,
     Result = os:cmd(Cmd),
     file:delete(TmpFile),
     Result.
 
 curl_get(ApiKey, Endpoint) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "GET", Endpoint, ""),
     Cmd = "curl -s https://api.unsandbox.com" ++ Endpoint ++
-          " -H 'Authorization: Bearer " ++ ApiKey ++ "'",
+          AuthHeaders,
     os:cmd(Cmd).
 
 curl_delete(ApiKey, Endpoint) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
     Cmd = "curl -s -X DELETE https://api.unsandbox.com" ++ Endpoint ++
-          " -H 'Authorization: Bearer " ++ ApiKey ++ "'",
+          AuthHeaders,
     os:cmd(Cmd).
 
 %% Argument parsing

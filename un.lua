@@ -76,13 +76,23 @@ local EXT_MAP = {
     [".tcl"] = "tcl", [".raku"] = "raku", [".m"] = "objc"
 }
 
-local function get_api_key(args_key)
-    local key = args_key or os.getenv("UNSANDBOX_API_KEY")
-    if not key then
-        io.stderr:write(RED .. "Error: UNSANDBOX_API_KEY not set" .. RESET .. "\n")
-        os.exit(1)
+local function get_api_keys(args_key)
+    local public_key = os.getenv("UNSANDBOX_PUBLIC_KEY")
+    local secret_key = os.getenv("UNSANDBOX_SECRET_KEY")
+
+    if not public_key or not secret_key then
+        local old_key = args_key or os.getenv("UNSANDBOX_API_KEY")
+        if old_key then
+            public_key = old_key
+            secret_key = old_key
+        else
+            io.stderr:write(RED .. "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set" .. RESET .. "\n")
+            io.stderr:write(RED .. "       (or legacy UNSANDBOX_API_KEY for backwards compatibility)" .. RESET .. "\n")
+            os.exit(1)
+        end
     end
-    return key
+
+    return {public_key = public_key, secret_key = secret_key}
 end
 
 local function detect_language(filename)
@@ -115,20 +125,46 @@ local function shell_escape(str)
     return "'" .. str:gsub("'", "'\\''") .. "'"
 end
 
-local function api_request(endpoint, method, data, api_key)
+local function api_request(endpoint, method, data, keys)
     method = method or "GET"
     local url = API_BASE .. endpoint
     local tmpfile = os.tmpname()
 
+    -- Generate timestamp and signature
+    local timestamp = tostring(os.time())
+    local body = data and json.encode(data) or ""
+
+    -- Parse URL to get path
+    local path = endpoint
+
+    -- Create HMAC signature using openssl command
+    local message = timestamp .. ":" .. method .. ":" .. path .. ":" .. body
+    local sig_tmpfile = os.tmpname()
+    local msg_tmpfile = os.tmpname()
+
+    -- Write message to temp file
+    local f = io.open(msg_tmpfile, "w")
+    f:write(message)
+    f:close()
+
+    -- Generate HMAC using openssl
+    local hmac_cmd = "openssl dgst -sha256 -hmac " .. shell_escape(keys.secret_key) .. " -hex " .. shell_escape(msg_tmpfile) .. " | awk '{print $2}'"
+    local sig_handle = io.popen(hmac_cmd)
+    local signature = sig_handle:read("*a"):gsub("%s+$", "")
+    sig_handle:close()
+    os.remove(msg_tmpfile)
+
     local cmd = "curl -s -X " .. method .. " " .. shell_escape(url) ..
-                " -H 'Authorization: Bearer " .. api_key .. "'" ..
+                " -H 'Authorization: Bearer " .. keys.public_key .. "'" ..
+                " -H 'X-Timestamp: " .. timestamp .. "'" ..
+                " -H 'X-Signature: " .. signature .. "'" ..
                 " -H 'Content-Type: application/json'"
 
+    local data_file
     if data then
-        local payload = json.encode(data)
-        local data_file = os.tmpname()
+        data_file = os.tmpname()
         local f = io.open(data_file, "w")
-        f:write(payload)
+        f:write(body)
         f:close()
         cmd = cmd .. " -d @" .. shell_escape(data_file)
     end
@@ -144,7 +180,7 @@ local function api_request(endpoint, method, data, api_key)
     file:close()
     os.remove(tmpfile)
 
-    if data then
+    if data_file then
         os.remove(data_file)
     end
 
@@ -198,7 +234,7 @@ local function base64_decode(data)
 end
 
 local function cmd_execute(options)
-    local api_key = get_api_key(options.api_key)
+    local keys = get_api_keys(options.api_key)
     local code = read_file(options.source_file)
     local language = detect_language(options.source_file)
 
@@ -233,7 +269,7 @@ local function cmd_execute(options)
     if options.network then payload.network = options.network end
     if options.vcpu then payload.vcpu = options.vcpu end
 
-    local result = api_request("/execute", "POST", payload, api_key)
+    local result = api_request("/execute", "POST", payload, keys)
 
     if result.stdout then
         io.write(BLUE .. result.stdout .. RESET)
@@ -261,10 +297,10 @@ local function cmd_execute(options)
 end
 
 local function cmd_session(options)
-    local api_key = get_api_key(options.api_key)
+    local keys = get_api_keys(options.api_key)
 
     if options.list then
-        local result = api_request("/sessions", "GET", nil, api_key)
+        local result = api_request("/sessions", "GET", nil, keys)
         local sessions = result.sessions or {}
         if #sessions == 0 then
             print("No active sessions")
@@ -280,7 +316,7 @@ local function cmd_session(options)
     end
 
     if options.kill then
-        api_request("/sessions/" .. options.kill, "DELETE", nil, api_key)
+        api_request("/sessions/" .. options.kill, "DELETE", nil, keys)
         print(GREEN .. "Session terminated: " .. options.kill .. RESET)
         return
     end
@@ -299,21 +335,39 @@ local function cmd_session(options)
     if options.audit then payload.audit = true end
 
     print(YELLOW .. "Creating session..." .. RESET)
-    local result = api_request("/sessions", "POST", payload, api_key)
+    local result = api_request("/sessions", "POST", payload, keys)
     print(GREEN .. "Session created: " .. (result.id or "N/A") .. RESET)
     print(YELLOW .. "(Interactive sessions require WebSocket - use un2 for full support)" .. RESET)
 end
 
 local function cmd_key(options)
-    local api_key = get_api_key(options.api_key)
+    local keys = get_api_keys(options.api_key)
 
     if options.extend then
         -- Get public_key from validation response
         local url = PORTAL_BASE .. "/keys/validate"
         local tmpfile = os.tmpname()
 
+        local timestamp = tostring(os.time())
+        local body = ""
+        local path = "/keys/validate"
+        local message = timestamp .. ":POST:" .. path .. ":" .. body
+        local msg_tmpfile = os.tmpname()
+
+        local f = io.open(msg_tmpfile, "w")
+        f:write(message)
+        f:close()
+
+        local hmac_cmd = "openssl dgst -sha256 -hmac " .. shell_escape(keys.secret_key) .. " -hex " .. shell_escape(msg_tmpfile) .. " | awk '{print $2}'"
+        local sig_handle = io.popen(hmac_cmd)
+        local signature = sig_handle:read("*a"):gsub("%s+$", "")
+        sig_handle:close()
+        os.remove(msg_tmpfile)
+
         local cmd = "curl -s -X POST " .. shell_escape(url) ..
-                    " -H 'Authorization: Bearer " .. api_key .. "'" ..
+                    " -H 'Authorization: Bearer " .. keys.public_key .. "'" ..
+                    " -H 'X-Timestamp: " .. timestamp .. "'" ..
+                    " -H 'X-Signature: " .. signature .. "'" ..
                     " -H 'Content-Type: application/json'" ..
                     " -w '\\n%{http_code}' -o " .. shell_escape(tmpfile)
 
@@ -351,8 +405,26 @@ local function cmd_key(options)
     local url = PORTAL_BASE .. "/keys/validate"
     local tmpfile = os.tmpname()
 
+    local timestamp = tostring(os.time())
+    local body = ""
+    local path = "/keys/validate"
+    local message = timestamp .. ":POST:" .. path .. ":" .. body
+    local msg_tmpfile = os.tmpname()
+
+    local f = io.open(msg_tmpfile, "w")
+    f:write(message)
+    f:close()
+
+    local hmac_cmd = "openssl dgst -sha256 -hmac " .. shell_escape(keys.secret_key) .. " -hex " .. shell_escape(msg_tmpfile) .. " | awk '{print $2}'"
+    local sig_handle = io.popen(hmac_cmd)
+    local signature = sig_handle:read("*a"):gsub("%s+$", "")
+    sig_handle:close()
+    os.remove(msg_tmpfile)
+
     local cmd = "curl -s -X POST " .. shell_escape(url) ..
-                " -H 'Authorization: Bearer " .. api_key .. "'" ..
+                " -H 'Authorization: Bearer " .. keys.public_key .. "'" ..
+                " -H 'X-Timestamp: " .. timestamp .. "'" ..
+                " -H 'X-Signature: " .. signature .. "'" ..
                 " -H 'Content-Type: application/json'" ..
                 " -w '\\n%{http_code}' -o " .. shell_escape(tmpfile)
 
@@ -390,10 +462,10 @@ local function cmd_key(options)
 end
 
 local function cmd_service(options)
-    local api_key = get_api_key(options.api_key)
+    local keys = get_api_keys(options.api_key)
 
     if options.list then
-        local result = api_request("/services", "GET", nil, api_key)
+        local result = api_request("/services", "GET", nil, keys)
         local services = result.services or {}
         if #services == 0 then
             print("No services")
@@ -411,44 +483,44 @@ local function cmd_service(options)
     end
 
     if options.info then
-        local result = api_request("/services/" .. options.info, "GET", nil, api_key)
+        local result = api_request("/services/" .. options.info, "GET", nil, keys)
         print(json.encode(result))
         return
     end
 
     if options.logs then
-        local result = api_request("/services/" .. options.logs .. "/logs", "GET", nil, api_key)
+        local result = api_request("/services/" .. options.logs .. "/logs", "GET", nil, keys)
         print(result.logs or "")
         return
     end
 
     if options.tail then
-        local result = api_request("/services/" .. options.tail .. "/logs?lines=9000", "GET", nil, api_key)
+        local result = api_request("/services/" .. options.tail .. "/logs?lines=9000", "GET", nil, keys)
         print(result.logs or "")
         return
     end
 
     if options.sleep then
-        api_request("/services/" .. options.sleep .. "/sleep", "POST", nil, api_key)
+        api_request("/services/" .. options.sleep .. "/sleep", "POST", nil, keys)
         print(GREEN .. "Service sleeping: " .. options.sleep .. RESET)
         return
     end
 
     if options.wake then
-        api_request("/services/" .. options.wake .. "/wake", "POST", nil, api_key)
+        api_request("/services/" .. options.wake .. "/wake", "POST", nil, keys)
         print(GREEN .. "Service waking: " .. options.wake .. RESET)
         return
     end
 
     if options.destroy then
-        api_request("/services/" .. options.destroy, "DELETE", nil, api_key)
+        api_request("/services/" .. options.destroy, "DELETE", nil, keys)
         print(GREEN .. "Service destroyed: " .. options.destroy .. RESET)
         return
     end
 
     if options.execute then
         local payload = { command = options.command }
-        local result = api_request("/services/" .. options.execute .. "/execute", "POST", payload, api_key)
+        local result = api_request("/services/" .. options.execute .. "/execute", "POST", payload, keys)
         if result.stdout then io.write(BLUE .. result.stdout .. RESET) end
         if result.stderr then io.stderr:write(RED .. result.stderr .. RESET) end
         return
@@ -457,7 +529,7 @@ local function cmd_service(options)
     if options.dump_bootstrap then
         io.stderr:write("Fetching bootstrap script from " .. options.dump_bootstrap .. "...\n")
         local payload = { command = "cat /tmp/bootstrap.sh" }
-        local result = api_request("/services/" .. options.dump_bootstrap .. "/execute", "POST", payload, api_key)
+        local result = api_request("/services/" .. options.dump_bootstrap .. "/execute", "POST", payload, keys)
 
         if result.stdout then
             local bootstrap = result.stdout
@@ -514,7 +586,7 @@ local function cmd_service(options)
         if options.network then payload.network = options.network end
         if options.vcpu then payload.vcpu = options.vcpu end
 
-        local result = api_request("/services", "POST", payload, api_key)
+        local result = api_request("/services", "POST", payload, keys)
         print(GREEN .. "Service created: " .. (result.id or "N/A") .. RESET)
         print("Name: " .. (result.name or "N/A"))
         if result.url then print("URL: " .. result.url) end

@@ -45,6 +45,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Security.Cryptography;
 
 class Un
 {
@@ -110,7 +111,7 @@ class Un
 
     static void CmdExecute(Args args)
     {
-        string apiKey = GetApiKey(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
         string code = File.ReadAllText(args.SourceFile);
         string language = DetectLanguage(args.SourceFile);
 
@@ -165,7 +166,7 @@ class Un
             payload["vcpu"] = args.Vcpu;
         }
 
-        var result = ApiRequest("/execute", "POST", payload, apiKey);
+        var result = ApiRequest("/execute", "POST", payload, publicKey, secretKey);
 
         if (result.ContainsKey("stdout") && !string.IsNullOrEmpty((string)result["stdout"]))
         {
@@ -197,11 +198,11 @@ class Un
 
     static void CmdSession(Args args)
     {
-        string apiKey = GetApiKey(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
         if (args.SessionList)
         {
-            var result = ApiRequest("/sessions", "GET", null, apiKey);
+            var result = ApiRequest("/sessions", "GET", null, publicKey, secretKey);
             var sessions = result.ContainsKey("sessions") ? result["sessions"] as List<object> : null;
             if (sessions == null || sessions.Count == 0)
             {
@@ -224,7 +225,7 @@ class Un
 
         if (args.SessionKill != null)
         {
-            ApiRequest($"/sessions/{args.SessionKill}", "DELETE", null, apiKey);
+            ApiRequest($"/sessions/{args.SessionKill}", "DELETE", null, publicKey, secretKey);
             Console.WriteLine($"{GREEN}Session terminated: {args.SessionKill}{RESET}");
             return;
         }
@@ -243,16 +244,16 @@ class Un
         }
 
         Console.WriteLine($"{YELLOW}Creating session...{RESET}");
-        var createResult = ApiRequest("/sessions", "POST", payload, apiKey);
+        var createResult = ApiRequest("/sessions", "POST", payload, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Session created: {createResult["id"]}{RESET}");
         Console.WriteLine($"{YELLOW}(Interactive sessions require WebSocket - use un2 for full support){RESET}");
     }
 
     static void CmdKey(Args args)
     {
-        string apiKey = GetApiKey(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
-        var result = ApiRequest("/keys/validate", "POST", null, apiKey);
+        var result = ApiRequest("/keys/validate", "POST", null, publicKey, secretKey);
 
         if (!result.ContainsKey("valid"))
         {
@@ -335,11 +336,11 @@ class Un
 
     static void CmdService(Args args)
     {
-        string apiKey = GetApiKey(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
         if (args.ServiceList)
         {
-            var result = ApiRequest("/services", "GET", null, apiKey);
+            var result = ApiRequest("/services", "GET", null, publicKey, secretKey);
             var services = result.ContainsKey("services") ? result["services"] as List<object> : null;
             if (services == null || services.Count == 0)
             {
@@ -366,42 +367,42 @@ class Un
 
         if (args.ServiceInfo != null)
         {
-            var result = ApiRequest($"/services/{args.ServiceInfo}", "GET", null, apiKey);
+            var result = ApiRequest($"/services/{args.ServiceInfo}", "GET", null, publicKey, secretKey);
             Console.WriteLine(ToJson(result));
             return;
         }
 
         if (args.ServiceLogs != null)
         {
-            var result = ApiRequest($"/services/{args.ServiceLogs}/logs", "GET", null, apiKey);
+            var result = ApiRequest($"/services/{args.ServiceLogs}/logs", "GET", null, publicKey, secretKey);
             Console.WriteLine(result.ContainsKey("logs") ? result["logs"] : "");
             return;
         }
 
         if (args.ServiceTail != null)
         {
-            var result = ApiRequest($"/services/{args.ServiceTail}/logs?lines=9000", "GET", null, apiKey);
+            var result = ApiRequest($"/services/{args.ServiceTail}/logs?lines=9000", "GET", null, publicKey, secretKey);
             Console.WriteLine(result.ContainsKey("logs") ? result["logs"] : "");
             return;
         }
 
         if (args.ServiceSleep != null)
         {
-            ApiRequest($"/services/{args.ServiceSleep}/sleep", "POST", null, apiKey);
+            ApiRequest($"/services/{args.ServiceSleep}/sleep", "POST", null, publicKey, secretKey);
             Console.WriteLine($"{GREEN}Service sleeping: {args.ServiceSleep}{RESET}");
             return;
         }
 
         if (args.ServiceWake != null)
         {
-            ApiRequest($"/services/{args.ServiceWake}/wake", "POST", null, apiKey);
+            ApiRequest($"/services/{args.ServiceWake}/wake", "POST", null, publicKey, secretKey);
             Console.WriteLine($"{GREEN}Service waking: {args.ServiceWake}{RESET}");
             return;
         }
 
         if (args.ServiceDestroy != null)
         {
-            ApiRequest($"/services/{args.ServiceDestroy}", "DELETE", null, apiKey);
+            ApiRequest($"/services/{args.ServiceDestroy}", "DELETE", null, publicKey, secretKey);
             Console.WriteLine($"{GREEN}Service destroyed: {args.ServiceDestroy}{RESET}");
             return;
         }
@@ -412,7 +413,7 @@ class Un
             {
                 ["command"] = args.ServiceCommand
             };
-            var result = ApiRequest($"/services/{args.ServiceExecute}/execute", "POST", payload, apiKey);
+            var result = ApiRequest($"/services/{args.ServiceExecute}/execute", "POST", payload, publicKey, secretKey);
             if (result.ContainsKey("stdout") && !string.IsNullOrEmpty((string)result["stdout"]))
             {
                 Console.Write($"{BLUE}{result["stdout"]}{RESET}");
@@ -431,7 +432,7 @@ class Un
             {
                 ["command"] = "cat /tmp/bootstrap.sh"
             };
-            var result = ApiRequest($"/services/{args.ServiceDumpBootstrap}/execute", "POST", payload, apiKey);
+            var result = ApiRequest($"/services/{args.ServiceDumpBootstrap}/execute", "POST", payload, publicKey, secretKey);
 
             var bootstrap = result.ContainsKey("stdout") ? (string)result["stdout"] : null;
             if (!string.IsNullOrEmpty(bootstrap))
@@ -494,7 +495,7 @@ class Un
                 payload["vcpu"] = args.Vcpu;
             }
 
-            var result = ApiRequest("/services", "POST", payload, apiKey);
+            var result = ApiRequest("/services", "POST", payload, publicKey, secretKey);
             Console.WriteLine($"{GREEN}Service created: {result["id"]}{RESET}");
             Console.WriteLine($"Name: {result["name"]}");
             if (result.ContainsKey("url"))
@@ -508,15 +509,24 @@ class Un
         Environment.Exit(1);
     }
 
-    static string GetApiKey(string argsKey)
+    static (string, string) GetApiKeys(string argsKey)
     {
-        string key = argsKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY");
-        if (string.IsNullOrEmpty(key))
+        string publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY");
+        string secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY");
+
+        // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+        if (string.IsNullOrEmpty(publicKey) || string.IsNullOrEmpty(secretKey))
         {
-            Console.Error.WriteLine($"{RED}Error: UNSANDBOX_API_KEY not set{RESET}");
-            Environment.Exit(1);
+            string legacyKey = argsKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY");
+            if (string.IsNullOrEmpty(legacyKey))
+            {
+                Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
+                Environment.Exit(1);
+            }
+            return (legacyKey, null);
         }
-        return key;
+
+        return (publicKey, secretKey);
     }
 
     static string DetectLanguage(string filename)
@@ -534,20 +544,46 @@ class Un
         return ExtMap[ext];
     }
 
-    static Dictionary<string, object> ApiRequest(string endpoint, string method, Dictionary<string, object> data, string apiKey)
+    static Dictionary<string, object> ApiRequest(string endpoint, string method, Dictionary<string, object> data, string publicKey, string secretKey)
     {
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
 
         HttpWebRequest request = (HttpWebRequest)WebRequest.Create(API_BASE + endpoint);
         request.Method = method;
-        request.Headers.Add("Authorization", $"Bearer {apiKey}");
         request.ContentType = "application/json";
         request.Timeout = 300000;
 
+        string body = "";
         if (data != null)
         {
-            string json = ToJson(data);
-            byte[] bytes = Encoding.UTF8.GetBytes(json);
+            body = ToJson(data);
+        }
+
+        // Add HMAC authentication headers if secretKey is provided
+        if (!string.IsNullOrEmpty(secretKey))
+        {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+
+            using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
+            {
+                byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
+                string signature = BitConverter.ToString(hash).Replace("-", "").ToLower();
+
+                request.Headers.Add("Authorization", $"Bearer {publicKey}");
+                request.Headers.Add("X-Timestamp", timestamp.ToString());
+                request.Headers.Add("X-Signature", signature);
+            }
+        }
+        else
+        {
+            // Legacy API key authentication
+            request.Headers.Add("Authorization", $"Bearer {publicKey}");
+        }
+
+        if (data != null)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(body);
             request.ContentLength = bytes.Length;
             using (Stream stream = request.GetRequestStream())
             {

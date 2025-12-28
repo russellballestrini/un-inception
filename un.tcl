@@ -1,3 +1,4 @@
+#!/usr/bin/env tclsh
 # PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 #
 # This is free public domain software for the public good of a permacomputer hosted
@@ -34,8 +35,6 @@
 # https://www.foxhop.net
 # https://www.unturf.com/software
 
-#!/usr/bin/env tclsh
-
 # unsandbox CLI - TCL implementation
 # Full-featured CLI matching un.c/un.py capabilities
 
@@ -43,6 +42,7 @@ package require http
 package require json
 package require tls
 package require base64
+package require sha256
 
 # Register https support
 ::http::register https 443 ::tls::socket
@@ -72,12 +72,28 @@ array set EXT_MAP {
     .tcl tcl .raku raku .m objc
 }
 
-proc get_api_key {} {
-    if {[info exists ::env(UNSANDBOX_API_KEY)]} {
-        return $::env(UNSANDBOX_API_KEY)
+proc get_api_keys {} {
+    set public_key ""
+    set secret_key ""
+
+    if {[info exists ::env(UNSANDBOX_PUBLIC_KEY)]} {
+        set public_key $::env(UNSANDBOX_PUBLIC_KEY)
     }
-    puts stderr "${::RED}Error: UNSANDBOX_API_KEY not set${::RESET}"
-    exit 1
+    if {[info exists ::env(UNSANDBOX_SECRET_KEY)]} {
+        set secret_key $::env(UNSANDBOX_SECRET_KEY)
+    }
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if {$public_key eq "" && [info exists ::env(UNSANDBOX_API_KEY)]} {
+        set public_key $::env(UNSANDBOX_API_KEY)
+        set secret_key ""
+    }
+
+    if {$public_key eq ""} {
+        puts stderr "${::RED}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set${::RESET}"
+        exit 1
+    }
+    return [list $public_key $secret_key]
 }
 
 proc detect_language {filename} {
@@ -103,16 +119,29 @@ proc detect_language {filename} {
     exit 1
 }
 
-proc api_request {endpoint method data api_key} {
+proc api_request {endpoint method data public_key secret_key} {
     set url "${::API_BASE}${endpoint}"
-    set headers [list Authorization "Bearer $api_key" Content-Type "application/json"]
+    set headers [list Authorization "Bearer $public_key" Content-Type "application/json"]
+
+    set json_data ""
+    if {$method ne "GET" && $method ne "DELETE" && [llength $data] > 0} {
+        set json_data [::json::write object {*}$data]
+    }
+
+    # Add HMAC signature if secret_key is present
+    if {$secret_key ne ""} {
+        set timestamp [clock seconds]
+        set sig_input "${timestamp}:${method}:${endpoint}:${json_data}"
+        set signature [::sha2::hmac -hex -key $secret_key $sig_input]
+        lappend headers X-Timestamp $timestamp
+        lappend headers X-Signature $signature
+    }
 
     if {$method eq "GET"} {
         set token [::http::geturl $url -headers $headers -timeout 300000]
     } elseif {$method eq "DELETE"} {
         set token [::http::geturl $url -method DELETE -headers $headers -timeout 300000]
     } else {
-        set json_data [::json::write object {*}$data]
         set token [::http::geturl $url -method $method -headers $headers -query $json_data -timeout 300000]
     }
 
@@ -131,7 +160,7 @@ proc api_request {endpoint method data api_key} {
 }
 
 proc cmd_execute {args} {
-    set api_key [get_api_key]
+    lassign [get_api_keys] public_key secret_key
     set source_file ""
     set env_vars [dict create]
     set input_files [list]
@@ -236,7 +265,7 @@ proc cmd_execute {args} {
     }
 
     # Execute
-    set result [api_request "/execute" "POST" $payload $api_key]
+    set result [api_request "/execute" "POST" $payload $public_key $secret_key]
 
     # Print output
     if {[dict exists $result stdout]} {
@@ -275,7 +304,7 @@ proc cmd_execute {args} {
 }
 
 proc cmd_session {args} {
-    set api_key [get_api_key]
+    lassign [get_api_keys] public_key secret_key
     set list_mode 0
     set kill_id ""
     set shell ""
@@ -309,7 +338,7 @@ proc cmd_session {args} {
     }
 
     if {$list_mode} {
-        set result [api_request "/sessions" "GET" {} $api_key]
+        set result [api_request "/sessions" "GET" {} $public_key $secret_key]
         set sessions [dict get $result sessions]
         if {[llength $sessions] == 0} {
             puts "No active sessions"
@@ -327,7 +356,7 @@ proc cmd_session {args} {
     }
 
     if {$kill_id ne ""} {
-        api_request "/sessions/$kill_id" "DELETE" {} $api_key
+        api_request "/sessions/$kill_id" "DELETE" {} $public_key $secret_key
         puts "${::GREEN}Session terminated: $kill_id${::RESET}"
         return
     }
@@ -347,13 +376,13 @@ proc cmd_session {args} {
     }
 
     puts "${::YELLOW}Creating session...${::RESET}"
-    set result [api_request "/sessions" "POST" $payload $api_key]
+    set result [api_request "/sessions" "POST" $payload $public_key $secret_key]
     puts "${::GREEN}Session created: [dict get $result id]${::RESET}"
     puts "${::YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${::RESET}"
 }
 
 proc cmd_key {args} {
-    set api_key [get_api_key]
+    lassign [get_api_keys] public_key secret_key
     set extend_mode 0
 
     # Parse arguments
@@ -368,7 +397,16 @@ proc cmd_key {args} {
 
     # POST to /keys/validate with Bearer auth
     set url "${::PORTAL_BASE}/keys/validate"
-    set headers [list Authorization "Bearer $api_key" Content-Type "application/json"]
+    set headers [list Authorization "Bearer $public_key" Content-Type "application/json"]
+
+    # Add HMAC signature if secret_key is present
+    if {$secret_key ne ""} {
+        set timestamp [clock seconds]
+        set sig_input "${timestamp}:POST:/keys/validate:"
+        set signature [::sha2::hmac -hex -key $secret_key $sig_input]
+        lappend headers X-Timestamp $timestamp
+        lappend headers X-Signature $signature
+    }
 
     set token [::http::geturl $url -method POST -headers $headers -timeout 30000]
     set status [::http::status $token]
@@ -438,7 +476,7 @@ proc cmd_key {args} {
 }
 
 proc cmd_service {args} {
-    set api_key [get_api_key]
+    lassign [get_api_keys] public_key secret_key
     set list_mode 0
     set info_id ""
     set logs_id ""
@@ -517,7 +555,7 @@ proc cmd_service {args} {
     }
 
     if {$list_mode} {
-        set result [api_request "/services" "GET" {} $api_key]
+        set result [api_request "/services" "GET" {} $public_key $secret_key]
         set services [dict get $result services]
         if {[llength $services] == 0} {
             puts "No services"
@@ -538,31 +576,31 @@ proc cmd_service {args} {
     }
 
     if {$info_id ne ""} {
-        set result [api_request "/services/$info_id" "GET" {} $api_key]
+        set result [api_request "/services/$info_id" "GET" {} $public_key $secret_key]
         puts [::json::write object {*}[dict_to_json_list $result]]
         return
     }
 
     if {$logs_id ne ""} {
-        set result [api_request "/services/$logs_id/logs" "GET" {} $api_key]
+        set result [api_request "/services/$logs_id/logs" "GET" {} $public_key $secret_key]
         puts [dict get $result logs]
         return
     }
 
     if {$sleep_id ne ""} {
-        api_request "/services/$sleep_id/sleep" "POST" {} $api_key
+        api_request "/services/$sleep_id/sleep" "POST" {} $public_key $secret_key
         puts "${::GREEN}Service sleeping: $sleep_id${::RESET}"
         return
     }
 
     if {$wake_id ne ""} {
-        api_request "/services/$wake_id/wake" "POST" {} $api_key
+        api_request "/services/$wake_id/wake" "POST" {} $public_key $secret_key
         puts "${::GREEN}Service waking: $wake_id${::RESET}"
         return
     }
 
     if {$destroy_id ne ""} {
-        api_request "/services/$destroy_id" "DELETE" {} $api_key
+        api_request "/services/$destroy_id" "DELETE" {} $public_key $secret_key
         puts "${::GREEN}Service destroyed: $destroy_id${::RESET}"
         return
     }
@@ -570,7 +608,7 @@ proc cmd_service {args} {
     if {$dump_bootstrap_id ne ""} {
         puts stderr "Fetching bootstrap script from $dump_bootstrap_id..."
         set payload [list command [::json::write string "cat /tmp/bootstrap.sh"]]
-        set result [api_request "/services/$dump_bootstrap_id/execute" "POST" $payload $api_key]
+        set result [api_request "/services/$dump_bootstrap_id/execute" "POST" $payload $public_key $secret_key]
 
         if {[dict exists $result stdout] && [dict get $result stdout] ne ""} {
             set bootstrap [dict get $result stdout]
@@ -628,7 +666,7 @@ proc cmd_service {args} {
             lappend payload vcpu $vcpu
         }
 
-        set result [api_request "/services" "POST" $payload $api_key]
+        set result [api_request "/services" "POST" $payload $public_key $secret_key]
         puts "${::GREEN}Service created: [dict get $result id]${::RESET}"
         puts "Name: [dict get $result name]"
         if {[dict exists $result url]} {

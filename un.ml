@@ -114,11 +114,22 @@ let escape_json s =
 
 (* Execute curl command *)
 let curl_post api_key endpoint json =
-  let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com%s -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d '%s'"
-    endpoint api_key json in
+  let (public_key, secret_key) = get_api_keys () in
+  let auth_headers = build_auth_headers public_key secret_key "POST" endpoint json in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com%s -H 'Content-Type: application/json'%s -d @%s"
+    endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
-  let output = read_file "/dev/stdin" in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let output = read_all "" in
   let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
   output
 
 let portal_curl_post api_key endpoint json =
@@ -126,8 +137,10 @@ let portal_curl_post api_key endpoint json =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-    portal_base endpoint api_key tmp_file in
+  let (public_key, secret_key) = get_api_keys () in
+  let auth_headers = build_auth_headers public_key secret_key "POST" endpoint json in
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+    portal_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
     try let line = input_line ic in read_all (acc ^ line ^ "\n")
@@ -139,8 +152,10 @@ let portal_curl_post api_key endpoint json =
   output
 
 let curl_get api_key endpoint =
-  let cmd = Printf.sprintf "curl -s https://api.unsandbox.com%s -H 'Authorization: Bearer %s'"
-    endpoint api_key in
+  let (public_key, secret_key) = get_api_keys () in
+  let auth_headers = build_auth_headers public_key secret_key "GET" endpoint "" in
+  let cmd = Printf.sprintf "curl -s https://api.unsandbox.com%s%s"
+    endpoint auth_headers in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
     try
@@ -153,17 +168,18 @@ let curl_get api_key endpoint =
   output
 
 let curl_delete api_key endpoint =
-  let cmd = Printf.sprintf "curl -s -X DELETE https://api.unsandbox.com%s -H 'Authorization: Bearer %s'"
-    endpoint api_key in
+  let (public_key, secret_key) = get_api_keys () in
+  let auth_headers = build_auth_headers public_key secret_key "DELETE" endpoint "" in
+  let cmd = Printf.sprintf "curl -s -X DELETE https://api.unsandbox.com%s%s"
+    endpoint auth_headers in
   let ic = Unix.open_process_in cmd in
-  let output = read_all "" where
-    let rec read_all acc =
-      try
-        let line = input_line ic in
-        read_all (acc ^ line ^ "\n")
-      with End_of_file -> acc
-    in read_all ""
+  let rec read_all acc =
+    try
+      let line = input_line ic in
+      read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
   in
+  let output = read_all "" in
   let _ = Unix.close_process_in ic in
   output
 
@@ -214,12 +230,45 @@ let unescape_json s =
   let s = Str.global_replace (Str.regexp "\\\\\\\\") "\\" s in
   s
 
-(* Get API key *)
-let get_api_key () =
-  try Sys.getenv "UNSANDBOX_API_KEY"
-  with Not_found ->
-    Printf.fprintf stderr "Error: UNSANDBOX_API_KEY not set\n";
+(* Get API keys *)
+let get_api_keys () =
+  let public_key = try Some (Sys.getenv "UNSANDBOX_PUBLIC_KEY") with Not_found -> None in
+  let secret_key = try Some (Sys.getenv "UNSANDBOX_SECRET_KEY") with Not_found -> None in
+  let api_key = try Some (Sys.getenv "UNSANDBOX_API_KEY") with Not_found -> None in
+  match (public_key, secret_key, api_key) with
+  | (Some pk, Some sk, _) -> (pk, Some sk)
+  | (_, _, Some ak) -> (ak, None)
+  | _ ->
+    Printf.fprintf stderr "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)\n";
     exit 1
+
+let get_api_key () =
+  let (public_key, _) = get_api_keys () in
+  public_key
+
+(* HMAC-SHA256 using openssl command *)
+let hmac_sha256 secret message =
+  let cmd = Printf.sprintf "echo -n '%s' | openssl dgst -sha256 -hmac '%s' | awk '{print $2}'"
+    (Str.global_replace (Str.regexp "'") "'\\''" message)
+    (Str.global_replace (Str.regexp "'") "'\\''" secret) in
+  let ic = Unix.open_process_in cmd in
+  let result = input_line ic in
+  let _ = Unix.close_process_in ic in
+  String.trim result
+
+let make_signature secret_key timestamp method_ path body =
+  let message = Printf.sprintf "%s:%s:%s:%s" timestamp method_ path body in
+  hmac_sha256 secret_key message
+
+let build_auth_headers public_key secret_key method_ path body =
+  match secret_key with
+  | Some sk ->
+    let timestamp = string_of_int (int_of_float (Unix.time ())) in
+    let signature = make_signature sk timestamp method_ path body in
+    Printf.sprintf " -H 'Authorization: Bearer %s' -H 'X-Timestamp: %s' -H 'X-Signature: %s'"
+      public_key timestamp signature
+  | None ->
+    Printf.sprintf " -H 'Authorization: Bearer %s'" public_key
 
 (* Execute command *)
 let execute_command file env_vars artifacts out_dir network vcpu =

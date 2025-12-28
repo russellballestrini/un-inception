@@ -41,6 +41,7 @@
 // Full-featured CLI matching un.c/un.py capabilities
 
 #import <Foundation/Foundation.h>
+#import <CommonCrypto/CommonHMAC.h>
 
 static NSString* API_BASE = @"https://api.unsandbox.com";
 static NSString* PORTAL_BASE = @"https://unsandbox.com";
@@ -69,13 +70,47 @@ NSDictionary* getExtMap() {
     };
 }
 
-NSString* getApiKey() {
-    NSString* key = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_API_KEY"];
-    if (!key) {
-        fprintf(stderr, "%sError: UNSANDBOX_API_KEY not set%s\n", [RED UTF8String], [RESET UTF8String]);
+void getApiKeys(NSString** publicKey, NSString** secretKey) {
+    // Try new-style keys first
+    *publicKey = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_PUBLIC_KEY"];
+    *secretKey = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_SECRET_KEY"];
+
+    // Fall back to old-style single key
+    if (!*publicKey || [*publicKey length] == 0) {
+        NSString* oldKey = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_API_KEY"];
+        if (!oldKey) {
+            fprintf(stderr, "%sError: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set%s\n",
+                    [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        *publicKey = oldKey;
+        *secretKey = oldKey;
+        return;
+    }
+
+    if (!*secretKey || [*secretKey length] == 0) {
+        fprintf(stderr, "%sError: UNSANDBOX_SECRET_KEY not set%s\n", [RED UTF8String], [RESET UTF8String]);
         exit(1);
     }
-    return key;
+}
+
+NSString* hmacSha256Hex(NSString* key, NSString* message) {
+    const char* cKey = [key UTF8String];
+    const char* cMessage = [message UTF8String];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+
+    CCHmac(kCCHmacAlgSHA256, cKey, strlen(cKey), cMessage, strlen(cMessage), digest);
+
+    NSMutableString* hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+        [hex appendFormat:@"%02x", digest[i]];
+    }
+    return hex;
+}
+
+NSString* computeSignature(NSString* secretKey, long timestamp, NSString* method, NSString* path, NSString* body) {
+    NSString* message = [NSString stringWithFormat:@"%ld:%@:%@:%@", timestamp, method, path, body];
+    return hmacSha256Hex(secretKey, message);
 }
 
 NSString* detectLanguage(NSString* filename) {
@@ -92,15 +127,15 @@ NSString* detectLanguage(NSString* filename) {
     return language;
 }
 
-NSDictionary* apiRequest(NSString* endpoint, NSString* method, NSDictionary* data, NSString* apiKey) {
+NSDictionary* apiRequest(NSString* endpoint, NSString* method, NSDictionary* data, NSString* publicKey, NSString* secretKey) {
     NSString* urlString = [API_BASE stringByAppendingString:endpoint];
     NSURL* url = [NSURL URLWithString:urlString];
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
     [request setHTTPMethod:method];
-    [request setValue:[@"Bearer " stringByAppendingString:apiKey] forHTTPHeaderField:@"Authorization"];
-    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [request setTimeoutInterval:300];
 
+    // Prepare body
+    NSString* bodyString = @"";
     if (data) {
         NSError* error = nil;
         NSData* jsonData = [NSJSONSerialization dataWithJSONObject:data options:0 error:&error];
@@ -109,8 +144,19 @@ NSDictionary* apiRequest(NSString* endpoint, NSString* method, NSDictionary* dat
                     [RED UTF8String], [[error localizedDescription] UTF8String], [RESET UTF8String]);
             exit(1);
         }
+        bodyString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
         [request setHTTPBody:jsonData];
     }
+
+    // Generate timestamp and signature
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    NSString* signature = computeSignature(secretKey, timestamp, method, endpoint, bodyString);
+
+    // Set headers
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+    [request setValue:signature forHTTPHeaderField:@"X-Signature"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
 
     NSHTTPURLResponse* response = nil;
     NSError* error = nil;
@@ -139,7 +185,8 @@ NSDictionary* apiRequest(NSString* endpoint, NSString* method, NSDictionary* dat
 }
 
 void cmdExecute(NSArray* args) {
-    NSString* apiKey = getApiKey();
+    NSString* publicKey, *secretKey;
+    getApiKeys(&publicKey, &secretKey);
     NSString* sourceFile = nil;
     NSMutableDictionary* envVars = [NSMutableDictionary dictionary];
     NSMutableArray* inputFiles = [NSMutableArray array];
@@ -233,7 +280,7 @@ void cmdExecute(NSArray* args) {
     }
 
     // Execute
-    NSDictionary* result = apiRequest(@"/execute", @"POST", payload, apiKey);
+    NSDictionary* result = apiRequest(@"/execute", @"POST", payload, publicKey, secretKey);
 
     // Print output
     NSString* stdoutText = result[@"stdout"] ?: @"";
@@ -361,7 +408,8 @@ void validateKey(NSString* apiKey, BOOL shouldExtend) {
 }
 
 void cmdKey(NSArray* args) {
-    NSString* apiKey = getApiKey();
+    NSString* publicKey, *secretKey;
+    getApiKeys(&publicKey, &secretKey);
     BOOL shouldExtend = NO;
 
     for (NSString* arg in args) {
@@ -370,11 +418,13 @@ void cmdKey(NSArray* args) {
         }
     }
 
-    validateKey(apiKey, shouldExtend);
+    // For portal validation, we use public key as bearer token
+    validateKey(publicKey, shouldExtend);
 }
 
 void cmdSession(NSArray* args) {
-    NSString* apiKey = getApiKey();
+    NSString* publicKey, *secretKey;
+    getApiKeys(&publicKey, &secretKey);
     BOOL listMode = NO;
     NSString* killId = nil;
     NSString* shell = nil;
@@ -398,7 +448,7 @@ void cmdSession(NSArray* args) {
     }
 
     if (listMode) {
-        NSDictionary* result = apiRequest(@"/sessions", @"GET", nil, apiKey);
+        NSDictionary* result = apiRequest(@"/sessions", @"GET", nil, publicKey, secretKey);
         NSArray* sessions = result[@"sessions"];
         if ([sessions count] == 0) {
             printf("No active sessions\n");
@@ -417,7 +467,7 @@ void cmdSession(NSArray* args) {
 
     if (killId) {
         NSString* endpoint = [NSString stringWithFormat:@"/sessions/%@", killId];
-        apiRequest(endpoint, @"DELETE", nil, apiKey);
+        apiRequest(endpoint, @"DELETE", nil, publicKey, secretKey);
         printf("%sSession terminated: %s%s\n", [GREEN UTF8String], [killId UTF8String], [RESET UTF8String]);
         return;
     }
@@ -430,14 +480,15 @@ void cmdSession(NSArray* args) {
     if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
 
     printf("%sCreating session...%s\n", [YELLOW UTF8String], [RESET UTF8String]);
-    NSDictionary* result = apiRequest(@"/sessions", @"POST", payload, apiKey);
+    NSDictionary* result = apiRequest(@"/sessions", @"POST", payload, publicKey, secretKey);
     printf("%sSession created: %s%s\n", [GREEN UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);
     printf("%s(Interactive sessions require WebSocket - use un2 for full support)%s\n",
            [YELLOW UTF8String], [RESET UTF8String]);
 }
 
 void cmdService(NSArray* args) {
-    NSString* apiKey = getApiKey();
+    NSString* publicKey, *secretKey;
+    getApiKeys(&publicKey, &secretKey);
     BOOL listMode = NO;
     NSString* infoId = nil;
     NSString* logsId = nil;
@@ -488,7 +539,7 @@ void cmdService(NSArray* args) {
     }
 
     if (listMode) {
-        NSDictionary* result = apiRequest(@"/services", @"GET", nil, apiKey);
+        NSDictionary* result = apiRequest(@"/services", @"GET", nil, publicKey, secretKey);
         NSArray* services = result[@"services"];
         if ([services count] == 0) {
             printf("No services\n");
@@ -512,7 +563,7 @@ void cmdService(NSArray* args) {
 
     if (infoId) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@", infoId];
-        NSDictionary* result = apiRequest(endpoint, @"GET", nil, apiKey);
+        NSDictionary* result = apiRequest(endpoint, @"GET", nil, publicKey, secretKey);
         NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
         NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
         printf("%s\n", [jsonString UTF8String]);
@@ -521,28 +572,28 @@ void cmdService(NSArray* args) {
 
     if (logsId) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@/logs", logsId];
-        NSDictionary* result = apiRequest(endpoint, @"GET", nil, apiKey);
+        NSDictionary* result = apiRequest(endpoint, @"GET", nil, publicKey, secretKey);
         printf("%s", [result[@"logs"] UTF8String]);
         return;
     }
 
     if (sleepId) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@/sleep", sleepId];
-        apiRequest(endpoint, @"POST", nil, apiKey);
+        apiRequest(endpoint, @"POST", nil, publicKey, secretKey);
         printf("%sService sleeping: %s%s\n", [GREEN UTF8String], [sleepId UTF8String], [RESET UTF8String]);
         return;
     }
 
     if (wakeId) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@/wake", wakeId];
-        apiRequest(endpoint, @"POST", nil, apiKey);
+        apiRequest(endpoint, @"POST", nil, publicKey, secretKey);
         printf("%sService waking: %s%s\n", [GREEN UTF8String], [wakeId UTF8String], [RESET UTF8String]);
         return;
     }
 
     if (destroyId) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@", destroyId];
-        apiRequest(endpoint, @"DELETE", nil, apiKey);
+        apiRequest(endpoint, @"DELETE", nil, publicKey, secretKey);
         printf("%sService destroyed: %s%s\n", [GREEN UTF8String], [destroyId UTF8String], [RESET UTF8String]);
         return;
     }
@@ -551,7 +602,7 @@ void cmdService(NSArray* args) {
         fprintf(stderr, "Fetching bootstrap script from %s...\n", [dumpBootstrapId UTF8String]);
         NSDictionary* payload = @{@"command": @"cat /tmp/bootstrap.sh"};
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@/execute", dumpBootstrapId];
-        NSDictionary* result = apiRequest(endpoint, @"POST", payload, apiKey);
+        NSDictionary* result = apiRequest(endpoint, @"POST", payload, publicKey, secretKey);
 
         if (result[@"stdout"] && [result[@"stdout"] length] > 0) {
             NSString* bootstrap = result[@"stdout"];
@@ -610,7 +661,7 @@ void cmdService(NSArray* args) {
         if (network) payload[@"network"] = network;
         if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
 
-        NSDictionary* result = apiRequest(@"/services", @"POST", payload, apiKey);
+        NSDictionary* result = apiRequest(@"/services", @"POST", payload, publicKey, secretKey);
         printf("%sService created: %s%s\n", [GREEN UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);
         printf("Name: %s\n", [result[@"name"] UTF8String]);
         if (result[@"url"]) {

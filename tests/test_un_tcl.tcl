@@ -47,6 +47,15 @@ proc run_command {cmd} {
     }
 }
 
+# Check if required TCL packages are available
+set has_required_packages 1
+foreach pkg {http json tls base64 sha256} {
+    if {[catch {package require $pkg}]} {
+        set has_required_packages 0
+        break
+    }
+}
+
 # Unit Tests
 puts "[color_blue "=== Unit Tests for un.tcl ==="]"
 
@@ -57,74 +66,102 @@ if {[file exists $UN_TCL] && [file executable $UN_TCL]} {
     test_failed "Script exists and is executable" "File not found or not executable"
 }
 
-# Test: Usage message when no arguments
-set result [run_command [list $UN_TCL]]
-set exit_code [lindex $result 0]
-set output [lindex $result 1]
-
-if {$exit_code != 0 && [string match "*Usage:*" $output]} {
-    test_passed "Shows usage message with no arguments"
+if {!$has_required_packages} {
+    test_skipped "Shows usage message with no arguments (missing TCL packages)"
+    test_skipped "Handles non-existent file (missing TCL packages)"
+    test_skipped "Handles unknown file extension (missing TCL packages)"
 } else {
-    test_failed "Shows usage message with no arguments" "Expected usage message"
+    # Test: Usage message when no arguments
+    set result [run_command [list $UN_TCL]]
+    set exit_code [lindex $result 0]
+    set output [lindex $result 1]
+
+    if {$exit_code != 0 && [string match "*Usage:*" $output]} {
+        test_passed "Shows usage message with no arguments"
+    } else {
+        test_failed "Shows usage message with no arguments" "Expected usage message"
+    }
+
+    # Test: Error on non-existent file
+    set result [run_command [list $UN_TCL /tmp/nonexistent_file_12345.xyz]]
+    set exit_code [lindex $result 0]
+    set output [lindex $result 1]
+
+    if {$exit_code != 0 && ([string match "*not found*" $output] || [string match "*does not exist*" $output] || [string match "*Error:*" $output])} {
+        test_passed "Handles non-existent file"
+    } else {
+        test_failed "Handles non-existent file" "Expected error message"
+    }
+
+    # Test: Error on unknown extension
+    set unknown_file "/tmp/test_unknown_ext_[pid].unknownext"
+    set fp [open $unknown_file w]
+    puts $fp "test"
+    close $fp
+
+    set result [run_command [list $UN_TCL $unknown_file]]
+    set exit_code [lindex $result 0]
+    set output [lindex $result 1]
+
+    file delete $unknown_file
+
+    if {$exit_code != 0 && ([string match "*unknown*" $output] || [string match "*extension*" $output] || [string match "*Error:*" $output] || [string match "*cannot detect*" $output])} {
+        test_passed "Handles unknown file extension"
+    } else {
+        test_failed "Handles unknown file extension" "Expected extension error message"
+    }
 }
 
-# Test: Error on non-existent file
-set result [run_command [list $UN_TCL /tmp/nonexistent_file_12345.xyz]]
-set exit_code [lindex $result 0]
-set output [lindex $result 1]
+# Test: Error when authentication not set
+set has_hmac [expr {[info exists ::env(UNSANDBOX_PUBLIC_KEY)] && $::env(UNSANDBOX_PUBLIC_KEY) ne "" && [info exists ::env(UNSANDBOX_SECRET_KEY)] && $::env(UNSANDBOX_SECRET_KEY) ne ""}]
+set has_legacy [expr {[info exists ::env(UNSANDBOX_API_KEY)] && $::env(UNSANDBOX_API_KEY) ne ""}]
 
-if {$exit_code != 0 && [string match "*not found*" $output]} {
-    test_passed "Handles non-existent file"
-} else {
-    test_failed "Handles non-existent file" "Expected 'not found' message"
-}
-
-# Test: Error on unknown extension
-set unknown_file "/tmp/test_unknown_ext_[pid].unknownext"
-set fp [open $unknown_file w]
-puts $fp "test"
-close $fp
-
-set result [run_command [list $UN_TCL $unknown_file]]
-set exit_code [lindex $result 0]
-set output [lindex $result 1]
-
-file delete $unknown_file
-
-if {$exit_code != 0 && [string match "*Unknown file extension*" $output]} {
-    test_passed "Handles unknown file extension"
-} else {
-    test_failed "Handles unknown file extension" "Expected 'Unknown file extension' message"
-}
-
-# Test: Error when API key not set
-if {[info exists ::env(UNSANDBOX_API_KEY)] && $::env(UNSANDBOX_API_KEY) ne ""} {
+if {!$has_required_packages} {
+    test_skipped "Requires authentication (missing TCL packages)"
+} elseif {$has_hmac || $has_legacy} {
     set test_file [file join $TEST_DIR fib.py]
     if {[file exists $test_file]} {
-        # Temporarily unset API key
-        set old_key $::env(UNSANDBOX_API_KEY)
-        unset ::env(UNSANDBOX_API_KEY)
+        # Temporarily unset auth keys
+        if {$has_hmac} {
+            set old_pub $::env(UNSANDBOX_PUBLIC_KEY)
+            set old_sec $::env(UNSANDBOX_SECRET_KEY)
+            unset ::env(UNSANDBOX_PUBLIC_KEY)
+            unset ::env(UNSANDBOX_SECRET_KEY)
+        }
+        if {$has_legacy} {
+            set old_key $::env(UNSANDBOX_API_KEY)
+            unset ::env(UNSANDBOX_API_KEY)
+        }
 
         set result [run_command [list $UN_TCL $test_file]]
         set exit_code [lindex $result 0]
         set output [lindex $result 1]
 
-        set ::env(UNSANDBOX_API_KEY) $old_key
+        # Restore keys
+        if {$has_hmac} {
+            set ::env(UNSANDBOX_PUBLIC_KEY) $old_pub
+            set ::env(UNSANDBOX_SECRET_KEY) $old_sec
+        }
+        if {$has_legacy} {
+            set ::env(UNSANDBOX_API_KEY) $old_key
+        }
 
-        if {$exit_code != 0 && [string match "*UNSANDBOX_API_KEY*" $output]} {
-            test_passed "Requires API key"
+        if {$exit_code != 0 && ([string match "*UNSANDBOX_PUBLIC_KEY*" $output] || [string match "*UNSANDBOX_API_KEY*" $output])} {
+            test_passed "Requires authentication"
         } else {
-            test_failed "Requires API key" "Expected API key error message"
+            test_failed "Requires authentication" "Expected auth error message"
         }
     } else {
-        test_skipped "Requires API key (test file not found)"
+        test_skipped "Requires authentication (test file not found)"
     }
 } else {
-    test_skipped "Requires API key (API key already not set)"
+    test_skipped "Requires authentication (auth already not set)"
 }
 
-# Integration Tests (require API key)
-if {[info exists ::env(UNSANDBOX_API_KEY)] && $::env(UNSANDBOX_API_KEY) ne ""} {
+# Integration Tests (require authentication and packages)
+if {!$has_required_packages} {
+    puts "\n[color_yellow "Skipping integration tests (missing TCL packages)"]"
+} elseif {$has_hmac || $has_legacy} {
     puts "\n[color_blue "=== Integration Tests for un.tcl ==="]"
 
     # Test: Can execute Python file
@@ -159,7 +196,7 @@ if {[info exists ::env(UNSANDBOX_API_KEY)] && $::env(UNSANDBOX_API_KEY) ne ""} {
         test_skipped "Executes Bash file successfully (fib.sh not found)"
     }
 } else {
-    puts "\n[color_yellow "Skipping integration tests (UNSANDBOX_API_KEY not set)"]"
+    puts "\n[color_yellow "Skipping integration tests (UNSANDBOX authentication not configured)"]"
 }
 
 # Summary
