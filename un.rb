@@ -150,7 +150,16 @@ def api_request(endpoint, method: 'GET', data: nil, keys:)
 
   response = http.request(request)
   unless response.is_a?(Net::HTTPSuccess)
-    warn "#{RED}Error: HTTP #{response.code} - #{response.body}#{RESET}"
+    if response.code == '401' && response.body.downcase.include?('timestamp')
+      warn "#{RED}Error: Request timestamp expired (must be within 5 minutes of server time)#{RESET}"
+      warn "#{YELLOW}Your computer's clock may have drifted.#{RESET}"
+      warn "#{YELLOW}Check your system time and sync with NTP if needed:#{RESET}"
+      warn "  Linux:   sudo ntpdate -s time.nist.gov"
+      warn "  macOS:   sudo sntp -sS time.apple.com"
+      warn "  Windows: w32tm /resync"
+    else
+      warn "#{RED}Error: HTTP #{response.code} - #{response.body}#{RESET}"
+    end
     exit 1
   end
 

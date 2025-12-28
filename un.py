@@ -181,7 +181,15 @@ def api_request(endpoint, method="GET", data=None, public_key=None, secret_key=N
             return json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8') if e.fp else str(e)
-        print(f"{RED}Error: HTTP {e.code} - {error_body}{RESET}", file=sys.stderr)
+        if e.code == 401 and 'timestamp' in error_body.lower():
+            print(f"{RED}Error: Request timestamp expired (must be within 5 minutes of server time){RESET}", file=sys.stderr)
+            print(f"{YELLOW}Your computer's clock may have drifted.{RESET}", file=sys.stderr)
+            print("Check your system time and sync with NTP if needed:", file=sys.stderr)
+            print("  Linux:   sudo ntpdate -s time.nist.gov", file=sys.stderr)
+            print("  macOS:   sudo sntp -sS time.apple.com", file=sys.stderr)
+            print("  Windows: w32tm /resync", file=sys.stderr)
+        else:
+            print(f"{RED}Error: HTTP {e.code} - {error_body}{RESET}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.URLError as e:
         print(f"{RED}Error: {e.reason}{RESET}", file=sys.stderr)

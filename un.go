@@ -209,7 +209,16 @@ func apiRequest(endpoint, method string, data map[string]interface{}, publicKey,
 	}
 
 	if resp.StatusCode >= 400 {
-		fmt.Fprintf(os.Stderr, "%sError: HTTP %d - %s%s\n", Red, resp.StatusCode, string(body), Reset)
+		if resp.StatusCode == 401 && strings.Contains(strings.ToLower(string(body)), "timestamp") {
+			fmt.Fprintf(os.Stderr, "%sError: Request timestamp expired (must be within 5 minutes of server time)%s\n", Red, Reset)
+			fmt.Fprintf(os.Stderr, "%sYour computer's clock may have drifted.%s\n", Yellow, Reset)
+			fmt.Fprintf(os.Stderr, "%sCheck your system time and sync with NTP if needed:%s\n", Yellow, Reset)
+			fmt.Fprintf(os.Stderr, "  Linux:   sudo ntpdate -s time.nist.gov\n")
+			fmt.Fprintf(os.Stderr, "  macOS:   sudo sntp -sS time.apple.com\n")
+			fmt.Fprintf(os.Stderr, "  Windows: w32tm /resync\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "%sError: HTTP %d - %s%s\n", Red, resp.StatusCode, string(body), Reset)
+		}
 		os.Exit(1)
 	}
 

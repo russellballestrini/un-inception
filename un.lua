@@ -185,7 +185,16 @@ local function api_request(endpoint, method, data, keys)
     end
 
     if not http_code or tonumber(http_code) < 200 or tonumber(http_code) >= 300 then
-        io.stderr:write(RED .. "Error: HTTP " .. (http_code or "000") .. " - " .. response .. RESET .. "\n")
+        if http_code == "401" and response:lower():find("timestamp") then
+            io.stderr:write(RED .. "Error: Request timestamp expired (must be within 5 minutes of server time)" .. RESET .. "\n")
+            io.stderr:write(YELLOW .. "Your computer's clock may have drifted." .. RESET .. "\n")
+            io.stderr:write(YELLOW .. "Check your system time and sync with NTP if needed:" .. RESET .. "\n")
+            io.stderr:write("  Linux:   sudo ntpdate -s time.nist.gov\n")
+            io.stderr:write("  macOS:   sudo sntp -sS time.apple.com\n")
+            io.stderr:write("  Windows: w32tm /resync\n")
+        else
+            io.stderr:write(RED .. "Error: HTTP " .. (http_code or "000") .. " - " .. response .. RESET .. "\n")
+        end
         os.exit(1)
     end
 

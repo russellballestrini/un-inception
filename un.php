@@ -162,7 +162,16 @@ function api_request($endpoint, $method = 'GET', $data = null, $keys = null) {
     curl_close($ch);
 
     if ($http_code < 200 || $http_code >= 300) {
-        fwrite(STDERR, RED . "Error: HTTP $http_code - $response" . RESET . "\n");
+        if ($http_code === 401 && stripos($response, 'timestamp') !== false) {
+            fwrite(STDERR, RED . "Error: Request timestamp expired (must be within 5 minutes of server time)" . RESET . "\n");
+            fwrite(STDERR, YELLOW . "Your computer's clock may have drifted." . RESET . "\n");
+            fwrite(STDERR, YELLOW . "Check your system time and sync with NTP if needed:" . RESET . "\n");
+            fwrite(STDERR, "  Linux:   sudo ntpdate -s time.nist.gov\n");
+            fwrite(STDERR, "  macOS:   sudo sntp -sS time.apple.com\n");
+            fwrite(STDERR, "  Windows: w32tm /resync\n");
+        } else {
+            fwrite(STDERR, RED . "Error: HTTP $http_code - $response" . RESET . "\n");
+        }
         exit(1);
     }
 

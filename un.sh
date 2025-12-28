@@ -190,7 +190,16 @@ api_request() {
     local body=$(echo "$response" | head -n-1)
 
     if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
-        echo -e "${RED}Error: HTTP $http_code - $body${RESET}" >&2
+        if [[ "$http_code" == "401" ]] && echo "$body" | grep -qi "timestamp"; then
+            echo -e "${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}" >&2
+            echo -e "${YELLOW}Your computer's clock may have drifted.${RESET}" >&2
+            echo -e "${YELLOW}Check your system time and sync with NTP if needed:${RESET}" >&2
+            echo -e "  Linux:   sudo ntpdate -s time.nist.gov" >&2
+            echo -e "  macOS:   sudo sntp -sS time.apple.com" >&2
+            echo -e "  Windows: w32tm /resync" >&2
+        else
+            echo -e "${RED}Error: HTTP $http_code - $body${RESET}" >&2
+        fi
         exit 1
     fi
 

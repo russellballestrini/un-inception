@@ -162,7 +162,16 @@ function apiRequest(endpoint, method = "GET", data = null, publicKey = null, sec
             resolve(responseBody);
           }
         } else {
-          console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
+          if (res.statusCode === 401 && responseBody.toLowerCase().includes('timestamp')) {
+            console.error(`${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}`);
+            console.error(`${YELLOW}Your computer's clock may have drifted.${RESET}`);
+            console.error(`${YELLOW}Check your system time and sync with NTP if needed:${RESET}`);
+            console.error(`  Linux:   sudo ntpdate -s time.nist.gov`);
+            console.error(`  macOS:   sudo sntp -sS time.apple.com`);
+            console.error(`  Windows: w32tm /resync`);
+          } else {
+            console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
+          }
           process.exit(1);
         }
       });

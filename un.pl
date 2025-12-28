@@ -153,7 +153,16 @@ sub api_request {
     my $response = $ua->request($request);
 
     unless ($response->is_success) {
-        print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
+        if ($response->code == 401 && $response->content =~ /timestamp/i) {
+            print STDERR "${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}\n";
+            print STDERR "${YELLOW}Your computer's clock may have drifted.${RESET}\n";
+            print STDERR "${YELLOW}Check your system time and sync with NTP if needed:${RESET}\n";
+            print STDERR "  Linux:   sudo ntpdate -s time.nist.gov\n";
+            print STDERR "  macOS:   sudo sntp -sS time.apple.com\n";
+            print STDERR "  Windows: w32tm /resync\n";
+        } else {
+            print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
+        }
         exit 1;
     }
 
