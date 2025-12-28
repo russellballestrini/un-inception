@@ -98,6 +98,17 @@ proc buildAuthHeaders(meth: string, path: string, body: string, publicKey: strin
 proc execCurl(cmd: string): string =
   result = execProcess(cmd)
 
+  # Check for timestamp authentication errors
+  if result.contains("timestamp") and
+     (result.contains("401") or result.contains("expired") or result.contains("invalid")):
+    stderr.writeLine(RED & "Error: Request timestamp expired (must be within 5 minutes of server time)" & RESET)
+    stderr.writeLine(YELLOW & "Your computer's clock may have drifted." & RESET)
+    stderr.writeLine("Check your system time and sync with NTP if needed:")
+    stderr.writeLine("  Linux:   sudo ntpdate -s time.nist.gov")
+    stderr.writeLine("  macOS:   sudo sntp -sS time.apple.com")
+    stderr.writeLine("  Windows: w32tm /resync")
+    quit(1)
+
 proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network: string, vcpu: int, publicKey: string, secretKey: string) =
   let lang = detectLanguage(sourceFile)
   if lang == "":

@@ -169,6 +169,17 @@ function execute(filename    , api_key) {
     # Clean up
     system("rm -f " tmp)
 
+    # Check for timestamp authentication errors
+    if (match(response, /timestamp/) && (match(response, /401/) || match(response, /expired/) || match(response, /invalid/))) {
+        print RED "Error: Request timestamp expired (must be within 5 minutes of server time)" RESET > "/dev/stderr"
+        print YELLOW "Your computer's clock may have drifted." RESET > "/dev/stderr"
+        print "Check your system time and sync with NTP if needed:" > "/dev/stderr"
+        print "  Linux:   sudo ntpdate -s time.nist.gov" > "/dev/stderr"
+        print "  macOS:   sudo sntp -sS time.apple.com" > "/dev/stderr"
+        print "  Windows: w32tm /resync" > "/dev/stderr"
+        exit 1
+    }
+
     # Parse stdout from response (simple regex)
     if (match(response, /"stdout":"([^"]*)"/, arr)) {
         stdout = arr[1]

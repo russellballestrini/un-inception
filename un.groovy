@@ -168,6 +168,18 @@ def apiRequest(endpoint, method, data, publicKey, secretKey) {
             System.exit(1)
         }
 
+        // Check for timestamp authentication errors
+        if (output.toLowerCase().contains('timestamp') &&
+            (output.contains('401') || output.toLowerCase().contains('expired') || output.toLowerCase().contains('invalid'))) {
+            System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
+            System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
+            System.err.println("Check your system time and sync with NTP if needed:")
+            System.err.println("  Linux:   sudo ntpdate -s time.nist.gov")
+            System.err.println("  macOS:   sudo sntp -sS time.apple.com")
+            System.err.println("  Windows: w32tm /resync")
+            System.exit(1)
+        }
+
         return output
     } finally {
         tempFile.delete()

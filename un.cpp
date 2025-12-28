@@ -109,6 +109,19 @@ string exec_curl(const string& cmd) {
         result += buffer;
     }
     pclose(pipe);
+
+    // Check for timestamp authentication errors
+    if (result.find("timestamp") != string::npos &&
+        (result.find("401") != string::npos || result.find("expired") != string::npos || result.find("invalid") != string::npos)) {
+        cerr << RED << "Error: Request timestamp expired (must be within 5 minutes of server time)" << RESET << endl;
+        cerr << YELLOW << "Your computer's clock may have drifted." << RESET << endl;
+        cerr << "Check your system time and sync with NTP if needed:" << endl;
+        cerr << "  Linux:   sudo ntpdate -s time.nist.gov" << endl;
+        cerr << "  macOS:   sudo sntp -sS time.apple.com" << endl;
+        cerr << "  Windows: w32tm /resync" << endl;
+        exit(1);
+    }
+
     return result;
 }
 

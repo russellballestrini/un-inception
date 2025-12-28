@@ -228,7 +228,20 @@ fn api_request(endpoint: &str, method: &str, body: Option<&str>, public_key: &st
         process::exit(1);
     }
 
-    String::from_utf8_lossy(&output.stdout).to_string()
+    let result = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Check for timestamp authentication errors
+    if result.contains("timestamp") && (result.contains("401") || result.contains("expired") || result.contains("invalid")) {
+        eprintln!("{}Error: Request timestamp expired (must be within 5 minutes of server time){}", RED, RESET);
+        eprintln!("{}Your computer's clock may have drifted.{}", YELLOW, RESET);
+        eprintln!("Check your system time and sync with NTP if needed:");
+        eprintln!("  Linux:   sudo ntpdate -s time.nist.gov");
+        eprintln!("  macOS:   sudo sntp -sS time.apple.com");
+        eprintln!("  Windows: w32tm /resync");
+        process::exit(1);
+    }
+
+    result
 }
 
 fn cmd_execute(

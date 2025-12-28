@@ -130,7 +130,17 @@ def api_request(endpoint : String, public_key : String, secret_key : String?, me
 
     JSON.parse(response.body)
   rescue ex
-    STDERR.puts "#{RED}Error: Request failed: #{ex.message}#{RESET}"
+    error_msg = ex.message || ""
+    if error_msg.downcase.includes?("timestamp") || (response && response.status_code == 401 && response.body.downcase.includes?("timestamp"))
+      STDERR.puts "#{RED}Error: Request timestamp expired (must be within 5 minutes of server time)#{RESET}"
+      STDERR.puts "#{YELLOW}Your computer's clock may have drifted.#{RESET}"
+      STDERR.puts "Check your system time and sync with NTP if needed:"
+      STDERR.puts "  Linux:   sudo ntpdate -s time.nist.gov"
+      STDERR.puts "  macOS:   sudo sntp -sS time.apple.com"
+      STDERR.puts "  Windows: w32tm /resync"
+    else
+      STDERR.puts "#{RED}Error: Request failed: #{ex.message}#{RESET}"
+    end
     exit 1
   end
 end

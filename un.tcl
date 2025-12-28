@@ -151,8 +151,17 @@ proc api_request {endpoint method data public_key secret_key} {
     ::http::cleanup $token
 
     if {$status ne "ok" || ($ncode != 200 && $ncode != 201)} {
-        puts stderr "${::RED}Error: HTTP $ncode${::RESET}"
-        puts stderr $body
+        if {$ncode == 401 && [string match -nocase "*timestamp*" $body]} {
+            puts stderr "${::RED}Error: Request timestamp expired (must be within 5 minutes of server time)${::RESET}"
+            puts stderr "${::YELLOW}Your computer's clock may have drifted.${::RESET}"
+            puts stderr "Check your system time and sync with NTP if needed:"
+            puts stderr "  Linux:   sudo ntpdate -s time.nist.gov"
+            puts stderr "  macOS:   sudo sntp -sS time.apple.com"
+            puts stderr "  Windows: w32tm /resync"
+        } else {
+            puts stderr "${::RED}Error: HTTP $ncode${::RESET}"
+            puts stderr $body
+        }
         exit 1
     }
 

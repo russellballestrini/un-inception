@@ -97,7 +97,21 @@ fn escape_json(s string) string {
 
 fn exec_curl(cmd string) string {
 	result := os.execute(cmd)
-	return result.output
+	output := result.output
+
+	// Check for timestamp authentication errors
+	if output.contains('timestamp') &&
+		(output.contains('401') || output.contains('expired') || output.contains('invalid')) {
+		eprintln('${red}Error: Request timestamp expired (must be within 5 minutes of server time)${reset}')
+		eprintln('${yellow}Your computer\'s clock may have drifted.${reset}')
+		eprintln('Check your system time and sync with NTP if needed:')
+		eprintln('  Linux:   sudo ntpdate -s time.nist.gov')
+		eprintln('  macOS:   sudo sntp -sS time.apple.com')
+		eprintln('  Windows: w32tm /resync')
+		exit(1)
+	}
+
+	return output
 }
 
 fn extract_json_string(json string, key string) string {

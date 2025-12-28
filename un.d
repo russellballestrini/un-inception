@@ -121,7 +121,22 @@ string buildAuthHeaders(string method, string path, string body, string publicKe
 
 string execCurl(string cmd) {
     auto result = executeShell(cmd);
-    return result.output;
+    string output = result.output;
+
+    // Check for timestamp authentication errors
+    import std.algorithm : canFind;
+    if (output.canFind("timestamp") &&
+        (output.canFind("401") || output.canFind("expired") || output.canFind("invalid"))) {
+        stderr.writefln("%sError: Request timestamp expired (must be within 5 minutes of server time)%s", RED, RESET);
+        stderr.writefln("%sYour computer's clock may have drifted.%s", YELLOW, RESET);
+        stderr.writeln("Check your system time and sync with NTP if needed:");
+        stderr.writeln("  Linux:   sudo ntpdate -s time.nist.gov");
+        stderr.writeln("  macOS:   sudo sntp -sS time.apple.com");
+        stderr.writeln("  Windows: w32tm /resync");
+        exit(1);
+    }
+
+    return output;
 }
 
 void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network, int vcpu, string publicKey, string secretKey) {

@@ -172,6 +172,19 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
     }
 
     final response = result.stdout as String;
+
+    // Check for timestamp authentication errors
+    if (response.toLowerCase().contains('timestamp') &&
+        (response.contains('401') || response.toLowerCase().contains('expired') || response.toLowerCase().contains('invalid'))) {
+      stderr.writeln('${red}Error: Request timestamp expired (must be within 5 minutes of server time)$reset');
+      stderr.writeln('${yellow}Your computer\'s clock may have drifted.$reset');
+      stderr.writeln('Check your system time and sync with NTP if needed:');
+      stderr.writeln('  Linux:   sudo ntpdate -s time.nist.gov');
+      stderr.writeln('  macOS:   sudo sntp -sS time.apple.com');
+      stderr.writeln('  Windows: w32tm /resync');
+      exit(1);
+    }
+
     return jsonDecode(response) as Map<String, dynamic>;
   } finally {
     await tempFile.delete();

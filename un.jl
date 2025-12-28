@@ -141,7 +141,17 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
         return JSON.parse(String(response.body))
     catch e
         if isa(e, HTTP.ExceptionRequest.StatusError)
-            println(stderr, "$(RED)Error: HTTP $(e.status) - $(String(e.response.body))$(RESET)")
+            error_body = String(e.response.body)
+            if e.status == 401 && occursin("timestamp", lowercase(error_body))
+                println(stderr, "$(RED)Error: Request timestamp expired (must be within 5 minutes of server time)$(RESET)")
+                println(stderr, "$(YELLOW)Your computer's clock may have drifted.$(RESET)")
+                println(stderr, "Check your system time and sync with NTP if needed:")
+                println(stderr, "  Linux:   sudo ntpdate -s time.nist.gov")
+                println(stderr, "  macOS:   sudo sntp -sS time.apple.com")
+                println(stderr, "  Windows: w32tm /resync")
+            else
+                println(stderr, "$(RED)Error: HTTP $(e.status) - $(error_body)$(RESET)")
+            end
         else
             println(stderr, "$(RED)Error: Request failed: $e$(RESET)")
         end

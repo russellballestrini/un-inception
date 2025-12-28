@@ -530,6 +530,15 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
 
     if (connection.responseCode !in 200..299) {
         val error = connection.errorStream?.bufferedReader()?.readText() ?: ""
+        if (connection.responseCode == 401 && error.lowercase().contains("timestamp")) {
+            System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
+            System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
+            System.err.println("Check your system time and sync with NTP if needed:")
+            System.err.println("  Linux:   sudo ntpdate -s time.nist.gov")
+            System.err.println("  macOS:   sudo sntp -sS time.apple.com")
+            System.err.println("  Windows: w32tm /resync")
+            exitProcess(1)
+        }
         throw RuntimeException("HTTP ${connection.responseCode} - $error")
     }
 

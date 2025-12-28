@@ -111,7 +111,17 @@ function Invoke-Api {
         }
         return $response
     } catch {
-        Write-Error "Error: $($_.Exception.Message)"
+        $errorMsg = $_.Exception.Message
+        if ($errorMsg -match "401" -and $errorMsg -match "timestamp") {
+            Write-Host "`e[31mError: Request timestamp expired (must be within 5 minutes of server time)`e[0m" -ForegroundColor Red
+            Write-Host "`e[33mYour computer's clock may have drifted.`e[0m" -ForegroundColor Yellow
+            Write-Host "Check your system time and sync with NTP if needed:"
+            Write-Host "  Linux:   sudo ntpdate -s time.nist.gov"
+            Write-Host "  macOS:   sudo sntp -sS time.apple.com"
+            Write-Host "  Windows: w32tm /resync"
+        } else {
+            Write-Error "Error: $errorMsg"
+        }
         exit 1
     }
 }
