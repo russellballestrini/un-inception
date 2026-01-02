@@ -319,6 +319,7 @@ proc cmd_session {args} {
     set shell ""
     set network ""
     set vcpu 0
+    set input_files [list]
 
     # Parse arguments
     for {set i 0} {$i < [llength $args]} {incr i} {
@@ -342,6 +343,10 @@ proc cmd_session {args} {
             -v {
                 incr i
                 set vcpu [lindex $args $i]
+            }
+            -f {
+                incr i
+                lappend input_files [lindex $args $i]
             }
         }
     }
@@ -382,6 +387,25 @@ proc cmd_session {args} {
     }
     if {$vcpu > 0} {
         lappend payload vcpu $vcpu
+    }
+
+    # Add input files
+    if {[llength $input_files] > 0} {
+        set files_json [list]
+        foreach filepath $input_files {
+            if {![file exists $filepath]} {
+                puts stderr "${::RED}Error: Input file not found: $filepath${::RESET}"
+                exit 1
+            }
+            set fp [open $filepath rb]
+            set content [read $fp]
+            close $fp
+            set b64_content [::base64::encode $content]
+            lappend files_json [::json::write object \
+                filename [::json::write string [file tail $filepath]] \
+                content_base64 [::json::write string $b64_content]]
+        }
+        lappend payload input_files [::json::write array {*}$files_json]
     }
 
     puts "${::YELLOW}Creating session...${::RESET}"
@@ -498,8 +522,10 @@ proc cmd_service {args} {
     set ports ""
     set service_type ""
     set bootstrap ""
+    set bootstrap_file ""
     set network ""
     set vcpu 0
+    set input_files [list]
 
     # Parse arguments
     for {set i 0} {$i < [llength $args]} {incr i} {
@@ -552,6 +578,10 @@ proc cmd_service {args} {
                 incr i
                 set bootstrap [lindex $args $i]
             }
+            --bootstrap-file {
+                incr i
+                set bootstrap_file [lindex $args $i]
+            }
             -n {
                 incr i
                 set network [lindex $args $i]
@@ -559,6 +589,10 @@ proc cmd_service {args} {
             -v {
                 incr i
                 set vcpu [lindex $args $i]
+            }
+            -f {
+                incr i
+                lappend input_files [lindex $args $i]
             }
         }
     }
@@ -657,14 +691,18 @@ proc cmd_service {args} {
         }
 
         if {$bootstrap ne ""} {
-            # Check if bootstrap is a file
-            if {[file exists $bootstrap]} {
-                set fp [open $bootstrap r]
+            lappend payload bootstrap [::json::write string $bootstrap]
+        }
+
+        if {$bootstrap_file ne ""} {
+            if {[file exists $bootstrap_file]} {
+                set fp [open $bootstrap_file r]
                 set bootstrap_content [read $fp]
                 close $fp
-                lappend payload bootstrap [::json::write string $bootstrap_content]
+                lappend payload bootstrap_content [::json::write string $bootstrap_content]
             } else {
-                lappend payload bootstrap [::json::write string $bootstrap]
+                puts stderr "${::RED}Error: Bootstrap file not found: $bootstrap_file${::RESET}"
+                exit 1
             }
         }
 
@@ -673,6 +711,25 @@ proc cmd_service {args} {
         }
         if {$vcpu > 0} {
             lappend payload vcpu $vcpu
+        }
+
+        # Add input files
+        if {[llength $input_files] > 0} {
+            set files_json [list]
+            foreach filepath $input_files {
+                if {![file exists $filepath]} {
+                    puts stderr "${::RED}Error: Input file not found: $filepath${::RESET}"
+                    exit 1
+                }
+                set fp [open $filepath rb]
+                set content [read $fp]
+                close $fp
+                set b64_content [::base64::encode $content]
+                lappend files_json [::json::write object \
+                    filename [::json::write string [file tail $filepath]] \
+                    content_base64 [::json::write string $b64_content]]
+            }
+            lappend payload input_files [::json::write array {*}$files_json]
         }
 
         set result [api_request "/services" "POST" $payload $public_key $secret_key]

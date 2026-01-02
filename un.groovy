@@ -79,6 +79,7 @@ class Args {
     String servicePorts = null
     String serviceType = null
     String serviceBootstrap = null
+    String serviceBootstrapFile = null
     String serviceInfo = null
     String serviceLogs = null
     String serviceTail = null
@@ -307,6 +308,21 @@ def cmdSession(args) {
     if (args.vcpu > 0) {
         json += ""","vcpu":${args.vcpu}"""
     }
+
+    // Add input files
+    if (args.files) {
+        def filesJson = args.files.collect { filepath ->
+            def f = new File(filepath)
+            if (!f.exists()) {
+                System.err.println("${RED}Error: Input file not found: ${filepath}${RESET}")
+                System.exit(1)
+            }
+            def content = f.bytes.encodeBase64().toString()
+            return """{"filename":"${f.name}","content_base64":"${content}"}"""
+        }.join(',')
+        json += ""","input_files":[${filesJson}]"""
+    }
+
     json += '}'
 
     println("${YELLOW}Creating session...${RESET}")
@@ -539,12 +555,37 @@ def cmdService(args) {
             def escaped = args.serviceBootstrap.replace('\\', '\\\\').replace('"', '\\"')
             json += ""","bootstrap":"${escaped}""""
         }
+        if (args.serviceBootstrapFile) {
+            def file = new File(args.serviceBootstrapFile)
+            if (file.exists()) {
+                def content = file.text.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                json += ""","bootstrap_content":"${content}""""
+            } else {
+                System.err.println("${RED}Error: Bootstrap file not found: ${args.serviceBootstrapFile}${RESET}")
+                System.exit(1)
+            }
+        }
         if (args.network) {
             json += ""","network":"${args.network}""""
         }
         if (args.vcpu > 0) {
             json += ""","vcpu":${args.vcpu}"""
         }
+
+        // Add input files
+        if (args.files) {
+            def filesJson = args.files.collect { filepath ->
+                def f = new File(filepath)
+                if (!f.exists()) {
+                    System.err.println("${RED}Error: Input file not found: ${filepath}${RESET}")
+                    System.exit(1)
+                }
+                def content = f.bytes.encodeBase64().toString()
+                return """{"filename":"${f.name}","content_base64":"${content}"}"""
+            }.join(',')
+            json += ""","input_files":[${filesJson}]"""
+        }
+
         json += '}'
 
         def output = apiRequest('/services', 'POST', json, publicKey, secretKey)
@@ -632,6 +673,9 @@ def parseArgs(argv) {
                 break
             case '--bootstrap':
                 args.serviceBootstrap = argv[++i]
+                break
+            case '--bootstrap-file':
+                args.serviceBootstrapFile = argv[++i]
                 break
             case '--info':
                 args.serviceInfo = argv[++i]

@@ -100,6 +100,25 @@ string escape_json(const string& s) {
     return o.str();
 }
 
+// Base64 encoding
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+string base64_encode(const string& input) {
+    string output;
+    int val = 0, valb = -6;
+    for (unsigned char c : input) {
+        val = (val << 8) + c;
+        valb += 8;
+        while (valb >= 0) {
+            output.push_back(b64_table[(val >> valb) & 0x3F]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) output.push_back(b64_table[((val << 8) >> (valb + 8)) & 0x3F]);
+    while (output.size() % 4) output.push_back('=');
+    return output;
+}
+
 string exec_curl(const string& cmd) {
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) return "";
@@ -233,7 +252,7 @@ void cmd_execute(const string& source_file, const vector<string>& envs, const ve
     exit(exit_code);
 }
 
-void cmd_session(bool list, const string& kill, const string& shell, const string& network, int vcpu, bool tmux, bool screen, const string& public_key, const string& secret_key) {
+void cmd_session(bool list, const string& kill, const string& shell, const string& network, int vcpu, bool tmux, bool screen, const vector<string>& files, const string& public_key, const string& secret_key) {
     if (list) {
         string auth_headers = build_auth_headers("GET", "/sessions", "", public_key, secret_key);
         string cmd = "curl -s -X GET '" + API_BASE + "/sessions' " + auth_headers;
@@ -255,6 +274,26 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
     if (tmux) json << ",\"persistence\":\"tmux\"";
     if (screen) json << ",\"persistence\":\"screen\"";
+
+    // Input files
+    if (!files.empty()) {
+        json << ",\"input_files\":[";
+        for (size_t i = 0; i < files.size(); i++) {
+            if (i > 0) json << ",";
+            ifstream file(files[i], ios::binary);
+            if (!file) {
+                cerr << RED << "Error: Input file not found: " << files[i] << RESET << endl;
+                exit(1);
+            }
+            ostringstream content;
+            content << file.rdbuf();
+            string b64 = base64_encode(content.str());
+            string filename = files[i].substr(files[i].find_last_of("/\\") + 1);
+            json << "{\"filename\":\"" << filename << "\",\"content_base64\":\"" << b64 << "\"}";
+        }
+        json << "]";
+    }
+
     json << "}";
 
     cout << YELLOW << "Creating session..." << RESET << endl;
@@ -266,7 +305,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const string& public_key, const string& secret_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const string& public_key, const string& secret_key) {
     if (list) {
         string auth_headers = build_auth_headers("GET", "/services", "", public_key, secret_key);
         string cmd = "curl -s -X GET '" + API_BASE + "/services' " + auth_headers;
@@ -415,13 +454,35 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         if (!ports.empty()) json << ",\"ports\":[" << ports << "]";
         if (!type.empty()) json << ",\"service_type\":\"" << type << "\"";
         if (!bootstrap.empty()) {
+            json << ",\"bootstrap\":\"" << escape_json(bootstrap) << "\"";
+        }
+        if (!bootstrap_file.empty()) {
             struct stat st;
-            if (stat(bootstrap.c_str(), &st) == 0) {
-                string boot_code = read_file(bootstrap);
-                json << ",\"bootstrap\":\"" << escape_json(boot_code) << "\"";
+            if (stat(bootstrap_file.c_str(), &st) == 0) {
+                string boot_code = read_file(bootstrap_file);
+                json << ",\"bootstrap_content\":\"" << escape_json(boot_code) << "\"";
             } else {
-                json << ",\"bootstrap\":\"" << escape_json(bootstrap) << "\"";
+                cerr << RED << "Error: Bootstrap file not found: " << bootstrap_file << RESET << endl;
+                exit(1);
             }
+        }
+        // Input files
+        if (!files.empty()) {
+            json << ",\"input_files\":[";
+            for (size_t i = 0; i < files.size(); i++) {
+                if (i > 0) json << ",";
+                ifstream file(files[i], ios::binary);
+                if (!file) {
+                    cerr << RED << "Error: Input file not found: " << files[i] << RESET << endl;
+                    exit(1);
+                }
+                ostringstream content;
+                content << file.rdbuf();
+                string b64 = base64_encode(content.str());
+                string filename = files[i].substr(files[i].find_last_of("/\\") + 1);
+                json << "{\"filename\":\"" << filename << "\",\"content_base64\":\"" << b64 << "\"}";
+            }
+            json << "]";
         }
         if (!network.empty()) json << ",\"network\":\"" << network << "\"";
         if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
@@ -547,12 +608,14 @@ int main(int argc, char* argv[]) {
         string kill, shell, network;
         int vcpu = 0;
         bool tmux = false, screen = false;
+        vector<string> files;
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
             if (arg == "--list") list = true;
             else if (arg == "--kill" && i+1 < argc) kill = argv[++i];
             else if (arg == "--shell" && i+1 < argc) shell = argv[++i];
+            else if (arg == "-f" && i+1 < argc) files.push_back(argv[++i]);
             else if (arg == "-n" && i+1 < argc) network = argv[++i];
             else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
             else if (arg == "--tmux") tmux = true;
@@ -560,15 +623,16 @@ int main(int argc, char* argv[]) {
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_session(list, kill, shell, network, vcpu, tmux, screen, public_key, secret_key);
+        cmd_session(list, kill, shell, network, vcpu, tmux, screen, files, public_key, secret_key);
         return 0;
     }
 
     if (cmd_type == "service") {
-        string name, ports, type, bootstrap;
+        string name, ports, type, bootstrap, bootstrap_file;
         bool list = false;
         string info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network;
         int vcpu = 0;
+        vector<string> files;
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
@@ -576,6 +640,8 @@ int main(int argc, char* argv[]) {
             else if (arg == "--ports" && i+1 < argc) ports = argv[++i];
             else if (arg == "--type" && i+1 < argc) type = argv[++i];
             else if (arg == "--bootstrap" && i+1 < argc) bootstrap = argv[++i];
+            else if (arg == "--bootstrap-file" && i+1 < argc) bootstrap_file = argv[++i];
+            else if (arg == "-f" && i+1 < argc) files.push_back(argv[++i]);
             else if (arg == "--list") list = true;
             else if (arg == "--info" && i+1 < argc) info = argv[++i];
             else if (arg == "--logs" && i+1 < argc) logs = argv[++i];
@@ -592,7 +658,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, public_key, secret_key);
+        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, public_key, secret_key);
         return 0;
     }
 

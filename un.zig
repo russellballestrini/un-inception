@@ -101,6 +101,55 @@ fn buildAuthCmd(allocator: std.mem.Allocator, method: []const u8, path: []const 
     return try std.fmt.allocPrint(allocator, "-H 'Authorization: Bearer {s}' -H 'X-Timestamp: {s}' -H 'X-Signature: {s}'", .{ public_key, timestamp_str, signature });
 }
 
+fn base64EncodeFile(allocator: std.mem.Allocator, filename: []const u8) ![]u8 {
+    const cmd = try std.fmt.allocPrint(allocator, "base64 -w0 '{s}'", .{filename});
+    defer allocator.free(cmd);
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", cmd },
+    }) catch return try allocator.dupe(u8, "");
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const trimmed = mem.trim(u8, result.stdout, &std.ascii.whitespace);
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn buildInputFilesJson(allocator: std.mem.Allocator, files: std.ArrayList([]const u8)) ![]u8 {
+    if (files.items.len == 0) {
+        return try allocator.dupe(u8, "");
+    }
+
+    var list = std.ArrayList(u8).init(allocator);
+    defer list.deinit();
+
+    try list.appendSlice(",\"input_files\":[");
+
+    for (files.items, 0..) |file, i| {
+        if (i > 0) try list.append(',');
+
+        // Get basename
+        var basename: []const u8 = file;
+        if (mem.lastIndexOfScalar(u8, file, '/')) |idx| {
+            basename = file[idx + 1 ..];
+        }
+
+        // Base64 encode file content
+        const content = try base64EncodeFile(allocator, file);
+        defer allocator.free(content);
+
+        const entry = try std.fmt.allocPrint(allocator, "{{\"filename\":\"{s}\",\"content\":\"{s}\"}}", .{ basename, content });
+        defer allocator.free(entry);
+
+        try list.appendSlice(entry);
+    }
+
+    try list.append(']');
+
+    return list.toOwnedSlice();
+}
+
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -133,6 +182,8 @@ pub fn main() !u8 {
         var list = false;
         var kill: ?[]const u8 = null;
         var shell: ?[]const u8 = null;
+        var input_files = std.ArrayList([]const u8).init(allocator);
+        defer input_files.deinit();
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (mem.eql(u8, args[i], "--list")) {
@@ -147,6 +198,15 @@ pub fn main() !u8 {
                 i += 1;
                 allocator.free(public_key);
                 public_key = try allocator.dupe(u8, args[i]);
+            } else if (mem.eql(u8, args[i], "-f") and i + 1 < args.len) {
+                i += 1;
+                const file = args[i];
+                // Check if file exists
+                fs.cwd().access(file, .{}) catch {
+                    std.debug.print("Error: File not found: {s}\n", .{file});
+                    return 1;
+                };
+                try input_files.append(file);
             }
         }
 
@@ -168,7 +228,9 @@ pub fn main() !u8 {
             std.debug.print("\x1b[32mSession terminated: {s}\x1b[0m\n", .{k});
         } else {
             const sh = shell orelse "bash";
-            const json = try std.fmt.allocPrint(allocator, "{{\"shell\":\"{s}\"}}", .{sh});
+            const input_files_json = try buildInputFilesJson(allocator, input_files);
+            defer allocator.free(input_files_json);
+            const json = try std.fmt.allocPrint(allocator, "{{\"shell\":\"{s}\"{s}}}", .{ sh, input_files_json });
             defer allocator.free(json);
             const auth_headers = try buildAuthCmd(allocator, "POST", "/sessions", json, public_key, secret_key);
             defer allocator.free(auth_headers);
@@ -187,11 +249,15 @@ pub fn main() !u8 {
         var name: ?[]const u8 = null;
         var ports: ?[]const u8 = null;
         var service_type: ?[]const u8 = null;
+        var bootstrap: ?[]const u8 = null;
+        var bootstrap_file: ?[]const u8 = null;
         var info: ?[]const u8 = null;
         var execute: ?[]const u8 = null;
         var command: ?[]const u8 = null;
         var dump_bootstrap: ?[]const u8 = null;
         var dump_file: ?[]const u8 = null;
+        var input_files = std.ArrayList([]const u8).init(allocator);
+        defer input_files.deinit();
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (mem.eql(u8, args[i], "--list")) {
@@ -205,6 +271,12 @@ pub fn main() !u8 {
             } else if (mem.eql(u8, args[i], "--type") and i + 1 < args.len) {
                 i += 1;
                 service_type = args[i];
+            } else if (mem.eql(u8, args[i], "--bootstrap") and i + 1 < args.len) {
+                i += 1;
+                bootstrap = args[i];
+            } else if (mem.eql(u8, args[i], "--bootstrap-file") and i + 1 < args.len) {
+                i += 1;
+                bootstrap_file = args[i];
             } else if (mem.eql(u8, args[i], "--info") and i + 1 < args.len) {
                 i += 1;
                 info = args[i];
@@ -224,6 +296,15 @@ pub fn main() !u8 {
                 i += 1;
                 allocator.free(public_key);
                 public_key = try allocator.dupe(u8, args[i]);
+            } else if (mem.eql(u8, args[i], "-f") and i + 1 < args.len) {
+                i += 1;
+                const file = args[i];
+                // Check if file exists
+                fs.cwd().access(file, .{}) catch {
+                    std.debug.print("Error: File not found: {s}\n", .{file});
+                    return 1;
+                };
+                try input_files.append(file);
             }
         }
 
@@ -306,7 +387,7 @@ pub fn main() !u8 {
                 return 1;
             }
         } else if (name) |n| {
-            var json_buf: [4096]u8 = undefined;
+            var json_buf: [65536]u8 = undefined;
             var json_stream = std.io.fixedBufferStream(&json_buf);
             const writer = json_stream.writer();
             try writer.print("{{\"name\":\"{s}\"", .{n});
@@ -316,6 +397,45 @@ pub fn main() !u8 {
             if (service_type) |t| {
                 try writer.print(",\"service_type\":\"{s}\"", .{t});
             }
+            if (bootstrap) |b| {
+                try writer.writeAll(",\"bootstrap\":\"");
+                // Escape JSON
+                for (b) |c| {
+                    switch (c) {
+                        '"' => try writer.writeAll("\\\""),
+                        '\\' => try writer.writeAll("\\\\"),
+                        '\n' => try writer.writeAll("\\n"),
+                        '\r' => try writer.writeAll("\\r"),
+                        '\t' => try writer.writeAll("\\t"),
+                        else => try writer.writeByte(c),
+                    }
+                }
+                try writer.writeAll("\"");
+            }
+            if (bootstrap_file) |bf| {
+                const boot_content = fs.cwd().readFileAlloc(allocator, bf, 10 * 1024 * 1024) catch |err| {
+                    std.debug.print("\x1b[31mError: Bootstrap file not found: {s} ({})\x1b[0m\n", .{ bf, err });
+                    return 1;
+                };
+                defer allocator.free(boot_content);
+                try writer.writeAll(",\"bootstrap_content\":\"");
+                // Escape JSON
+                for (boot_content) |c| {
+                    switch (c) {
+                        '"' => try writer.writeAll("\\\""),
+                        '\\' => try writer.writeAll("\\\\"),
+                        '\n' => try writer.writeAll("\\n"),
+                        '\r' => try writer.writeAll("\\r"),
+                        '\t' => try writer.writeAll("\\t"),
+                        else => try writer.writeByte(c),
+                    }
+                }
+                try writer.writeAll("\"");
+            }
+            // Add input_files JSON
+            const input_files_json = try buildInputFilesJson(allocator, input_files);
+            defer allocator.free(input_files_json);
+            try writer.writeAll(input_files_json);
             try writer.writeAll("}");
             const json_str = json_stream.getWritten();
 

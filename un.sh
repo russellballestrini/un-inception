@@ -343,6 +343,7 @@ cmd_session() {
     local network=""
     local vcpu=""
     local api_key="${UNSANDBOX_API_KEY:-}"
+    local -a input_files=()
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -373,6 +374,10 @@ cmd_session() {
             --screen)
                 screen=true
                 shift
+                ;;
+            -f)
+                input_files+=("$2")
+                shift 2
                 ;;
             -n)
                 network="$2"
@@ -427,6 +432,22 @@ cmd_session() {
     [[ "$screen" == true ]] && payload=$(echo "$payload" | jq '. + {persistence: "screen"}')
     [[ "$audit" == true ]] && payload=$(echo "$payload" | jq '. + {audit: true}')
 
+    # Add input files
+    if [[ ${#input_files[@]} -gt 0 ]]; then
+        local files_json="["
+        for file in "${input_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+                echo -e "${RED}Error: Input file not found: $file${RESET}" >&2
+                exit 1
+            fi
+            local filename=$(basename "$file")
+            local content_b64=$(base64 -w0 < "$file")
+            files_json+="{\"filename\":\"$filename\",\"content_base64\":\"$content_b64\"},"
+        done
+        files_json="${files_json%,}]"
+        payload=$(echo "$payload" | jq --argjson files "$files_json" '. + {input_files: $files}')
+    fi
+
     echo -e "${YELLOW}Creating session...${RESET}"
     local result=$(api_request "/sessions" "POST" "$payload" "$api_key")
     local session_id=$(echo "$result" | jq -r '.id // "N/A"')
@@ -440,6 +461,7 @@ cmd_service() {
     local domains=""
     local service_type=""
     local bootstrap=""
+    local bootstrap_file=""
     local list=false
     local info=""
     local logs=""
@@ -452,6 +474,7 @@ cmd_service() {
     local network=""
     local vcpu=""
     local api_key="${UNSANDBOX_API_KEY:-}"
+    local -a input_files=()
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -473,6 +496,14 @@ cmd_service() {
                 ;;
             --bootstrap)
                 bootstrap="$2"
+                shift 2
+                ;;
+            --bootstrap-file)
+                bootstrap_file="$2"
+                shift 2
+                ;;
+            -f)
+                input_files+=("$2")
                 shift 2
                 ;;
             -l|--list)
@@ -639,12 +670,32 @@ cmd_service() {
         fi
 
         if [[ -n "$bootstrap" ]]; then
-            if [[ -f "$bootstrap" ]]; then
-                local bootstrap_content=$(cat "$bootstrap")
-                payload=$(echo "$payload" | jq --arg b "$bootstrap_content" '. + {bootstrap: $b}')
-            else
-                payload=$(echo "$payload" | jq --arg b "$bootstrap" '. + {bootstrap: $b}')
+            payload=$(echo "$payload" | jq --arg b "$bootstrap" '. + {bootstrap: $b}')
+        fi
+
+        if [[ -n "$bootstrap_file" ]]; then
+            if [[ ! -f "$bootstrap_file" ]]; then
+                echo -e "${RED}Error: Bootstrap file not found: $bootstrap_file${RESET}" >&2
+                return 1
             fi
+            local file_content=$(cat "$bootstrap_file")
+            payload=$(echo "$payload" | jq --arg b "$file_content" '. + {bootstrap_content: $b}')
+        fi
+
+        # Add input files
+        if [[ ${#input_files[@]} -gt 0 ]]; then
+            local files_json="["
+            for file in "${input_files[@]}"; do
+                if [[ ! -f "$file" ]]; then
+                    echo -e "${RED}Error: Input file not found: $file${RESET}" >&2
+                    exit 1
+                fi
+                local filename=$(basename "$file")
+                local content_b64=$(base64 -w0 < "$file")
+                files_json+="{\"filename\":\"$filename\",\"content_base64\":\"$content_b64\"},"
+            done
+            files_json="${files_json%,}]"
+            payload=$(echo "$payload" | jq --argjson files "$files_json" '. + {input_files: $files}')
         fi
 
         [[ -n "$network" ]] && payload=$(echo "$payload" | jq --arg n "$network" '. + {network: $n}')
@@ -842,7 +893,8 @@ Service options:
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
   --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)
-  --bootstrap CMD  Bootstrap command/file
+  --bootstrap CMD  Bootstrap command or URI
+  --bootstrap-file FILE  Upload local file as bootstrap script
   -l, --list       List services
   --info ID        Get service details
   --logs ID        Get all logs

@@ -450,6 +450,7 @@ void cmdSession(NSArray* args) {
     NSString* shell = nil;
     NSString* network = nil;
     int vcpu = 0;
+    NSMutableArray* inputFiles = [NSMutableArray array];
 
     // Parse arguments
     for (NSUInteger i = 0; i < [args count]; i++) {
@@ -460,6 +461,8 @@ void cmdSession(NSArray* args) {
             killId = args[++i];
         } else if ([arg isEqualToString:@"--shell"] && i + 1 < [args count]) {
             shell = args[++i];
+        } else if ([arg isEqualToString:@"-f"] && i + 1 < [args count]) {
+            [inputFiles addObject:args[++i]];
         } else if ([arg isEqualToString:@"-n"] && i + 1 < [args count]) {
             network = args[++i];
         } else if ([arg isEqualToString:@"-v"] && i + 1 < [args count]) {
@@ -499,6 +502,26 @@ void cmdSession(NSArray* args) {
     if (network) payload[@"network"] = network;
     if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
 
+    // Add input files
+    if ([inputFiles count] > 0) {
+        NSFileManager* fm = [NSFileManager defaultManager];
+        NSMutableArray* files = [NSMutableArray array];
+        for (NSString* filepath in inputFiles) {
+            if (![fm fileExistsAtPath:filepath]) {
+                fprintf(stderr, "%sError: Input file not found: %s%s\n",
+                        [RED UTF8String], [filepath UTF8String], [RESET UTF8String]);
+                exit(1);
+            }
+            NSData* content = [NSData dataWithContentsOfFile:filepath];
+            NSString* b64Content = [content base64EncodedStringWithOptions:0];
+            [files addObject:@{
+                @"filename": [filepath lastPathComponent],
+                @"content_base64": b64Content
+            }];
+        }
+        payload[@"input_files"] = files;
+    }
+
     printf("%sCreating session...%s\n", [YELLOW UTF8String], [RESET UTF8String]);
     NSDictionary* result = apiRequest(@"/sessions", @"POST", payload, publicKey, secretKey);
     printf("%sSession created: %s%s\n", [GREEN UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);
@@ -521,8 +544,10 @@ void cmdService(NSArray* args) {
     NSString* ports = nil;
     NSString* type = nil;
     NSString* bootstrap = nil;
+    NSString* bootstrapFile = nil;
     NSString* network = nil;
     int vcpu = 0;
+    NSMutableArray* inputFiles = [NSMutableArray array];
 
     // Parse arguments
     for (NSUInteger i = 0; i < [args count]; i++) {
@@ -551,6 +576,10 @@ void cmdService(NSArray* args) {
             type = args[++i];
         } else if ([arg isEqualToString:@"--bootstrap"] && i + 1 < [args count]) {
             bootstrap = args[++i];
+        } else if ([arg isEqualToString:@"--bootstrap-file"] && i + 1 < [args count]) {
+            bootstrapFile = args[++i];
+        } else if ([arg isEqualToString:@"-f"] && i + 1 < [args count]) {
+            [inputFiles addObject:args[++i]];
         } else if ([arg isEqualToString:@"-n"] && i + 1 < [args count]) {
             network = args[++i];
         } else if ([arg isEqualToString:@"-v"] && i + 1 < [args count]) {
@@ -669,13 +698,39 @@ void cmdService(NSArray* args) {
         }
 
         if (bootstrap) {
+            payload[@"bootstrap"] = bootstrap;
+        }
+
+        if (bootstrapFile) {
             NSFileManager* fm = [NSFileManager defaultManager];
-            if ([fm fileExistsAtPath:bootstrap]) {
-                NSString* content = [NSString stringWithContentsOfFile:bootstrap encoding:NSUTF8StringEncoding error:nil];
-                payload[@"bootstrap"] = content;
+            if ([fm fileExistsAtPath:bootstrapFile]) {
+                NSString* content = [NSString stringWithContentsOfFile:bootstrapFile encoding:NSUTF8StringEncoding error:nil];
+                payload[@"bootstrap_content"] = content;
             } else {
-                payload[@"bootstrap"] = bootstrap;
+                fprintf(stderr, "%sError: Bootstrap file not found: %s%s\n",
+                        [RED UTF8String], [bootstrapFile UTF8String], [RESET UTF8String]);
+                exit(1);
             }
+        }
+
+        // Add input files
+        if ([inputFiles count] > 0) {
+            NSFileManager* fm = [NSFileManager defaultManager];
+            NSMutableArray* files = [NSMutableArray array];
+            for (NSString* filepath in inputFiles) {
+                if (![fm fileExistsAtPath:filepath]) {
+                    fprintf(stderr, "%sError: Input file not found: %s%s\n",
+                            [RED UTF8String], [filepath UTF8String], [RESET UTF8String]);
+                    exit(1);
+                }
+                NSData* content = [NSData dataWithContentsOfFile:filepath];
+                NSString* b64Content = [content base64EncodedStringWithOptions:0];
+                [files addObject:@{
+                    @"filename": [filepath lastPathComponent],
+                    @"content_base64": b64Content
+                }];
+            }
+            payload[@"input_files"] = files;
         }
 
         if (network) payload[@"network"] = network;

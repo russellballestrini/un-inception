@@ -330,7 +330,7 @@ func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts boo
 	os.Exit(exitCode)
 }
 
-func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int, tmux, screen bool, publicKey, secretKey string) {
+func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int, tmux, screen bool, files inputFiles, publicKey, secretKey string) {
 	if sessionList != "" {
 		result := apiRequest("/sessions", "GET", nil, publicKey, secretKey)
 		sessions := result["sessions"].([]interface{})
@@ -373,12 +373,29 @@ func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int
 		payload["persistence"] = "screen"
 	}
 
+	// Input files
+	if len(files) > 0 {
+		var inputFilesList []map[string]string
+		for _, f := range files {
+			content, err := os.ReadFile(f)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sError reading input file %s: %v%s\n", Red, f, err, Reset)
+				os.Exit(1)
+			}
+			inputFilesList = append(inputFilesList, map[string]string{
+				"filename":       filepath.Base(f),
+				"content_base64": base64.StdEncoding.EncodeToString(content),
+			})
+		}
+		payload["input_files"] = inputFilesList
+	}
+
 	fmt.Printf("%sCreating session...%s\n", Yellow, Reset)
 	result := apiRequest("/sessions", "POST", payload, publicKey, secretKey)
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, network string, vcpu int, publicKey, secretKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, network string, vcpu int, files inputFiles, publicKey, secretKey string) {
 	if serviceList != "" {
 		result := apiRequest("/services", "GET", nil, publicKey, secretKey)
 		services := result["services"].([]interface{})
@@ -503,13 +520,31 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 			payload["service_type"] = serviceType
 		}
 		if serviceBootstrap != "" {
-			// Check if it's a file
-			if _, err := os.Stat(serviceBootstrap); err == nil {
-				content, _ := os.ReadFile(serviceBootstrap)
-				payload["bootstrap"] = string(content)
-			} else {
-				payload["bootstrap"] = serviceBootstrap
+			payload["bootstrap"] = serviceBootstrap
+		}
+		if serviceBootstrapFile != "" {
+			content, err := os.ReadFile(serviceBootstrapFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: Bootstrap file not found: %s%s\n", Red, serviceBootstrapFile, Reset)
+				os.Exit(1)
 			}
+			payload["bootstrap_content"] = string(content)
+		}
+		// Input files
+		if len(files) > 0 {
+			var inputFilesList []map[string]string
+			for _, f := range files {
+				content, err := os.ReadFile(f)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%sError reading input file %s: %v%s\n", Red, f, err, Reset)
+					os.Exit(1)
+				}
+				inputFilesList = append(inputFilesList, map[string]string{
+					"filename":       filepath.Base(f),
+					"content_base64": base64.StdEncoding.EncodeToString(content),
+				})
+			}
+			payload["input_files"] = inputFilesList
 		}
 		if network != "" {
 			payload["network"] = network
@@ -706,6 +741,8 @@ func main() {
 	sessionShell := sessionCmd.String("shell", "", "Shell/REPL to use")
 	sessionTmux := sessionCmd.Bool("tmux", false, "Enable tmux persistence")
 	sessionScreen := sessionCmd.Bool("screen", false, "Enable screen persistence")
+	var sessionFiles inputFiles
+	sessionCmd.Var(&sessionFiles, "f", "Input file")
 	sessionNetwork := sessionCmd.String("n", "", "Network mode")
 	sessionVcpu := sessionCmd.Int("v", 0, "vCPU count")
 	sessionKey := sessionCmd.String("k", "", "API key")
@@ -716,7 +753,10 @@ func main() {
 	servicePorts := serviceCmd.String("ports", "", "Ports (comma-separated)")
 	serviceDomains := serviceCmd.String("domains", "", "Custom domains (comma-separated)")
 	serviceType := serviceCmd.String("type", "", "Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)")
-	serviceBootstrap := serviceCmd.String("bootstrap", "", "Bootstrap command/file")
+	serviceBootstrap := serviceCmd.String("bootstrap", "", "Bootstrap command or URI")
+	serviceBootstrapFile := serviceCmd.String("bootstrap-file", "", "Upload local file as bootstrap script")
+	var serviceFiles inputFiles
+	serviceCmd.Var(&serviceFiles, "f", "Input file")
 	serviceList := serviceCmd.String("list", "", "List services")
 	serviceInfo := serviceCmd.String("info", "", "Get service info")
 	serviceLogs := serviceCmd.String("logs", "", "Get service logs")
@@ -753,7 +793,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdSession(*sessionList, *sessionKill, *sessionShell, net, vc, *sessionTmux, *sessionScreen, publicKey, secretKey)
+			cmdSession(*sessionList, *sessionKill, *sessionShell, net, vc, *sessionTmux, *sessionScreen, sessionFiles, publicKey, secretKey)
 			return
 
 		case "service":
@@ -767,7 +807,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, net, vc, publicKey, secretKey)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, net, vc, serviceFiles, publicKey, secretKey)
 			return
 
 		case "key":

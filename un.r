@@ -281,8 +281,36 @@ cmd_session <- function(args) {
         return()
     }
 
-    cat(sprintf("%sError: Use --list or --kill%s\n", RED, RESET), file = stderr())
-    quit(status = 1)
+    # Create new session
+    payload <- list(shell = "bash")
+
+    if (!is.null(args$network)) {
+        payload$network <- args$network
+    }
+
+    # Add input files
+    if (!is.null(args$files)) {
+        input_files <- list()
+        for (filepath in args$files) {
+            if (!file.exists(filepath)) {
+                cat(sprintf("%sError: Input file not found: %s%s\n", RED, filepath, RESET), file = stderr())
+                quit(status = 1)
+            }
+            content <- base64enc::base64encode(filepath)
+            input_files[[length(input_files) + 1]] <- list(
+                filename = basename(filepath),
+                content_base64 = content
+            )
+        }
+        if (length(input_files) > 0) {
+            payload$input_files <- input_files
+        }
+    }
+
+    cat(sprintf("%sCreating session...%s\n", YELLOW, RESET))
+    result <- api_request("/sessions", public_key, secret_key, method = "POST", data = payload)
+    cat(sprintf("%sSession created: %s%s\n", GREEN, if (!is.null(result$id)) result$id else "N/A", RESET))
+    cat(sprintf("%s(Interactive sessions require WebSocket - use un2 for full support)%s\n", YELLOW, RESET))
 }
 
 cmd_key <- function(args) {
@@ -485,10 +513,15 @@ cmd_service <- function(args) {
         }
 
         if (!is.null(args$bootstrap)) {
-            if (file.exists(args$bootstrap)) {
-                payload$bootstrap <- paste(readLines(args$bootstrap, warn = FALSE), collapse = "\n")
+            payload$bootstrap <- args$bootstrap
+        }
+
+        if (!is.null(args$bootstrap_file)) {
+            if (file.exists(args$bootstrap_file)) {
+                payload$bootstrap_content <- paste(readLines(args$bootstrap_file, warn = FALSE), collapse = "\n")
             } else {
-                payload$bootstrap <- args$bootstrap
+                cat(sprintf("%sError: Bootstrap file not found: %s%s\n", RED, args$bootstrap_file, RESET), file = stderr())
+                quit(status = 1)
             }
         }
 
@@ -498,6 +531,25 @@ cmd_service <- function(args) {
 
         if (!is.null(args$vcpu)) {
             payload$vcpu <- args$vcpu
+        }
+
+        # Add input files
+        if (!is.null(args$files)) {
+            input_files <- list()
+            for (filepath in args$files) {
+                if (!file.exists(filepath)) {
+                    cat(sprintf("%sError: Input file not found: %s%s\n", RED, filepath, RESET), file = stderr())
+                    quit(status = 1)
+                }
+                content <- base64enc::base64encode(filepath)
+                input_files[[length(input_files) + 1]] <- list(
+                    filename = basename(filepath),
+                    content_base64 = content
+                )
+            }
+            if (length(input_files) > 0) {
+                payload$input_files <- input_files
+            }
         }
 
         result <- api_request("/services", public_key, secret_key, method = "POST", data = payload)
@@ -539,6 +591,7 @@ parse_args <- function() {
         domains = NULL,
         type = NULL,
         bootstrap = NULL,
+        bootstrap_file = NULL,
         vcpu = NULL,
         extend = FALSE
     )
@@ -633,6 +686,10 @@ parse_args <- function() {
         } else if (arg == "--bootstrap") {
             i <- i + 1
             result$bootstrap <- args[i]
+            i <- i + 1
+        } else if (arg == "--bootstrap-file") {
+            i <- i + 1
+            result$bootstrap_file <- args[i]
             i <- i + 1
         } else if (arg %in% c("-v", "--vcpu")) {
             i <- i + 1

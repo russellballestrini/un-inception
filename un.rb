@@ -268,6 +268,21 @@ def cmd_session(options)
   payload[:persistence] = 'screen' if options[:screen]
   payload[:audit] = true if options[:audit]
 
+  # Add input files
+  if options[:files] && !options[:files].empty?
+    input_files = options[:files].map do |filepath|
+      unless File.exist?(filepath)
+        warn "#{RED}Error: Input file not found: #{filepath}#{RESET}"
+        exit 1
+      end
+      {
+        filename: File.basename(filepath),
+        content_base64: Base64.strict_encode64(File.read(filepath, mode: 'rb'))
+      }
+    end
+    payload[:input_files] = input_files
+  end
+
   puts "#{YELLOW}Creating session...#{RESET}"
   result = api_request('/sessions', method: 'POST', data: payload, keys: keys)
   puts "#{GREEN}Session created: #{result['id'] || 'N/A'}#{RESET}"
@@ -461,12 +476,27 @@ def cmd_service(options)
     payload[:ports] = options[:ports].split(',').map(&:to_i) if options[:ports]
     payload[:domains] = options[:domains].split(',') if options[:domains]
     payload[:service_type] = options[:type] if options[:type]
-    if options[:bootstrap]
-      payload[:bootstrap] = if File.exist?(options[:bootstrap])
-                              File.read(options[:bootstrap])
-                            else
-                              options[:bootstrap]
-                            end
+    payload[:bootstrap] = options[:bootstrap] if options[:bootstrap]
+    if options[:bootstrap_file]
+      unless File.exist?(options[:bootstrap_file])
+        warn "#{RED}Error: Bootstrap file not found: #{options[:bootstrap_file]}#{RESET}"
+        exit 1
+      end
+      payload[:bootstrap_content] = File.read(options[:bootstrap_file])
+    end
+    # Add input files
+    if options[:files] && !options[:files].empty?
+      input_files = options[:files].map do |filepath|
+        unless File.exist?(filepath)
+          warn "#{RED}Error: Input file not found: #{filepath}#{RESET}"
+          exit 1
+        end
+        {
+          filename: File.basename(filepath),
+          content_base64: Base64.strict_encode64(File.read(filepath, mode: 'rb'))
+        }
+      end
+      payload[:input_files] = input_files
     end
     payload[:network] = options[:network] if options[:network]
     payload[:vcpu] = options[:vcpu] if options[:vcpu]
@@ -577,6 +607,9 @@ def main
     when '--bootstrap'
       i += 1
       options[:bootstrap] = ARGV[i]
+    when '--bootstrap-file'
+      i += 1
+      options[:bootstrap_file] = ARGV[i]
     when '--info'
       i += 1
       options[:info] = ARGV[i]
@@ -659,7 +692,8 @@ def main
           --ports PORTS    Comma-separated ports
           --domains DOMAINS Custom domains
           --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
-          --bootstrap CMD  Bootstrap command/file
+          --bootstrap CMD  Bootstrap command or URI
+          --bootstrap-file FILE  Upload local file as bootstrap script
           -l, --list       List services
           --info ID        Get service details
           --logs ID        Get all logs

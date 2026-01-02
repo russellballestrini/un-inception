@@ -86,6 +86,7 @@ class Args {
   String? servicePorts;
   String? serviceType;
   String? serviceBootstrap;
+  String? serviceBootstrapFile;
   String? serviceInfo;
   String? serviceLogs;
   String? serviceTail;
@@ -305,6 +306,24 @@ Future<void> cmdSession(Args args) async {
     payload['vcpu'] = args.vcpu;
   }
 
+  // Add input files
+  if (args.files.isNotEmpty) {
+    final inputFiles = <Map<String, String>>[];
+    for (final filepath in args.files) {
+      final file = File(filepath);
+      if (!await file.exists()) {
+        stderr.writeln('${red}Error: Input file not found: $filepath$reset');
+        exit(1);
+      }
+      final content = await file.readAsBytes();
+      inputFiles.add({
+        'filename': filepath.split('/').last,
+        'content_base64': base64Encode(content),
+      });
+    }
+    payload['input_files'] = inputFiles;
+  }
+
   print('${yellow}Creating session...$reset');
   final result = await apiRequestCurl('/sessions', 'POST', jsonEncode(payload), publicKey, secretKey);
   print('${green}Session created: ${result['id'] ?? 'N/A'}$reset');
@@ -426,11 +445,38 @@ Future<void> cmdService(Args args) async {
     if (args.serviceBootstrap != null) {
       payload['bootstrap'] = args.serviceBootstrap;
     }
+    if (args.serviceBootstrapFile != null) {
+      final file = File(args.serviceBootstrapFile!);
+      if (await file.exists()) {
+        payload['bootstrap_content'] = await file.readAsString();
+      } else {
+        stderr.writeln('${red}Error: Bootstrap file not found: ${args.serviceBootstrapFile}$reset');
+        exit(1);
+      }
+    }
     if (args.network != null) {
       payload['network'] = args.network;
     }
     if (args.vcpu > 0) {
       payload['vcpu'] = args.vcpu;
+    }
+
+    // Add input files
+    if (args.files.isNotEmpty) {
+      final inputFiles = <Map<String, String>>[];
+      for (final filepath in args.files) {
+        final file = File(filepath);
+        if (!await file.exists()) {
+          stderr.writeln('${red}Error: Input file not found: $filepath$reset');
+          exit(1);
+        }
+        final content = await file.readAsBytes();
+        inputFiles.add({
+          'filename': filepath.split('/').last,
+          'content_base64': base64Encode(content),
+        });
+      }
+      payload['input_files'] = inputFiles;
     }
 
     final result = await apiRequestCurl('/services', 'POST', jsonEncode(payload), publicKey, secretKey);
@@ -572,6 +618,9 @@ Args parseArgs(List<String> argv) {
         break;
       case '--bootstrap':
         args.serviceBootstrap = argv[++i];
+        break;
+      case '--bootstrap-file':
+        args.serviceBootstrapFile = argv[++i];
         break;
       case '--info':
         args.serviceInfo = argv[++i];

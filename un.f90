@@ -192,15 +192,16 @@ contains
     end subroutine handle_execute
 
     subroutine handle_session()
-        character(len=4096) :: full_cmd
+        character(len=8192) :: full_cmd
         character(len=256) :: arg, session_id
-        character(len=1024) :: public_key, secret_key
+        character(len=1024) :: public_key, secret_key, input_files
         integer :: i, stat
         logical :: list_mode, kill_mode
 
         list_mode = .false.
         kill_mode = .false.
         session_id = ''
+        input_files = ''
 
         ! Parse session arguments
         do i = 2, command_argument_count()
@@ -211,6 +212,15 @@ contains
                 kill_mode = .true.
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, session_id)
+                end if
+            else if (trim(arg) == '-f') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, arg)
+                    if (len_trim(input_files) > 0) then
+                        input_files = trim(input_files) // ',' // trim(arg)
+                    else
+                        input_files = trim(arg)
+                    end if
                 end if
             end if
         end do
@@ -258,14 +268,48 @@ contains
                 'echo -e "\x1b[32mSession terminated: ', trim(session_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else
-            write(0, '(A)') 'Error: Use --list or --kill ID'
-            stop 1
+            ! Create session with optional input_files
+            if (len_trim(input_files) > 0) then
+                write(full_cmd, '(30A)') &
+                    'INPUT_FILES=""; ', &
+                    'IFS='','' read -ra FILES <<< "', trim(input_files), '"; ', &
+                    'for f in "${FILES[@]}"; do ', &
+                    'b64=$(base64 -w0 "$f" 2>/dev/null || base64 "$f"); ', &
+                    'name=$(basename "$f"); ', &
+                    'if [ -n "$INPUT_FILES" ]; then INPUT_FILES="$INPUT_FILES,"; fi; ', &
+                    'INPUT_FILES="$INPUT_FILES{\"filename\":\"$name\",\"content\":\"$b64\"}"; ', &
+                    'done; ', &
+                    'BODY=''{"shell":"bash","input_files":[''"$INPUT_FILES"'']}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/sessions:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/sessions ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" ', &
+                    '-d "$BODY" && ', &
+                    'echo -e "\x1b[33mSession created (WebSocket required)\x1b[0m"'
+            else
+                write(full_cmd, '(20A)') &
+                    'BODY=''{"shell":"bash"}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/sessions:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/sessions ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" ', &
+                    '-d "$BODY" && ', &
+                    'echo -e "\x1b[33mSession created (WebSocket required)\x1b[0m"'
+            end if
+            call execute_command_line(trim(full_cmd), wait=.true.)
         end if
     end subroutine handle_session
 
     subroutine handle_service()
-        character(len=2048) :: full_cmd
-        character(len=256) :: arg, service_id, operation, service_type
+        character(len=8192) :: full_cmd
+        character(len=256) :: arg, service_id, operation, service_type, service_name
+        character(len=1024) :: input_files
         integer :: i, stat
         logical :: list_mode
 
@@ -273,15 +317,31 @@ contains
         operation = ''
         service_id = ''
         service_type = ''
+        service_name = ''
+        input_files = ''
 
         ! Parse service arguments
         do i = 2, command_argument_count()
             call get_command_argument(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
+            else if (trim(arg) == '--name') then
+                operation = 'create'
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_name)
+                end if
             else if (trim(arg) == '--type') then
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_type)
+                end if
+            else if (trim(arg) == '-f') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, arg)
+                    if (len_trim(input_files) > 0) then
+                        input_files = trim(input_files) // ',' // trim(arg)
+                    else
+                        input_files = trim(arg)
+                    end if
                 end if
             else if (trim(arg) == '--info') then
                 operation = 'info'
@@ -385,8 +445,36 @@ contains
                 'else echo "$STDOUT"; fi; ', &
                 'else echo -e "\x1b[31mError: Failed to fetch bootstrap\x1b[0m" >&2; exit 1; fi'
             call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'create' .and. len_trim(service_name) > 0) then
+            ! Create service with optional input_files
+            if (len_trim(input_files) > 0) then
+                write(full_cmd, '(30A)') &
+                    'INPUT_FILES=""; ', &
+                    'IFS='','' read -ra FILES <<< "', trim(input_files), '"; ', &
+                    'for f in "${FILES[@]}"; do ', &
+                    'b64=$(base64 -w0 "$f" 2>/dev/null || base64 "$f"); ', &
+                    'name=$(basename "$f"); ', &
+                    'if [ -n "$INPUT_FILES" ]; then INPUT_FILES="$INPUT_FILES,"; fi; ', &
+                    'INPUT_FILES="$INPUT_FILES{\"filename\":\"$name\",\"content\":\"$b64\"}"; ', &
+                    'done; ', &
+                    'curl -s -X POST https://api.unsandbox.com/services ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(api_key), '" ', &
+                    '-d ''{"name":"', trim(service_name), '","input_files":[''"$INPUT_FILES"'']}'' | ', &
+                    'jq -r ''.id + " created"'' && ', &
+                    'echo -e "\x1b[32mService created\x1b[0m"'
+            else
+                write(full_cmd, '(15A)') &
+                    'curl -s -X POST https://api.unsandbox.com/services ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(api_key), '" ', &
+                    '-d ''{"name":"', trim(service_name), '"}'' | ', &
+                    'jq -r ''.id + " created"'' && ', &
+                    'echo -e "\x1b[32mService created\x1b[0m"'
+            end if
+            call execute_command_line(trim(full_cmd), wait=.true.)
         else
-            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --dump-bootstrap'
+            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --dump-bootstrap, or --name NAME'
             stop 1
         end if
     end subroutine handle_service

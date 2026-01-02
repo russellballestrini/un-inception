@@ -276,8 +276,36 @@ function cmd_session(args)
         return
     end
 
-    println(stderr, "$(RED)Error: Use --list or --kill$(RESET)")
-    exit(1)
+    # Create new session
+    payload = Dict("shell" => "bash")
+
+    if args["network"] !== nothing
+        payload["network"] = args["network"]
+    end
+
+    # Add input files
+    if args["files"] !== nothing
+        input_files = []
+        for filepath in args["files"]
+            if !isfile(filepath)
+                println(stderr, "$(RED)Error: Input file not found: $filepath$(RESET)")
+                exit(1)
+            end
+            content = base64encode(read(filepath))
+            push!(input_files, Dict(
+                "filename" => basename(filepath),
+                "content_base64" => content
+            ))
+        end
+        if !isempty(input_files)
+            payload["input_files"] = input_files
+        end
+    end
+
+    println("$(YELLOW)Creating session...$(RESET)")
+    result = api_request("/sessions", public_key, secret_key, method="POST", data=payload)
+    println("$(GREEN)Session created: $(get(result, "id", "N/A"))$(RESET)")
+    println("$(YELLOW)(Interactive sessions require WebSocket - use un2 for full support)$(RESET)")
 end
 
 function cmd_service(args)
@@ -380,11 +408,16 @@ function cmd_service(args)
         end
 
         if args["bootstrap"] !== nothing
-            bootstrap = args["bootstrap"]
-            if isfile(bootstrap)
-                payload["bootstrap"] = read(bootstrap, String)
+            payload["bootstrap"] = args["bootstrap"]
+        end
+
+        if args["bootstrap-file"] !== nothing
+            bootstrap_file = args["bootstrap-file"]
+            if isfile(bootstrap_file)
+                payload["bootstrap_content"] = read(bootstrap_file, String)
             else
-                payload["bootstrap"] = bootstrap
+                println(stderr, "$(RED)Error: Bootstrap file not found: $bootstrap_file$(RESET)")
+                exit(1)
             end
         end
 
@@ -394,6 +427,25 @@ function cmd_service(args)
 
         if args["vcpu"] !== nothing
             payload["vcpu"] = args["vcpu"]
+        end
+
+        # Add input files
+        if args["files"] !== nothing
+            input_files = []
+            for filepath in args["files"]
+                if !isfile(filepath)
+                    println(stderr, "$(RED)Error: Input file not found: $filepath$(RESET)")
+                    exit(1)
+                end
+                content = base64encode(read(filepath))
+                push!(input_files, Dict(
+                    "filename" => basename(filepath),
+                    "content_base64" => content
+                ))
+            end
+            if !isempty(input_files)
+                payload["input_files"] = input_files
+            end
         end
 
         result = api_request("/services", public_key, secret_key, method="POST", data=payload)
@@ -595,6 +647,13 @@ function main()
             action = :store_true
         "--kill"
             help = "Terminate session"
+        "--files", "-f"
+            help = "Add input file"
+            action = :append_arg
+        "--network", "-n"
+            help = "Network mode"
+            arg_type = String
+            range_tester = x -> x in ["zerotrust", "semitrusted"]
         "--api-key", "-k"
             help = "API key"
     end
@@ -609,7 +668,12 @@ function main()
         "--type"
             help = "Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
         "--bootstrap"
-            help = "Bootstrap command/file"
+            help = "Bootstrap command or URI"
+        "--bootstrap-file"
+            help = "Upload local file as bootstrap script"
+        "--files", "-f"
+            help = "Add input file"
+            action = :append_arg
         "--network", "-n"
             help = "Network mode"
             arg_type = String

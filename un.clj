@@ -95,6 +95,21 @@
       (str/replace "\\\"" "\"")
       (str/replace "\\\\" "\\")))
 
+(defn read-and-base64 [filepath]
+  (let [content (slurp filepath)
+        bytes (.getBytes content "UTF-8")]
+    (.encodeToString (java.util.Base64/getEncoder) bytes)))
+
+(defn build-input-files-json [files]
+  (if (empty? files)
+    ""
+    (let [file-jsons (map (fn [f]
+                            (let [basename (-> (io/file f) .getName)
+                                  b64 (read-and-base64 f)]
+                              (str "{\"filename\":\"" (escape-json basename) "\",\"content\":\"" b64 "\"}")))
+                          files)]
+      (str ",\"input_files\":[" (str/join "," file-jsons) "]"))))
+
 (defn extract-field [field json-str]
   (let [pattern-str (re-pattern (str "\"" field "\":\"([^\"]*)\""))
         pattern-num (re-pattern (str "\"" field "\":(\\d+)"))]
@@ -235,7 +250,7 @@
             (flush)))
         (System/exit exit-code)))))
 
-(defn session-command [action sid shell network vcpu]
+(defn session-command [action sid shell network vcpu input-files]
   (let [api-key (get-api-key)]
     (case action
       :list (println (curl-get api-key "/sessions"))
@@ -245,11 +260,12 @@
       :create (let [sh (or shell "bash")
                     network-json (if network (str ",\"network\":\"" network "\"") "")
                     vcpu-json (if vcpu (str ",\"vcpu\":" vcpu) "")
-                    json (str "{\"shell\":\"" sh "\"" network-json vcpu-json "}")]
+                    input-files-json (build-input-files-json input-files)
+                    json (str "{\"shell\":\"" sh "\"" network-json vcpu-json input-files-json "}")]
                 (println (str yellow "Session created (WebSocket required)" reset))
                 (println (curl-post api-key "/sessions" json))))))
 
-(defn service-command [action sid name ports bootstrap service-type network vcpu]
+(defn service-command [action sid name ports bootstrap bootstrap-file service-type network vcpu input-files]
   (let [api-key (get-api-key)]
     (case action
       :list (println (curl-get api-key "/services"))
@@ -292,10 +308,14 @@
       :create (when name
                 (let [ports-json (if ports (str ",\"ports\":[" ports "]") "")
                       bootstrap-json (if bootstrap (str ",\"bootstrap\":\"" (escape-json bootstrap) "\"") "")
+                      bootstrap-content-json (if bootstrap-file
+                                               (str ",\"bootstrap_content\":\"" (escape-json (slurp bootstrap-file)) "\"")
+                                               "")
                       service-type-json (if service-type (str ",\"service_type\":\"" service-type "\"") "")
                       network-json (if network (str ",\"network\":\"" network "\"") "")
                       vcpu-json (if vcpu (str ",\"vcpu\":" vcpu) "")
-                      json (str "{\"name\":\"" name "\"" ports-json bootstrap-json service-type-json network-json vcpu-json "}")]
+                      input-files-json (build-input-files-json input-files)
+                      json (str "{\"name\":\"" name "\"" ports-json bootstrap-json bootstrap-content-json service-type-json network-json vcpu-json input-files-json "}")]
                   (println (str green "Service created" reset))
                   (println (curl-post api-key "/services" json)))))))
 
@@ -359,19 +379,22 @@
          session-action nil
          session-id nil
          session-shell nil
+         session-input-files []
          service-action nil
          service-id nil
          service-name nil
          service-ports nil
          service-bootstrap nil
+         service-bootstrap-file nil
          service-type nil
+         service-input-files []
          key-extend false
          mode :execute]
     (cond
       (empty? args)
       (case mode
-        :session (session-command (or session-action :create) session-id session-shell network vcpu)
-        :service (service-command (or service-action :create) service-id service-name service-ports service-bootstrap service-type network vcpu)
+        :session (session-command (or session-action :create) session-id session-shell network vcpu session-input-files)
+        :service (service-command (or service-action :create) service-id service-name service-ports service-bootstrap service-bootstrap-file service-type network vcpu service-input-files)
         :key (key-command key-extend)
         :execute (if file
                    (execute-command file env-vars artifacts out-dir network vcpu)
@@ -382,117 +405,129 @@
                        (System/exit 1))))
 
       (= (first args) "session")
-      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend :session)
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend :session)
 
       (= (first args) "service")
-      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend :service)
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend :service)
 
       (= (first args) "key")
-      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend :key)
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend :key)
 
       ;; Key options
       (and (= mode :key) (= (first args) "--extend"))
-      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type true mode)
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files true mode)
 
       ;; Session options
       (and (= mode :session) (= (first args) "--list"))
-      (recur (rest args) file env-vars artifacts out-dir network vcpu :list session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest args) file env-vars artifacts out-dir network vcpu :list session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :session) (= (first args) "--kill"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu :kill (second args) session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu :kill (second args) session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :session) (or (= (first args) "--shell") (= (first args) "-s")))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id (second args)
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id (second args) session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
+
+      (and (= mode :session) (= (first args) "-f"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell (conj session-input-files (second args))
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       ;; Service options
       (and (= mode :service) (= (first args) "--list"))
-      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :list service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :list service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--info"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :info (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :info (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--logs"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :logs (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :logs (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--freeze"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :sleep (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :sleep (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--unfreeze"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :wake (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :wake (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--destroy"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :destroy (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :destroy (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--execute"))
-      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :execute (second args) service-name service-ports (nth args 2) service-type key-extend mode)
+      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :execute (second args) service-name service-ports (nth args 2) service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--dump-bootstrap") (>= (count args) 3) (not (.startsWith (nth args 2) "-")))
-      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) key-extend mode)
+      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--dump-bootstrap"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--name"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             :create service-id (second args) service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :create service-id (second args) service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--ports"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name (second args) service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name (second args) service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--bootstrap"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports (second args) service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports (second args) service-bootstrap-file service-type service-input-files key-extend mode)
+
+      (and (= mode :service) (= (first args) "--bootstrap-file"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap (second args) service-type service-input-files key-extend mode)
 
       (and (= mode :service) (= (first args) "--type"))
-      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap (second args) key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file (second args) service-input-files key-extend mode)
+
+      (and (= mode :service) (= (first args) "-f"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type (conj service-input-files (second args)) key-extend mode)
 
       ;; Execute options
       (= (first args) "-e")
       (let [[k v] (str/split (second args) #"=" 2)]
         (recur (rest (rest args)) file (conj env-vars [k v]) artifacts out-dir network vcpu
-               session-action session-id session-shell service-action service-id service-name service-ports service-bootstrap service-type key-extend mode))
+               session-action session-id session-shell session-input-files service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode))
 
       (= (first args) "-a")
-      (recur (rest args) file env-vars true out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest args) file env-vars true out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (= (first args) "-o")
-      (recur (rest (rest args)) file env-vars artifacts (second args) network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts (second args) network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (= (first args) "-n")
-      (recur (rest (rest args)) file env-vars artifacts out-dir (second args) vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir (second args) vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       (= (first args) "-v")
-      (recur (rest (rest args)) file env-vars artifacts out-dir network (Integer/parseInt (second args)) session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest (rest args)) file env-vars artifacts out-dir network (Integer/parseInt (second args)) session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       ;; Source file
       (and (= mode :execute) (not (.startsWith (first args) "-")) (nil? file))
-      (recur (rest args) (first args) env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode)
+      (recur (rest args) (first args) env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
       :else
-      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell
-             service-action service-id service-name service-ports service-bootstrap service-type key-extend mode))))
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode))))
 
 (parse-args *command-line-args*)

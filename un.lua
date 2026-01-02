@@ -343,6 +343,19 @@ local function cmd_session(options)
     if options.screen then payload.persistence = "screen" end
     if options.audit then payload.audit = true end
 
+    -- Add input files
+    if options.files and #options.files > 0 then
+        local input_files = {}
+        for _, filepath in ipairs(options.files) do
+            local content = read_file(filepath)
+            table.insert(input_files, {
+                filename = filepath:match("([^/]+)$"),
+                content_base64 = base64_encode(content)
+            })
+        end
+        payload.input_files = input_files
+    end
+
     print(YELLOW .. "Creating session..." .. RESET)
     local result = api_request("/sessions", "POST", payload, keys)
     print(GREEN .. "Session created: " .. (result.id or "N/A") .. RESET)
@@ -584,13 +597,28 @@ local function cmd_service(options)
             payload.service_type = options.type
         end
         if options.bootstrap then
-            local file = io.open(options.bootstrap, "r")
-            if file then
-                payload.bootstrap = file:read("*all")
-                file:close()
-            else
-                payload.bootstrap = options.bootstrap
+            payload.bootstrap = options.bootstrap
+        end
+        if options.bootstrap_file then
+            local file = io.open(options.bootstrap_file, "r")
+            if not file then
+                io.stderr:write(RED .. "Error: Bootstrap file not found: " .. options.bootstrap_file .. RESET .. "\n")
+                os.exit(1)
             end
+            payload.bootstrap_content = file:read("*all")
+            file:close()
+        end
+        -- Add input files
+        if options.files and #options.files > 0 then
+            local input_files = {}
+            for _, filepath in ipairs(options.files) do
+                local content = read_file(filepath)
+                table.insert(input_files, {
+                    filename = filepath:match("([^/]+)$"),
+                    content_base64 = base64_encode(content)
+                })
+            end
+            payload.input_files = input_files
         end
         if options.network then payload.network = options.network end
         if options.vcpu then payload.vcpu = options.vcpu end
@@ -629,6 +657,7 @@ local function main()
         domains = nil,
         type = nil,
         bootstrap = nil,
+        bootstrap_file = nil,
         info = nil,
         logs = nil,
         tail = nil,
@@ -700,6 +729,9 @@ local function main()
         elseif a == "--bootstrap" then
             i = i + 1
             options.bootstrap = arg[i]
+        elseif a == "--bootstrap-file" then
+            i = i + 1
+            options.bootstrap_file = arg[i]
         elseif a == "--info" then
             i = i + 1
             options.info = arg[i]
@@ -780,7 +812,8 @@ Service options:
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
   --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
-  --bootstrap CMD  Bootstrap command/file
+  --bootstrap CMD  Bootstrap command or URI
+  --bootstrap-file FILE  Upload local file as bootstrap script
   -l, --list       List services
   --info ID        Get service details
   --logs ID        Get all logs

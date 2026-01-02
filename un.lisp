@@ -88,6 +88,33 @@
       (read-sequence contents stream)
       contents)))
 
+(defun read-file-binary (filename)
+  "Read file as binary and return as vector of bytes"
+  (with-open-file (stream filename :element-type '(unsigned-byte 8))
+    (let* ((len (file-length stream))
+           (data (make-array len :element-type '(unsigned-byte 8))))
+      (read-sequence data stream)
+      data)))
+
+(defun base64-encode-file (filename)
+  "Base64 encode a file using shell command"
+  (let* ((cmd (format nil "base64 -w0 ~a" (uiop:escape-sh-token filename)))
+         (result (string-trim '(#\Space #\Tab #\Newline #\Return)
+                             (uiop:run-program cmd :output :string))))
+    result))
+
+(defun build-input-files-json (files)
+  "Build input_files JSON array from list of filenames"
+  (if (null files)
+      ""
+      (format nil ",\"input_files\":[~{~a~^,~}]"
+              (mapcar (lambda (f)
+                        (let* ((basename (file-namestring f))
+                               (content (base64-encode-file f)))
+                          (format nil "{\"filename\":\"~a\",\"content\":\"~a\"}"
+                                  basename content)))
+                      files))))
+
 (defun write-temp-file (data)
   (let ((tmp-file (format nil "/tmp/un_lisp_~a.json" (random 999999))))
     (with-open-file (stream tmp-file :direction :output :if-exists :supersede)
@@ -209,7 +236,7 @@
            (response (curl-post api-key "/execute" json)))
       (format t "~a~%" response))))
 
-(defun session-cmd (action id shell)
+(defun session-cmd (action id shell input-files)
   (let ((api-key (get-api-key)))
     (cond
       ((string= action "list")
@@ -219,12 +246,13 @@
        (format t "~aSession terminated: ~a~a~%" *green* id *reset*))
       (t
         (let* ((sh (or shell "bash"))
-               (json (format nil "{\"shell\":\"~a\"}" sh))
+               (input-files-json (build-input-files-json input-files))
+               (json (format nil "{\"shell\":\"~a\"~a}" sh input-files-json))
                (response (curl-post api-key "/sessions" json)))
           (format t "~aSession created (WebSocket required)~a~%" *yellow* *reset*)
           (format t "~a~%" response))))))
 
-(defun service-cmd (action id name ports bootstrap service-type)
+(defun service-cmd (action id name ports bootstrap bootstrap-file service-type input-files)
   (let ((api-key (get-api-key)))
     (cond
       ((string= action "list")
@@ -269,8 +297,12 @@
       ((and (string= action "create") name)
        (let* ((ports-json (if ports (format nil ",\"ports\":[~a]" ports) ""))
               (bootstrap-json (if bootstrap (format nil ",\"bootstrap\":\"~a\"" (escape-json bootstrap)) ""))
+              (bootstrap-content-json (if bootstrap-file
+                                          (format nil ",\"bootstrap_content\":\"~a\"" (escape-json (read-file bootstrap-file)))
+                                          ""))
               (type-json (if service-type (format nil ",\"service_type\":\"~a\"" service-type) ""))
-              (json (format nil "{\"name\":\"~a\"~a~a~a}" name ports-json bootstrap-json type-json))
+              (input-files-json (build-input-files-json input-files))
+              (json (format nil "{\"name\":\"~a\"~a~a~a~a~a}" name ports-json bootstrap-json bootstrap-content-json type-json input-files-json))
               (response (curl-post api-key "/services" json)))
          (format t "~aService created~a~%" *green* *reset*)
          (format t "~a~%" response)))
@@ -364,6 +396,19 @@
 (defun key-cmd (extend-flag)
   (validate-key extend-flag))
 
+(defun parse-input-files (args)
+  "Parse -f flags from args and return list of filenames"
+  (let ((files nil))
+    (loop for i from 0 below (1- (length args))
+          do (when (string= (nth i args) "-f")
+               (let ((file (nth (1+ i) args)))
+                 (if (probe-file file)
+                     (push file files)
+                     (progn
+                       (format *error-output* "Error: File not found: ~a~%" file)
+                       (uiop:quit 1))))))
+    (nreverse files)))
+
 (defun main ()
   (let ((args (uiop:command-line-arguments)))
     (if (null args)
@@ -377,45 +422,57 @@
           ((string= (first args) "session")
            (cond
              ((and (> (length args) 1) (string= (second args) "--list"))
-              (session-cmd "list" nil nil))
+              (session-cmd "list" nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--kill"))
-              (session-cmd "kill" (third args) nil))
+              (session-cmd "kill" (third args) nil nil))
              (t
-               (session-cmd "create" nil nil))))
+               ;; Parse session create options including -f
+               (let* ((rest-args (cdr args))
+                      (shell nil)
+                      (input-files (parse-input-files rest-args)))
+                 (loop for i from 0 below (1- (length rest-args))
+                       do (let ((opt (nth i rest-args))
+                                (val (nth (1+ i) rest-args)))
+                            (cond
+                              ((or (string= opt "--shell") (string= opt "-s")) (setf shell val)))))
+                 (session-cmd "create" nil shell input-files)))))
           ((string= (first args) "service")
            (cond
              ((and (> (length args) 1) (string= (second args) "--list"))
-              (service-cmd "list" nil nil nil nil nil))
+              (service-cmd "list" nil nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--info"))
-              (service-cmd "info" (third args) nil nil nil nil))
+              (service-cmd "info" (third args) nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--logs"))
-              (service-cmd "logs" (third args) nil nil nil nil))
+              (service-cmd "logs" (third args) nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--freeze"))
-              (service-cmd "sleep" (third args) nil nil nil nil))
+              (service-cmd "sleep" (third args) nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--unfreeze"))
-              (service-cmd "wake" (third args) nil nil nil nil))
+              (service-cmd "wake" (third args) nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--destroy"))
-              (service-cmd "destroy" (third args) nil nil nil nil))
+              (service-cmd "destroy" (third args) nil nil nil nil nil nil))
              ((and (> (length args) 3) (string= (second args) "--execute"))
-              (service-cmd "execute" (third args) nil nil (fourth args) nil))
+              (service-cmd "execute" (third args) nil nil (fourth args) nil nil nil))
              ((and (> (length args) 3) (string= (second args) "--dump-bootstrap"))
-              (service-cmd "dump-bootstrap" (third args) nil nil nil (fourth args)))
+              (service-cmd "dump-bootstrap" (third args) nil nil nil nil (fourth args) nil))
              ((and (> (length args) 2) (string= (second args) "--dump-bootstrap"))
-              (service-cmd "dump-bootstrap" (third args) nil nil nil nil))
+              (service-cmd "dump-bootstrap" (third args) nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--name"))
               (let* ((name (third args))
                      (rest-args (nthcdr 3 args))
                      (ports nil)
                      (bootstrap nil)
-                     (service-type nil))
-                (loop for i from 0 below (length rest-args) by 2
+                     (bootstrap-file nil)
+                     (service-type nil)
+                     (input-files (parse-input-files rest-args)))
+                (loop for i from 0 below (1- (length rest-args))
                       do (let ((opt (nth i rest-args))
                                (val (nth (1+ i) rest-args)))
                            (cond
                              ((string= opt "--ports") (setf ports val))
                              ((string= opt "--bootstrap") (setf bootstrap val))
+                             ((string= opt "--bootstrap-file") (setf bootstrap-file val))
                              ((string= opt "--type") (setf service-type val)))))
-                (service-cmd "create" nil name ports bootstrap service-type)))
+                (service-cmd "create" nil name ports bootstrap bootstrap-file service-type input-files)))
              (t
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))

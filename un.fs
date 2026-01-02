@@ -89,6 +89,7 @@ type Args = {
     mutable ServicePorts: string option
     mutable ServiceType: string option
     mutable ServiceBootstrap: string option
+    mutable ServiceBootstrapFile: string option
     mutable ServiceInfo: string option
     mutable ServiceLogs: string option
     mutable ServiceTail: string option
@@ -358,6 +359,13 @@ let cmdSession (args: Args) =
         if args.Vcpu > 0 then
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
+        if args.Files.Count > 0 then
+            let inputFiles = args.Files |> Seq.map (fun filepath ->
+                let content = File.ReadAllBytes(filepath)
+                [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))]
+            ) |> Seq.toList
+            payload <- payload @ [("input_files", box inputFiles)]
+
         printfn "%sCreating session...%s" yellow reset
         let result = apiRequest "/sessions" "POST" (Some payload) publicKey secretKey
         match result.TryFind "id" with
@@ -526,6 +534,19 @@ let cmdService (args: Args) =
             payload <- payload @ [("service_type", box args.ServiceType.Value)]
         if args.ServiceBootstrap.IsSome then
             payload <- payload @ [("bootstrap", box args.ServiceBootstrap.Value)]
+        if args.ServiceBootstrapFile.IsSome then
+            if File.Exists(args.ServiceBootstrapFile.Value) then
+                let content = File.ReadAllText(args.ServiceBootstrapFile.Value)
+                payload <- payload @ [("bootstrap_content", box content)]
+            else
+                eprintfn "%sError: Bootstrap file not found: %s%s" red args.ServiceBootstrapFile.Value reset
+                exit 1
+        if args.Files.Count > 0 then
+            let inputFiles = args.Files |> Seq.map (fun filepath ->
+                let content = File.ReadAllBytes(filepath)
+                [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))]
+            ) |> Seq.toList
+            payload <- payload @ [("input_files", box inputFiles)]
         if args.Network.IsSome then
             payload <- payload @ [("network", box args.Network.Value)]
         if args.Vcpu > 0 then
@@ -564,6 +585,7 @@ let parseArgs (argv: string[]) =
         ServicePorts = None
         ServiceType = None
         ServiceBootstrap = None
+        ServiceBootstrapFile = None
         ServiceInfo = None
         ServiceLogs = None
         ServiceTail = None
@@ -601,6 +623,7 @@ let parseArgs (argv: string[]) =
         | "--ports" -> i <- i + 1; args.ServicePorts <- Some argv.[i]
         | "--type" -> i <- i + 1; args.ServiceType <- Some argv.[i]
         | "--bootstrap" -> i <- i + 1; args.ServiceBootstrap <- Some argv.[i]
+        | "--bootstrap-file" -> i <- i + 1; args.ServiceBootstrapFile <- Some argv.[i]
         | "--info" -> i <- i + 1; args.ServiceInfo <- Some argv.[i]
         | "--logs" -> i <- i + 1; args.ServiceLogs <- Some argv.[i]
         | "--tail" -> i <- i + 1; args.ServiceTail <- Some argv.[i]

@@ -75,6 +75,8 @@
        01  WS-DOMAINS          PIC X(256).
        01  WS-SERVICE-TYPE     PIC X(64).
        01  WS-BOOTSTRAP        PIC X(2048).
+       01  WS-BOOTSTRAP-FILE   PIC X(256).
+       01  WS-INPUT-FILES      PIC X(1024).
        01  WS-PORTAL-BASE      PIC X(256) VALUE
            "https://unsandbox.com".
        01  WS-EXTEND-FLAG      PIC X(8).
@@ -155,6 +157,9 @@
                STOP RUN
            END-IF.
 
+      * Initialize session parameters
+           MOVE SPACES TO WS-INPUT-FILES.
+
       * Parse session arguments (simplified)
       * For full implementation, would need to parse multiple args
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
@@ -166,9 +171,8 @@
                    ACCEPT WS-ID FROM ARGUMENT-VALUE
                    PERFORM SESSION-KILL
                ELSE
-                   DISPLAY "Error: Use --list or --kill ID"
-                       UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
+                   PERFORM PARSE-SESSION-CREATE-ARGS
+                   PERFORM SESSION-CREATE
                END-IF
            END-IF.
 
@@ -187,6 +191,8 @@
            MOVE SPACES TO WS-DOMAINS.
            MOVE SPACES TO WS-SERVICE-TYPE.
            MOVE SPACES TO WS-BOOTSTRAP.
+           MOVE SPACES TO WS-BOOTSTRAP-FILE.
+           MOVE SPACES TO WS-INPUT-FILES.
 
       * Parse service arguments
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
@@ -356,6 +362,59 @@
 
            CALL "SYSTEM" USING WS-CURL-CMD.
 
+       PARSE-SESSION-CREATE-ARGS.
+      * Parse arguments for session creation
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "-f"
+                   ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+                   IF WS-INPUT-FILES NOT = SPACES
+                       STRING FUNCTION TRIM(WS-INPUT-FILES) ","
+                           FUNCTION TRIM(WS-ARG3)
+                           DELIMITED BY SIZE INTO WS-INPUT-FILES
+                       END-STRING
+                   ELSE
+                       MOVE WS-ARG3 TO WS-INPUT-FILES
+                   END-IF
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       SESSION-CREATE.
+      * Build curl command for session creation with input_files support
+           STRING "INPUT_FILES=''; "
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-INPUT-FILES NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "IFS=',' read -ra FILES <<< '"
+                   FUNCTION TRIM(WS-INPUT-FILES)
+                   "'; "
+                   "for f in \"${FILES[@]}\"; do "
+                   "b64=$(base64 -w0 \"$f\" 2>/dev/null || base64 \"$f\"); "
+                   "name=$(basename \"$f\"); "
+                   "if [ -n \"$INPUT_FILES\" ]; then INPUT_FILES=\"$INPUT_FILES,\"; fi; "
+                   "INPUT_FILES=\"$INPUT_FILES{\\\"filename\\\":\\\"$name\\\",\\\"content\\\":\\\"$b64\\\"}\"; "
+                   "done; "
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "if [ -n \"$INPUT_FILES\" ]; then "
+               "JSON='{\"shell\":\"bash\",\"input_files\":['\"$INPUT_FILES\"']}'; "
+               "else JSON='{\"shell\":\"bash\"}'; fi; "
+               "curl -s -X POST https://api.unsandbox.com/sessions "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+               "' -d \"$JSON\" && "
+               "echo -e '\x1b[33mSession created (WebSocket required)\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
        SERVICE-LIST.
            STRING "curl -s -X GET https://api.unsandbox.com/services "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
@@ -487,6 +546,18 @@
                    ACCEPT WS-SERVICE-TYPE FROM ARGUMENT-VALUE
                ELSE IF WS-ARG3 = "--bootstrap"
                    ACCEPT WS-BOOTSTRAP FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--bootstrap-file"
+                   ACCEPT WS-BOOTSTRAP-FILE FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "-f"
+                   ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+                   IF WS-INPUT-FILES NOT = SPACES
+                       STRING FUNCTION TRIM(WS-INPUT-FILES) ","
+                           FUNCTION TRIM(WS-ARG3)
+                           DELIMITED BY SIZE INTO WS-INPUT-FILES
+                       END-STRING
+                   ELSE
+                       MOVE WS-ARG3 TO WS-INPUT-FILES
+                   END-IF
                END-IF
                ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
            END-PERFORM.
@@ -540,6 +611,43 @@
                    """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
+           END-IF.
+
+      * Add bootstrap_content from file if provided
+           IF WS-BOOTSTRAP-FILE NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "' | jq --rawfile b '"
+                   FUNCTION TRIM(WS-BOOTSTRAP-FILE)
+                   "' '. + {bootstrap_content: $b}' | tr -d '\\n' | curl "
+                   "-s -X POST https://api.unsandbox.com/services "
+                   "-H 'Content-Type: application/json' "
+                   "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
+                   "' -d @- | jq -r '.id + "" created""'"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+               CALL "SYSTEM" USING WS-CURL-CMD
+               EXIT PARAGRAPH
+           END-IF.
+
+      * Add input_files if provided (use shell script for base64)
+           IF WS-INPUT-FILES NOT = SPACES
+               STRING "INPUT_FILES=''; "
+                   "IFS=',' read -ra FILES <<< '"
+                   FUNCTION TRIM(WS-INPUT-FILES)
+                   "'; "
+                   "for f in \"${FILES[@]}\"; do "
+                   "b64=$(base64 -w0 \"$f\" 2>/dev/null || base64 \"$f\"); "
+                   "name=$(basename \"$f\"); "
+                   "if [ -n \"$INPUT_FILES\" ]; then INPUT_FILES=\"$INPUT_FILES,\"; fi; "
+                   "INPUT_FILES=\"$INPUT_FILES{\\\"filename\\\":\\\"$name\\\",\\\"content\\\":\\\"$b64\\\"}\"; "
+                   "done; "
+                   FUNCTION TRIM(WS-CURL-CMD)
+                   ",\"input_files\":['\"$INPUT_FILES\"']}' | "
+                   "jq -r '.id + "" created""'"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+               CALL "SYSTEM" USING WS-CURL-CMD
+               EXIT PARAGRAPH
            END-IF.
 
       * Close JSON and add output formatting

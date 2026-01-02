@@ -262,8 +262,36 @@ def cmd_session(args)
     return
   end
 
-  STDERR.puts "#{RED}Error: Use --list or --kill#{RESET}"
-  exit 1
+  # Create new session
+  payload = JSON.parse({shell: "bash"}.to_json)
+
+  if network = args[:network]?.as?(String)
+    payload.as_h["network"] = JSON::Any.new(network)
+  end
+
+  # Add input files
+  if files = args[:files]?.as?(Array(String))
+    input_files = [] of JSON::Any
+    files.each do |filepath|
+      unless File.exists?(filepath)
+        STDERR.puts "#{RED}Error: Input file not found: #{filepath}#{RESET}"
+        exit 1
+      end
+      content = Base64.strict_encode(File.read(filepath))
+      input_files << JSON.parse({
+        filename: File.basename(filepath),
+        content_base64: content
+      }.to_json)
+    end
+    unless input_files.empty?
+      payload.as_h["input_files"] = JSON.parse(input_files.to_json)
+    end
+  end
+
+  puts "#{YELLOW}Creating session...#{RESET}"
+  result = api_request("/sessions", public_key, secret_key, method: "POST", data: payload)
+  puts "#{GREEN}Session created: #{result["id"]?.try(&.as_s?) || "N/A"}#{RESET}"
+  puts "#{YELLOW}(Interactive sessions require WebSocket - use un2 for full support)#{RESET}"
 end
 
 def cmd_key(args)
@@ -469,17 +497,41 @@ def cmd_service(args)
 
     # Add bootstrap
     if bootstrap = args[:bootstrap]?.as?(String)
-      # Check if bootstrap is a file
-      if File.exists?(bootstrap)
-        payload.as_h["bootstrap"] = JSON::Any.new(File.read(bootstrap))
+      payload.as_h["bootstrap"] = JSON::Any.new(bootstrap)
+    end
+
+    # Add bootstrap_file
+    if bootstrap_file = args[:bootstrap_file]?.as?(String)
+      if File.exists?(bootstrap_file)
+        payload.as_h["bootstrap_content"] = JSON::Any.new(File.read(bootstrap_file))
       else
-        payload.as_h["bootstrap"] = JSON::Any.new(bootstrap)
+        STDERR.puts "#{RED}Error: Bootstrap file not found: #{bootstrap_file}#{RESET}"
+        exit 1
       end
     end
 
     # Add network
     if network = args[:network]?.as?(String)
       payload.as_h["network"] = JSON::Any.new(network)
+    end
+
+    # Add input files
+    if files = args[:files]?.as?(Array(String))
+      input_files = [] of JSON::Any
+      files.each do |filepath|
+        unless File.exists?(filepath)
+          STDERR.puts "#{RED}Error: Input file not found: #{filepath}#{RESET}"
+          exit 1
+        end
+        content = Base64.strict_encode(File.read(filepath))
+        input_files << JSON.parse({
+          filename: File.basename(filepath),
+          content_base64: content
+        }.to_json)
+      end
+      unless input_files.empty?
+        payload.as_h["input_files"] = JSON.parse(input_files.to_json)
+      end
     end
 
     # Create service
@@ -521,6 +573,7 @@ def main
     domains: nil,
     service_type: nil,
     bootstrap: nil,
+    bootstrap_file: nil,
     extend: false
   } of Symbol => (String | Array(String) | Bool | Nil)
 
@@ -548,7 +601,8 @@ def main
     opts.on("--ports=PORTS", "Comma-separated ports") { |p| args[:ports] = p }
     opts.on("--domains=DOMAINS", "Comma-separated domains") { |d| args[:domains] = d }
     opts.on("--type=TYPE", "Service type for SRV records") { |t| args[:service_type] = t }
-    opts.on("--bootstrap=CMD", "Bootstrap command/file") { |b| args[:bootstrap] = b }
+    opts.on("--bootstrap=CMD", "Bootstrap command or URI") { |b| args[:bootstrap] = b }
+    opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
     opts.on("--extend", "Open browser to extend/renew key") { args[:extend] = true }
 
     opts.unknown_args do |before, after|

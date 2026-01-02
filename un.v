@@ -95,6 +95,25 @@ fn escape_json(s string) string {
 	return result
 }
 
+fn base64_encode_file(filename string) string {
+	cmd := "base64 -w0 '${filename}'"
+	result := os.execute(cmd)
+	return result.output.trim_space()
+}
+
+fn build_input_files_json(files []string) string {
+	if files.len == 0 {
+		return ''
+	}
+	mut entries := []string{}
+	for f in files {
+		basename := os.file_name(f)
+		content := base64_encode_file(f)
+		entries << '{"filename":"${basename}","content":"${content}"}'
+	}
+	return ',"input_files":[' + entries.join(',') + ']'
+}
+
 fn exec_curl(cmd string) string {
 	result := os.execute(cmd)
 	output := result.output
@@ -252,7 +271,7 @@ fn cmd_execute(source_file string, envs []string, artifacts bool, network string
 	println(exec_curl(cmd))
 }
 
-fn cmd_session(list bool, kill string, shell string, network string, vcpu int, tmux bool, screen bool, api_key string) {
+fn cmd_session(list bool, kill string, shell string, network string, vcpu int, tmux bool, screen bool, input_files []string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -283,6 +302,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	if screen {
 		json += ',"persistence":"screen"'
 	}
+	json += build_input_files_json(input_files)
 	json += '}'
 
 	println('${yellow}Creating session...${reset}')
@@ -290,7 +310,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl(cmd))
 }
 
-fn cmd_service(name string, ports string, service_type string, bootstrap string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -389,11 +409,18 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 			json += ',"service_type":"${service_type}"'
 		}
 		if bootstrap != '' {
-			if os.exists(bootstrap) {
-				boot_code := os.read_file(bootstrap) or { bootstrap }
-				json += ',"bootstrap":"${escape_json(boot_code)}"'
+			json += ',"bootstrap":"${escape_json(bootstrap)}"'
+		}
+		if bootstrap_file != '' {
+			if os.exists(bootstrap_file) {
+				boot_code := os.read_file(bootstrap_file) or {
+					eprintln('${red}Error: Could not read bootstrap file: ${bootstrap_file}${reset}')
+					exit(1)
+				}
+				json += ',"bootstrap_content":"${escape_json(boot_code)}"'
 			} else {
-				json += ',"bootstrap":"${escape_json(bootstrap)}"'
+				eprintln('${red}Error: Bootstrap file not found: ${bootstrap_file}${reset}')
+				exit(1)
 			}
 		}
 		if network != '' {
@@ -402,6 +429,7 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		if vcpu > 0 {
 			json += ',"vcpu":${vcpu}'
 		}
+		json += build_input_files_json(input_files)
 		json += '}'
 
 		println('${yellow}Creating service...${reset}')
@@ -459,6 +487,7 @@ fn main() {
 		mut tmux := false
 		mut screen := false
 
+		mut input_files := []string{}
 		mut i := 2
 		for i < os.args.len {
 			match os.args[i] {
@@ -485,12 +514,22 @@ fn main() {
 					i++
 					api_key = os.args[i]
 				}
+				'-f' {
+					i++
+					f := os.args[i]
+					if os.exists(f) {
+						input_files << f
+					} else {
+						eprintln('Error: File not found: ${f}')
+						exit(1)
+					}
+				}
 				else {}
 			}
 			i++
 		}
 
-		cmd_session(list, kill, shell, network, vcpu, tmux, screen, api_key)
+		cmd_session(list, kill, shell, network, vcpu, tmux, screen, input_files, api_key)
 		return
 	}
 
@@ -499,6 +538,7 @@ fn main() {
 		mut ports := ''
 		mut service_type := ''
 		mut bootstrap := ''
+		mut bootstrap_file := ''
 		mut list := false
 		mut info := ''
 		mut logs := ''
@@ -512,6 +552,7 @@ fn main() {
 		mut dump_file := ''
 		mut network := ''
 		mut vcpu := 0
+		mut input_files := []string{}
 
 		mut i := 2
 		for i < os.args.len {
@@ -531,6 +572,10 @@ fn main() {
 				'--bootstrap' {
 					i++
 					bootstrap = os.args[i]
+				}
+				'--bootstrap-file' {
+					i++
+					bootstrap_file = os.args[i]
 				}
 				'--list' { list = true }
 				'--info' {
@@ -585,13 +630,23 @@ fn main() {
 					i++
 					api_key = os.args[i]
 				}
+				'-f' {
+					i++
+					f := os.args[i]
+					if os.exists(f) {
+						input_files << f
+					} else {
+						eprintln('Error: File not found: ${f}')
+						exit(1)
+					}
+				}
 				else {}
 			}
 			i++
 		}
 
-		cmd_service(name, ports, service_type, bootstrap, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network,
-			vcpu, api_key)
+		cmd_service(name, ports, service_type, bootstrap, bootstrap_file, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network,
+			vcpu, input_files, api_key)
 		return
 	}
 

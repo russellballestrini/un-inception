@@ -88,6 +88,31 @@ string escapeJson(string s) {
     return result;
 }
 
+string readAndBase64(string filepath) {
+    import std.base64 : Base64;
+    try {
+        auto content = readText(filepath);
+        return Base64.encode(cast(ubyte[])content);
+    } catch (Exception e) {
+        stderr.writefln("%sError: Cannot read file: %s%s", RED, filepath, RESET);
+        return "";
+    }
+}
+
+string buildInputFilesJson(string[] files) {
+    if (files.length == 0) return "";
+    string[] fileJsons;
+    foreach (f; files) {
+        string b64 = readAndBase64(f);
+        if (b64.empty) continue;
+        string basename = baseName(f);
+        fileJsons ~= format(`{"filename":"%s","content":"%s"}`, escapeJson(basename), b64);
+    }
+    if (fileJsons.length == 0) return "";
+    import std.array : join;
+    return format(`,"input_files":[%s]`, fileJsons.join(","));
+}
+
 string computeHmac(string secretKey, string message) {
     import std.process : pipeShell, Redirect, wait;
     import std.stdio : File;
@@ -173,7 +198,7 @@ void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network
     writeln(result);
 }
 
-void cmdSession(bool list, string kill, string shell, string network, int vcpu, bool tmux, bool screen, string publicKey, string secretKey) {
+void cmdSession(bool list, string kill, string shell, string network, int vcpu, bool tmux, bool screen, string[] inputFiles, string publicKey, string secretKey) {
     if (list) {
         string authHeaders = buildAuthHeaders("GET", "/sessions", "", publicKey, secretKey);
         string cmd = format(`curl -s -X GET '%s/sessions' %s`, API_BASE, authHeaders);
@@ -195,6 +220,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
     if (tmux) json ~= `,"persistence":"tmux"`;
     if (screen) json ~= `,"persistence":"screen"`;
+    json ~= buildInputFilesJson(inputFiles);
     json ~= "}";
 
     writefln("%sCreating session...%s", YELLOW, RESET);
@@ -203,7 +229,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string publicKey, string secretKey) {
+void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string[] inputFiles, string publicKey, string secretKey) {
     if (list) {
         string authHeaders = buildAuthHeaders("GET", "/services", "", publicKey, secretKey);
         string cmd = format(`curl -s -X GET '%s/services' %s`, API_BASE, authHeaders);
@@ -340,15 +366,20 @@ void cmdService(string name, string ports, string bootstrap, string type, bool l
         if (!ports.empty) json ~= format(`,"ports":[%s]`, ports);
         if (!type.empty) json ~= format(`,"service_type":"%s"`, type);
         if (!bootstrap.empty) {
-            if (exists(bootstrap)) {
-                string bootCode = readText(bootstrap);
-                json ~= format(`,"bootstrap":"%s"`, escapeJson(bootCode));
+            json ~= format(`,"bootstrap":"%s"`, escapeJson(bootstrap));
+        }
+        if (!bootstrapFile.empty) {
+            if (exists(bootstrapFile)) {
+                string bootCode = readText(bootstrapFile);
+                json ~= format(`,"bootstrap_content":"%s"`, escapeJson(bootCode));
             } else {
-                json ~= format(`,"bootstrap":"%s"`, escapeJson(bootstrap));
+                stderr.writefln("%sError: Bootstrap file not found: %s%s", RED, bootstrapFile, RESET);
+                exit(1);
             }
         }
         if (!network.empty) json ~= format(`,"network":"%s"`, network);
         if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
+        json ~= buildInputFilesJson(inputFiles);
         json ~= "}";
 
         writefln("%sCreating service...%s", YELLOW, RESET);
@@ -505,6 +536,7 @@ int main(string[] args) {
         string kill, shell, network;
         int vcpu = 0;
         bool tmux = false, screen = false;
+        string[] inputFiles;
 
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--list") list = true;
@@ -514,23 +546,26 @@ int main(string[] args) {
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
             else if (args[i] == "--tmux") tmux = true;
             else if (args[i] == "--screen") screen = true;
+            else if (args[i] == "-f" && i+1 < args.length) inputFiles ~= args[++i];
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdSession(list, kill, shell, network, vcpu, tmux, screen, publicKey, secretKey);
+        cmdSession(list, kill, shell, network, vcpu, tmux, screen, inputFiles, publicKey, secretKey);
         return 0;
     }
 
     if (args[1] == "service") {
-        string name, ports, bootstrap, type;
+        string name, ports, bootstrap, bootstrapFile, type;
         bool list = false;
         string info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network;
         int vcpu = 0;
+        string[] inputFiles;
 
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--name" && i+1 < args.length) name = args[++i];
             else if (args[i] == "--ports" && i+1 < args.length) ports = args[++i];
             else if (args[i] == "--bootstrap" && i+1 < args.length) bootstrap = args[++i];
+            else if (args[i] == "--bootstrap-file" && i+1 < args.length) bootstrapFile = args[++i];
             else if (args[i] == "--type" && i+1 < args.length) type = args[++i];
             else if (args[i] == "--list") list = true;
             else if (args[i] == "--info" && i+1 < args.length) info = args[++i];
@@ -545,10 +580,11 @@ int main(string[] args) {
             else if (args[i] == "--dump-file" && i+1 < args.length) dumpFile = args[++i];
             else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
+            else if (args[i] == "-f" && i+1 < args.length) inputFiles ~= args[++i];
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, publicKey, secretKey);
+        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, publicKey, secretKey);
         return 0;
     }
 

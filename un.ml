@@ -91,6 +91,25 @@ let read_file filename =
   close_in ic;
   s
 
+(* Base64 encode a file using shell command *)
+let base64_encode_file filename =
+  let cmd = Printf.sprintf "base64 -w0 %s" (Filename.quote filename) in
+  let ic = Unix.open_process_in cmd in
+  let result = try input_line ic with End_of_file -> "" in
+  let _ = Unix.close_process_in ic in
+  String.trim result
+
+(* Build input_files JSON from list of filenames *)
+let build_input_files_json files =
+  if files = [] then ""
+  else
+    let entries = List.map (fun f ->
+      let basename = Filename.basename f in
+      let content = base64_encode_file f in
+      Printf.sprintf "{\"filename\":\"%s\",\"content\":\"%s\"}" basename content
+    ) files in
+    ",\"input_files\":[" ^ (String.concat "," entries) ^ "]"
+
 (* Get file extension *)
 let get_extension filename =
   try
@@ -407,7 +426,7 @@ let key_command extend =
   validate_key api_key extend
 
 (* Session command *)
-let session_command action shell network vcpu =
+let session_command action shell network vcpu input_files =
   let api_key = get_api_key () in
   match action with
   | "list" ->
@@ -425,7 +444,8 @@ let session_command action shell network vcpu =
     let sh = match shell with Some s -> s | None -> "bash" in
     let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
     let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
-    let json = Printf.sprintf "{\"shell\":\"%s\"%s%s}" sh network_json vcpu_json in
+    let input_files_json = build_input_files_json input_files in
+    let json = Printf.sprintf "{\"shell\":\"%s\"%s%s%s}" sh network_json vcpu_json input_files_json in
     let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
     let oc = open_out tmp_file in
     output_string oc json;
@@ -445,7 +465,7 @@ let session_command action shell network vcpu =
   | _ -> ()
 
 (* Service command *)
-let service_command action name ports bootstrap service_type network vcpu =
+let service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files =
   let api_key = get_api_key () in
   match action with
   | "list" ->
@@ -576,10 +596,17 @@ let service_command action name ports bootstrap service_type network vcpu =
      | Some n ->
        let ports_json = match ports with Some p -> Printf.sprintf ",\"ports\":[%s]" p | None -> "" in
        let bootstrap_json = match bootstrap with Some b -> Printf.sprintf ",\"bootstrap\":\"%s\"" (escape_json b) | None -> "" in
+       let bootstrap_content_json = match bootstrap_file with
+         | Some f ->
+           let content = read_file f in
+           Printf.sprintf ",\"bootstrap_content\":\"%s\"" (escape_json content)
+         | None -> ""
+       in
        let service_type_json = match service_type with Some t -> Printf.sprintf ",\"service_type\":\"%s\"" t | None -> "" in
        let network_json = match network with Some net -> Printf.sprintf ",\"network\":\"%s\"" net | None -> "" in
        let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
-       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s}" n ports_json bootstrap_json service_type_json network_json vcpu_json in
+       let input_files_json = build_input_files_json input_files in
+       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s%s%s}" n ports_json bootstrap_json bootstrap_content_json service_type_json network_json vcpu_json input_files_json in
        let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
        let oc = open_out tmp_file in
        output_string oc json;
@@ -601,6 +628,18 @@ let service_command action name ports bootstrap service_type network vcpu =
        exit 1)
   | _ -> ()
 
+(* Parse -f flags from argument list *)
+let rec parse_input_files acc = function
+  | [] -> List.rev acc
+  | "-f" :: file :: rest ->
+    if Sys.file_exists file then
+      parse_input_files (file :: acc) rest
+    else begin
+      Printf.fprintf stderr "Error: File not found: %s\n" file;
+      exit 1
+    end
+  | _ :: rest -> parse_input_files acc rest
+
 (* Parse arguments *)
 let () =
   Random.self_init ();
@@ -616,37 +655,42 @@ let () =
     let extend = List.mem "--extend" rest in
     key_command extend
   | "session" :: rest ->
+    let input_files = parse_input_files [] rest in
     let rec parse_session action shell network vcpu = function
-      | [] -> session_command action shell network vcpu
+      | [] -> session_command action shell network vcpu input_files
       | "--list" :: rest -> parse_session "list" shell network vcpu rest
       | "--kill" :: id :: rest -> parse_session "kill" (Some id) network vcpu rest
       | "--shell" :: sh :: rest | "-s" :: sh :: rest -> parse_session action (Some sh) network vcpu rest
       | "-n" :: net :: rest -> parse_session action shell (Some net) vcpu rest
       | "-v" :: v :: rest -> parse_session action shell network (Some (int_of_string v)) rest
+      | "-f" :: _ :: rest -> parse_session action shell network vcpu rest (* skip -f, already parsed *)
       | _ :: rest -> parse_session action shell network vcpu rest
     in
     parse_session "create" None None None rest
   | "service" :: rest ->
-    let rec parse_service action name ports bootstrap service_type network vcpu = function
-      | [] -> service_command action name ports bootstrap service_type network vcpu
-      | "--list" :: rest -> parse_service "list" name ports bootstrap service_type network vcpu rest
-      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap service_type network vcpu rest
-      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap service_type network vcpu rest
-      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap service_type network vcpu rest
-      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap service_type network vcpu rest
-      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap service_type network vcpu rest
-      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) service_type network vcpu rest
-      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) network vcpu rest
-      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap service_type network vcpu rest
-      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap service_type network vcpu rest
-      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap service_type network vcpu rest
-      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) service_type network vcpu rest
-      | "--type" :: t :: rest -> parse_service action name ports bootstrap (Some t) network vcpu rest
-      | "-n" :: net :: rest -> parse_service action name ports bootstrap service_type (Some net) vcpu rest
-      | "-v" :: v :: rest -> parse_service action name ports bootstrap service_type network (Some (int_of_string v)) rest
-      | _ :: rest -> parse_service action name ports bootstrap service_type network vcpu rest
+    let input_files = parse_input_files [] rest in
+    let rec parse_service action name ports bootstrap bootstrap_file service_type network vcpu = function
+      | [] -> service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files
+      | "--list" :: rest -> parse_service "list" name ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) bootstrap_file service_type network vcpu rest
+      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) service_type network vcpu rest
+      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap bootstrap_file service_type network vcpu rest
+      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap bootstrap_file service_type network vcpu rest
+      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) bootstrap_file service_type network vcpu rest
+      | "--bootstrap-file" :: f :: rest -> parse_service action name ports bootstrap (Some f) service_type network vcpu rest
+      | "--type" :: t :: rest -> parse_service action name ports bootstrap bootstrap_file (Some t) network vcpu rest
+      | "-n" :: net :: rest -> parse_service action name ports bootstrap bootstrap_file service_type (Some net) vcpu rest
+      | "-v" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) rest
+      | "-f" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu rest (* skip -f, already parsed *)
+      | _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu rest
     in
-    parse_service "create" None None None None None None rest
+    parse_service "create" None None None None None None None rest
   | args ->
     let rec parse_execute file env_vars artifacts out_dir network vcpu = function
       | [] -> execute_command file env_vars artifacts out_dir network vcpu

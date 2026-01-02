@@ -193,8 +193,32 @@ function Invoke-Session {
         $shell = $Args[$idx + 1]
     }
 
-    $payload = @{ shell = $shell } | ConvertTo-Json
-    $result = Invoke-Api -Endpoint "/sessions" -Method "POST" -Body $payload
+    # Parse input files
+    $inputFiles = @()
+    for ($i = 0; $i -lt $Args.Count; $i++) {
+        if ($Args[$i] -eq "-f" -and ($i + 1) -lt $Args.Count) {
+            $filepath = $Args[$i + 1]
+            if (-not (Test-Path $filepath)) {
+                Write-Error "Error: Input file not found: $filepath"
+                exit 1
+            }
+            $content = [System.IO.File]::ReadAllBytes($filepath)
+            $b64Content = [Convert]::ToBase64String($content)
+            $inputFiles += @{
+                filename = [System.IO.Path]::GetFileName($filepath)
+                content_base64 = $b64Content
+            }
+            $i++
+        }
+    }
+
+    $payload = @{ shell = $shell }
+    if ($inputFiles.Count -gt 0) {
+        $payload["input_files"] = $inputFiles
+    }
+
+    $body = $payload | ConvertTo-Json -Depth 10
+    $result = Invoke-Api -Endpoint "/sessions" -Method "POST" -Body $body
     Write-Host "`e[33mSession created (WebSocket required for interactive)`e[0m"
     $result | ConvertTo-Json -Depth 5
 }
@@ -353,12 +377,45 @@ function Invoke-Service {
             $payload["bootstrap"] = $Args[$bIdx + 1]
         }
 
+        if ($Args -contains "--bootstrap-file") {
+            $bfIdx = [array]::IndexOf($Args, "--bootstrap-file")
+            $bootstrapFile = $Args[$bfIdx + 1]
+            if (Test-Path $bootstrapFile) {
+                $payload["bootstrap_content"] = Get-Content -Raw $bootstrapFile
+            } else {
+                Write-Error "Error: Bootstrap file not found: $bootstrapFile"
+                exit 1
+            }
+        }
+
         if ($Args -contains "--type") {
             $tIdx = [array]::IndexOf($Args, "--type")
             $payload["service_type"] = $Args[$tIdx + 1]
         }
 
-        $body = $payload | ConvertTo-Json -Depth 5
+        # Parse input files
+        $inputFiles = @()
+        for ($i = 0; $i -lt $Args.Count; $i++) {
+            if ($Args[$i] -eq "-f" -and ($i + 1) -lt $Args.Count) {
+                $filepath = $Args[$i + 1]
+                if (-not (Test-Path $filepath)) {
+                    Write-Error "Error: Input file not found: $filepath"
+                    exit 1
+                }
+                $content = [System.IO.File]::ReadAllBytes($filepath)
+                $b64Content = [Convert]::ToBase64String($content)
+                $inputFiles += @{
+                    filename = [System.IO.Path]::GetFileName($filepath)
+                    content_base64 = $b64Content
+                }
+                $i++
+            }
+        }
+        if ($inputFiles.Count -gt 0) {
+            $payload["input_files"] = $inputFiles
+        }
+
+        $body = $payload | ConvertTo-Json -Depth 10
         $result = Invoke-Api -Endpoint "/services" -Method "POST" -Body $body
         Write-Host "`e[32mService created`e[0m"
         $result | ConvertTo-Json -Depth 5
@@ -385,12 +442,14 @@ Session options:
   --list, -l      List sessions
   --kill ID       Terminate session
   --shell NAME    Shell/REPL to use
+  -f FILE         Input file (can be repeated)
 
 Service options:
   --name NAME          Service name
   --ports PORTS        Comma-separated ports
   --type TYPE          Service type (minecraft, mumble, teamspeak, source, tcp, udp)
   --bootstrap CMD      Bootstrap command
+  -f FILE              Input file (can be repeated)
   --list, -l           List services
   --info ID            Get service info
   --logs ID            Get logs

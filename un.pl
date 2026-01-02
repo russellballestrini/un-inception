@@ -281,6 +281,26 @@ sub cmd_session {
     $payload->{persistence} = 'screen' if $options->{screen};
     $payload->{audit} = JSON::PP::true if $options->{audit};
 
+    # Add input files
+    if ($options->{files} && @{$options->{files}}) {
+        my @input_files;
+        foreach my $filepath (@{$options->{files}}) {
+            unless (-e $filepath) {
+                print STDERR "${RED}Error: Input file not found: $filepath${RESET}\n";
+                exit 1;
+            }
+            open my $f, '<:raw', $filepath or die "Cannot read file: $!";
+            local $/;
+            my $content = <$f>;
+            close $f;
+            push @input_files, {
+                filename => basename($filepath),
+                content_base64 => encode_base64($content, '')
+            };
+        }
+        $payload->{input_files} = \@input_files;
+    }
+
     print "${YELLOW}Creating session...${RESET}\n";
     my $result = api_request('/sessions', 'POST', $payload, $public_key, $secret_key);
     print "${GREEN}Session created: ", ($result->{id} // 'N/A'), "${RESET}\n";
@@ -396,14 +416,36 @@ sub cmd_service {
             $payload->{service_type} = $options->{type};
         }
         if ($options->{bootstrap}) {
-            if (-e $options->{bootstrap}) {
-                open my $fh, '<', $options->{bootstrap} or die "Cannot read file: $!";
-                local $/;
-                $payload->{bootstrap} = <$fh>;
-                close $fh;
-            } else {
-                $payload->{bootstrap} = $options->{bootstrap};
+            $payload->{bootstrap} = $options->{bootstrap};
+        }
+        if ($options->{bootstrap_file}) {
+            if (! -e $options->{bootstrap_file}) {
+                print STDERR "${RED}Error: Bootstrap file not found: $options->{bootstrap_file}${RESET}\n";
+                exit 1;
             }
+            open my $fh, '<', $options->{bootstrap_file} or die "Cannot read file: $!";
+            local $/;
+            $payload->{bootstrap_content} = <$fh>;
+            close $fh;
+        }
+        # Add input files
+        if ($options->{files} && @{$options->{files}}) {
+            my @input_files;
+            foreach my $filepath (@{$options->{files}}) {
+                unless (-e $filepath) {
+                    print STDERR "${RED}Error: Input file not found: $filepath${RESET}\n";
+                    exit 1;
+                }
+                open my $f, '<:raw', $filepath or die "Cannot read file: $!";
+                local $/;
+                my $content = <$f>;
+                close $f;
+                push @input_files, {
+                    filename => basename($filepath),
+                    content_base64 => encode_base64($content, '')
+                };
+            }
+            $payload->{input_files} = \@input_files;
         }
         $payload->{network} = $options->{network} if $options->{network};
         $payload->{vcpu} = $options->{vcpu} if $options->{vcpu};
@@ -520,6 +562,7 @@ sub main {
         domains => undef,
         type => undef,
         bootstrap => undef,
+        bootstrap_file => undef,
         info => undef,
         logs => undef,
         tail => undef,
@@ -576,6 +619,8 @@ sub main {
             $options{type} = $ARGV[++$i];
         } elsif ($arg eq '--bootstrap') {
             $options{bootstrap} = $ARGV[++$i];
+        } elsif ($arg eq '--bootstrap-file') {
+            $options{bootstrap_file} = $ARGV[++$i];
         } elsif ($arg eq '--info') {
             $options{info} = $ARGV[++$i];
         } elsif ($arg eq '--logs') {
@@ -644,7 +689,8 @@ Service options:
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
   --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
-  --bootstrap CMD  Bootstrap command/file
+  --bootstrap CMD  Bootstrap command or URI
+  --bootstrap-file FILE  Upload local file as bootstrap script
   -l, --list       List services
   --info ID        Get service details
   --logs ID        Get all logs

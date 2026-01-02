@@ -316,6 +316,23 @@ def cmd_session(args):
     if args.audit:
         payload["audit"] = True
 
+    # Add input files
+    if args.files:
+        input_files = []
+        for filepath in args.files:
+            try:
+                with open(filepath, 'rb') as f:
+                    content = base64.b64encode(f.read()).decode('utf-8')
+                input_files.append({
+                    "filename": os.path.basename(filepath),
+                    "content_base64": content
+                })
+            except FileNotFoundError:
+                print(f"{RED}Error: Input file not found: {filepath}{RESET}", file=sys.stderr)
+                sys.exit(1)
+        if input_files:
+            payload["input_files"] = input_files
+
     print(f"{YELLOW}Creating session...{RESET}")
     result = api_request("/sessions", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
     print(f"{GREEN}Session created: {result.get('id', 'N/A')}{RESET}")
@@ -494,12 +511,28 @@ def cmd_service(args):
         if args.service_type:
             payload["service_type"] = args.service_type
         if args.bootstrap:
-            # Check if bootstrap is a file
-            if os.path.exists(args.bootstrap):
-                with open(args.bootstrap, 'r') as f:
-                    payload["bootstrap"] = f.read()
-            else:
-                payload["bootstrap"] = args.bootstrap
+            payload["bootstrap"] = args.bootstrap
+        if args.bootstrap_file:
+            if not os.path.exists(args.bootstrap_file):
+                print(f"{RED}Error: Bootstrap file not found: {args.bootstrap_file}{RESET}", file=sys.stderr)
+                sys.exit(1)
+            with open(args.bootstrap_file, 'r') as f:
+                payload["bootstrap_content"] = f.read()
+        if args.files:
+            input_files = []
+            for filepath in args.files:
+                try:
+                    with open(filepath, 'rb') as f:
+                        content = base64.b64encode(f.read()).decode('utf-8')
+                    input_files.append({
+                        "filename": os.path.basename(filepath),
+                        "content_base64": content
+                    })
+                except FileNotFoundError:
+                    print(f"{RED}Error: Input file not found: {filepath}{RESET}", file=sys.stderr)
+                    sys.exit(1)
+            if input_files:
+                payload["input_files"] = input_files
         if args.network:
             payload["network"] = args.network
         if args.vcpu:
@@ -530,6 +563,7 @@ Examples:
   %(prog)s session --shell python3      Python REPL
   %(prog)s session --list               List active sessions
   %(prog)s service --name web --ports 80 --bootstrap "python -m http.server"
+  %(prog)s service --name app --ports 8000 --bootstrap-file ./setup.sh
   %(prog)s service --list               List all services
         """
     )
@@ -555,6 +589,7 @@ Examples:
     session_parser.add_argument("--audit", action="store_true", help="Record session")
     session_parser.add_argument("--tmux", action="store_true", help="Enable tmux persistence")
     session_parser.add_argument("--screen", action="store_true", help="Enable screen persistence")
+    session_parser.add_argument("-f", "--files", action="append", metavar="FILE", help="Add input file")
     session_parser.add_argument("-n", "--network", choices=["zerotrust", "semitrusted"])
     session_parser.add_argument("-v", "--vcpu", type=int, choices=range(1, 9))
     session_parser.add_argument("-k", "--api-key")
@@ -565,7 +600,9 @@ Examples:
     service_parser.add_argument("--ports", help="Comma-separated ports")
     service_parser.add_argument("--domains", help="Comma-separated custom domains")
     service_parser.add_argument("--type", dest="service_type", help="Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)")
-    service_parser.add_argument("--bootstrap", help="Bootstrap command/file")
+    service_parser.add_argument("--bootstrap", help="Bootstrap command or URI")
+    service_parser.add_argument("--bootstrap-file", dest="bootstrap_file", help="Upload local file as bootstrap script")
+    service_parser.add_argument("-f", "--files", action="append", metavar="FILE", help="Add input file")
     service_parser.add_argument("-l", "--list", action="store_true", help="List services")
     service_parser.add_argument("--info", metavar="ID", help="Get service details")
     service_parser.add_argument("--tail", metavar="ID", help="Get last 9000 lines of logs")

@@ -400,7 +400,7 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
-\ Service create (requires --name, optional --ports, --domains, --type, --bootstrap)
+\ Service create (requires --name, optional --ports, --domains, --type, --bootstrap, -f)
 : service-create ( -- )
     get-api-key
     \ Parse arguments (simplified - in real implementation would iterate through args)
@@ -413,15 +413,32 @@
     s" SECRET_KEY='" r@ write-file throw
     get-secret-key r@ write-file throw
     s" '" r@ write-line throw
-    s" NAME=''; PORTS=''; DOMAINS=''; TYPE=''; BOOTSTRAP=''" r@ write-line throw
-    s" for ((i=3; i<$#; i+=2)); do" r@ write-line throw
-    s"   case ${!i} in" r@ write-line throw
-    s"     --name) NAME=${!((i+1))} ;;" r@ write-line throw
-    s"     --ports) PORTS=${!((i+1))} ;;" r@ write-line throw
-    s"     --domains) DOMAINS=${!((i+1))} ;;" r@ write-line throw
-    s"     --type) TYPE=${!((i+1))} ;;" r@ write-line throw
-    s"     --bootstrap) BOOTSTRAP=${!((i+1))} ;;" r@ write-line throw
+    s" NAME=''; PORTS=''; DOMAINS=''; TYPE=''; BOOTSTRAP=''; BOOTSTRAP_FILE=''; INPUT_FILES=''" r@ write-line throw
+    s" i=3" r@ write-line throw
+    s" while [ $i -lt $# ]; do" r@ write-line throw
+    s"   arg=${!i}" r@ write-line throw
+    s"   case \"$arg\" in" r@ write-line throw
+    s"     --name) ((i++)); NAME=${!i} ;;" r@ write-line throw
+    s"     --ports) ((i++)); PORTS=${!i} ;;" r@ write-line throw
+    s"     --domains) ((i++)); DOMAINS=${!i} ;;" r@ write-line throw
+    s"     --type) ((i++)); TYPE=${!i} ;;" r@ write-line throw
+    s"     --bootstrap) ((i++)); BOOTSTRAP=${!i} ;;" r@ write-line throw
+    s"     --bootstrap-file) ((i++)); BOOTSTRAP_FILE=${!i} ;;" r@ write-line throw
+    s"     -f) ((i++)); FILE=${!i}" r@ write-line throw
+    s"       if [ -f \"$FILE\" ]; then" r@ write-line throw
+    s"         BASENAME=$(basename \"$FILE\")" r@ write-line throw
+    s"         CONTENT=$(base64 -w0 \"$FILE\")" r@ write-line throw
+    s"         if [ -z \"$INPUT_FILES\" ]; then" r@ write-line throw
+    s"           INPUT_FILES=\"{\\\"filename\\\":\\\"$BASENAME\\\",\\\"content\\\":\\\"$CONTENT\\\"}\"" r@ write-line throw
+    s"         else" r@ write-line throw
+    s"           INPUT_FILES=\"$INPUT_FILES,{\\\"filename\\\":\\\"$BASENAME\\\",\\\"content\\\":\\\"$CONTENT\\\"}\"" r@ write-line throw
+    s"         fi" r@ write-line throw
+    s"       else" r@ write-line throw
+    s"         echo \"Error: File not found: $FILE\" >&2" r@ write-line throw
+    s"         exit 1" r@ write-line throw
+    s"       fi ;;" r@ write-line throw
     s"   esac" r@ write-line throw
+    s"   ((i++))" r@ write-line throw
     s" done" r@ write-line throw
     s" [ -z \"$NAME\" ] && echo 'Error: --name required' && exit 1" r@ write-line throw
     s" PAYLOAD='{\"name\":\"'\"$NAME\"'\"}'" r@ write-line throw
@@ -429,6 +446,13 @@
     s" [ -n \"$DOMAINS\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg d \"$DOMAINS\" '. + {domains: ($d | split(\",\"))}')" r@ write-line throw
     s" [ -n \"$TYPE\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg t \"$TYPE\" '. + {service_type: $t}')" r@ write-line throw
     s" [ -n \"$BOOTSTRAP\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg b \"$BOOTSTRAP\" '. + {bootstrap: $b}')" r@ write-line throw
+    s" if [ -n \"$BOOTSTRAP_FILE\" ]; then" r@ write-line throw
+    s"   [ ! -f \"$BOOTSTRAP_FILE\" ] && echo -e '\\x1b[31mError: Bootstrap file not found: '$BOOTSTRAP_FILE'\\x1b[0m' >&2 && exit 1" r@ write-line throw
+    s"   PAYLOAD=$(echo $PAYLOAD | jq --rawfile b \"$BOOTSTRAP_FILE\" '. + {bootstrap_content: $b}')" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ -n \"$INPUT_FILES\" ]; then" r@ write-line throw
+    s"   PAYLOAD=$(echo $PAYLOAD | jq --argjson f \"[$INPUT_FILES]\" '. + {input_files: $f}')" r@ write-line throw
+    s" fi" r@ write-line throw
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
     s" MESSAGE=\"$TIMESTAMP:POST:/services:$PAYLOAD\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
@@ -515,6 +539,51 @@
     0 (bye)
 ;
 
+\ Session create with input_files support
+: session-create ( -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SHELL='bash'" r@ write-line throw
+    s" INPUT_FILES=''" r@ write-line throw
+    s" for ((i=2; i<$#; i++)); do" r@ write-line throw
+    s"   case ${!i} in" r@ write-line throw
+    s"     --shell|-s) ((i++)); SHELL=${!i} ;;" r@ write-line throw
+    s"     -f) ((i++)); FILE=${!i}" r@ write-line throw
+    s"       if [ -f \"$FILE\" ]; then" r@ write-line throw
+    s"         BASENAME=$(basename \"$FILE\")" r@ write-line throw
+    s"         CONTENT=$(base64 -w0 \"$FILE\")" r@ write-line throw
+    s"         if [ -z \"$INPUT_FILES\" ]; then" r@ write-line throw
+    s"           INPUT_FILES=\"{\\\"filename\\\":\\\"$BASENAME\\\",\\\"content\\\":\\\"$CONTENT\\\"}\"" r@ write-line throw
+    s"         else" r@ write-line throw
+    s"           INPUT_FILES=\"$INPUT_FILES,{\\\"filename\\\":\\\"$BASENAME\\\",\\\"content\\\":\\\"$CONTENT\\\"}\"" r@ write-line throw
+    s"         fi" r@ write-line throw
+    s"       else" r@ write-line throw
+    s"         echo \"Error: File not found: $FILE\" >&2" r@ write-line throw
+    s"         exit 1" r@ write-line throw
+    s"       fi ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s" done" r@ write-line throw
+    s" if [ -n \"$INPUT_FILES\" ]; then" r@ write-line throw
+    s"   BODY=\"{\\\"shell\\\":\\\"$SHELL\\\",\\\"input_files\\\":[$INPUT_FILES]}\"" r@ write-line throw
+    s" else" r@ write-line throw
+    s"   BODY=\"{\\\"shell\\\":\\\"$SHELL\\\"}\"" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/sessions:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" echo -e '\\x1b[33mCreating session...\\x1b[0m'" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/sessions -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\"" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
 \ Handle session subcommand
 : handle-session ( -- )
     argc @ 3 < if
@@ -539,6 +608,22 @@
             1 (bye)
         then
         3 arg session-kill
+        0 (bye)
+    then
+
+    \ Check for --shell or -f flags (create session)
+    2dup s" --shell" compare 0= if
+        2drop session-create
+        0 (bye)
+    then
+
+    2dup s" -s" compare 0= if
+        2drop session-create
+        0 (bye)
+    then
+
+    2dup s" -f" compare 0= if
+        2drop session-create
         0 (bye)
     then
 

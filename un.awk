@@ -326,7 +326,90 @@ function service_dump_bootstrap(id, dump_file    , endpoint, json_body, timestam
     }
 }
 
-function service_create(name, ports, domains, service_type, bootstrap    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+function read_and_base64(filepath    , cmd, b64) {
+    cmd = "base64 -w0 '" filepath "' 2>/dev/null || base64 '" filepath "'"
+    cmd | getline b64
+    close(cmd)
+    return b64
+}
+
+function build_input_files_json(files_str    , n, files, i, fname, b64, json) {
+    if (files_str == "") return ""
+    n = split(files_str, files, ",")
+    json = ",\"input_files\":["
+    for (i = 1; i <= n; i++) {
+        fname = files[i]
+        b64 = read_and_base64(fname)
+        if (i > 1) json = json ","
+        # Get just the basename for filename
+        cmd = "basename '" fname "'"
+        cmd | getline basename
+        close(cmd)
+        json = json "{\"filename\":\"" escape_json(basename) "\",\"content\":\"" b64 "\"}"
+    }
+    json = json "]"
+    return json
+}
+
+function session_create(shell, network, vcpu, input_files    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response, input_files_json) {
+    get_api_keys()
+
+    # Build JSON payload
+    json = "{\"shell\":\"" (shell != "" ? shell : "bash") "\""
+
+    if (network != "") {
+        json = json ",\"network\":\"" escape_json(network) "\""
+    }
+
+    if (vcpu != "") {
+        json = json ",\"vcpu\":" vcpu
+    }
+
+    # Add input_files if provided
+    input_files_json = build_input_files_json(input_files)
+    if (input_files_json != "") {
+        json = json input_files_json
+    }
+
+    json = json "}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_sess_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:/sessions:" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE "/sessions' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    print YELLOW "Session created (WebSocket required)" RESET
+    print response
+}
+
+function service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, boot_content, line, input_files_json) {
     get_api_keys()
 
     # Build JSON payload
@@ -353,6 +436,29 @@ function service_create(name, ports, domains, service_type, bootstrap    , json,
 
     if (bootstrap != "") {
         json = json ",\"bootstrap\":\"" escape_json(bootstrap) "\""
+    }
+
+    if (bootstrap_file != "") {
+        # Read file content
+        boot_content = ""
+        while ((getline line < bootstrap_file) > 0) {
+            if (boot_content != "") boot_content = boot_content "\n"
+            boot_content = boot_content line
+        }
+        close(bootstrap_file)
+
+        if (boot_content == "") {
+            print RED "Error: Bootstrap file not found or empty: " bootstrap_file RESET > "/dev/stderr"
+            exit 1
+        }
+
+        json = json ",\"bootstrap_content\":\"" escape_json(boot_content) "\""
+    }
+
+    # Add input_files if provided
+    input_files_json = build_input_files_json(input_files)
+    if (input_files_json != "") {
+        json = json input_files_json
     }
 
     json = json "}"
@@ -495,11 +601,16 @@ function show_help() {
     print "Usage: awk -f un.awk <source_file>"
     print "       awk -f un.awk session --list"
     print "       awk -f un.awk session --kill ID"
+    print "       awk -f un.awk session [-s SHELL] [-f FILE]..."
     print "       awk -f un.awk key [--extend]"
     print "       awk -f un.awk service --list"
-    print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD]"
+    print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-f FILE]..."
     print "       awk -f un.awk service --destroy ID"
     print "       awk -f un.awk service --dump-bootstrap ID [--dump-file FILE]"
+    print ""
+    print "Session options:"
+    print "  -s, --shell SHELL  Shell to use (default: bash)"
+    print "  -f FILE            Input file to upload (can be repeated)"
     print ""
     print "Service options:"
     print "  --name NAME      Service name (required for --create)"
@@ -509,6 +620,7 @@ function show_help() {
     print "  --bootstrap CMD  Bootstrap command or script"
     print "  --dump-bootstrap ID  Dump bootstrap script from service"
     print "  --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)"
+    print "  -f FILE          Input file to upload (can be repeated)"
     print ""
     print "Requires: UNSANDBOX_API_KEY environment variable"
 }
@@ -536,7 +648,33 @@ END {
         } else if (ARGC >= 4 && ARGV[2] == "--kill") {
             session_kill(ARGV[3])
         } else {
-            print "Usage: awk -f un.awk session --list|--kill ID"
+            # Parse session creation arguments
+            shell = ""
+            network = ""
+            vcpu = ""
+            input_files = ""
+
+            i = 2
+            while (i < ARGC) {
+                if ((ARGV[i] == "--shell" || ARGV[i] == "-s") && i + 1 < ARGC) {
+                    shell = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "-n" && i + 1 < ARGC) {
+                    network = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "-v" && i + 1 < ARGC) {
+                    vcpu = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "-f" && i + 1 < ARGC) {
+                    if (input_files != "") input_files = input_files ","
+                    input_files = input_files ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+
+            session_create(shell, network, vcpu, input_files)
         }
         exit 0
     }
@@ -568,6 +706,8 @@ END {
             domains = ""
             service_type = ""
             bootstrap = ""
+            bootstrap_file = ""
+            input_files = ""
 
             i = 3
             while (i < ARGC) {
@@ -586,6 +726,13 @@ END {
                 } else if (ARGV[i] == "--bootstrap" && i + 1 < ARGC) {
                     bootstrap = ARGV[i + 1]
                     i += 2
+                } else if (ARGV[i] == "--bootstrap-file" && i + 1 < ARGC) {
+                    bootstrap_file = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "-f" && i + 1 < ARGC) {
+                    if (input_files != "") input_files = input_files ","
+                    input_files = input_files ARGV[i + 1]
+                    i += 2
                 } else {
                     i++
                 }
@@ -596,7 +743,7 @@ END {
                 exit 1
             }
 
-            service_create(name, ports, domains, service_type, bootstrap)
+            service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files)
         } else {
             print "Usage: awk -f un.awk service --list|--create|--destroy ID"
         }

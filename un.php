@@ -288,6 +288,22 @@ function cmd_session($options) {
     if ($options['screen']) $payload['persistence'] = 'screen';
     if ($options['audit']) $payload['audit'] = true;
 
+    // Add input files
+    if (!empty($options['files'])) {
+        $input_files = [];
+        foreach ($options['files'] as $filepath) {
+            if (!file_exists($filepath)) {
+                fwrite(STDERR, RED . "Error: Input file not found: $filepath" . RESET . "\n");
+                exit(1);
+            }
+            $input_files[] = [
+                'filename' => basename($filepath),
+                'content_base64' => base64_encode(file_get_contents($filepath))
+            ];
+        }
+        $payload['input_files'] = $input_files;
+    }
+
     echo YELLOW . "Creating session..." . RESET . "\n";
     $result = api_request('/sessions', 'POST', $payload, $keys);
     echo GREEN . "Session created: " . ($result['id'] ?? 'N/A') . RESET . "\n";
@@ -524,11 +540,29 @@ function cmd_service($options) {
             $payload['service_type'] = $options['type'];
         }
         if ($options['bootstrap']) {
-            if (file_exists($options['bootstrap'])) {
-                $payload['bootstrap'] = file_get_contents($options['bootstrap']);
-            } else {
-                $payload['bootstrap'] = $options['bootstrap'];
+            $payload['bootstrap'] = $options['bootstrap'];
+        }
+        if ($options['bootstrap_file']) {
+            if (!file_exists($options['bootstrap_file'])) {
+                fwrite(STDERR, RED . "Error: Bootstrap file not found: {$options['bootstrap_file']}" . RESET . "\n");
+                exit(1);
             }
+            $payload['bootstrap_content'] = file_get_contents($options['bootstrap_file']);
+        }
+        // Add input files
+        if (!empty($options['files'])) {
+            $input_files = [];
+            foreach ($options['files'] as $filepath) {
+                if (!file_exists($filepath)) {
+                    fwrite(STDERR, RED . "Error: Input file not found: $filepath" . RESET . "\n");
+                    exit(1);
+                }
+                $input_files[] = [
+                    'filename' => basename($filepath),
+                    'content_base64' => base64_encode(file_get_contents($filepath))
+                ];
+            }
+            $payload['input_files'] = $input_files;
         }
         if ($options['network']) $payload['network'] = $options['network'];
         if ($options['vcpu']) $payload['vcpu'] = $options['vcpu'];
@@ -569,6 +603,7 @@ function main() {
         'domains' => null,
         'type' => null,
         'bootstrap' => null,
+        'bootstrap_file' => null,
         'info' => null,
         'logs' => null,
         'tail' => null,
@@ -649,6 +684,9 @@ function main() {
                 break;
             case '--bootstrap':
                 $options['bootstrap'] = $argv[++$i];
+                break;
+            case '--bootstrap-file':
+                $options['bootstrap_file'] = $argv[++$i];
                 break;
             case '--info':
                 $options['info'] = $argv[++$i];
@@ -731,7 +769,8 @@ Service options:
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
   --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
-  --bootstrap CMD  Bootstrap command/file
+  --bootstrap CMD  Bootstrap command or URI
+  --bootstrap-file FILE  Upload local file as bootstrap script
   -l, --list       List services
   --info ID        Get service details
   --logs ID        Get all logs

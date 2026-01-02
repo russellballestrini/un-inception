@@ -210,6 +210,19 @@ public class Un {
             payload.put("vcpu", args.vcpu);
         }
 
+        // Add input files
+        if (args.files != null && !args.files.isEmpty()) {
+            List<Map<String, String>> inputFiles = new ArrayList<>();
+            for (String filepath : args.files) {
+                byte[] content = Files.readAllBytes(Paths.get(filepath));
+                Map<String, String> fileObj = new HashMap<>();
+                fileObj.put("filename", Paths.get(filepath).getFileName().toString());
+                fileObj.put("content_base64", Base64.getEncoder().encodeToString(content));
+                inputFiles.add(fileObj);
+            }
+            payload.put("input_files", inputFiles);
+        }
+
         System.out.println(YELLOW + "Creating session..." + RESET);
         Map<String, Object> result = apiRequest("/sessions", "POST", payload, publicKey, secretKey);
         System.out.println(GREEN + "Session created: " + result.getOrDefault("id", "N/A") + RESET);
@@ -340,6 +353,18 @@ public class Un {
             }
             if (args.serviceBootstrap != null) {
                 payload.put("bootstrap", args.serviceBootstrap);
+            }
+            // Add input files
+            if (args.files != null && !args.files.isEmpty()) {
+                List<Map<String, String>> inputFiles = new ArrayList<>();
+                for (String filepath : args.files) {
+                    byte[] content = Files.readAllBytes(Paths.get(filepath));
+                    Map<String, String> fileObj = new HashMap<>();
+                    fileObj.put("filename", Paths.get(filepath).getFileName().toString());
+                    fileObj.put("content_base64", Base64.getEncoder().encodeToString(content));
+                    inputFiles.add(fileObj);
+                }
+                payload.put("input_files", inputFiles);
             }
             if (args.network != null) {
                 payload.put("network", args.network);

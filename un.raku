@@ -283,6 +283,7 @@ sub cmd-session(@args) {
     my $shell = '';
     my $network = '';
     my $vcpu = 0;
+    my @input-files;
 
     # Parse arguments
     my $i = 0;
@@ -306,6 +307,10 @@ sub cmd-session(@args) {
             when '-v' {
                 $i++;
                 $vcpu = @args[$i].Int;
+            }
+            when '-f' {
+                $i++;
+                @input-files.push(@args[$i]);
             }
         }
         $i++;
@@ -337,6 +342,23 @@ sub cmd-session(@args) {
     %payload<network> = $network if $network;
     %payload<vcpu> = $vcpu if $vcpu > 0;
 
+    # Add input files
+    if @input-files {
+        my @files;
+        for @input-files -> $filepath {
+            unless $filepath.IO.e {
+                note "{$RED}Error: Input file not found: $filepath{$RESET}";
+                exit 1;
+            }
+            my $content = $filepath.IO.slurp(:bin);
+            @files.push({
+                filename => $filepath.IO.basename,
+                content_base64 => $content.encode('latin1').decode('latin1').encode.base64
+            });
+        }
+        %payload<input_files> = @files;
+    }
+
     say "{$YELLOW}Creating session...{$RESET}";
     my %result = api-request('/sessions', 'POST', %payload, :$public-key, :$secret-key);
     say "{$GREEN}Session created: {%result<id>}{$RESET}";
@@ -357,8 +379,10 @@ sub cmd-service(@args) {
     my $ports = '';
     my $type = '';
     my $bootstrap = '';
+    my $bootstrap-file = '';
     my $network = '';
     my $vcpu = 0;
+    my @input-files;
 
     # Parse arguments
     my $i = 0;
@@ -411,6 +435,10 @@ sub cmd-service(@args) {
                 $i++;
                 $bootstrap = @args[$i];
             }
+            when '--bootstrap-file' {
+                $i++;
+                $bootstrap-file = @args[$i];
+            }
             when '-n' {
                 $i++;
                 $network = @args[$i];
@@ -418,6 +446,10 @@ sub cmd-service(@args) {
             when '-v' {
                 $i++;
                 $vcpu = @args[$i].Int;
+            }
+            when '-f' {
+                $i++;
+                @input-files.push(@args[$i]);
             }
         }
         $i++;
@@ -506,16 +538,37 @@ sub cmd-service(@args) {
         }
 
         if $bootstrap {
-            # Check if bootstrap is a file
-            if $bootstrap.IO.e && $bootstrap.IO.f {
-                %payload<bootstrap> = $bootstrap.IO.slurp;
+            %payload<bootstrap> = $bootstrap;
+        }
+
+        if $bootstrap-file {
+            if $bootstrap-file.IO.e && $bootstrap-file.IO.f {
+                %payload<bootstrap_content> = $bootstrap-file.IO.slurp;
             } else {
-                %payload<bootstrap> = $bootstrap;
+                note "{$RED}Error: Bootstrap file not found: $bootstrap-file{$RESET}";
+                exit 1;
             }
         }
 
         %payload<network> = $network if $network;
         %payload<vcpu> = $vcpu if $vcpu > 0;
+
+        # Add input files
+        if @input-files {
+            my @files;
+            for @input-files -> $filepath {
+                unless $filepath.IO.e {
+                    note "{$RED}Error: Input file not found: $filepath{$RESET}";
+                    exit 1;
+                }
+                my $content = $filepath.IO.slurp(:bin);
+                @files.push({
+                    filename => $filepath.IO.basename,
+                    content_base64 => $content.encode('latin1').decode('latin1').encode.base64
+                });
+            }
+            %payload<input_files> = @files;
+        }
 
         my %result = api-request('/services', 'POST', %payload, :$public-key, :$secret-key);
         say "{$GREEN}Service created: {%result<id>}{$RESET}";

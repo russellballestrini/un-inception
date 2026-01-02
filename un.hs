@@ -133,6 +133,7 @@ data SessionOpts = SessionOpts
   , sessShell :: Maybe String
   , sessNetwork :: Maybe String
   , sessVcpu :: Maybe Int
+  , sessFiles :: [String]
   }
 
 data SessionAction = SessionList | SessionKill String | SessionCreate
@@ -143,8 +144,10 @@ data ServiceOpts = ServiceOpts
   , svcPorts :: Maybe String
   , svcType :: Maybe String
   , svcBootstrap :: Maybe String
+  , svcBootstrapFile :: Maybe String
   , svcNetwork :: Maybe String
   , svcVcpu :: Maybe Int
+  , svcFiles :: [String]
   }
 
 data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
@@ -174,7 +177,7 @@ parseKey args = return $ parseKeyArgs args defaultKeyOpts
 parseSession :: [String] -> IO SessionOpts
 parseSession args = return $ parseSessionArgs args defaultSessionOpts
   where
-    defaultSessionOpts = SessionOpts SessionCreate Nothing Nothing Nothing
+    defaultSessionOpts = SessionOpts SessionCreate Nothing Nothing Nothing []
     parseSessionArgs [] opts = opts
     parseSessionArgs ("--list":rest) opts = parseSessionArgs rest opts { sessAction = SessionList }
     parseSessionArgs ("--kill":id:rest) opts = parseSessionArgs rest opts { sessAction = SessionKill id }
@@ -182,12 +185,13 @@ parseSession args = return $ parseSessionArgs args defaultSessionOpts
     parseSessionArgs ("-s":sh:rest) opts = parseSessionArgs rest opts { sessShell = Just sh }
     parseSessionArgs ("-n":net:rest) opts = parseSessionArgs rest opts { sessNetwork = Just net }
     parseSessionArgs ("-v":v:rest) opts = parseSessionArgs rest opts { sessVcpu = Just (read v) }
+    parseSessionArgs ("-f":f:rest) opts = parseSessionArgs rest opts { sessFiles = sessFiles opts ++ [f] }
     parseSessionArgs (_:rest) opts = parseSessionArgs rest opts
 
 parseService :: [String] -> IO ServiceOpts
 parseService args = return $ parseServiceArgs args defaultServiceOpts
   where
-    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing
+    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing []
     parseServiceArgs [] opts = opts
     parseServiceArgs ("--list":rest) opts = parseServiceArgs rest opts { svcAction = ServiceList }
     parseServiceArgs ("--info":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceInfo id }
@@ -202,8 +206,10 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--ports":p:rest) opts = parseServiceArgs rest opts { svcPorts = Just p }
     parseServiceArgs ("--type":t:rest) opts = parseServiceArgs rest opts { svcType = Just t }
     parseServiceArgs ("--bootstrap":b:rest) opts = parseServiceArgs rest opts { svcBootstrap = Just b }
+    parseServiceArgs ("--bootstrap-file":f:rest) opts = parseServiceArgs rest opts { svcBootstrapFile = Just f }
     parseServiceArgs ("-n":net:rest) opts = parseServiceArgs rest opts { svcNetwork = Just net }
     parseServiceArgs ("-v":v:rest) opts = parseServiceArgs rest opts { svcVcpu = Just (read v) }
+    parseServiceArgs ("-f":f:rest) opts = parseServiceArgs rest opts { svcFiles = svcFiles opts ++ [f] }
     parseServiceArgs (_:rest) opts = parseServiceArgs rest opts
 
 parseExecute :: [String] -> IO Command
@@ -317,7 +323,18 @@ sessionCommand opts = do
       let shell = maybe "bash" id (sessShell opts)
       let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (sessNetwork opts)
       let vcpuJSON = maybe "" (\v -> ",\"vcpu\":" ++ show v) (sessVcpu opts)
-      let json = "{\"shell\":\"" ++ shell ++ "\"" ++ networkJSON ++ vcpuJSON ++ "}"
+      -- Input files
+      filesJSON <- if null (sessFiles opts)
+        then return ""
+        else do
+          fileEntries <- mapM (\f -> do
+            content <- BS.readFile f
+            let b64 = BSC.unpack $ B64.encode content
+            let fname = takeFileName f
+            return $ "{\"filename\":\"" ++ fname ++ "\",\"content_base64\":\"" ++ b64 ++ "\"}"
+            ) (sessFiles opts)
+          return $ ",\"input_files\":[" ++ intercalate "," fileEntries ++ "]"
+      let json = "{\"shell\":\"" ++ shell ++ "\"" ++ networkJSON ++ vcpuJSON ++ filesJSON ++ "}"
       (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/sessions" json
       putStrLn $ yellow ++ "Session created (WebSocket required for interactivity)" ++ reset
       putStrLn stdout
@@ -376,9 +393,25 @@ serviceCommand opts = do
           let portsJSON = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") (svcPorts opts)
           let typeJSON = maybe "" (\t -> ",\"service_type\":\"" ++ t ++ "\"") (svcType opts)
           let bootstrapJSON = maybe "" (\b -> ",\"bootstrap\":\"" ++ escapeJSON b ++ "\"") (svcBootstrap opts)
+          bootstrapContentJSON <- case svcBootstrapFile opts of
+            Just f -> do
+              content <- readFile f
+              return $ ",\"bootstrap_content\":\"" ++ escapeJSON content ++ "\""
+            Nothing -> return ""
           let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (svcNetwork opts)
           let vcpuJSON = maybe "" (\v -> ",\"vcpu\":" ++ show v) (svcVcpu opts)
-          let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ networkJSON ++ vcpuJSON ++ "}"
+          -- Input files
+          filesJSON <- if null (svcFiles opts)
+            then return ""
+            else do
+              fileEntries <- mapM (\f -> do
+                content <- BS.readFile f
+                let b64 = BSC.unpack $ B64.encode content
+                let fname = takeFileName f
+                return $ "{\"filename\":\"" ++ fname ++ "\",\"content_base64\":\"" ++ b64 ++ "\"}"
+                ) (svcFiles opts)
+              return $ ",\"input_files\":[" ++ intercalate "," fileEntries ++ "]"
+          let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ bootstrapContentJSON ++ networkJSON ++ vcpuJSON ++ filesJSON ++ "}"
           (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/services" json
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout

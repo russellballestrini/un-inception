@@ -348,6 +348,7 @@ fn cmd_session(
     vcpu: Option<i32>,
     tmux: bool,
     screen: bool,
+    files: &[String],
     public_key: &str,
     secret_key: &str,
 ) {
@@ -381,6 +382,25 @@ fn cmd_session(
     if screen {
         json.push_str(r#","persistence":"screen""#);
     }
+
+    // Input files
+    if !files.is_empty() {
+        json.push_str(r#","input_files":["#);
+        for (i, f) in files.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            let content = fs::read(f).unwrap_or_else(|e| {
+                eprintln!("{}Error reading input file {}: {}{}", RED, f, e, RESET);
+                process::exit(1);
+            });
+            let b64 = base64::encode(&content);
+            let filename = Path::new(f).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+            json.push_str(&format!(r#"{{"filename":"{}","content_base64":"{}"}}"#, filename, b64));
+        }
+        json.push(']');
+    }
+
     json.push('}');
 
     println!("{}Creating session...{}", YELLOW, RESET);
@@ -395,6 +415,8 @@ fn cmd_service(
     domains: Option<&str>,
     service_type: Option<&str>,
     bootstrap: Option<&str>,
+    bootstrap_file: Option<&str>,
+    files: &[String],
     list: bool,
     info: Option<&str>,
     logs: Option<&str>,
@@ -533,12 +555,38 @@ fn cmd_service(
         }
 
         if let Some(b) = bootstrap {
-            let cmd = if Path::new(b).exists() {
-                fs::read_to_string(b).unwrap_or(b.to_string())
+            json.push_str(&format!(r#","bootstrap":"{}""#, escape_json(b)));
+        }
+
+        if let Some(bf) = bootstrap_file {
+            if Path::new(bf).exists() {
+                let content = fs::read_to_string(bf).unwrap_or_else(|e| {
+                    eprintln!("{}Error reading bootstrap file: {}{}", RED, e, RESET);
+                    process::exit(1);
+                });
+                json.push_str(&format!(r#","bootstrap_content":"{}""#, escape_json(&content)));
             } else {
-                b.to_string()
-            };
-            json.push_str(&format!(r#","bootstrap":"{}""#, escape_json(&cmd)));
+                eprintln!("{}Error: Bootstrap file not found: {}{}", RED, bf, RESET);
+                process::exit(1);
+            }
+        }
+
+        // Input files
+        if !files.is_empty() {
+            json.push_str(r#","input_files":["#);
+            for (i, f) in files.iter().enumerate() {
+                if i > 0 {
+                    json.push(',');
+                }
+                let content = fs::read(f).unwrap_or_else(|e| {
+                    eprintln!("{}Error reading input file {}: {}{}", RED, f, e, RESET);
+                    process::exit(1);
+                });
+                let b64 = base64::encode(&content);
+                let filename = Path::new(f).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                json.push_str(&format!(r#"{{"filename":"{}","content_base64":"{}"}}"#, filename, b64));
+            }
+            json.push(']');
         }
 
         if let Some(net) = network {
@@ -703,6 +751,17 @@ fn main() {
             }
             "session" => {
                 let (public_key, secret_key) = get_api_keys(api_key.as_deref());
+                // Collect -f files for session
+                let mut session_files: Vec<String> = Vec::new();
+                let mut j = i + 1;
+                while j < args.len() {
+                    if args[j] == "-f" && j + 1 < args.len() {
+                        session_files.push(args[j + 1].clone());
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
                 cmd_session(
                     args.contains(&"--list".to_string()),
                     args.iter().position(|x| x == "--kill").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
@@ -711,6 +770,7 @@ fn main() {
                     vcpu,
                     args.contains(&"--tmux".to_string()),
                     args.contains(&"--screen".to_string()),
+                    &session_files,
                     &public_key,
                     &secret_key,
                 );
@@ -718,12 +778,25 @@ fn main() {
             }
             "service" => {
                 let (public_key, secret_key) = get_api_keys(api_key.as_deref());
+                // Collect -f files for service
+                let mut service_files: Vec<String> = Vec::new();
+                let mut j = i + 1;
+                while j < args.len() {
+                    if args[j] == "-f" && j + 1 < args.len() {
+                        service_files.push(args[j + 1].clone());
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
                 cmd_service(
                     args.iter().position(|x| x == "--name").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--ports").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--domains").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--type").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--bootstrap").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--bootstrap-file").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    &service_files,
                     args.contains(&"--list".to_string()),
                     args.iter().position(|x| x == "--info").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--logs").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),

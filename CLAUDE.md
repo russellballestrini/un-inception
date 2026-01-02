@@ -117,6 +117,32 @@ The pattern `((VAR++))` returns exit code 1 when VAR is 0. Use `VAR=$((VAR + 1))
 ### Shebang lines
 Shebang MUST be on line 1, not buried in license headers.
 
+## Keeping Implementations in Sync
+
+**CRITICAL: ALL 38 implementations must have feature parity.**
+
+When adding a new feature to the CLI (e.g., new flag, new command):
+1. Update the canonical C implementation at `~/git/unsandbox.com/cli/un.c`
+2. Update ALL 38 implementations in this repo - not just "main" ones, ALL of them
+3. Use the Task agent to batch update if needed
+
+Current implementations (ALL must be updated):
+```
+un.awk un.clj un.cob un.cpp un.cr un.d un.dart un.erl un.ex un.f90
+un.forth un.fs un.go un.groovy un.hs un.jl un.js un.kt un.lisp un.lua
+un.m un.ml un.nim un.php un.pl un.pro un.ps1 un.py un.r un.raku
+un.rb un.rs un.scm un.sh un.tcl un.ts un.v un.zig
+```
+
+### Feature Checklist
+
+Each implementation must support:
+- **Execute**: `un file.py` - run code with `-e ENV=val`, `-f FILE`, `-n MODE`, `-a` artifacts
+- **Session**: `un session` - interactive shell with `-f FILE`, `--tmux`, `--screen`, `--list`, `--attach`, `--kill`
+- **Service**: `un service` - persistent services with `-f FILE`, `--name`, `--ports`, `--bootstrap`, `--bootstrap-file`, `--list`, `--info`, `--logs`, `--destroy`
+
+The `-f FILE` flag must work for ALL three commands (execute, session, service) - files go to `/tmp/` in the container.
+
 ## Related Repos
 
 - `~/git/unsandbox.com/` - Portal (contains un.c CLI at cli/un.c)

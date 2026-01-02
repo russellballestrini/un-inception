@@ -105,7 +105,9 @@ session_command(["--kill", SessionId | _]) ->
 session_command(Args) ->
     ApiKey = get_api_key(),
     Shell = get_shell_opt(Args, "bash"),
-    Json = "{\"shell\":\"" ++ Shell ++ "\"}",
+    InputFiles = get_input_files(Args),
+    InputFilesJson = build_input_files_json(InputFiles),
+    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ InputFilesJson ++ "}",
     TmpFile = write_temp_file(Json),
     Response = curl_post(ApiKey, "/sessions", TmpFile),
     file:delete(TmpFile),
@@ -199,7 +201,9 @@ service_command(Args) ->
             ApiKey = get_api_key(),
             Ports = get_service_ports(Args),
             Bootstrap = get_service_bootstrap(Args),
+            BootstrapFile = get_service_bootstrap_file(Args),
             Type = get_service_type(Args),
+            InputFiles = get_input_files(Args),
             PortsJson = case Ports of
                 undefined -> "";
                 P -> ",\"ports\":[" ++ P ++ "]"
@@ -208,11 +212,24 @@ service_command(Args) ->
                 undefined -> "";
                 B -> ",\"bootstrap\":\"" ++ escape_json(B) ++ "\""
             end,
+            BootstrapContentJson = case BootstrapFile of
+                undefined -> "";
+                BF ->
+                    case file:read_file(BF) of
+                        {ok, ContentBin} ->
+                            Content = binary_to_list(ContentBin),
+                            ",\"bootstrap_content\":\"" ++ escape_json(Content) ++ "\"";
+                        {error, _} ->
+                            io:format(standard_error, "\033[31mError: Bootstrap file not found: ~s\033[0m~n", [BF]),
+                            halt(1)
+                    end
+            end,
             TypeJson = case Type of
                 undefined -> "";
                 T -> ",\"service_type\":\"" ++ T ++ "\""
             end,
-            Json = "{\"name\":\"" ++ Name ++ "\"" ++ PortsJson ++ BootstrapJson ++ TypeJson ++ "}",
+            InputFilesJson = build_input_files_json(InputFiles),
+            Json = "{\"name\":\"" ++ Name ++ "\"" ++ PortsJson ++ BootstrapJson ++ BootstrapContentJson ++ TypeJson ++ InputFilesJson ++ "}",
             TmpFile = write_temp_file(Json),
             Response = curl_post(ApiKey, "/services", TmpFile),
             file:delete(TmpFile),
@@ -409,6 +426,23 @@ escape_json([C | Rest], Acc) ->
 build_json(Language, Code) ->
     "{\"language\":\"" ++ Language ++ "\",\"code\":\"" ++ escape_json(Code) ++ "\"}".
 
+read_and_base64(Filepath) ->
+    case file:read_file(Filepath) of
+        {ok, Content} ->
+            base64:encode_to_string(Content);
+        {error, _} ->
+            ""
+    end.
+
+build_input_files_json([]) -> "";
+build_input_files_json(Files) ->
+    FileJsons = lists:map(fun(F) ->
+        B64 = read_and_base64(F),
+        Basename = filename:basename(F),
+        "{\"filename\":\"" ++ escape_json(Basename) ++ "\",\"content\":\"" ++ B64 ++ "\"}"
+    end, Files),
+    ",\"input_files\":[" ++ string:join(FileJsons, ",") ++ "]".
+
 write_temp_file(Data) ->
     TmpFile = "/tmp/un_erl_" ++ integer_to_list(rand:uniform(999999)) ++ ".json",
     file:write_file(TmpFile, Data),
@@ -484,9 +518,19 @@ get_service_bootstrap([]) -> undefined;
 get_service_bootstrap(["--bootstrap", Bootstrap | _]) -> Bootstrap;
 get_service_bootstrap([_ | Rest]) -> get_service_bootstrap(Rest).
 
+get_service_bootstrap_file([]) -> undefined;
+get_service_bootstrap_file(["--bootstrap-file", BootstrapFile | _]) -> BootstrapFile;
+get_service_bootstrap_file([_ | Rest]) -> get_service_bootstrap_file(Rest).
+
 get_service_type([]) -> undefined;
 get_service_type(["--type", Type | _]) -> Type;
 get_service_type([_ | Rest]) -> get_service_type(Rest).
+
+get_input_files(Args) -> get_input_files(Args, []).
+
+get_input_files([], Acc) -> lists:reverse(Acc);
+get_input_files(["-f", File | Rest], Acc) -> get_input_files(Rest, [File | Acc]);
+get_input_files([_ | Rest], Acc) -> get_input_files(Rest, Acc).
 
 has_extend_flag([]) -> false;
 has_extend_flag(["--extend" | _]) -> true;

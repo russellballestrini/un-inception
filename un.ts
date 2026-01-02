@@ -102,6 +102,7 @@ interface Args {
   domains: string | null;
   type: string | null;
   bootstrap: string | null;
+  bootstrapFile: string | null;
   info: string | null;
   logs: string | null;
   tail: string | null;
@@ -363,6 +364,22 @@ async function cmdSession(args: Args): Promise<void> {
   if (args.screen) payload.persistence = "screen";
   if (args.audit) payload.audit = true;
 
+  // Add input files
+  if (args.files && args.files.length > 0) {
+    payload.input_files = args.files.map(filepath => {
+      try {
+        const content = fs.readFileSync(filepath);
+        return {
+          filename: path.basename(filepath),
+          content_base64: content.toString('base64')
+        };
+      } catch (e) {
+        console.error(`${RED}Error: Input file not found: ${filepath}${RESET}`);
+        process.exit(1);
+      }
+    });
+  }
+
   console.log(`${YELLOW}Creating session...${RESET}`);
   const result = await apiRequest("/sessions", "POST", payload, keys);
   console.log(`${GREEN}Session created: ${result.id || 'N/A'}${RESET}`);
@@ -466,11 +483,29 @@ async function cmdService(args: Args): Promise<void> {
     if (args.domains) payload.domains = args.domains.split(',');
     if (args.type) payload.service_type = args.type;
     if (args.bootstrap) {
-      if (fs.existsSync(args.bootstrap)) {
-        payload.bootstrap = fs.readFileSync(args.bootstrap, 'utf-8');
-      } else {
-        payload.bootstrap = args.bootstrap;
+      payload.bootstrap = args.bootstrap;
+    }
+    if (args.bootstrapFile) {
+      if (!fs.existsSync(args.bootstrapFile)) {
+        console.error(`${RED}Error: Bootstrap file not found: ${args.bootstrapFile}${RESET}`);
+        process.exit(1);
       }
+      payload.bootstrap_content = fs.readFileSync(args.bootstrapFile, 'utf-8');
+    }
+    // Add input files
+    if (args.files && args.files.length > 0) {
+      payload.input_files = args.files.map(filepath => {
+        try {
+          const content = fs.readFileSync(filepath);
+          return {
+            filename: path.basename(filepath),
+            content_base64: content.toString('base64')
+          };
+        } catch (e) {
+          console.error(`${RED}Error: Input file not found: ${filepath}${RESET}`);
+          process.exit(1);
+        }
+      });
     }
     if (args.network) payload.network = args.network;
     if (args.vcpu) payload.vcpu = args.vcpu;
@@ -579,6 +614,7 @@ function parseArgs(argv: string[]): Args {
     domains: null,
     type: null,
     bootstrap: null,
+    bootstrapFile: null,
     info: null,
     logs: null,
     tail: null,
@@ -655,6 +691,9 @@ function parseArgs(argv: string[]): Args {
       i++;
     } else if (arg === '--bootstrap' && i + 1 < argv.length) {
       args.bootstrap = argv[++i];
+      i++;
+    } else if (arg === '--bootstrap-file' && i + 1 < argv.length) {
+      args.bootstrapFile = argv[++i];
       i++;
     } else if (arg === '--info' && i + 1 < argv.length) {
       args.info = argv[++i];
@@ -744,7 +783,8 @@ Service options:
   --ports PORTS    Comma-separated ports
   --domains DOMAINS Custom domains
   --type TYPE      Service type (minecraft|mumble|teamspeak|source|tcp|udp)
-  --bootstrap CMD  Bootstrap command/file
+  --bootstrap CMD  Bootstrap command or URI
+  --bootstrap-file FILE  Upload local file as bootstrap script
   -l, --list       List services
   --info ID        Get service details
   --logs ID        Get all logs

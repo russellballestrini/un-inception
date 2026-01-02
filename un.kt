@@ -90,6 +90,7 @@ data class Args(
     var servicePorts: String? = null,
     var serviceType: String? = null,
     var serviceBootstrap: String? = null,
+    var serviceBootstrapFile: String? = null,
     var serviceInfo: String? = null,
     var serviceLogs: String? = null,
     var serviceTail: String? = null,
@@ -238,6 +239,22 @@ fun cmdSession(args: Args) {
         payload["vcpu"] = args.vcpu
     }
 
+    // Add input files
+    if (args.files.isNotEmpty()) {
+        val inputFiles = args.files.map { filepath ->
+            val file = java.io.File(filepath)
+            if (!file.exists()) {
+                System.err.println("${RED}Error: Input file not found: $filepath${RESET}")
+                exitProcess(1)
+            }
+            mapOf(
+                "filename" to file.name,
+                "content_base64" to java.util.Base64.getEncoder().encodeToString(file.readBytes())
+            )
+        }
+        payload["input_files"] = inputFiles
+    }
+
     println("${YELLOW}Creating session...${RESET}")
     val result = apiRequest("/sessions", "POST", payload, publicKey, secretKey)
     println("${GREEN}Session created: ${result["id"] ?: "N/A"}${RESET}")
@@ -362,6 +379,30 @@ fun cmdService(args: Args) {
         }
         if (args.serviceBootstrap != null) {
             payload["bootstrap"] = args.serviceBootstrap!!
+        }
+        if (args.serviceBootstrapFile != null) {
+            val file = File(args.serviceBootstrapFile!!)
+            if (file.exists()) {
+                payload["bootstrap_content"] = file.readText()
+            } else {
+                System.err.println("${RED}Error: Bootstrap file not found: ${args.serviceBootstrapFile}${RESET}")
+                exitProcess(1)
+            }
+        }
+        // Add input files
+        if (args.files.isNotEmpty()) {
+            val inputFiles = args.files.map { filepath ->
+                val file = java.io.File(filepath)
+                if (!file.exists()) {
+                    System.err.println("${RED}Error: Input file not found: $filepath${RESET}")
+                    exitProcess(1)
+                }
+                mapOf(
+                    "filename" to file.name,
+                    "content_base64" to java.util.Base64.getEncoder().encodeToString(file.readBytes())
+                )
+            }
+            payload["input_files"] = inputFiles
         }
         if (args.network != null) {
             payload["network"] = args.network!!
@@ -695,6 +736,7 @@ fun parseArgs(args: Array<String>): Args {
             "--ports" -> result.servicePorts = args[++i]
             "--type" -> result.serviceType = args[++i]
             "--bootstrap" -> result.serviceBootstrap = args[++i]
+            "--bootstrap-file" -> result.serviceBootstrapFile = args[++i]
             "--info" -> result.serviceInfo = args[++i]
             "--logs" -> result.serviceLogs = args[++i]
             "--tail" -> result.serviceTail = args[++i]

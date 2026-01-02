@@ -137,11 +137,13 @@ defmodule Un do
     shell = get_opt(args, "--shell", "-s", "bash")
     network = get_opt(args, "-n", nil, nil)
     vcpu = get_opt(args, "-v", nil, nil)
+    input_files = get_all_opts(args, "-f")
 
     network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
     vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
+    input_files_json = build_input_files_json(input_files)
 
-    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}}"
+    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}#{input_files_json}}"
     response = curl_post(api_key, "/sessions", json)
     IO.puts("#{@yellow}Session created (WebSocket required)#{@reset}")
     IO.puts(response)
@@ -238,17 +240,30 @@ defmodule Un do
     api_key = get_api_key()
     ports = get_opt(args, "--ports", nil, nil)
     bootstrap = get_opt(args, "--bootstrap", nil, nil)
+    bootstrap_file = get_opt(args, "--bootstrap-file", nil, nil)
     network = get_opt(args, "-n", nil, nil)
     vcpu = get_opt(args, "-v", nil, nil)
     service_type = get_opt(args, "--type", nil, nil)
+    input_files = get_all_opts(args, "-f")
 
     ports_json = if ports, do: ",\"ports\":[#{ports}]", else: ""
     bootstrap_json = if bootstrap, do: ",\"bootstrap\":\"#{escape_json(bootstrap)}\"", else: ""
+    bootstrap_content_json = if bootstrap_file do
+      case File.read(bootstrap_file) do
+        {:ok, content} -> ",\"bootstrap_content\":\"#{escape_json(content)}\""
+        {:error, _} ->
+          IO.puts(:stderr, "#{@red}Error: Bootstrap file not found: #{bootstrap_file}#{@reset}")
+          System.halt(1)
+      end
+    else
+      ""
+    end
     network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
     vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
     type_json = if service_type, do: ",\"service_type\":\"#{service_type}\"", else: ""
+    input_files_json = build_input_files_json(input_files)
 
-    json = "{\"name\":\"#{name}\"#{ports_json}#{bootstrap_json}#{network_json}#{vcpu_json}#{type_json}}"
+    json = "{\"name\":\"#{name}\"#{ports_json}#{bootstrap_json}#{bootstrap_content_json}#{network_json}#{vcpu_json}#{type_json}#{input_files_json}}"
     response = curl_post(api_key, "/services", json)
     IO.puts("#{@green}Service created#{@reset}")
     IO.puts(response)
@@ -443,6 +458,25 @@ defmodule Un do
     |> String.replace("\t", "\\t")
   end
 
+  defp read_and_base64(filepath) do
+    case File.read(filepath) do
+      {:ok, content} -> Base.encode64(content)
+      {:error, _} -> ""
+    end
+  end
+
+  defp build_input_files_json([]), do: ""
+  defp build_input_files_json(files) do
+    file_jsons = files
+      |> Enum.map(fn f ->
+        b64 = read_and_base64(f)
+        basename = Path.basename(f)
+        "{\"filename\":\"#{escape_json(basename)}\",\"content\":\"#{b64}\"}"
+      end)
+      |> Enum.join(",")
+    ",\"input_files\":[#{file_jsons}]"
+  end
+
   defp build_execute_json(language, code, _opts) do
     "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"}"
   end
@@ -557,6 +591,18 @@ defmodule Un do
 
   defp get_opt([_arg | rest], long, short, default) do
     get_opt(rest, long, short, default)
+  end
+
+  defp get_all_opts(args, flag), do: get_all_opts(args, flag, [])
+
+  defp get_all_opts([], _flag, acc), do: Enum.reverse(acc)
+
+  defp get_all_opts([arg, value | rest], flag, acc) when arg == flag do
+    get_all_opts(rest, flag, [value | acc])
+  end
+
+  defp get_all_opts([_arg | rest], flag, acc) do
+    get_all_opts(rest, flag, acc)
   end
 
   defp check_clock_drift(response) do

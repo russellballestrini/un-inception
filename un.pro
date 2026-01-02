@@ -150,6 +150,32 @@ session_kill(SessionId) :-
         [SessionId, SecretKey, SessionId, PublicKey, SessionId]),
     shell(Cmd, 0).
 
+% Session create with optional input files
+session_create(Shell, InputFiles) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   Shell \= ''
+    ->  ShellVal = Shell
+    ;   ShellVal = 'bash'
+    ),
+    % Build file arguments for bash script
+    build_file_args(InputFiles, FileArgs),
+    format(atom(Cmd),
+        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
+        [ShellVal, FileArgs, SecretKey, PublicKey]),
+    shell(Cmd, 0).
+
+% Build bash commands to base64 encode files
+build_file_args([], '').
+build_file_args(Files, Args) :-
+    Files \= [],
+    maplist(build_single_file_arg, Files, ArgList),
+    atomic_list_concat(ArgList, ' ', Args).
+
+build_single_file_arg(FilePath, Arg) :-
+    file_base_name(FilePath, Basename),
+    format(atom(Arg), 'CONTENT=$(base64 -w0 "~w"); if [ -z "$INPUT_FILES" ]; then INPUT_FILES="{\\\"filename\\\":\\\"~w\\\",\\\"content\\\":\\\"$CONTENT\\\"}"; else INPUT_FILES="$INPUT_FILES,{\\\"filename\\\":\\\"~w\\\",\\\"content\\\":\\\"$CONTENT\\\"}"; fi;', [FilePath, Basename, Basename]).
+
 % Service list
 service_list :-
     get_public_key(PublicKey),
@@ -220,8 +246,8 @@ service_dump_bootstrap(ServiceId, DumpFile) :-
     ),
     shell(Cmd, 0).
 
-% Service create
-service_create(Name, Ports, Bootstrap, ServiceType) :-
+% Service create with optional input files
+service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     % Build JSON payload
@@ -233,15 +259,24 @@ service_create(Name, Ports, Bootstrap, ServiceType) :-
     ->  format(atom(BootstrapJson), ',"bootstrap":"~w"', [Bootstrap])
     ;   BootstrapJson = ''
     ),
+    (   BootstrapFile \= ''
+    ->  (   exists_file(BootstrapFile)
+        ->  read_file_content(BootstrapFile, BootstrapContent),
+            format(atom(BootstrapContentJson), ',"bootstrap_content":"~w"', [BootstrapContent])
+        ;   format(user_error, 'Error: Bootstrap file not found: ~w~n', [BootstrapFile]),
+            halt(1)
+        )
+    ;   BootstrapContentJson = ''
+    ),
     (   ServiceType \= ''
     ->  format(atom(ServiceTypeJson), ',"service_type":"~w"', [ServiceType])
     ;   ServiceTypeJson = ''
     ),
-    format(atom(Json), '{"name":"~w"~w~w~w}', [Name, PortsJson, BootstrapJson, ServiceTypeJson]),
-    % Execute curl command with HMAC
+    % Build file arguments for bash script
+    build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'BODY=\'~w\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" && echo -e "\\x1b[32mService created\\x1b[0m"',
-        [Json, SecretKey, PublicKey]),
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
+        [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, SecretKey, PublicKey]),
     shell(Cmd, 0).
 
 % Key validate
@@ -269,53 +304,78 @@ handle_key(_) :- validate_key(false).
 handle_session(['--list'|_]) :- session_list.
 handle_session(['-l'|_]) :- session_list.
 handle_session(['--kill', SessionId|_]) :- session_kill(SessionId).
-handle_session(_) :-
-    write(user_error, 'Error: Use --list or --kill ID\n'),
-    halt(1).
+handle_session(Args) :-
+    parse_session_args(Args, '', [], Shell, InputFiles),
+    session_create(Shell, InputFiles).
+
+% Parse session arguments for -f and --shell
+parse_session_args([], Shell, Files, Shell, Files).
+parse_session_args(['--shell', ShellVal|Rest], _, Files, Shell, InputFiles) :-
+    parse_session_args(Rest, ShellVal, Files, Shell, InputFiles).
+parse_session_args(['-s', ShellVal|Rest], _, Files, Shell, InputFiles) :-
+    parse_session_args(Rest, ShellVal, Files, Shell, InputFiles).
+parse_session_args(['-f', FilePath|Rest], Shell, Files, ShellOut, InputFiles) :-
+    (   exists_file(FilePath)
+    ->  append(Files, [FilePath], NewFiles),
+        parse_session_args(Rest, Shell, NewFiles, ShellOut, InputFiles)
+    ;   format(user_error, 'Error: File not found: ~w~n', [FilePath]),
+        halt(1)
+    ).
+parse_session_args([_|Rest], Shell, Files, ShellOut, InputFiles) :-
+    parse_session_args(Rest, Shell, Files, ShellOut, InputFiles).
 
 % Handle service subcommand
 handle_service(Args) :-
-    parse_service_args(Args, '', '', '', '', Action),
-    execute_service_action(Action).
+    parse_service_args(Args, '', '', '', '', '', [], Action, InputFiles),
+    execute_service_action(Action, InputFiles).
 
 % Parse service arguments
-parse_service_args([], Name, Ports, Bootstrap, ServiceType, create) :-
+parse_service_args([], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, create, InputFiles) :-
     (   Name \= ''
-    ->  service_create(Name, Ports, Bootstrap, ServiceType)
+    ->  service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles)
     ;   write(user_error, 'Error: --name required for service creation\n'),
         halt(1)
     ).
-parse_service_args([], _, _, _, _, Action) :-
+parse_service_args([], _, _, _, _, _, InputFiles, Action, InputFiles) :-
     (   Action = list
     ->  service_list
     ;   write(user_error, 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --name\n'),
         halt(1)
     ).
-parse_service_args(['--list'|_], _, _, _, _, _) :- service_list.
-parse_service_args(['-l'|_], _, _, _, _, _) :- service_list.
-parse_service_args(['--info', ServiceId|_], _, _, _, _, _) :- service_info(ServiceId).
-parse_service_args(['--logs', ServiceId|_], _, _, _, _, _) :- service_logs(ServiceId).
-parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _) :- service_sleep(ServiceId).
-parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _) :- service_wake(ServiceId).
-parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _) :- service_destroy(ServiceId).
-parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _) :-
+parse_service_args(['--list'|_], _, _, _, _, _, _, _, _) :- service_list.
+parse_service_args(['-l'|_], _, _, _, _, _, _, _, _) :- service_list.
+parse_service_args(['--info', ServiceId|_], _, _, _, _, _, _, _, _) :- service_info(ServiceId).
+parse_service_args(['--logs', ServiceId|_], _, _, _, _, _, _, _, _) :- service_logs(ServiceId).
+parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _, _, _, _) :- service_sleep(ServiceId).
+parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _, _, _, _) :- service_wake(ServiceId).
+parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _, _, _, _) :- service_destroy(ServiceId).
+parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _, _, _, _) :-
     (   Rest = ['--dump-file', DumpFile|_]
     ->  service_dump_bootstrap(ServiceId, DumpFile)
     ;   service_dump_bootstrap(ServiceId, '')
     ).
-parse_service_args(['--name', Name|Rest], _, Ports, Bootstrap, ServiceType, _) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, ServiceType, create).
-parse_service_args(['--ports', PortsList|Rest], Name, _, Bootstrap, ServiceType, Action) :-
-    parse_service_args(Rest, Name, PortsList, Bootstrap, ServiceType, Action).
-parse_service_args(['--bootstrap', BootstrapFile|Rest], Name, Ports, _, ServiceType, Action) :-
-    parse_service_args(Rest, Name, Ports, BootstrapFile, ServiceType, Action).
-parse_service_args(['--type', Type|Rest], Name, Ports, Bootstrap, _, Action) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, Type, Action).
-parse_service_args([_|Rest], Name, Ports, Bootstrap, ServiceType, Action) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, ServiceType, Action).
+parse_service_args(['--name', Name|Rest], _, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, _, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, create, InputFilesOut).
+parse_service_args(['--ports', PortsList|Rest], Name, _, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, PortsList, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut).
+parse_service_args(['--bootstrap', BootstrapVal|Rest], Name, Ports, _, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, BootstrapVal, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut).
+parse_service_args(['--bootstrap-file', BootstrapFileVal|Rest], Name, Ports, Bootstrap, _, ServiceType, InputFiles, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFileVal, ServiceType, InputFiles, Action, InputFilesOut).
+parse_service_args(['--type', Type|Rest], Name, Ports, Bootstrap, BootstrapFile, _, InputFiles, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, Type, InputFiles, Action, InputFilesOut).
+parse_service_args(['-f', FilePath|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
+    (   exists_file(FilePath)
+    ->  append(InputFiles, [FilePath], NewInputFiles),
+        parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, NewInputFiles, Action, InputFilesOut)
+    ;   format(user_error, 'Error: File not found: ~w~n', [FilePath]),
+        halt(1)
+    ).
+parse_service_args([_|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut).
 
 % Execute service action (not used, but kept for structure)
-execute_service_action(_).
+execute_service_action(_, _).
 
 % Main program
 main(Argv) :-

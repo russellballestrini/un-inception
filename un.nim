@@ -76,6 +76,20 @@ proc escapeJson(s: string): string =
     of '\t': result.add("\\t")
     else: result.add(c)
 
+proc base64EncodeFile(filename: string): string =
+  let cmd = fmt"base64 -w0 '{filename}'"
+  result = execProcess(cmd).strip()
+
+proc buildInputFilesJson(files: seq[string]): string =
+  if files.len == 0:
+    return ""
+  var entries: seq[string] = @[]
+  for f in files:
+    let basename = extractFilename(f)
+    let content = base64EncodeFile(f)
+    entries.add(fmt"""{{"filename":"{basename}","content":"{content}"}}""")
+  result = fmt""","input_files":[{entries.join(",")}]"""
+
 proc computeHmac(secretKey: string, message: string): string =
   let cmd = fmt"echo -n '{message}' | openssl dgst -sha256 -hmac '{secretKey}' -hex 2>/dev/null | sed 's/.*= //'"
   result = execProcess(cmd).strip()
@@ -136,7 +150,7 @@ proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network:
   let cmd = fmt"""curl -s -X POST '{API_BASE}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, screen: bool, publicKey: string, secretKey: string) =
+proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, screen: bool, inputFiles: seq[string], publicKey: string, secretKey: string) =
   if list:
     let authHeaders = buildAuthHeaders("GET", "/sessions", "", publicKey, secretKey)
     let cmd = fmt"""curl -s -X GET '{API_BASE}/sessions' {authHeaders}"""
@@ -156,6 +170,7 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
   if tmux: json.add(""","persistence":"tmux"""")
   if screen: json.add(""","persistence":"screen"""")
+  json.add(buildInputFilesJson(inputFiles))
   json.add("}")
 
   echo YELLOW & "Creating session..." & RESET
@@ -163,7 +178,7 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, publicKey: string, secretKey: string) =
+proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, inputFiles: seq[string], publicKey: string, secretKey: string) =
   if list:
     let authHeaders = buildAuthHeaders("GET", "/services", "", publicKey, secretKey)
     let cmd = fmt"""curl -s -X GET '{API_BASE}/services' {authHeaders}"""
@@ -294,14 +309,18 @@ proc cmdService(name, ports, bootstrap, serviceType: string, list: bool, info, l
     var json = fmt"""{"name":"{name}""""
     if ports != "": json.add(fmt""","ports":[{ports}]""")
     if bootstrap != "":
-      if fileExists(bootstrap):
-        let bootCode = readFile(bootstrap)
-        json.add(fmt""","bootstrap":"{escapeJson(bootCode)}"""")
+      json.add(fmt""","bootstrap":"{escapeJson(bootstrap)}"""")
+    if bootstrapFile != "":
+      if fileExists(bootstrapFile):
+        let bootCode = readFile(bootstrapFile)
+        json.add(fmt""","bootstrap_content":"{escapeJson(bootCode)}"""")
       else:
-        json.add(fmt""","bootstrap":"{escapeJson(bootstrap)}"""")
+        stderr.writeLine(RED & "Error: Bootstrap file not found: " & bootstrapFile & RESET)
+        quit(1)
     if serviceType != "": json.add(fmt""","service_type":"{serviceType}"""")
     if network != "": json.add(fmt""","network":"{network}"""")
     if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
+    json.add(buildInputFilesJson(inputFiles))
     json.add("}")
 
     echo YELLOW & "Creating service..." & RESET
@@ -422,6 +441,7 @@ proc main() =
     var kill, shell, network = ""
     var vcpu = 0
     var tmux, screen = false
+    var inputFiles: seq[string] = @[]
     var i = 1
     while i < args.len:
       case args[i]
@@ -433,21 +453,32 @@ proc main() =
       of "--tmux": tmux = true
       of "--screen": screen = true
       of "-k": publicKey = args[i+1]; inc i
+      of "-f":
+        let file = args[i+1]
+        if fileExists(file):
+          inputFiles.add(file)
+        else:
+          stderr.writeLine("Error: File not found: " & file)
+          quit(1)
+        inc i
+      else: discard
       inc i
-    cmdSession(list, kill, shell, network, vcpu, tmux, screen, publicKey, secretKey)
+    cmdSession(list, kill, shell, network, vcpu, tmux, screen, inputFiles, publicKey, secretKey)
     return
 
   if args[0] == "service":
-    var name, ports, bootstrap, serviceType = ""
+    var name, ports, bootstrap, bootstrapFile, serviceType = ""
     var list = false
     var info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network = ""
     var vcpu = 0
+    var inputFiles: seq[string] = @[]
     var i = 1
     while i < args.len:
       case args[i]
       of "--name": name = args[i+1]; inc i
       of "--ports": ports = args[i+1]; inc i
       of "--bootstrap": bootstrap = args[i+1]; inc i
+      of "--bootstrap-file": bootstrapFile = args[i+1]; inc i
       of "--type": serviceType = args[i+1]; inc i
       of "--list": list = true
       of "--info": info = args[i+1]; inc i
@@ -463,8 +494,17 @@ proc main() =
       of "-n": network = args[i+1]; inc i
       of "-v": vcpu = parseInt(args[i+1]); inc i
       of "-k": publicKey = args[i+1]; inc i
+      of "-f":
+        let file = args[i+1]
+        if fileExists(file):
+          inputFiles.add(file)
+        else:
+          stderr.writeLine("Error: File not found: " & file)
+          quit(1)
+        inc i
+      else: discard
       inc i
-    cmdService(name, ports, bootstrap, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, publicKey, secretKey)
+    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, publicKey, secretKey)
     return
 
   # Execute mode
