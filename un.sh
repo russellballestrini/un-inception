@@ -247,6 +247,10 @@ cmd_execute() {
                 api_key="$2"
                 shift 2
                 ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${RESET}" >&2
+                exit 1
+                ;;
             *)
                 source_file="$1"
                 shift
@@ -390,6 +394,10 @@ cmd_session() {
             -k)
                 api_key="$2"
                 shift 2
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${RESET}" >&2
+                exit 1
                 ;;
             *)
                 shift
@@ -561,6 +569,10 @@ cmd_service() {
             -k)
                 api_key="$2"
                 shift 2
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${RESET}" >&2
+                exit 1
                 ;;
             *)
                 shift
@@ -849,6 +861,10 @@ cmd_key() {
             --extend)
                 extend=true
                 shift
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${RESET}" >&2
+                exit 1
                 ;;
             *)
                 shift

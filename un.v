@@ -698,7 +698,10 @@ fn main() {
 				api_key = os.args[i]
 			}
 			else {
-				if !os.args[i].starts_with('-') {
+				if os.args[i].starts_with('-') {
+					eprintln('${red}Unknown option: ${os.args[i]}${reset}')
+					exit(1)
+				} else {
 					source_file = os.args[i]
 				}
 			}

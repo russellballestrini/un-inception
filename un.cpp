@@ -689,7 +689,11 @@ int main(int argc, char* argv[]) {
         else if (arg == "-n" && i+1 < argc) network = argv[++i];
         else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
         else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
-        else if (arg[0] != '-') source_file = arg;
+        else if (arg[0] == '-') {
+            cerr << RED << "Unknown option: " << arg << RESET << endl;
+            return 1;
+        }
+        else source_file = arg;
     }
 
     if (source_file.empty()) {

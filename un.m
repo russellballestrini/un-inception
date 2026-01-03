@@ -232,6 +232,9 @@ void cmdExecute(NSArray* args) {
             network = args[++i];
         } else if ([arg isEqualToString:@"-v"] && i + 1 < [args count]) {
             vcpu = [args[++i] intValue];
+        } else if ([arg hasPrefix:@"-"]) {
+            fprintf(stderr, "%sUnknown option: %s%s\n", RED, [arg UTF8String], RESET);
+            exit(1);
         } else {
             sourceFile = arg;
         }

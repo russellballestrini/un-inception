@@ -764,7 +764,10 @@ local function main()
             options.dump_file = arg[i]
         elseif a == "--extend" then
             options.extend = true
-        elseif not a:match("^%-") then
+        elseif a:match("^%-") then
+            io.stderr:write(RED .. "Unknown option: " .. a .. RESET .. "\n")
+            os.exit(1)
+        else
             options.source_file = a
         end
 

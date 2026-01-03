@@ -486,7 +486,10 @@ if ($args[0] -eq "session") {
             }
             "-n" { $network = $args[$i+1]; $i++ }
             default {
-                if (-not $args[$i].StartsWith("-")) {
+                if ($args[$i].StartsWith("-")) {
+                    Write-Error "${RED}Unknown option: $($args[$i])${RESET}"
+                    exit 1
+                } else {
                     $sourceFile = $args[$i]
                 }
             }

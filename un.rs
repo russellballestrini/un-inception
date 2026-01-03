@@ -825,7 +825,10 @@ fn main() {
                 return;
             }
             _ => {
-                if !args[i].starts_with('-') {
+                if args[i].starts_with('-') {
+                    eprintln!("{}Unknown option: {}{}", RED, args[i], RESET);
+                    std::process::exit(1);
+                } else {
                     source_file = Some(args[i].clone());
                 }
             }

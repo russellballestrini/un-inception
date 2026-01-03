@@ -643,7 +643,12 @@ def main
     when '--extend'
       options[:extend] = true
     else
-      options[:source_file] = arg unless arg.start_with?('-')
+      if arg.start_with?('-')
+        warn "#{RED}Unknown option: #{arg}#{RESET}"
+        exit 1
+      else
+        options[:source_file] = arg
+      end
     end
 
     i += 1

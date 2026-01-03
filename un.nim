@@ -521,7 +521,10 @@ proc main() =
     of "-v": vcpu = parseInt(args[i+1]); inc i
     of "-k": publicKey = args[i+1]; inc i
     else:
-      if not args[i].startsWith("-"):
+      if args[i].startsWith("-"):
+        stderr.writeLine(RED & "Unknown option: " & args[i] & RESET)
+        quit(1)
+      else:
         sourceFile = args[i]
     inc i
 

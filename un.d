@@ -617,7 +617,11 @@ int main(string[] args) {
         else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
         else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
         else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
-        else if (!args[i].startsWith("-")) sourceFile = args[i];
+        else if (args[i].startsWith("-")) {
+            stderr.writefln("%sUnknown option: %s%s", RED, args[i], RESET);
+            return 1;
+        }
+        else sourceFile = args[i];
     }
 
     if (sourceFile.empty) {

@@ -656,7 +656,10 @@ Args parseArgs(List<String> argv) {
         args.keyExtend = true;
         break;
       default:
-        if (!argv[i].startsWith('-')) {
+        if (argv[i].startsWith('-')) {
+          stderr.writeln('${RED}Unknown option: ${argv[i]}${RESET}');
+          exit(1);
+        } else {
           args.sourceFile = argv[i];
         }
     }

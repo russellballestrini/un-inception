@@ -722,7 +722,10 @@ function main() {
                 $options['extend'] = true;
                 break;
             default:
-                if (!str_starts_with($arg, '-')) {
+                if (str_starts_with($arg, '-')) {
+                    fwrite(STDERR, RED . "Unknown option: $arg" . RESET . "\n");
+                    exit(1);
+                } else {
                     $options['source_file'] = $arg;
                 }
                 break;

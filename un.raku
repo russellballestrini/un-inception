@@ -201,7 +201,12 @@ sub cmd-execute(@args) {
                 $vcpu = @args[$i].Int;
             }
             default {
-                $source-file = @args[$i];
+                if @args[$i].starts-with('-') {
+                    note "$RED\Unknown option: {@args[$i]}$RESET";
+                    exit 1;
+                } else {
+                    $source-file = @args[$i];
+                }
             }
         }
         $i++;

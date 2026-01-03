@@ -748,7 +748,14 @@ fun parseArgs(args: Array<String>): Args {
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
             "--extend" -> result.keyExtend = true
-            else -> if (!args[i].startsWith("-")) result.sourceFile = args[i]
+            else -> {
+                if (args[i].startsWith("-")) {
+                    System.err.println("${RED}Unknown option: ${args[i]}${RESET}")
+                    kotlin.system.exitProcess(1)
+                } else {
+                    result.sourceFile = args[i]
+                }
+            }
         }
         i++
     }

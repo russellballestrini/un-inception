@@ -711,7 +711,10 @@ def parseArgs(argv) {
                 args.keyExtend = true
                 break
             default:
-                if (!argv[i].startsWith('-')) {
+                if (argv[i].startsWith('-')) {
+                    System.err.println("${RED}Unknown option: ${argv[i]}${RESET}")
+                    System.exit(1)
+                } else {
                     args.sourceFile = argv[i]
                 }
         }

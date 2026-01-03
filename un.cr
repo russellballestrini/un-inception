@@ -615,7 +615,12 @@ def main
         when "key"
           args[:command] = "key"
         else
-          args[:source_file] = before[0]
+          if before[0].starts_with?("-")
+            STDERR.puts "#{RED}Unknown option: #{before[0]}#{RESET}"
+            exit 1
+          else
+            args[:source_file] = before[0]
+          end
         end
       end
     end

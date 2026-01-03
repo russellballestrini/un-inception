@@ -621,7 +621,11 @@ pub fn main() !u8 {
     // Execute mode - find source file
     var source_file: ?[]const u8 = null;
     for (args[1..]) |arg| {
-        if (!mem.startsWith(u8, arg, "-")) {
+        if (mem.startsWith(u8, arg, "-")) {
+            const stderr = std.io.getStdErr().writer();
+            stderr.print("{s}Unknown option: {s}{s}\n", .{ RED, arg, RESET }) catch {};
+            std.os.exit(1);
+        } else {
             source_file = arg;
             break;
         }

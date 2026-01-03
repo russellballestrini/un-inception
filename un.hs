@@ -227,7 +227,10 @@ parseExecute args =
       | "-o" `isPrefixOf` arg = parseExecArgs rest opts { exOutDir = Just (head rest) }
       | "-n" `isPrefixOf` arg = parseExecArgs rest opts { exNetwork = Just (head rest) }
       | "-v" `isPrefixOf` arg = parseExecArgs rest opts { exVcpu = Just (read (head rest)) }
-      | not ("-" `isPrefixOf` arg) && null (exFile opts) = parseExecArgs rest opts { exFile = arg }
+      | "-" `isPrefixOf` arg = do
+        hPutStrLn stderr $ red ++ "Unknown option: " ++ arg ++ reset
+        exitFailure
+      | null (exFile opts) = parseExecArgs rest opts { exFile = arg }
       | otherwise = parseExecArgs rest opts
     parseEnv (kv:rest) =
       let (k, v) = span (/= '=') kv

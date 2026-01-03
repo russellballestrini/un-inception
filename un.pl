@@ -643,7 +643,10 @@ sub main {
             $options{dump_file} = $ARGV[++$i];
         } elsif ($arg eq '--extend') {
             $options{extend} = 1;
-        } elsif ($arg !~ /^-/) {
+        } elsif ($arg =~ /^-/) {
+            print STDERR "${RED}Unknown option: $arg${RESET}\n";
+            exit 1;
+        } else {
             $options{source_file} = $arg;
         }
     }
