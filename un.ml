@@ -664,7 +664,13 @@ let () =
       | "-n" :: net :: rest -> parse_session action shell (Some net) vcpu rest
       | "-v" :: v :: rest -> parse_session action shell network (Some (int_of_string v)) rest
       | "-f" :: _ :: rest -> parse_session action shell network vcpu rest (* skip -f, already parsed *)
-      | _ :: rest -> parse_session action shell network vcpu rest
+      | arg :: rest ->
+        if String.length arg > 0 && arg.[0] = '-' then begin
+          Printf.fprintf stderr "Unknown option: %s\n" arg;
+          Printf.fprintf stderr "Usage: un.ml session [options]\n";
+          exit 1
+        end else
+          parse_session action shell network vcpu rest
     in
     parse_session "create" None None None rest
   | "service" :: rest ->

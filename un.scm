@@ -481,10 +481,17 @@
                         (shell #f))
                    ;; Parse --shell option
                    (let loop ((args rest-args))
-                     (when (and (pair? args) (pair? (cdr args)))
+                     (when (pair? args)
                        (cond
-                         ((or (equal? (car args) "--shell") (equal? (car args) "-s"))
-                          (set! shell (cadr args)))
+                         ((and (or (equal? (car args) "--shell") (equal? (car args) "-s")) (pair? (cdr args)))
+                          (set! shell (cadr args))
+                          (loop (cddr args)))
+                         ((equal? (car args) "-f")
+                          (loop (cdr args)))  ; skip -f, already parsed
+                         ((and (string? (car args)) (> (string-length (car args)) 0) (char=? (string-ref (car args) 0) #\-))
+                          (format (current-error-port) "~aUnknown option: ~a~a\n" red (car args) reset)
+                          (format (current-error-port) "Usage: un.scm session [options]\n")
+                          (exit 1))
                          (else (loop (cdr args))))))
                    (session-cmd "create" #f shell input-files)))))
         ((equal? (car args) "service")

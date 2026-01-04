@@ -376,6 +376,16 @@
                    ELSE
                        MOVE WS-ARG3 TO WS-INPUT-FILES
                    END-IF
+               ELSE
+                   IF WS-ARG3(1:1) = "-"
+                       STRING "Unknown option: " FUNCTION TRIM(WS-ARG3)
+                           DELIMITED BY SIZE INTO WS-ERROR-MSG
+                       END-STRING
+                       DISPLAY WS-ERROR-MSG UPON SYSERR
+                       DISPLAY "Usage: un.cob session [options]" UPON SYSERR
+                       MOVE 1 TO RETURN-CODE
+                       STOP RUN
+                   END-IF
                END-IF
                ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
            END-PERFORM.

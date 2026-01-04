@@ -222,6 +222,14 @@ contains
                         input_files = trim(arg)
                     end if
                 end if
+            else
+                if (len_trim(arg) > 0) then
+                    if (arg(1:1) == '-') then
+                        write(0, '(A,A)') 'Unknown option: ', trim(arg)
+                        write(0, '(A)') 'Usage: un.f90 session [options]'
+                        stop 1
+                    end if
+                end if
             end if
         end do
 

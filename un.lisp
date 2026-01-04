@@ -434,7 +434,12 @@
                        do (let ((opt (nth i rest-args))
                                 (val (nth (1+ i) rest-args)))
                             (cond
-                              ((or (string= opt "--shell") (string= opt "-s")) (setf shell val)))))
+                              ((or (string= opt "--shell") (string= opt "-s")) (setf shell val))
+                              ((string= opt "-f") nil) ; already parsed
+                              ((and (> (length opt) 0) (char= (char opt 0) #\-))
+                               (format *error-output* "Unknown option: ~a~%" opt)
+                               (format *error-output* "Usage: un.lisp session [options]~%")
+                               (uiop:quit 1)))))
                  (session-cmd "create" nil shell input-files)))))
           ((string= (first args) "service")
            (cond

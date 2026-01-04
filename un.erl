@@ -103,6 +103,7 @@ session_command(["--kill", SessionId | _]) ->
     io:format("\033[32mSession terminated: ~s\033[0m~n", [SessionId]);
 
 session_command(Args) ->
+    validate_session_args(Args),
     ApiKey = get_api_key(),
     Shell = get_shell_opt(Args, "bash"),
     InputFiles = get_input_files(Args),
@@ -113,6 +114,22 @@ session_command(Args) ->
     file:delete(TmpFile),
     io:format("\033[33mSession created (WebSocket required)\033[0m~n"),
     io:format("~s~n", [Response]).
+
+validate_session_args([]) -> ok;
+validate_session_args(["--shell", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["-s", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["-f", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["-n", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["-v", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args([Arg | _]) ->
+    case Arg of
+        [$- | _] ->
+            io:format(standard_error, "Unknown option: ~s~n", [Arg]),
+            io:format(standard_error, "Usage: un.erl session [options]~n", []),
+            halt(1);
+        _ ->
+            validate_session_args([])
+    end.
 
 %% Service command
 service_command(["--list" | _]) ->

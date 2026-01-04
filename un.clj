@@ -526,6 +526,14 @@
       (recur (rest args) (first args) env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode)
 
+      ;; Unknown option check
+      (and (= mode :session) (.startsWith (first args) "-"))
+      (do
+        (println (str red "Unknown option: " (first args) reset) *err*)
+        (println "Usage: un.clj session [options]")
+        (println "Options: --list, --kill ID, --shell SHELL, -s SHELL, -f FILE, -n NETWORK, -v VCPU")
+        (System/exit 1))
+
       :else
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files key-extend mode))))

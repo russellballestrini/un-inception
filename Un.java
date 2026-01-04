@@ -877,6 +877,10 @@ public class Un {
                 result.keyExtend = true;
             } else if (!arg.startsWith("-")) {
                 result.sourceFile = arg;
+            } else {
+                System.err.println("Unknown option: " + arg);
+                printHelp();
+                System.exit(1);
             }
         }
         return result;

@@ -702,7 +702,11 @@ parse_args <- function() {
             result$source_file <- arg
             i <- i + 1
         } else {
-            cat(sprintf("Unknown argument: %s\n", arg), file = stderr())
+            cat(sprintf("Unknown option: %s\n", arg), file = stderr())
+            cat("Usage: un.r [options] <source_file>\n", file = stderr())
+            cat("       un.r session [options]\n", file = stderr())
+            cat("       un.r service [options]\n", file = stderr())
+            cat("       un.r key [options]\n", file = stderr())
             quit(status = 1)
         }
     }

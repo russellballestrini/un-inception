@@ -627,9 +627,17 @@
         0 (bye)
     then
 
+    \ Check if argument starts with '-'
+    2dup drop c@ [char] - = if
+        s" Unknown option: " type type cr
+        s" Usage: un.forth session [options]" type cr
+        2drop
+        1 (bye)
+    then
+
     2drop
-    s" Error: Use --list or --kill ID" type cr
-    1 (bye)
+    session-create
+    0 (bye)
 ;
 
 \ Handle service subcommand

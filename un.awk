@@ -670,6 +670,11 @@ END {
                     input_files = input_files ARGV[i + 1]
                     i += 2
                 } else {
+                    if (substr(ARGV[i], 1, 1) == "-") {
+                        print "Unknown option: " ARGV[i] > "/dev/stderr"
+                        usage()
+                        exit 1
+                    }
                     i++
                 }
             }

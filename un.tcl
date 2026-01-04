@@ -348,6 +348,13 @@ proc cmd_session {args} {
                 incr i
                 lappend input_files [lindex $args $i]
             }
+            default {
+                if {[string index $arg 0] eq "-"} {
+                    puts stderr "${::RED}Unknown option: $arg${::RESET}"
+                    puts stderr "Usage: un.tcl session \[options\]"
+                    exit 1
+                }
+            }
         }
     }
 

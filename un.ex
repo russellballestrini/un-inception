@@ -133,6 +133,7 @@ defmodule Un do
   end
 
   defp session_command(args) do
+    validate_session_args(args)
     api_key = get_api_key()
     shell = get_opt(args, "--shell", "-s", "bash")
     network = get_opt(args, "-n", nil, nil)
@@ -147,6 +148,22 @@ defmodule Un do
     response = curl_post(api_key, "/sessions", json)
     IO.puts("#{@yellow}Session created (WebSocket required)#{@reset}")
     IO.puts(response)
+  end
+
+  defp validate_session_args([]), do: :ok
+  defp validate_session_args(["--shell", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["-s", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["-f", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["-n", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["-v", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args([arg | _]) do
+    if String.starts_with?(arg, "-") do
+      IO.puts(:stderr, "Unknown option: #{arg}")
+      IO.puts(:stderr, "Usage: un.ex session [options]")
+      System.halt(1)
+    else
+      validate_session_args([])
+    end
   end
 
   # Service command

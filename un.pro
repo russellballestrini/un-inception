@@ -321,8 +321,13 @@ parse_session_args(['-f', FilePath|Rest], Shell, Files, ShellOut, InputFiles) :-
     ;   format(user_error, 'Error: File not found: ~w~n', [FilePath]),
         halt(1)
     ).
-parse_session_args([_|Rest], Shell, Files, ShellOut, InputFiles) :-
-    parse_session_args(Rest, Shell, Files, ShellOut, InputFiles).
+parse_session_args([Arg|Rest], Shell, Files, ShellOut, InputFiles) :-
+    (   atom_chars(Arg, ['-'|_])
+    ->  format(user_error, 'Unknown option: ~w~n', [Arg]),
+        format(user_error, 'Usage: un.pro session [options]~n', []),
+        halt(1)
+    ;   parse_session_args(Rest, Shell, Files, ShellOut, InputFiles)
+    ).
 
 % Handle service subcommand
 handle_service(Args) :-

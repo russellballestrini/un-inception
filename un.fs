@@ -636,7 +636,11 @@ let parseArgs (argv: string[]) =
         | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
         | "--extend" -> args.KeyExtend <- true
         | arg when not (arg.StartsWith("-")) -> args.SourceFile <- Some arg
-        | _ -> ()
+        | arg ->
+            if arg.StartsWith("-") && args.Command = Some "session" then
+                eprintfn "Unknown option: %s" arg
+                eprintfn "Usage: un.fs session [options]"
+                Environment.Exit(1)
         i <- i + 1
 
     args
