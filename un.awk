@@ -597,30 +597,286 @@ function cmd_key(do_extend) {
     validate_key(do_extend)
 }
 
+function snapshot_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:/snapshots:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE "/snapshots' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function snapshot_info(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/snapshots/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/snapshots/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    system(cmd)
+    print GREEN "Snapshot deleted: " id RESET
+}
+
+function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/sessions/" id "/snapshot"
+
+    # Build JSON payload
+    json = "{"
+    if (name != "") {
+        json = json "\"name\":\"" escape_json(name) "\""
+        if (hot != "") json = json ","
+    }
+    if (hot != "") {
+        json = json "\"hot\":" hot
+    }
+    json = json "}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_snap_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    print GREEN "Snapshot created" RESET
+    print response
+}
+
+function session_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    get_api_keys()
+    endpoint = "/snapshots/" snapshot_id "/restore"
+
+    json = "{}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_restore_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    print GREEN "Session restored from snapshot" RESET
+}
+
+function service_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/services/" id "/snapshot"
+
+    # Build JSON payload
+    json = "{"
+    if (name != "") {
+        json = json "\"name\":\"" escape_json(name) "\""
+        if (hot != "") json = json ","
+    }
+    if (hot != "") {
+        json = json "\"hot\":" hot
+    }
+    json = json "}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_snap_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    print GREEN "Snapshot created" RESET
+    print response
+}
+
+function service_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    get_api_keys()
+    endpoint = "/snapshots/" snapshot_id "/restore"
+
+    json = "{}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_restore_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    # Build HMAC signature if secret key exists
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    # Call curl
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    # Clean up
+    system("rm -f " tmp)
+
+    print GREEN "Service restored from snapshot" RESET
+}
+
 function show_help() {
     print "Usage: awk -f un.awk <source_file>"
     print "       awk -f un.awk session --list"
     print "       awk -f un.awk session --kill ID"
     print "       awk -f un.awk session [-s SHELL] [-f FILE]..."
+    print "       awk -f un.awk session --snapshot SESSION_ID [--snapshot-name NAME] [--hot]"
+    print "       awk -f un.awk session --restore SNAPSHOT_ID"
     print "       awk -f un.awk key [--extend]"
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-f FILE]..."
     print "       awk -f un.awk service --destroy ID"
     print "       awk -f un.awk service --dump-bootstrap ID [--dump-file FILE]"
+    print "       awk -f un.awk service --snapshot SERVICE_ID [--snapshot-name NAME] [--hot]"
+    print "       awk -f un.awk service --restore SNAPSHOT_ID"
+    print "       awk -f un.awk snapshot --list"
+    print "       awk -f un.awk snapshot --info ID"
+    print "       awk -f un.awk snapshot --delete ID"
     print ""
     print "Session options:"
-    print "  -s, --shell SHELL  Shell to use (default: bash)"
-    print "  -f FILE            Input file to upload (can be repeated)"
+    print "  -s, --shell SHELL      Shell to use (default: bash)"
+    print "  -f FILE                Input file to upload (can be repeated)"
+    print "  --snapshot SESSION_ID  Create snapshot of session"
+    print "  --restore SNAPSHOT_ID  Restore from snapshot ID"
+    print "  --snapshot-name N      Name for snapshot"
+    print "  --hot                  Take snapshot without freezing (live snapshot)"
     print ""
     print "Service options:"
-    print "  --name NAME      Service name (required for --create)"
-    print "  --ports PORTS    Comma-separated port numbers"
-    print "  --domains DOMAINS Comma-separated domain names"
-    print "  --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
-    print "  --bootstrap CMD  Bootstrap command or script"
-    print "  --dump-bootstrap ID  Dump bootstrap script from service"
-    print "  --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)"
-    print "  -f FILE          Input file to upload (can be repeated)"
+    print "  --name NAME        Service name (required for --create)"
+    print "  --ports PORTS      Comma-separated port numbers"
+    print "  --domains DOMAINS  Comma-separated domain names"
+    print "  --type TYPE        Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
+    print "  --bootstrap CMD    Bootstrap command or script"
+    print "  --dump-bootstrap ID    Dump bootstrap script from service"
+    print "  --dump-file FILE       Save bootstrap to file (with --dump-bootstrap)"
+    print "  -f FILE                Input file to upload (can be repeated)"
+    print "  --snapshot SERVICE_ID  Create snapshot of service"
+    print "  --restore SNAPSHOT_ID  Restore from snapshot ID"
+    print "  --snapshot-name N      Name for snapshot"
+    print "  --hot                  Take snapshot without freezing (live snapshot)"
+    print ""
+    print "Snapshot options:"
+    print "  -l, --list         List all snapshots"
+    print "  --info ID          Get snapshot details"
+    print "  --delete ID        Delete a snapshot"
     print ""
     print "Requires: UNSANDBOX_API_KEY environment variable"
 }
@@ -647,6 +903,26 @@ END {
             session_list()
         } else if (ARGC >= 4 && ARGV[2] == "--kill") {
             session_kill(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--snapshot") {
+            # Parse snapshot options
+            snapshot_name = ""
+            hot = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "--snapshot-name" && i + 1 < ARGC) {
+                    snapshot_name = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--hot") {
+                    hot = "true"
+                    i++
+                } else {
+                    i++
+                }
+            }
+            session_snapshot(ARGV[3], snapshot_name, hot)
+        } else if (ARGC >= 4 && ARGV[2] == "--restore") {
+            # --restore takes snapshot ID directly
+            session_restore(ARGV[3])
         } else {
             # Parse session creation arguments
             shell = ""
@@ -693,6 +969,19 @@ END {
         exit 0
     }
 
+    if (ARGV[1] == "snapshot") {
+        if (ARGC >= 3 && (ARGV[2] == "--list" || ARGV[2] == "-l")) {
+            snapshot_list()
+        } else if (ARGC >= 4 && ARGV[2] == "--info") {
+            snapshot_info(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--delete") {
+            snapshot_delete(ARGV[3])
+        } else {
+            print "Usage: awk -f un.awk snapshot --list|--info ID|--delete ID"
+        }
+        exit 0
+    }
+
     if (ARGV[1] == "service") {
         if (ARGC >= 3 && ARGV[2] == "--list") {
             service_list()
@@ -704,6 +993,26 @@ END {
                 dump_file = ARGV[5]
             }
             service_dump_bootstrap(ARGV[3], dump_file)
+        } else if (ARGC >= 4 && ARGV[2] == "--snapshot") {
+            # Parse snapshot options
+            snapshot_name = ""
+            hot = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "--snapshot-name" && i + 1 < ARGC) {
+                    snapshot_name = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--hot") {
+                    hot = "true"
+                    i++
+                } else {
+                    i++
+                }
+            }
+            service_snapshot(ARGV[3], snapshot_name, hot)
+        } else if (ARGC >= 4 && ARGV[2] == "--restore") {
+            # --restore takes snapshot ID directly
+            service_restore(ARGV[3])
         } else if (ARGV[2] == "--create") {
             # Parse service creation arguments
             name = ""

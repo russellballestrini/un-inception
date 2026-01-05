@@ -116,7 +116,7 @@ escapeJSON = concatMap escape
     escape c = [c]
 
 -- Parse command line arguments
-data Command = Execute ExecuteOpts | Session SessionOpts | Service ServiceOpts | Key KeyOpts | Help
+data Command = Execute ExecuteOpts | Session SessionOpts | Service ServiceOpts | Key KeyOpts | Snapshot SnapshotOpts | Help
 
 data ExecuteOpts = ExecuteOpts
   { exFile :: String
@@ -134,9 +134,13 @@ data SessionOpts = SessionOpts
   , sessNetwork :: Maybe String
   , sessVcpu :: Maybe Int
   , sessFiles :: [String]
+  , sessSnapshotName :: Maybe String
+  , sessSnapshotFrom :: Maybe String
+  , sessHot :: Bool
   }
 
 data SessionAction = SessionList | SessionKill String | SessionCreate
+                   | SessionSnapshot String | SessionRestore String
 
 data ServiceOpts = ServiceOpts
   { svcAction :: ServiceAction
@@ -148,12 +152,25 @@ data ServiceOpts = ServiceOpts
   , svcNetwork :: Maybe String
   , svcVcpu :: Maybe Int
   , svcFiles :: [String]
+  , svcSnapshotName :: Maybe String
+  , svcSnapshotFrom :: Maybe String
+  , svcHot :: Bool
   }
 
 data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
                    | ServiceSleep String | ServiceWake String | ServiceDestroy String
                    | ServiceExecute String String | ServiceDumpBootstrap String (Maybe String)
-                   | ServiceCreate
+                   | ServiceCreate | ServiceSnapshot String | ServiceRestore String
+
+data SnapshotOpts = SnapshotOpts
+  { snapAction :: SnapshotAction
+  , snapCloneType :: Maybe String
+  , snapCloneName :: Maybe String
+  , snapClonePorts :: Maybe String
+  }
+
+data SnapshotAction = SnapshotList | SnapshotInfo String | SnapshotDelete String
+                    | SnapshotClone String
 
 data KeyOpts = KeyOpts
   { keyExtend :: Bool
@@ -164,6 +181,7 @@ parseArgs :: [String] -> IO Command
 parseArgs ("session":rest) = Session <$> parseSession rest
 parseArgs ("service":rest) = Service <$> parseService rest
 parseArgs ("key":rest) = Key <$> parseKey rest
+parseArgs ("snapshot":rest) = Snapshot <$> parseSnapshot rest
 parseArgs args = parseExecute args
 
 parseKey :: [String] -> IO KeyOpts
@@ -174,15 +192,35 @@ parseKey args = return $ parseKeyArgs args defaultKeyOpts
     parseKeyArgs ("--extend":rest) opts = parseKeyArgs rest opts { keyExtend = True }
     parseKeyArgs (_:rest) opts = parseKeyArgs rest opts
 
+parseSnapshot :: [String] -> IO SnapshotOpts
+parseSnapshot args = return $ parseSnapshotArgs args defaultSnapshotOpts
+  where
+    defaultSnapshotOpts = SnapshotOpts SnapshotList Nothing Nothing Nothing
+    parseSnapshotArgs [] opts = opts
+    parseSnapshotArgs ("--list":rest) opts = parseSnapshotArgs rest opts { snapAction = SnapshotList }
+    parseSnapshotArgs ("-l":rest) opts = parseSnapshotArgs rest opts { snapAction = SnapshotList }
+    parseSnapshotArgs ("--info":id:rest) opts = parseSnapshotArgs rest opts { snapAction = SnapshotInfo id }
+    parseSnapshotArgs ("--delete":id:rest) opts = parseSnapshotArgs rest opts { snapAction = SnapshotDelete id }
+    parseSnapshotArgs ("--clone":id:rest) opts = parseSnapshotArgs rest opts { snapAction = SnapshotClone id }
+    parseSnapshotArgs ("--type":t:rest) opts = parseSnapshotArgs rest opts { snapCloneType = Just t }
+    parseSnapshotArgs ("--name":n:rest) opts = parseSnapshotArgs rest opts { snapCloneName = Just n }
+    parseSnapshotArgs ("--ports":p:rest) opts = parseSnapshotArgs rest opts { snapClonePorts = Just p }
+    parseSnapshotArgs (_:rest) opts = parseSnapshotArgs rest opts
+
 parseSession :: [String] -> IO SessionOpts
 parseSession args = return $ parseSessionArgs args defaultSessionOpts
   where
-    defaultSessionOpts = SessionOpts SessionCreate Nothing Nothing Nothing []
+    defaultSessionOpts = SessionOpts SessionCreate Nothing Nothing Nothing [] Nothing Nothing False
     parseSessionArgs [] opts = opts
     parseSessionArgs ("--list":rest) opts = parseSessionArgs rest opts { sessAction = SessionList }
     parseSessionArgs ("--kill":id:rest) opts = parseSessionArgs rest opts { sessAction = SessionKill id }
+    parseSessionArgs ("--snapshot":id:rest) opts = parseSessionArgs rest opts { sessAction = SessionSnapshot id }
+    parseSessionArgs ("--restore":id:rest) opts = parseSessionArgs rest opts { sessAction = SessionRestore id }
     parseSessionArgs ("--shell":sh:rest) opts = parseSessionArgs rest opts { sessShell = Just sh }
     parseSessionArgs ("-s":sh:rest) opts = parseSessionArgs rest opts { sessShell = Just sh }
+    parseSessionArgs ("--snapshot-name":n:rest) opts = parseSessionArgs rest opts { sessSnapshotName = Just n }
+    parseSessionArgs ("--from":f:rest) opts = parseSessionArgs rest opts { sessSnapshotFrom = Just f }
+    parseSessionArgs ("--hot":rest) opts = parseSessionArgs rest opts { sessHot = True }
     parseSessionArgs ("-n":net:rest) opts = parseSessionArgs rest opts { sessNetwork = Just net }
     parseSessionArgs ("-v":v:rest) opts = parseSessionArgs rest opts { sessVcpu = Just (read v) }
     parseSessionArgs ("-f":f:rest) opts = parseSessionArgs rest opts { sessFiles = sessFiles opts ++ [f] }
@@ -191,7 +229,7 @@ parseSession args = return $ parseSessionArgs args defaultSessionOpts
 parseService :: [String] -> IO ServiceOpts
 parseService args = return $ parseServiceArgs args defaultServiceOpts
   where
-    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing []
+    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing [] Nothing Nothing False
     parseServiceArgs [] opts = opts
     parseServiceArgs ("--list":rest) opts = parseServiceArgs rest opts { svcAction = ServiceList }
     parseServiceArgs ("--info":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceInfo id }
@@ -199,6 +237,8 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--freeze":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSleep id }
     parseServiceArgs ("--unfreeze":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceWake id }
     parseServiceArgs ("--destroy":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDestroy id }
+    parseServiceArgs ("--snapshot":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSnapshot id }
+    parseServiceArgs ("--restore":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceRestore id }
     parseServiceArgs ("--execute":id:"--command":cmd:rest) opts = parseServiceArgs rest opts { svcAction = ServiceExecute id cmd }
     parseServiceArgs ("--dump-bootstrap":id:file:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id (Just file) }
     parseServiceArgs ("--dump-bootstrap":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id Nothing }
@@ -207,6 +247,9 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--type":t:rest) opts = parseServiceArgs rest opts { svcType = Just t }
     parseServiceArgs ("--bootstrap":b:rest) opts = parseServiceArgs rest opts { svcBootstrap = Just b }
     parseServiceArgs ("--bootstrap-file":f:rest) opts = parseServiceArgs rest opts { svcBootstrapFile = Just f }
+    parseServiceArgs ("--snapshot-name":n:rest) opts = parseServiceArgs rest opts { svcSnapshotName = Just n }
+    parseServiceArgs ("--from":f:rest) opts = parseServiceArgs rest opts { svcSnapshotFrom = Just f }
+    parseServiceArgs ("--hot":rest) opts = parseServiceArgs rest opts { svcHot = True }
     parseServiceArgs ("-n":net:rest) opts = parseServiceArgs rest opts { svcNetwork = Just net }
     parseServiceArgs ("-v":v:rest) opts = parseServiceArgs rest opts { svcVcpu = Just (read v) }
     parseServiceArgs ("-f":f:rest) opts = parseServiceArgs rest opts { svcFiles = svcFiles opts ++ [f] }
@@ -246,6 +289,7 @@ main = do
     Session opts -> sessionCommand opts
     Service opts -> serviceCommand opts
     Key opts -> keyCommand opts
+    Snapshot opts -> snapshotCommand opts
     Help -> printHelp
 
 printHelp :: IO ()
@@ -254,6 +298,7 @@ printHelp = do
   putStrLn "  un.hs [options] <source_file>         Execute code"
   putStrLn "  un.hs session [options]                Manage sessions"
   putStrLn "  un.hs service [options]                Manage services"
+  putStrLn "  un.hs snapshot [options]               Manage snapshots"
   putStrLn "  un.hs key [options]                    Validate/extend API key"
   putStrLn ""
   putStrLn "Execute options:"
@@ -263,6 +308,29 @@ printHelp = do
   putStrLn "  -o DIR          Output directory"
   putStrLn "  -n MODE         Network mode (zerotrust|semitrusted)"
   putStrLn "  -v N            vCPU count (1-8)"
+  putStrLn ""
+  putStrLn "Session snapshot options:"
+  putStrLn "  --snapshot ID        Create snapshot of session"
+  putStrLn "  --restore ID         Restore session from snapshot"
+  putStrLn "  --from SNAPSHOT_ID   Snapshot ID to restore from"
+  putStrLn "  --snapshot-name NAME Optional snapshot name"
+  putStrLn "  --hot                Take live snapshot without freezing"
+  putStrLn ""
+  putStrLn "Service snapshot options:"
+  putStrLn "  --snapshot ID        Create snapshot of service"
+  putStrLn "  --restore ID         Restore service from snapshot"
+  putStrLn "  --from SNAPSHOT_ID   Snapshot ID to restore from"
+  putStrLn "  --snapshot-name NAME Optional snapshot name"
+  putStrLn "  --hot                Take live snapshot without freezing"
+  putStrLn ""
+  putStrLn "Snapshot management options:"
+  putStrLn "  -l, --list           List all snapshots"
+  putStrLn "  --info ID            Get snapshot details"
+  putStrLn "  --delete ID          Delete a snapshot"
+  putStrLn "  --clone ID           Clone snapshot to new session/service"
+  putStrLn "  --type TYPE          Type for clone (session|service)"
+  putStrLn "  --name NAME          Name for cloned instance"
+  putStrLn "  --ports PORTS        Ports for cloned service"
   putStrLn ""
   putStrLn "Key options:"
   putStrLn "  --extend        Open browser to extend/renew key"
@@ -322,6 +390,20 @@ sessionCommand opts = do
     SessionKill sid -> do
       (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/sessions/" ++ sid)
       putStrLn $ green ++ "Session terminated: " ++ sid ++ reset
+    SessionSnapshot sid -> do
+      let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\",") (sessSnapshotName opts)
+      let hotJSON = if sessHot opts then "\"hot\":true" else "\"hot\":false"
+      let json = "{" ++ nameJSON ++ hotJSON ++ "}"
+      hPutStrLn stderr $ "Creating snapshot of session " ++ sid ++ "..."
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/sessions/" ++ sid ++ "/snapshot") json
+      putStrLn $ green ++ "Snapshot created" ++ reset
+      putStrLn stdout
+    SessionRestore snapshotId -> do
+      -- --restore takes snapshot ID directly, calls /snapshots/:id/restore
+      hPutStrLn stderr $ "Restoring from snapshot " ++ snapshotId ++ "..."
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ snapshotId ++ "/restore") "{}"
+      putStrLn $ green ++ "Session restored from snapshot" ++ reset
+      putStrLn stdout
     SessionCreate -> do
       let shell = maybe "bash" id (sessShell opts)
       let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (sessNetwork opts)
@@ -387,6 +469,20 @@ serviceCommand opts = do
         _ -> do
           hPutStrLn stderr $ red ++ "Error: Failed to fetch bootstrap (service not running or no bootstrap file)" ++ reset
           exitFailure
+    ServiceSnapshot sid -> do
+      let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\",") (svcSnapshotName opts)
+      let hotJSON = if svcHot opts then "\"hot\":true" else "\"hot\":false"
+      let json = "{" ++ nameJSON ++ hotJSON ++ "}"
+      hPutStrLn stderr $ "Creating snapshot of service " ++ sid ++ "..."
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/snapshot") json
+      putStrLn $ green ++ "Snapshot created" ++ reset
+      putStrLn stdout
+    ServiceRestore snapshotId -> do
+      -- --restore takes snapshot ID directly, calls /snapshots/:id/restore
+      hPutStrLn stderr $ "Restoring from snapshot " ++ snapshotId ++ "..."
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ snapshotId ++ "/restore") "{}"
+      putStrLn $ green ++ "Service restored from snapshot" ++ reset
+      putStrLn stdout
     ServiceCreate -> do
       case svcName opts of
         Nothing -> do
@@ -554,6 +650,34 @@ extractJsonString json field =
       _ -> ""
     tails [] = [[]]
     tails s@(_:xs) = s : tails xs
+
+-- Snapshot command
+snapshotCommand :: SnapshotOpts -> IO ()
+snapshotCommand opts = do
+  apiKey <- getApiKey
+  case snapAction opts of
+    SnapshotList -> do
+      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/snapshots"
+      putStrLn stdout
+    SnapshotInfo sid -> do
+      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
+      putStrLn stdout
+    SnapshotDelete sid -> do
+      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
+      putStrLn $ green ++ "Snapshot deleted: " ++ sid ++ reset
+    SnapshotClone sid -> do
+      case snapCloneType opts of
+        Nothing -> do
+          hPutStrLn stderr "Error: --type (session|service) required for clone"
+          exitFailure
+        Just cloneType -> do
+          let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\",") (snapCloneName opts)
+          let portsJSON = maybe "" (\p -> "\"ports\":[" ++ p ++ "],") (snapClonePorts opts)
+          let json = "{\"type\":\"" ++ cloneType ++ "\"," ++ nameJSON ++ portsJSON ++ "}"
+          hPutStrLn stderr $ "Cloning snapshot " ++ sid ++ " to create new " ++ cloneType ++ "..."
+          (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ sid ++ "/clone") json
+          putStrLn $ green ++ "Snapshot cloned" ++ reset
+          putStrLn stdout
 
 -- Key command
 keyCommand :: KeyOpts -> IO ()

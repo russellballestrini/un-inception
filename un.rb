@@ -255,6 +255,27 @@ def cmd_session(options)
     return
   end
 
+  if options[:snapshot_session]
+    payload = {}
+    payload[:name] = options[:snapshot_name] if options[:snapshot_name]
+    payload[:hot] = true if options[:hot]
+
+    warn "#{YELLOW}Creating snapshot of session #{options[:snapshot_session]}...#{RESET}"
+    result = api_request("/sessions/#{options[:snapshot_session]}/snapshot", method: 'POST', data: payload, keys: keys)
+    puts "#{GREEN}Snapshot created successfully#{RESET}"
+    puts "Snapshot ID: #{result['id'] || 'N/A'}"
+    return
+  end
+
+  if options[:restore_session]
+    # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    warn "#{YELLOW}Restoring from snapshot #{options[:restore_session]}...#{RESET}"
+    result = api_request("/snapshots/#{options[:restore_session]}/restore", method: 'POST', keys: keys)
+    puts "#{GREEN}Session restored from snapshot#{RESET}"
+    puts "New session ID: #{result['session_id']}" if result['session_id']
+    return
+  end
+
   if options[:attach]
     puts "#{YELLOW}Attaching to session #{options[:attach]}...#{RESET}"
     puts "#{YELLOW}(Interactive sessions require WebSocket - use un2 for full support)#{RESET}"
@@ -378,6 +399,75 @@ def cmd_key(options)
   end
 end
 
+def cmd_snapshot(options)
+  keys = get_api_keys(options[:api_key])
+
+  if options[:list]
+    result = api_request('/snapshots', keys: keys)
+    snapshots = result['snapshots'] || []
+    if snapshots.empty?
+      puts 'No snapshots found'
+    else
+      puts format('%-40s %-20s %-12s %-30s %s', 'ID', 'Name', 'Type', 'Source ID', 'Size')
+      snapshots.each do |s|
+        puts format('%-40s %-20s %-12s %-30s %s',
+                    s['id'] || 'N/A', s['name'] || '-',
+                    s['source_type'] || 'N/A', s['source_id'] || 'N/A',
+                    s['size'] || 'N/A')
+      end
+    end
+    return
+  end
+
+  if options[:info_snapshot]
+    result = api_request("/snapshots/#{options[:info_snapshot]}", keys: keys)
+    puts "#{BLUE}Snapshot Details#{RESET}\n"
+    puts "Snapshot ID: #{result['id'] || 'N/A'}"
+    puts "Name: #{result['name'] || '-'}"
+    puts "Source Type: #{result['source_type'] || 'N/A'}"
+    puts "Source ID: #{result['source_id'] || 'N/A'}"
+    puts "Size: #{result['size'] || 'N/A'}"
+    puts "Created: #{result['created_at'] || 'N/A'}"
+    return
+  end
+
+  if options[:delete_snapshot]
+    api_request("/snapshots/#{options[:delete_snapshot]}", method: 'DELETE', keys: keys)
+    puts "#{GREEN}Snapshot deleted successfully#{RESET}"
+    return
+  end
+
+  if options[:clone_snapshot]
+    unless options[:clone_type]
+      warn "#{RED}Error: --type required for --clone (session or service)#{RESET}"
+      exit 1
+    end
+    unless ['session', 'service'].include?(options[:clone_type])
+      warn "#{RED}Error: --type must be 'session' or 'service'#{RESET}"
+      exit 1
+    end
+
+    payload = { type: options[:clone_type] }
+    payload[:name] = options[:clone_name] if options[:clone_name]
+    payload[:shell] = options[:clone_shell] if options[:clone_shell]
+    payload[:ports] = options[:clone_ports].split(',').map(&:to_i) if options[:clone_ports]
+
+    result = api_request("/snapshots/#{options[:clone_snapshot]}/clone", method: 'POST', data: payload, keys: keys)
+
+    if options[:clone_type] == 'session'
+      puts "#{GREEN}Session created from snapshot#{RESET}"
+      puts "Session ID: #{result['id'] || 'N/A'}"
+    else
+      puts "#{GREEN}Service created from snapshot#{RESET}"
+      puts "Service ID: #{result['id'] || 'N/A'}"
+    end
+    return
+  end
+
+  warn "#{RED}Error: Specify --list, --info ID, --delete ID, or --clone ID --type TYPE#{RESET}"
+  exit 1
+end
+
 def cmd_service(options)
   keys = get_api_keys(options[:api_key])
 
@@ -432,6 +522,27 @@ def cmd_service(options)
   if options[:destroy]
     api_request("/services/#{options[:destroy]}", method: 'DELETE', keys: keys)
     puts "#{GREEN}Service destroyed: #{options[:destroy]}#{RESET}"
+    return
+  end
+
+  if options[:snapshot_service]
+    payload = {}
+    payload[:name] = options[:snapshot_name] if options[:snapshot_name]
+    payload[:hot] = true if options[:hot]
+
+    warn "#{YELLOW}Creating snapshot of service #{options[:snapshot_service]}...#{RESET}"
+    result = api_request("/services/#{options[:snapshot_service]}/snapshot", method: 'POST', data: payload, keys: keys)
+    puts "#{GREEN}Snapshot created successfully#{RESET}"
+    puts "Snapshot ID: #{result['id'] || 'N/A'}"
+    return
+  end
+
+  if options[:restore_service]
+    # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    warn "#{YELLOW}Restoring from snapshot #{options[:restore_service]}...#{RESET}"
+    result = api_request("/snapshots/#{options[:restore_service]}/restore", method: 'POST', keys: keys)
+    puts "#{GREEN}Service restored from snapshot#{RESET}"
+    puts "New service ID: #{result['service_id']}" if result['service_id']
     return
   end
 
@@ -527,6 +638,20 @@ def main
     list: false,
     attach: nil,
     kill: nil,
+    snapshot_session: nil,
+    snapshot_service: nil,
+    restore_session: nil,
+    restore_service: nil,
+    from_snapshot: nil,
+    snapshot_name: nil,
+    hot: false,
+    info_snapshot: nil,
+    delete_snapshot: nil,
+    clone_snapshot: nil,
+    clone_type: nil,
+    clone_name: nil,
+    clone_shell: nil,
+    clone_ports: nil,
     audit: false,
     tmux: false,
     screen: false,
@@ -544,7 +669,8 @@ def main
     execute: nil,
     dump_bootstrap: nil,
     dump_file: nil,
-    extend: false
+    extend: false,
+    bootstrap_file: nil
   }
 
   # Manual argument parsing
@@ -553,7 +679,7 @@ def main
     arg = ARGV[i]
 
     case arg
-    when 'session', 'service', 'key'
+    when 'session', 'service', 'key', 'snapshot'
       options[:command] = arg
     when '-e'
       i += 1
@@ -640,6 +766,55 @@ def main
     when '--dump-file'
       i += 1
       options[:dump_file] = ARGV[i]
+    when '--snapshot'
+      i += 1
+      if options[:command] == 'session'
+        options[:snapshot_session] = ARGV[i]
+      elsif options[:command] == 'service'
+        options[:snapshot_service] = ARGV[i]
+      end
+    when '--restore'
+      i += 1
+      if options[:command] == 'session'
+        options[:restore_session] = ARGV[i]
+      elsif options[:command] == 'service'
+        options[:restore_service] = ARGV[i]
+      end
+    when '--from'
+      i += 1
+      options[:from_snapshot] = ARGV[i]
+    when '--snapshot-name'
+      i += 1
+      options[:snapshot_name] = ARGV[i]
+    when '--hot'
+      options[:hot] = true
+    when '--info'
+      i += 1
+      if options[:command] == 'snapshot'
+        options[:info_snapshot] = ARGV[i]
+      else
+        options[:info] = ARGV[i]
+      end
+    when '--delete'
+      i += 1
+      options[:delete_snapshot] = ARGV[i]
+    when '--clone'
+      i += 1
+      options[:clone_snapshot] = ARGV[i]
+    when '--type'
+      i += 1
+      if options[:clone_snapshot]
+        options[:clone_type] = ARGV[i]
+      else
+        options[:type] = ARGV[i]
+      end
+    when '--shell'
+      i += 1
+      if options[:clone_snapshot]
+        options[:clone_shell] = ARGV[i]
+      else
+        options[:shell] = ARGV[i]
+      end
     when '--extend'
       options[:extend] = true
     else
@@ -659,6 +834,8 @@ def main
     cmd_session(options)
   when 'service'
     cmd_service(options)
+  when 'snapshot'
+    cmd_snapshot(options)
   when 'key'
     cmd_key(options)
   else

@@ -78,6 +78,7 @@ defmodule Un do
   def main([]), do: print_usage()
   def main(["session" | rest]), do: session_command(rest)
   def main(["service" | rest]), do: service_command(rest)
+  def main(["snapshot" | rest]), do: snapshot_command(rest)
   def main(["key" | rest]), do: key_command(rest)
   def main(args), do: execute_command(args)
 
@@ -85,6 +86,7 @@ defmodule Un do
     IO.puts("Usage: un.ex [options] <source_file>")
     IO.puts("       un.ex session [options]")
     IO.puts("       un.ex service [options]")
+    IO.puts("       un.ex snapshot [options]")
     IO.puts("       un.ex key [--extend]")
     System.halt(1)
   end
@@ -132,6 +134,26 @@ defmodule Un do
     IO.puts("#{@green}Session terminated: #{session_id}#{@reset}")
   end
 
+  defp session_command(["--snapshot", session_id | rest]) do
+    api_key = get_api_key()
+    name = get_opt(rest, "--snapshot-name", nil, nil)
+    hot = "--hot" in rest
+    name_json = if name, do: ",\"name\":\"#{escape_json(name)}\"", else: ""
+    hot_json = if hot, do: ",\"hot\":true", else: ""
+    json = "{#{String.slice(name_json <> hot_json, 1..-1)}}"
+    response = curl_post(api_key, "/sessions/#{session_id}/snapshot", json)
+    IO.puts("#{@green}Snapshot created#{@reset}")
+    IO.puts(response)
+  end
+
+  defp session_command(["--restore", snapshot_id | _rest]) do
+    # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    api_key = get_api_key()
+    response = curl_post(api_key, "/snapshots/#{snapshot_id}/restore", "{}")
+    IO.puts("#{@green}Session restored from snapshot#{@reset}")
+    IO.puts(response)
+  end
+
   defp session_command(args) do
     validate_session_args(args)
     api_key = get_api_key()
@@ -156,6 +178,11 @@ defmodule Un do
   defp validate_session_args(["-f", _ | rest]), do: validate_session_args(rest)
   defp validate_session_args(["-n", _ | rest]), do: validate_session_args(rest)
   defp validate_session_args(["-v", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["--snapshot", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["--restore", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["--from", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["--snapshot-name", _ | rest]), do: validate_session_args(rest)
+  defp validate_session_args(["--hot" | rest]), do: validate_session_args(rest)
   defp validate_session_args([arg | _]) do
     if String.starts_with?(arg, "-") do
       IO.puts(:stderr, "Unknown option: #{arg}")
@@ -201,6 +228,26 @@ defmodule Un do
     api_key = get_api_key()
     curl_delete(api_key, "/services/#{service_id}")
     IO.puts("#{@green}Service destroyed: #{service_id}#{@reset}")
+  end
+
+  defp service_command(["--snapshot", service_id | rest]) do
+    api_key = get_api_key()
+    name = get_opt(rest, "--snapshot-name", nil, nil)
+    hot = "--hot" in rest
+    name_json = if name, do: ",\"name\":\"#{escape_json(name)}\"", else: ""
+    hot_json = if hot, do: ",\"hot\":true", else: ""
+    json = "{#{String.slice(name_json <> hot_json, 1..-1)}}"
+    response = curl_post(api_key, "/services/#{service_id}/snapshot", json)
+    IO.puts("#{@green}Snapshot created#{@reset}")
+    IO.puts(response)
+  end
+
+  defp service_command(["--restore", snapshot_id | _rest]) do
+    # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    api_key = get_api_key()
+    response = curl_post(api_key, "/snapshots/#{snapshot_id}/restore", "{}")
+    IO.puts("#{@green}Service restored from snapshot#{@reset}")
+    IO.puts(response)
   end
 
   defp service_command(["--execute", service_id, "--command", command | _]) do
@@ -284,6 +331,57 @@ defmodule Un do
     response = curl_post(api_key, "/services", json)
     IO.puts("#{@green}Service created#{@reset}")
     IO.puts(response)
+  end
+
+  # Snapshot command
+  defp snapshot_command(["--list" | _]) do
+    snapshot_command(["-l"])
+  end
+
+  defp snapshot_command(["-l" | _]) do
+    api_key = get_api_key()
+    response = curl_get(api_key, "/snapshots")
+    IO.puts(response)
+  end
+
+  defp snapshot_command(["--info", snapshot_id | _]) do
+    api_key = get_api_key()
+    response = curl_get(api_key, "/snapshots/#{snapshot_id}")
+    IO.puts(response)
+  end
+
+  defp snapshot_command(["--delete", snapshot_id | _]) do
+    api_key = get_api_key()
+    curl_delete(api_key, "/snapshots/#{snapshot_id}")
+    IO.puts("#{@green}Snapshot deleted: #{snapshot_id}#{@reset}")
+  end
+
+  defp snapshot_command(["--clone", snapshot_id | rest]) do
+    api_key = get_api_key()
+    clone_type = get_opt(rest, "--type", nil, nil)
+    name = get_opt(rest, "--name", nil, nil)
+    shell = get_opt(rest, "--shell", nil, nil)
+    ports = get_opt(rest, "--ports", nil, nil)
+
+    if !clone_type do
+      IO.puts(:stderr, "#{@red}Error: --type required (session or service)#{@reset}")
+      System.halt(1)
+    end
+
+    type_json = "\"type\":\"#{clone_type}\""
+    name_json = if name, do: ",\"name\":\"#{escape_json(name)}\"", else: ""
+    shell_json = if shell, do: ",\"shell\":\"#{shell}\"", else: ""
+    ports_json = if ports, do: ",\"ports\":[#{ports}]", else: ""
+    json = "{#{type_json}#{name_json}#{shell_json}#{ports_json}}"
+
+    response = curl_post(api_key, "/snapshots/#{snapshot_id}/clone", json)
+    IO.puts("#{@green}Created from snapshot#{@reset}")
+    IO.puts(response)
+  end
+
+  defp snapshot_command(_) do
+    IO.puts(:stderr, "Error: Use --list, --info ID, --delete ID, or --clone ID --type TYPE")
+    System.halt(1)
   end
 
   # Key command

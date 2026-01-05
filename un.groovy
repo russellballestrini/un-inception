@@ -74,6 +74,11 @@ class Args {
     Boolean sessionList = false
     String sessionShell = null
     String sessionKill = null
+    String sessionSnapshot = null
+    String sessionRestore = null
+    String sessionFrom = null
+    String sessionSnapshotName = null
+    Boolean sessionHot = false
     Boolean serviceList = false
     String serviceName = null
     String servicePorts = null
@@ -90,6 +95,19 @@ class Args {
     String serviceCommand = null
     String serviceDumpBootstrap = null
     String serviceDumpFile = null
+    String serviceSnapshot = null
+    String serviceRestore = null
+    String serviceFrom = null
+    String serviceSnapshotName = null
+    Boolean serviceHot = false
+    Boolean snapshotList = false
+    String snapshotInfo = null
+    String snapshotDelete = null
+    String snapshotClone = null
+    String snapshotType = null
+    String snapshotName = null
+    String snapshotShell = null
+    String snapshotPorts = null
     Boolean keyExtend = false
 }
 
@@ -288,6 +306,30 @@ def cmdExecute(args) {
 def cmdSession(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
+    if (args.sessionSnapshot) {
+        def json = "{"
+        if (args.sessionSnapshotName) {
+            json += "\"name\":\"${args.sessionSnapshotName.replace('\\', '\\\\').replace('"', '\\"')}\""
+        }
+        if (args.sessionHot) {
+            if (args.sessionSnapshotName) json += ","
+            json += "\"hot\":true"
+        }
+        json += "}"
+        def output = apiRequest("/sessions/${args.sessionSnapshot}/snapshot", 'POST', json, publicKey, secretKey)
+        println("${GREEN}Snapshot created${RESET}")
+        println(output)
+        return
+    }
+
+    if (args.sessionRestore) {
+        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        def output = apiRequest("/snapshots/${args.sessionRestore}/restore", 'POST', '{}', publicKey, secretKey)
+        println("${GREEN}Session restored from snapshot${RESET}")
+        println(output)
+        return
+    }
+
     if (args.sessionList) {
         def output = apiRequest('/sessions', 'GET', null, publicKey, secretKey)
         println("%-40s %-10s %-10s %s".format("ID", "Shell", "Status", "Created"))
@@ -349,6 +391,53 @@ def openBrowser(url) {
     } catch (Exception e) {
         System.err.println("${RED}Error opening browser: ${e.message}${RESET}")
     }
+}
+
+def cmdSnapshot(args) {
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    if (args.snapshotList) {
+        def output = apiRequest('/snapshots', 'GET', null, publicKey, secretKey)
+        println(output)
+        return
+    }
+
+    if (args.snapshotInfo) {
+        def output = apiRequest("/snapshots/${args.snapshotInfo}", 'GET', null, publicKey, secretKey)
+        println(output)
+        return
+    }
+
+    if (args.snapshotDelete) {
+        apiRequest("/snapshots/${args.snapshotDelete}", 'DELETE', null, publicKey, secretKey)
+        println("${GREEN}Snapshot deleted: ${args.snapshotDelete}${RESET}")
+        return
+    }
+
+    if (args.snapshotClone) {
+        if (!args.snapshotType) {
+            System.err.println("${RED}Error: --type required (session or service)${RESET}")
+            System.exit(1)
+        }
+        def json = "{\"type\":\"${args.snapshotType}\""
+        if (args.snapshotName) {
+            json += ",\"name\":\"${args.snapshotName.replace('\\', '\\\\').replace('"', '\\"')}\""
+        }
+        if (args.snapshotShell) {
+            json += ",\"shell\":\"${args.snapshotShell}\""
+        }
+        if (args.snapshotPorts) {
+            json += ",\"ports\":[${args.snapshotPorts}]"
+        }
+        json += "}"
+        def output = apiRequest("/snapshots/${args.snapshotClone}/clone", 'POST', json, publicKey, secretKey)
+        println("${GREEN}Created from snapshot${RESET}")
+        println(output)
+        return
+    }
+
+    System.err.println("Error: Use --list, --info ID, --delete ID, or --clone ID --type TYPE")
+    System.exit(1)
 }
 
 def cmdKey(args) {
@@ -434,6 +523,30 @@ def cmdKey(args) {
 
 def cmdService(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    if (args.serviceSnapshot) {
+        def json = "{"
+        if (args.serviceSnapshotName) {
+            json += "\"name\":\"${args.serviceSnapshotName.replace('\\', '\\\\').replace('"', '\\"')}\""
+        }
+        if (args.serviceHot) {
+            if (args.serviceSnapshotName) json += ","
+            json += "\"hot\":true"
+        }
+        json += "}"
+        def output = apiRequest("/services/${args.serviceSnapshot}/snapshot", 'POST', json, publicKey, secretKey)
+        println("${GREEN}Snapshot created${RESET}")
+        println(output)
+        return
+    }
+
+    if (args.serviceRestore) {
+        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        def output = apiRequest("/snapshots/${args.serviceRestore}/restore", 'POST', '{}', publicKey, secretKey)
+        println("${GREEN}Service restored from snapshot${RESET}")
+        println(output)
+        return
+    }
 
     if (args.serviceList) {
         def output = apiRequest('/services', 'GET', null, publicKey, secretKey)
@@ -619,6 +732,9 @@ def parseArgs(argv) {
             case 'service':
                 args.command = 'service'
                 break
+            case 'snapshot':
+                args.command = 'snapshot'
+                break
             case 'key':
                 args.command = 'key'
                 break
@@ -662,23 +778,57 @@ def parseArgs(argv) {
             case '--kill':
                 args.sessionKill = argv[++i]
                 break
-            case '--name':
-                args.serviceName = argv[++i]
+            case '--snapshot':
+                if (args.command == 'session') args.sessionSnapshot = argv[++i]
+                else if (args.command == 'service') args.serviceSnapshot = argv[++i]
                 break
-            case '--ports':
-                args.servicePorts = argv[++i]
+            case '--restore':
+                if (args.command == 'session') args.sessionRestore = argv[++i]
+                else if (args.command == 'service') args.serviceRestore = argv[++i]
+                break
+            case '--from':
+                if (args.command == 'session') args.sessionFrom = argv[++i]
+                else if (args.command == 'service') args.serviceFrom = argv[++i]
+                break
+            case '--snapshot-name':
+                if (args.command == 'session') args.sessionSnapshotName = argv[++i]
+                else if (args.command == 'service') args.serviceSnapshotName = argv[++i]
+                break
+            case '--hot':
+                if (args.command == 'session') args.sessionHot = true
+                else if (args.command == 'service') args.serviceHot = true
+                break
+            case '--info':
+                if (args.command == 'snapshot') args.snapshotInfo = argv[++i]
+                else args.serviceInfo = argv[++i]
+                break
+            case '--delete':
+                if (args.command == 'snapshot') args.snapshotDelete = argv[++i]
+                break
+            case '--clone':
+                args.snapshotClone = argv[++i]
                 break
             case '--type':
-                args.serviceType = argv[++i]
+                if (args.command == 'snapshot') args.snapshotType = argv[++i]
+                else args.serviceType = argv[++i]
+                break
+            case '--name':
+                if (args.command == 'snapshot') args.snapshotName = argv[++i]
+                else args.serviceName = argv[++i]
+                break
+            case '--shell':
+                if (args.command == 'snapshot') args.snapshotShell = argv[++i]
+                else args.sessionShell = argv[++i]
+                break
+            case '--ports':
+                if (args.command == 'snapshot') args.snapshotPorts = argv[++i]
+                else args.servicePorts = argv[++i]
                 break
             case '--bootstrap':
                 args.serviceBootstrap = argv[++i]
                 break
             case '--bootstrap-file':
                 args.serviceBootstrapFile = argv[++i]
-                break
-            case '--info':
-                args.serviceInfo = argv[++i]
                 break
             case '--logs':
                 args.serviceLogs = argv[++i]
@@ -774,6 +924,8 @@ try {
         cmdSession(args)
     } else if (args.command == 'service') {
         cmdService(args)
+    } else if (args.command == 'snapshot') {
+        cmdSnapshot(args)
     } else if (args.command == 'key') {
         cmdKey(args)
     } else if (args.sourceFile) {

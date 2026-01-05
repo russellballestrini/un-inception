@@ -348,6 +348,11 @@ cmd_session() {
     local vcpu=""
     local api_key="${UNSANDBOX_API_KEY:-}"
     local -a input_files=()
+    local snapshot=""
+    local restore=""
+    local from_snapshot=""
+    local snapshot_name=""
+    local hot=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -377,6 +382,26 @@ cmd_session() {
                 ;;
             --screen)
                 screen=true
+                shift
+                ;;
+            --snapshot)
+                snapshot="$2"
+                shift 2
+                ;;
+            --restore)
+                restore="$2"
+                shift 2
+                ;;
+            --from)
+                from_snapshot="$2"
+                shift 2
+                ;;
+            --snapshot-name)
+                snapshot_name="$2"
+                shift 2
+                ;;
+            --hot)
+                hot=true
                 shift
                 ;;
             -f)
@@ -423,6 +448,26 @@ cmd_session() {
     if [[ -n "$kill" ]]; then
         api_request "/sessions/$kill" "DELETE" "" "$api_key" > /dev/null
         echo -e "${GREEN}Session terminated: $kill${RESET}"
+        return
+    fi
+
+    if [[ -n "$snapshot" ]]; then
+        local payload=$(jq -n --arg name "$snapshot_name" --argjson hot "$hot" '{name: $name, hot: $hot}')
+        echo -e "${YELLOW}Creating snapshot of session $snapshot...${RESET}"
+        local result=$(api_request "/sessions/$snapshot/snapshot" "POST" "$payload" "$api_key")
+        local snapshot_id=$(echo "$result" | jq -r '.id // "N/A"')
+        echo -e "${GREEN}Snapshot created successfully${RESET}"
+        echo "Snapshot ID: $snapshot_id"
+        return
+    fi
+
+    if [[ -n "$restore" ]]; then
+        # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        echo -e "${YELLOW}Restoring from snapshot $restore...${RESET}"
+        local result=$(api_request "/snapshots/$restore/restore" "POST" "{}" "$api_key")
+        echo -e "${GREEN}Session restored from snapshot${RESET}"
+        local new_id=$(echo "$result" | jq -r '.session_id // empty')
+        [[ -n "$new_id" ]] && echo "New session ID: $new_id"
         return
     fi
 
@@ -483,6 +528,11 @@ cmd_service() {
     local vcpu=""
     local api_key="${UNSANDBOX_API_KEY:-}"
     local -a input_files=()
+    local snapshot=""
+    local restore=""
+    local from_snapshot=""
+    local snapshot_name=""
+    local hot=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -558,6 +608,26 @@ cmd_service() {
                 dump_file="$2"
                 shift 2
                 ;;
+            --snapshot)
+                snapshot="$2"
+                shift 2
+                ;;
+            --restore)
+                restore="$2"
+                shift 2
+                ;;
+            --from)
+                from_snapshot="$2"
+                shift 2
+                ;;
+            --snapshot-name)
+                snapshot_name="$2"
+                shift 2
+                ;;
+            --hot)
+                hot=true
+                shift
+                ;;
             -n)
                 network="$2"
                 shift 2
@@ -592,6 +662,26 @@ cmd_service() {
                     printf "%-20s %-15s %-10s %-15s %s\n" "$id" "$name" "$status" "$ports" "$domains"
                 done
         fi
+        return
+    fi
+
+    if [[ -n "$snapshot" ]]; then
+        local payload=$(jq -n --arg name "$snapshot_name" --argjson hot "$hot" '{name: $name, hot: $hot}')
+        echo -e "${YELLOW}Creating snapshot of service $snapshot...${RESET}"
+        local result=$(api_request "/services/$snapshot/snapshot" "POST" "$payload" "$api_key")
+        local snapshot_id=$(echo "$result" | jq -r '.id // "N/A"')
+        echo -e "${GREEN}Snapshot created successfully${RESET}"
+        echo "Snapshot ID: $snapshot_id"
+        return
+    fi
+
+    if [[ -n "$restore" ]]; then
+        # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        echo -e "${YELLOW}Restoring from snapshot $restore...${RESET}"
+        local result=$(api_request "/snapshots/$restore/restore" "POST" "{}" "$api_key")
+        echo -e "${GREEN}Service restored from snapshot${RESET}"
+        local new_id=$(echo "$result" | jq -r '.service_id // empty')
+        [[ -n "$new_id" ]] && echo "New service ID: $new_id"
         return
     fi
 
@@ -725,6 +815,116 @@ cmd_service() {
     fi
 
     echo -e "${RED}Error: Specify --name to create a service, or use --list, --info, etc.${RESET}" >&2
+    exit 1
+}
+
+cmd_snapshot() {
+    local api_key="${UNSANDBOX_API_KEY:-}"
+    local list=false
+    local info=""
+    local delete=""
+    local clone=""
+    local clone_type=""
+    local clone_name=""
+    local clone_shell=""
+    local clone_ports=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -l|--list)
+                list=true
+                shift
+                ;;
+            --info)
+                info="$2"
+                shift 2
+                ;;
+            --delete)
+                delete="$2"
+                shift 2
+                ;;
+            --clone)
+                clone="$2"
+                shift 2
+                ;;
+            --type)
+                clone_type="$2"
+                shift 2
+                ;;
+            --name)
+                clone_name="$2"
+                shift 2
+                ;;
+            --shell)
+                clone_shell="$2"
+                shift 2
+                ;;
+            --ports)
+                clone_ports="$2"
+                shift 2
+                ;;
+            -k)
+                api_key="$2"
+                shift 2
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${RESET}" >&2
+                exit 1
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if [[ "$list" == true ]]; then
+        local result=$(api_request "/snapshots" "GET" "" "$api_key")
+        echo "$result" | jq '.'
+        return
+    fi
+
+    if [[ -n "$info" ]]; then
+        local result=$(api_request "/snapshots/$info" "GET" "" "$api_key")
+        echo "$result" | jq '.'
+        return
+    fi
+
+    if [[ -n "$delete" ]]; then
+        api_request "/snapshots/$delete" "DELETE" "" "$api_key" > /dev/null
+        echo -e "${GREEN}Snapshot deleted successfully${RESET}"
+        return
+    fi
+
+    if [[ -n "$clone" ]]; then
+        if [[ -z "$clone_type" ]]; then
+            echo -e "${RED}Error: --type required with --clone (session or service)${RESET}" >&2
+            exit 1
+        fi
+
+        local payload=$(jq -n --arg type "$clone_type" '{type: $type}')
+        [[ -n "$clone_name" ]] && payload=$(echo "$payload" | jq --arg n "$clone_name" '. + {name: $n}')
+        [[ -n "$clone_shell" ]] && payload=$(echo "$payload" | jq --arg s "$clone_shell" '. + {shell: $s}')
+        if [[ -n "$clone_ports" ]]; then
+            local ports_json="[$(echo "$clone_ports" | sed 's/,/,/g')]"
+            payload=$(echo "$payload" | jq --argjson p "$ports_json" '. + {ports: $p}')
+        fi
+
+        echo -e "${YELLOW}Cloning snapshot $clone to create new $clone_type...${RESET}"
+        local result=$(api_request "/snapshots/$clone/clone" "POST" "$payload" "$api_key")
+
+        if [[ "$clone_type" == "session" ]]; then
+            local session_id=$(echo "$result" | jq -r '.session_id // "N/A"')
+            echo -e "${GREEN}Session created from snapshot${RESET}"
+            echo "Session ID: $session_id"
+        else
+            local service_id=$(echo "$result" | jq -r '.service_id // "N/A"')
+            echo -e "${GREEN}Service created from snapshot${RESET}"
+            echo "Service ID: $service_id"
+        fi
+        return
+    fi
+
+    echo -e "${RED}Error: Specify --list, --info, --delete, or --clone${RESET}" >&2
     exit 1
 }
 
@@ -884,6 +1084,7 @@ Usage:
   $0 [options] <source_file>
   $0 session [options]
   $0 service [options]
+  $0 snapshot [options]
   $0 key [options]
 
 Execute options:
@@ -903,6 +1104,10 @@ Session options:
   --audit          Record session
   --tmux           Enable tmux persistence
   --screen         Enable screen persistence
+  --snapshot SESSION_ID  Create snapshot of session
+  --restore SNAPSHOT_ID  Restore from snapshot ID
+  --snapshot-name NAME  Optional name for snapshot
+  --hot            Take snapshot without freezing (live snapshot)
 
 Service options:
   --name NAME      Service name
@@ -922,6 +1127,20 @@ Service options:
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script
   --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
+  --snapshot SERVICE_ID  Create snapshot of service
+  --restore SNAPSHOT_ID  Restore from snapshot ID
+  --snapshot-name NAME  Optional name for snapshot
+  --hot            Take snapshot without freezing (live snapshot)
+
+Snapshot options:
+  -l, --list       List all snapshots
+  --info ID        Get snapshot details
+  --delete ID      Delete a snapshot
+  --clone ID       Clone snapshot to new session/service (--type required)
+  --type TYPE      Type for clone: session or service
+  --name NAME      Name for cloned session/service
+  --shell NAME     Shell for cloned session
+  --ports PORTS    Ports for cloned service
 
 Key options:
   -k KEY           API key to validate
@@ -942,6 +1161,9 @@ if [[ "$1" == "session" ]]; then
 elif [[ "$1" == "service" ]]; then
     shift
     cmd_service "$@"
+elif [[ "$1" == "snapshot" ]]; then
+    shift
+    cmd_snapshot "$@"
 elif [[ "$1" == "key" ]]; then
     shift
     cmd_key "$@"

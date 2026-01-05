@@ -296,6 +296,28 @@ def cmd_session(args):
         print(f"{GREEN}Session terminated: {args.kill}{RESET}")
         return
 
+    if args.snapshot:
+        payload = {}
+        if args.snapshot_name:
+            payload["name"] = args.snapshot_name
+        if args.hot:
+            payload["hot"] = True
+
+        print(f"{YELLOW}Creating snapshot of session {args.snapshot}...{RESET}", file=sys.stderr)
+        result = api_request(f"/sessions/{args.snapshot}/snapshot", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Snapshot created successfully{RESET}")
+        print(f"Snapshot ID: {result.get('id', 'N/A')}")
+        return
+
+    if args.restore:
+        # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        print(f"{YELLOW}Restoring from snapshot {args.restore}...{RESET}", file=sys.stderr)
+        result = api_request(f"/snapshots/{args.restore}/restore", method="POST", public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Session restored from snapshot{RESET}")
+        if result.get('session_id'):
+            print(f"New session ID: {result.get('session_id')}")
+        return
+
     if args.attach:
         print(f"{YELLOW}Attaching to session {args.attach}...{RESET}")
         print(f"{YELLOW}(Interactive sessions require WebSocket - use un2 for full support){RESET}")
@@ -420,6 +442,68 @@ def cmd_key(args):
     validate_key(public_key, secret_key, extend=args.extend)
 
 
+def cmd_snapshot(args):
+    """Manage snapshots"""
+    public_key, secret_key = get_api_keys(args.api_key)
+
+    if args.list:
+        result = api_request("/snapshots", public_key=public_key, secret_key=secret_key)
+        snapshots = result.get("snapshots", [])
+        if not snapshots:
+            print("No snapshots found")
+        else:
+            print(f"{'ID':<40} {'Name':<20} {'Type':<12} {'Source ID':<30} {'Size':<10}")
+            for s in snapshots:
+                print(f"{s.get('id', 'N/A'):<40} {s.get('name', '-'):<20} {s.get('source_type', 'N/A'):<12} {s.get('source_id', 'N/A'):<30} {s.get('size', 'N/A'):<10}")
+        return
+
+    if args.info:
+        result = api_request(f"/snapshots/{args.info}", public_key=public_key, secret_key=secret_key)
+        print(f"{BLUE}Snapshot Details{RESET}\n")
+        print(f"Snapshot ID: {result.get('id', 'N/A')}")
+        print(f"Name: {result.get('name', '-')}")
+        print(f"Source Type: {result.get('source_type', 'N/A')}")
+        print(f"Source ID: {result.get('source_id', 'N/A')}")
+        print(f"Size: {result.get('size', 'N/A')}")
+        print(f"Created: {result.get('created_at', 'N/A')}")
+        print(f"Hot Snapshot: {result.get('hot', 'N/A')}")
+        return
+
+    if args.delete:
+        result = api_request(f"/snapshots/{args.delete}", method="DELETE", public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Snapshot deleted successfully{RESET}")
+        return
+
+    if args.clone:
+        if not args.type:
+            print(f"{RED}Error: --type required for --clone (session or service){RESET}", file=sys.stderr)
+            sys.exit(1)
+        if args.type not in ["session", "service"]:
+            print(f"{RED}Error: --type must be 'session' or 'service'{RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        payload = {"type": args.type}
+        if args.name:
+            payload["name"] = args.name
+        if args.shell:
+            payload["shell"] = args.shell
+        if args.ports:
+            payload["ports"] = [int(p) for p in args.ports.split(',')]
+
+        result = api_request(f"/snapshots/{args.clone}/clone", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
+
+        if args.type == "session":
+            print(f"{GREEN}Session created from snapshot{RESET}")
+            print(f"Session ID: {result.get('id', 'N/A')}")
+        else:
+            print(f"{GREEN}Service created from snapshot{RESET}")
+            print(f"Service ID: {result.get('id', 'N/A')}")
+        return
+
+    print(f"{RED}Error: Specify --list, --info ID, --delete ID, or --clone ID --type TYPE{RESET}", file=sys.stderr)
+    sys.exit(1)
+
+
 def cmd_service(args):
     """Manage persistent services"""
     public_key, secret_key = get_api_keys(args.api_key)
@@ -465,6 +549,28 @@ def cmd_service(args):
     if args.destroy:
         result = api_request(f"/services/{args.destroy}", method="DELETE", public_key=public_key, secret_key=secret_key)
         print(f"{GREEN}Service destroyed: {args.destroy}{RESET}")
+        return
+
+    if args.snapshot:
+        payload = {}
+        if args.snapshot_name:
+            payload["name"] = args.snapshot_name
+        if args.hot:
+            payload["hot"] = True
+
+        print(f"{YELLOW}Creating snapshot of service {args.snapshot}...{RESET}", file=sys.stderr)
+        result = api_request(f"/services/{args.snapshot}/snapshot", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Snapshot created successfully{RESET}")
+        print(f"Snapshot ID: {result.get('id', 'N/A')}")
+        return
+
+    if args.restore:
+        # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        print(f"{YELLOW}Restoring from snapshot {args.restore}...{RESET}", file=sys.stderr)
+        result = api_request(f"/snapshots/{args.restore}/restore", method="POST", public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Service restored from snapshot{RESET}")
+        if result.get('service_id'):
+            print(f"New service ID: {result.get('service_id')}")
         return
 
     if args.execute:
@@ -586,6 +692,10 @@ Examples:
     session_parser.add_argument("-l", "--list", action="store_true", help="List active sessions")
     session_parser.add_argument("--attach", metavar="ID", help="Reconnect to session")
     session_parser.add_argument("--kill", metavar="ID", help="Terminate session")
+    session_parser.add_argument("--snapshot", metavar="SESSION_ID", help="Create snapshot of session")
+    session_parser.add_argument("--restore", metavar="SNAPSHOT_ID", help="Restore from snapshot ID")
+    session_parser.add_argument("--snapshot-name", metavar="NAME", help="Name for snapshot")
+    session_parser.add_argument("--hot", action="store_true", help="Hot snapshot (no freeze)")
     session_parser.add_argument("--audit", action="store_true", help="Record session")
     session_parser.add_argument("--tmux", action="store_true", help="Enable tmux persistence")
     session_parser.add_argument("--screen", action="store_true", help="Enable screen persistence")
@@ -610,6 +720,10 @@ Examples:
     service_parser.add_argument("--freeze", metavar="ID", help="Freeze service")
     service_parser.add_argument("--unfreeze", metavar="ID", help="Unfreeze service")
     service_parser.add_argument("--destroy", metavar="ID", help="Destroy service")
+    service_parser.add_argument("--snapshot", metavar="SERVICE_ID", help="Create snapshot of service")
+    service_parser.add_argument("--restore", metavar="SNAPSHOT_ID", help="Restore from snapshot ID")
+    service_parser.add_argument("--snapshot-name", metavar="NAME", help="Name for snapshot")
+    service_parser.add_argument("--hot", action="store_true", help="Hot snapshot (no freeze)")
     service_parser.add_argument("--execute", metavar="ID", help="Execute command in service")
     service_parser.add_argument("--command", help="Command to execute (with --execute)")
     service_parser.add_argument("--dump-bootstrap", metavar="ID", help="Dump bootstrap script")
@@ -617,6 +731,18 @@ Examples:
     service_parser.add_argument("-n", "--network", choices=["zerotrust", "semitrusted"])
     service_parser.add_argument("-v", "--vcpu", type=int, choices=range(1, 9))
     service_parser.add_argument("-k", "--api-key")
+
+    # Snapshot subcommand
+    snapshot_parser = subparsers.add_parser("snapshot", help="Manage container snapshots")
+    snapshot_parser.add_argument("-l", "--list", action="store_true", help="List all snapshots")
+    snapshot_parser.add_argument("--info", metavar="ID", help="Get snapshot details")
+    snapshot_parser.add_argument("--delete", metavar="ID", help="Delete a snapshot")
+    snapshot_parser.add_argument("--clone", metavar="ID", help="Clone snapshot to new session/service")
+    snapshot_parser.add_argument("--type", help="Type for clone (session or service)")
+    snapshot_parser.add_argument("--name", help="Name for cloned session/service")
+    snapshot_parser.add_argument("--shell", help="Shell for cloned session")
+    snapshot_parser.add_argument("--ports", help="Ports for cloned service")
+    snapshot_parser.add_argument("-k", "--api-key")
 
     # Execute options (default command)
     parser.add_argument("source_file", nargs="?", help="Source file to execute")
@@ -634,6 +760,8 @@ Examples:
         cmd_session(args)
     elif args.command == "service":
         cmd_service(args)
+    elif args.command == "snapshot":
+        cmd_snapshot(args)
     elif args.source_file:
         cmd_execute(args)
     else:

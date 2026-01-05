@@ -46,6 +46,7 @@ main([]) ->
     io:format("Usage: un.erl [options] <source_file>~n"),
     io:format("       un.erl session [options]~n"),
     io:format("       un.erl service [options]~n"),
+    io:format("       un.erl snapshot [options]~n"),
     io:format("       un.erl key [options]~n"),
     halt(1);
 
@@ -54,6 +55,9 @@ main(["session" | Rest]) ->
 
 main(["service" | Rest]) ->
     service_command(Rest);
+
+main(["snapshot" | Rest]) ->
+    snapshot_command(Rest);
 
 main(["key" | Rest]) ->
     key_command(Rest);
@@ -115,12 +119,38 @@ session_command(Args) ->
     io:format("\033[33mSession created (WebSocket required)\033[0m~n"),
     io:format("~s~n", [Response]).
 
+%% Session snapshot commands
+session_command(["--snapshot", SessionId | Rest]) ->
+    ApiKey = get_api_key(),
+    Name = get_snapshot_name(Rest),
+    Hot = has_hot_flag(Rest),
+    Json = build_snapshot_json(Name, Hot),
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/sessions/" ++ SessionId ++ "/snapshot", TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[32mSnapshot created\033[0m~n"),
+    io:format("~s~n", [Response]);
+
+session_command(["--restore", SnapshotId | _Rest]) ->
+    % --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    ApiKey = get_api_key(),
+    TmpFile = write_temp_file("{}"),
+    Response = curl_post(ApiKey, "/snapshots/" ++ SnapshotId ++ "/restore", TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[32mSession restored from snapshot\033[0m~n"),
+    io:format("~s~n", [Response]);
+
 validate_session_args([]) -> ok;
 validate_session_args(["--shell", _ | Rest]) -> validate_session_args(Rest);
 validate_session_args(["-s", _ | Rest]) -> validate_session_args(Rest);
 validate_session_args(["-f", _ | Rest]) -> validate_session_args(Rest);
 validate_session_args(["-n", _ | Rest]) -> validate_session_args(Rest);
 validate_session_args(["-v", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["--snapshot", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["--restore", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["--from", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["--snapshot-name", _ | Rest]) -> validate_session_args(Rest);
+validate_session_args(["--hot" | Rest]) -> validate_session_args(Rest);
 validate_session_args([Arg | _]) ->
     case Arg of
         [$- | _] ->
@@ -130,6 +160,23 @@ validate_session_args([Arg | _]) ->
         _ ->
             validate_session_args([])
     end.
+
+get_snapshot_name([]) -> undefined;
+get_snapshot_name(["--snapshot-name", Name | _]) -> Name;
+get_snapshot_name([_ | Rest]) -> get_snapshot_name(Rest).
+
+get_from_snapshot([]) -> undefined;
+get_from_snapshot(["--from", SnapshotId | _]) -> SnapshotId;
+get_from_snapshot([_ | Rest]) -> get_from_snapshot(Rest).
+
+has_hot_flag([]) -> false;
+has_hot_flag(["--hot" | _]) -> true;
+has_hot_flag([_ | Rest]) -> has_hot_flag(Rest).
+
+build_snapshot_json(undefined, false) -> "{}";
+build_snapshot_json(undefined, true) -> "{\"hot\":true}";
+build_snapshot_json(Name, false) -> "{\"name\":\"" ++ escape_json(Name) ++ "\"}";
+build_snapshot_json(Name, true) -> "{\"name\":\"" ++ escape_json(Name) ++ "\",\"hot\":true}".
 
 %% Service command
 service_command(["--list" | _]) ->
@@ -209,6 +256,27 @@ service_command(["--dump-bootstrap", ServiceId | _]) ->
             io:format("~s", [Script])
     end;
 
+%% Service snapshot commands
+service_command(["--snapshot", ServiceId | Rest]) ->
+    ApiKey = get_api_key(),
+    Name = get_snapshot_name(Rest),
+    Hot = has_hot_flag(Rest),
+    Json = build_snapshot_json(Name, Hot),
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/snapshot", TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[32mSnapshot created\033[0m~n"),
+    io:format("~s~n", [Response]);
+
+service_command(["--restore", SnapshotId | _Rest]) ->
+    % --restore takes snapshot ID directly, calls /snapshots/:id/restore
+    ApiKey = get_api_key(),
+    TmpFile = write_temp_file("{}"),
+    Response = curl_post(ApiKey, "/snapshots/" ++ SnapshotId ++ "/restore", TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[32mService restored from snapshot\033[0m~n"),
+    io:format("~s~n", [Response]);
+
 service_command(Args) ->
     case get_service_name(Args) of
         undefined ->
@@ -253,6 +321,76 @@ service_command(Args) ->
             io:format("\033[32mService created\033[0m~n"),
             io:format("~s~n", [Response])
     end.
+
+%% Snapshot command
+snapshot_command(["--list" | _]) ->
+    snapshot_command(["-l"]);
+snapshot_command(["-l" | _]) ->
+    ApiKey = get_api_key(),
+    Response = curl_get(ApiKey, "/snapshots"),
+    io:format("~s~n", [Response]);
+
+snapshot_command(["--info", SnapshotId | _]) ->
+    ApiKey = get_api_key(),
+    Response = curl_get(ApiKey, "/snapshots/" ++ SnapshotId),
+    io:format("~s~n", [Response]);
+
+snapshot_command(["--delete", SnapshotId | _]) ->
+    ApiKey = get_api_key(),
+    _ = curl_delete(ApiKey, "/snapshots/" ++ SnapshotId),
+    io:format("\033[32mSnapshot deleted: ~s\033[0m~n", [SnapshotId]);
+
+snapshot_command(["--clone", SnapshotId | Rest]) ->
+    ApiKey = get_api_key(),
+    Type = get_clone_type(Rest),
+    Name = get_clone_name(Rest),
+    Shell = get_clone_shell(Rest),
+    Ports = get_clone_ports(Rest),
+    Json = build_clone_json(Type, Name, Shell, Ports),
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/snapshots/" ++ SnapshotId ++ "/clone", TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[32mCreated from snapshot\033[0m~n"),
+    io:format("~s~n", [Response]);
+
+snapshot_command(_) ->
+    io:format(standard_error, "Error: Use --list, --info ID, --delete ID, or --clone ID --type TYPE~n", []),
+    halt(1).
+
+get_clone_type([]) -> undefined;
+get_clone_type(["--type", Type | _]) -> Type;
+get_clone_type([_ | Rest]) -> get_clone_type(Rest).
+
+get_clone_name([]) -> undefined;
+get_clone_name(["--name", Name | _]) -> Name;
+get_clone_name([_ | Rest]) -> get_clone_name(Rest).
+
+get_clone_shell([]) -> undefined;
+get_clone_shell(["--shell", Shell | _]) -> Shell;
+get_clone_shell([_ | Rest]) -> get_clone_shell(Rest).
+
+get_clone_ports([]) -> undefined;
+get_clone_ports(["--ports", Ports | _]) -> Ports;
+get_clone_ports([_ | Rest]) -> get_clone_ports(Rest).
+
+build_clone_json(undefined, _, _, _) ->
+    io:format(standard_error, "\033[31mError: --type required (session or service)\033[0m~n"),
+    halt(1);
+build_clone_json(Type, Name, Shell, Ports) ->
+    TypeJson = "{\"type\":\"" ++ Type ++ "\"",
+    NameJson = case Name of
+        undefined -> "";
+        N -> ",\"name\":\"" ++ escape_json(N) ++ "\""
+    end,
+    ShellJson = case Shell of
+        undefined -> "";
+        S -> ",\"shell\":\"" ++ S ++ "\""
+    end,
+    PortsJson = case Ports of
+        undefined -> "";
+        P -> ",\"ports\":[" ++ P ++ "]"
+    end,
+    TypeJson ++ NameJson ++ ShellJson ++ PortsJson ++ "}".
 
 %% Key command
 key_command(Args) ->

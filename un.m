@@ -454,6 +454,11 @@ void cmdSession(NSArray* args) {
     NSString* network = nil;
     int vcpu = 0;
     NSMutableArray* inputFiles = [NSMutableArray array];
+    NSString* snapshotId = nil;
+    NSString* restoreId = nil;
+    NSString* fromSnapshot = nil;
+    NSString* snapshotName = nil;
+    BOOL hotSnapshot = NO;
 
     // Parse arguments
     for (NSUInteger i = 0; i < [args count]; i++) {
@@ -462,6 +467,16 @@ void cmdSession(NSArray* args) {
             listMode = YES;
         } else if ([arg isEqualToString:@"--kill"] && i + 1 < [args count]) {
             killId = args[++i];
+        } else if ([arg isEqualToString:@"--snapshot"] && i + 1 < [args count]) {
+            snapshotId = args[++i];
+        } else if ([arg isEqualToString:@"--restore"] && i + 1 < [args count]) {
+            restoreId = args[++i];
+        } else if ([arg isEqualToString:@"--from"] && i + 1 < [args count]) {
+            fromSnapshot = args[++i];
+        } else if ([arg isEqualToString:@"--snapshot-name"] && i + 1 < [args count]) {
+            snapshotName = args[++i];
+        } else if ([arg isEqualToString:@"--hot"]) {
+            hotSnapshot = YES;
         } else if ([arg isEqualToString:@"--shell"] && i + 1 < [args count]) {
             shell = args[++i];
         } else if ([arg isEqualToString:@"-f"] && i + 1 < [args count]) {
@@ -495,6 +510,26 @@ void cmdSession(NSArray* args) {
         NSString* endpoint = [NSString stringWithFormat:@"/sessions/%@", killId];
         apiRequest(endpoint, @"DELETE", nil, publicKey, secretKey);
         printf("%sSession terminated: %s%s\n", [GREEN UTF8String], [killId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (snapshotId) {
+        fprintf(stderr, "Creating snapshot of session %s...\n", [snapshotId UTF8String]);
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        if (snapshotName) payload[@"name"] = snapshotName;
+        if (hotSnapshot) payload[@"hot"] = @YES;
+        NSString* endpoint = [NSString stringWithFormat:@"/sessions/%@/snapshot", snapshotId];
+        NSDictionary* result = apiRequest(endpoint, @"POST", payload, publicKey, secretKey);
+        printf("%sSnapshot created: %s%s\n", [GREEN UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (restoreId) {
+        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        fprintf(stderr, "Restoring from snapshot %s...\n", [restoreId UTF8String]);
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/restore", restoreId];
+        apiRequest(endpoint, @"POST", @{}, publicKey, secretKey);
+        printf("%sSession restored from snapshot%s\n", [GREEN UTF8String], [RESET UTF8String]);
         return;
     }
 
@@ -551,6 +586,11 @@ void cmdService(NSArray* args) {
     NSString* network = nil;
     int vcpu = 0;
     NSMutableArray* inputFiles = [NSMutableArray array];
+    NSString* snapshotId = nil;
+    NSString* restoreId = nil;
+    NSString* fromSnapshot = nil;
+    NSString* snapshotName = nil;
+    BOOL hotSnapshot = NO;
 
     // Parse arguments
     for (NSUInteger i = 0; i < [args count]; i++) {
@@ -571,6 +611,16 @@ void cmdService(NSArray* args) {
             dumpBootstrapId = args[++i];
         } else if ([arg isEqualToString:@"--dump-file"] && i + 1 < [args count]) {
             dumpFile = args[++i];
+        } else if ([arg isEqualToString:@"--snapshot"] && i + 1 < [args count]) {
+            snapshotId = args[++i];
+        } else if ([arg isEqualToString:@"--restore"] && i + 1 < [args count]) {
+            restoreId = args[++i];
+        } else if ([arg isEqualToString:@"--from"] && i + 1 < [args count]) {
+            fromSnapshot = args[++i];
+        } else if ([arg isEqualToString:@"--snapshot-name"] && i + 1 < [args count]) {
+            snapshotName = args[++i];
+        } else if ([arg isEqualToString:@"--hot"]) {
+            hotSnapshot = YES;
         } else if ([arg isEqualToString:@"--name"] && i + 1 < [args count]) {
             name = args[++i];
         } else if ([arg isEqualToString:@"--ports"] && i + 1 < [args count]) {
@@ -683,6 +733,26 @@ void cmdService(NSArray* args) {
         return;
     }
 
+    if (snapshotId) {
+        fprintf(stderr, "Creating snapshot of service %s...\n", [snapshotId UTF8String]);
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        if (snapshotName) payload[@"name"] = snapshotName;
+        if (hotSnapshot) payload[@"hot"] = @YES;
+        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/snapshot", snapshotId];
+        NSDictionary* result = apiRequest(endpoint, @"POST", payload, publicKey, secretKey);
+        printf("%sSnapshot created: %s%s\n", [GREEN UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (restoreId) {
+        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        fprintf(stderr, "Restoring from snapshot %s...\n", [restoreId UTF8String]);
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/restore", restoreId];
+        apiRequest(endpoint, @"POST", @{}, publicKey, secretKey);
+        printf("%sService restored from snapshot%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        return;
+    }
+
     // Create new service
     if (name) {
         NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{@"name": name}];
@@ -753,12 +823,93 @@ void cmdService(NSArray* args) {
     exit(1);
 }
 
+void cmdSnapshot(NSArray* args) {
+    NSString* publicKey, *secretKey;
+    getApiKeys(&publicKey, &secretKey);
+    BOOL listMode = NO;
+    NSString* infoId = nil;
+    NSString* deleteId = nil;
+    NSString* cloneId = nil;
+    NSString* cloneType = nil;
+    NSString* cloneName = nil;
+
+    for (NSUInteger i = 0; i < [args count]; i++) {
+        NSString* arg = args[i];
+        if ([arg isEqualToString:@"--list"] || [arg isEqualToString:@"-l"]) {
+            listMode = YES;
+        } else if ([arg isEqualToString:@"--info"] && i + 1 < [args count]) {
+            infoId = args[++i];
+        } else if ([arg isEqualToString:@"--delete"] && i + 1 < [args count]) {
+            deleteId = args[++i];
+        } else if ([arg isEqualToString:@"--clone"] && i + 1 < [args count]) {
+            cloneId = args[++i];
+        } else if ([arg isEqualToString:@"--type"] && i + 1 < [args count]) {
+            cloneType = args[++i];
+        } else if ([arg isEqualToString:@"--name"] && i + 1 < [args count]) {
+            cloneName = args[++i];
+        }
+    }
+
+    if (listMode) {
+        NSDictionary* result = apiRequest(@"/snapshots", @"GET", nil, publicKey, secretKey);
+        NSArray* snapshots = result[@"snapshots"];
+        if ([snapshots count] == 0) {
+            printf("No snapshots found\n");
+        } else {
+            printf("%-40s %-20s %-12s %-30s\n", "SNAPSHOT ID", "NAME", "SOURCE TYPE", "SOURCE ID");
+            for (NSDictionary* s in snapshots) {
+                printf("%-40s %-20s %-12s %-30s\n",
+                       [s[@"id"] UTF8String],
+                       [s[@"name"] UTF8String] ?: "-",
+                       [s[@"source_type"] UTF8String],
+                       [s[@"source_id"] UTF8String]);
+            }
+        }
+        return;
+    }
+
+    if (infoId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@", infoId];
+        NSDictionary* result = apiRequest(endpoint, @"GET", nil, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (deleteId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@", deleteId];
+        apiRequest(endpoint, @"DELETE", nil, publicKey, secretKey);
+        printf("%sSnapshot deleted successfully%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (cloneId) {
+        if (!cloneType) {
+            fprintf(stderr, "%sError: --type required with --clone (session or service)%s\n", [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{@"type": cloneType}];
+        if (cloneName) payload[@"name"] = cloneName;
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/clone", cloneId];
+        NSDictionary* result = apiRequest(endpoint, @"POST", payload, publicKey, secretKey);
+        printf("%s%s created from snapshot: %s%s\n", [GREEN UTF8String],
+               [cloneType UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    fprintf(stderr, "%sError: No snapshot action specified. Use --list, --info, --delete, or --clone%s\n",
+            [RED UTF8String], [RESET UTF8String]);
+    exit(1);
+}
+
 int main(int argc, const char* argv[]) {
     @autoreleasepool {
         if (argc < 2) {
             fprintf(stderr, "Usage: un.m [options] <source_file>\n");
             fprintf(stderr, "       un.m session [options]\n");
             fprintf(stderr, "       un.m service [options]\n");
+            fprintf(stderr, "       un.m snapshot [options]\n");
             fprintf(stderr, "       un.m key [options]\n");
             return 1;
         }
@@ -774,6 +925,8 @@ int main(int argc, const char* argv[]) {
             cmdSession([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else if ([firstArg isEqualToString:@"service"]) {
             cmdService([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"snapshot"]) {
+            cmdSnapshot([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else if ([firstArg isEqualToString:@"key"]) {
             cmdKey([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else {

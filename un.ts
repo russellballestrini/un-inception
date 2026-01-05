@@ -112,6 +112,19 @@ interface Args {
   execute: string | null;
   command_arg: string | null;
   extend: boolean;
+  snapshot: string | null;
+  restore: string | null;
+  from: string | null;
+  snapshotName: string | null;
+  hot: boolean;
+  deleteSnapshot: string | null;
+  clone: string | null;
+  cloneType: string | null;
+  cloneName: string | null;
+  cloneShell: string | null;
+  clonePorts: string | null;
+  dumpBootstrap: string | null;
+  dumpFile: string | null;
 }
 
 interface ApiKeys {

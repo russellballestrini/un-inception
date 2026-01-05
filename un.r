@@ -281,6 +281,30 @@ cmd_session <- function(args) {
         return()
     }
 
+    if (!is.null(args$snapshot_id)) {
+        payload <- list()
+        if (!is.null(args$snapshot_name)) {
+            payload$name <- args$snapshot_name
+        }
+        if (!is.null(args$hot) && args$hot) {
+            payload$hot <- TRUE
+        }
+
+        cat(sprintf("%sCreating snapshot of session %s...%s\n", YELLOW, args$snapshot_id, RESET), file = stderr())
+        result <- api_request(paste0("/sessions/", args$snapshot_id, "/snapshot"), public_key, secret_key, method = "POST", data = payload)
+        cat(sprintf("%sSnapshot created successfully%s\n", GREEN, RESET))
+        cat(sprintf("Snapshot ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        return()
+    }
+
+    if (!is.null(args$restore_id)) {
+        # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        cat(sprintf("%sRestoring from snapshot %s...%s\n", YELLOW, args$restore_id, RESET), file = stderr())
+        result <- api_request(paste0("/snapshots/", args$restore_id, "/restore"), public_key, secret_key, method = "POST", data = list())
+        cat(sprintf("%sSession restored from snapshot%s\n", GREEN, RESET))
+        return()
+    }
+
     # Create new session
     payload <- list(shell = "bash")
 
@@ -412,6 +436,86 @@ cmd_key <- function(args) {
     })
 }
 
+cmd_snapshot <- function(args) {
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
+
+    if (!is.null(args$list) && args$list) {
+        result <- api_request("/snapshots", public_key, secret_key)
+        snapshots <- if (!is.null(result$snapshots)) result$snapshots else list()
+        if (length(snapshots) == 0) {
+            cat("No snapshots found\n")
+        } else {
+            cat(sprintf("%-40s %-20s %-12s %-30s %s\n", "ID", "Name", "Type", "Source ID", "Size"))
+            for (s in snapshots) {
+                cat(sprintf("%-40s %-20s %-12s %-30s %s\n",
+                    if (!is.null(s$id)) s$id else "N/A",
+                    if (!is.null(s$name)) s$name else "-",
+                    if (!is.null(s$source_type)) s$source_type else "N/A",
+                    if (!is.null(s$source_id)) s$source_id else "N/A",
+                    if (!is.null(s$size)) s$size else "N/A"))
+            }
+        }
+        return()
+    }
+
+    if (!is.null(args$info)) {
+        result <- api_request(paste0("/snapshots/", args$info), public_key, secret_key)
+        cat(sprintf("%sSnapshot Details%s\n\n", BLUE, RESET))
+        cat(sprintf("Snapshot ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        cat(sprintf("Name: %s\n", if (!is.null(result$name)) result$name else "-"))
+        cat(sprintf("Source Type: %s\n", if (!is.null(result$source_type)) result$source_type else "N/A"))
+        cat(sprintf("Source ID: %s\n", if (!is.null(result$source_id)) result$source_id else "N/A"))
+        cat(sprintf("Size: %s\n", if (!is.null(result$size)) result$size else "N/A"))
+        cat(sprintf("Created: %s\n", if (!is.null(result$created_at)) result$created_at else "N/A"))
+        return()
+    }
+
+    if (!is.null(args$delete)) {
+        result <- api_request(paste0("/snapshots/", args$delete), public_key, secret_key, method = "DELETE")
+        cat(sprintf("%sSnapshot deleted successfully%s\n", GREEN, RESET))
+        return()
+    }
+
+    if (!is.null(args$clone)) {
+        if (is.null(args$type)) {
+            cat(sprintf("%sError: --type required for --clone (session or service)%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        if (!(args$type %in% c("session", "service"))) {
+            cat(sprintf("%sError: --type must be 'session' or 'service'%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+
+        payload <- list(type = args$type)
+        if (!is.null(args$clone_name)) {
+            payload$name <- args$clone_name
+        }
+        if (!is.null(args$shell)) {
+            payload$shell <- args$shell
+        }
+        if (!is.null(args$ports)) {
+            ports_vec <- as.integer(strsplit(args$ports, ",")[[1]])
+            payload$ports <- ports_vec
+        }
+
+        result <- api_request(paste0("/snapshots/", args$clone, "/clone"), public_key, secret_key, method = "POST", data = payload)
+
+        if (args$type == "session") {
+            cat(sprintf("%sSession created from snapshot%s\n", GREEN, RESET))
+            cat(sprintf("Session ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        } else {
+            cat(sprintf("%sService created from snapshot%s\n", GREEN, RESET))
+            cat(sprintf("Service ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        }
+        return()
+    }
+
+    cat(sprintf("%sError: Specify --list, --info ID, --delete ID, or --clone ID --type TYPE%s\n", RED, RESET), file = stderr())
+    quit(status = 1)
+}
+
 cmd_service <- function(args) {
     keys <- get_api_keys(args$api_key)
     public_key <- keys$public_key
@@ -464,6 +568,30 @@ cmd_service <- function(args) {
     if (!is.null(args$destroy)) {
         result <- api_request(paste0("/services/", args$destroy), public_key, secret_key, method = "DELETE")
         cat(sprintf("%sService destroyed: %s%s\n", GREEN, args$destroy, RESET))
+        return()
+    }
+
+    if (!is.null(args$snapshot_svc)) {
+        payload <- list()
+        if (!is.null(args$snapshot_name)) {
+            payload$name <- args$snapshot_name
+        }
+        if (!is.null(args$hot) && args$hot) {
+            payload$hot <- TRUE
+        }
+
+        cat(sprintf("%sCreating snapshot of service %s...%s\n", YELLOW, args$snapshot_svc, RESET), file = stderr())
+        result <- api_request(paste0("/services/", args$snapshot_svc, "/snapshot"), public_key, secret_key, method = "POST", data = payload)
+        cat(sprintf("%sSnapshot created successfully%s\n", GREEN, RESET))
+        cat(sprintf("Snapshot ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        return()
+    }
+
+    if (!is.null(args$restore_svc)) {
+        # --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        cat(sprintf("%sRestoring from snapshot %s...%s\n", YELLOW, args$restore_svc, RESET), file = stderr())
+        result <- api_request(paste0("/snapshots/", args$restore_svc, "/restore"), public_key, secret_key, method = "POST", data = list())
+        cat(sprintf("%sService restored from snapshot%s\n", GREEN, RESET))
         return()
     }
 
@@ -579,11 +707,22 @@ parse_args <- function() {
         command = NULL,
         list = FALSE,
         kill = NULL,
+        snapshot_id = NULL,
+        snapshot_svc = NULL,
+        restore_id = NULL,
+        restore_svc = NULL,
+        from_snapshot = NULL,
+        snapshot_name = NULL,
+        hot = FALSE,
         info = NULL,
         logs = NULL,
         sleep = NULL,
         wake = NULL,
         destroy = NULL,
+        delete = NULL,
+        clone = NULL,
+        clone_name = NULL,
+        shell = NULL,
         dump_bootstrap = NULL,
         dump_file = NULL,
         name = NULL,
@@ -608,6 +747,9 @@ parse_args <- function() {
             i <- i + 1
         } else if (arg == "key") {
             result$command <- "key"
+            i <- i + 1
+        } else if (arg == "snapshot") {
+            result$command <- "snapshot"
             i <- i + 1
         } else if (arg %in% c("-k", "--api-key")) {
             i <- i + 1
@@ -695,6 +837,45 @@ parse_args <- function() {
             i <- i + 1
             result$vcpu <- as.integer(args[i])
             i <- i + 1
+        } else if (arg == "--snapshot") {
+            i <- i + 1
+            if (result$command == "session") {
+                result$snapshot_id <- args[i]
+            } else if (result$command == "service") {
+                result$snapshot_svc <- args[i]
+            }
+            i <- i + 1
+        } else if (arg == "--restore") {
+            i <- i + 1
+            if (result$command == "session") {
+                result$restore_id <- args[i]
+            } else if (result$command == "service") {
+                result$restore_svc <- args[i]
+            }
+            i <- i + 1
+        } else if (arg == "--from") {
+            i <- i + 1
+            result$from_snapshot <- args[i]
+            i <- i + 1
+        } else if (arg == "--snapshot-name") {
+            i <- i + 1
+            result$snapshot_name <- args[i]
+            i <- i + 1
+        } else if (arg == "--hot") {
+            result$hot <- TRUE
+            i <- i + 1
+        } else if (arg == "--delete") {
+            i <- i + 1
+            result$delete <- args[i]
+            i <- i + 1
+        } else if (arg == "--clone") {
+            i <- i + 1
+            result$clone <- args[i]
+            i <- i + 1
+        } else if (arg == "--shell") {
+            i <- i + 1
+            result$shell <- args[i]
+            i <- i + 1
         } else if (arg == "--extend") {
             result$extend <- TRUE
             i <- i + 1
@@ -706,6 +887,7 @@ parse_args <- function() {
             cat("Usage: un.r [options] <source_file>\n", file = stderr())
             cat("       un.r session [options]\n", file = stderr())
             cat("       un.r service [options]\n", file = stderr())
+            cat("       un.r snapshot [options]\n", file = stderr())
             cat("       un.r key [options]\n", file = stderr())
             quit(status = 1)
         }
@@ -721,6 +903,8 @@ main <- function() {
         cmd_session(args)
     } else if (!is.null(args$command) && args$command == "service") {
         cmd_service(args)
+    } else if (!is.null(args$command) && args$command == "snapshot") {
+        cmd_snapshot(args)
     } else if (!is.null(args$command) && args$command == "key") {
         cmd_key(args)
     } else if (!is.null(args$source_file)) {
@@ -729,6 +913,7 @@ main <- function() {
         cat("Usage: un.r [options] <source_file>\n", file = stderr())
         cat("       un.r session [options]\n", file = stderr())
         cat("       un.r service [options]\n", file = stderr())
+        cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
         quit(status = 1)
     }

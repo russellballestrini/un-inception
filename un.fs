@@ -84,6 +84,11 @@ type Args = {
     mutable SessionList: bool
     mutable SessionShell: string option
     mutable SessionKill: string option
+    mutable SessionSnapshot: string option
+    mutable SessionRestore: string option
+    mutable SessionFrom: string option
+    mutable SessionSnapshotName: string option
+    mutable SessionHot: bool
     mutable ServiceList: bool
     mutable ServiceName: string option
     mutable ServicePorts: string option
@@ -100,6 +105,19 @@ type Args = {
     mutable ServiceCommand: string option
     mutable ServiceDumpBootstrap: string option
     mutable ServiceDumpFile: string option
+    mutable ServiceSnapshot: string option
+    mutable ServiceRestore: string option
+    mutable ServiceFrom: string option
+    mutable ServiceSnapshotName: string option
+    mutable ServiceHot: bool
+    mutable SnapshotList: bool
+    mutable SnapshotInfo: string option
+    mutable SnapshotDelete: string option
+    mutable SnapshotClone: string option
+    mutable SnapshotType: string option
+    mutable SnapshotName: string option
+    mutable SnapshotShell: string option
+    mutable SnapshotPorts: string option
     mutable KeyExtend: bool
 }
 
@@ -345,7 +363,21 @@ let cmdExecute (args: Args) =
 let cmdSession (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey
 
-    if args.SessionList then
+    if args.SessionSnapshot.IsSome then
+        let mutable payload = []
+        if args.SessionSnapshotName.IsSome then
+            payload <- payload @ [("name", box args.SessionSnapshotName.Value)]
+        if args.SessionHot then
+            payload <- payload @ [("hot", box true)]
+        let result = apiRequest (sprintf "/sessions/%s/snapshot" args.SessionSnapshot.Value) "POST" (Some payload) publicKey secretKey
+        printfn "%sSnapshot created%s" green reset
+        printfn "%s" (toJson (box result))
+    elif args.SessionRestore.IsSome then
+        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        let result = apiRequest (sprintf "/snapshots/%s/restore" args.SessionRestore.Value) "POST" None publicKey secretKey
+        printfn "%sSession restored from snapshot%s" green reset
+        printfn "%s" (toJson (box result))
+    elif args.SessionList then
         let result = apiRequest "/sessions" "GET" None publicKey secretKey
         printfn "%-40s %-10s %-10s %s" "ID" "Shell" "Status" "Created"
         printfn "No sessions (list parsing not implemented)"
@@ -465,10 +497,55 @@ let cmdKey (args: Args) =
         printfn "Reason: %s" errorMsg
         exit 1
 
+let cmdSnapshot (args: Args) =
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
+
+    if args.SnapshotList then
+        let result = apiRequest "/snapshots" "GET" None publicKey secretKey
+        printfn "%s" (toJson (box result))
+    elif args.SnapshotInfo.IsSome then
+        let result = apiRequest (sprintf "/snapshots/%s" args.SnapshotInfo.Value) "GET" None publicKey secretKey
+        printfn "%s" (toJson (box result))
+    elif args.SnapshotDelete.IsSome then
+        let result = apiRequest (sprintf "/snapshots/%s" args.SnapshotDelete.Value) "DELETE" None publicKey secretKey
+        printfn "%sSnapshot deleted: %s%s" green args.SnapshotDelete.Value reset
+    elif args.SnapshotClone.IsSome then
+        if args.SnapshotType.IsNone then
+            eprintfn "%sError: --type required (session or service)%s" red reset
+            exit 1
+        let mutable payload = [("type", box args.SnapshotType.Value)]
+        if args.SnapshotName.IsSome then
+            payload <- payload @ [("name", box args.SnapshotName.Value)]
+        if args.SnapshotShell.IsSome then
+            payload <- payload @ [("shell", box args.SnapshotShell.Value)]
+        if args.SnapshotPorts.IsSome then
+            let ports = args.SnapshotPorts.Value.Split(',') |> Array.map (fun p -> box (int (p.Trim())))
+            payload <- payload @ [("ports", box ports)]
+        let result = apiRequest (sprintf "/snapshots/%s/clone" args.SnapshotClone.Value) "POST" (Some payload) publicKey secretKey
+        printfn "%sCreated from snapshot%s" green reset
+        printfn "%s" (toJson (box result))
+    else
+        eprintfn "%sError: Use --list, --info ID, --delete ID, or --clone ID --type TYPE%s" red reset
+        exit 1
+
 let cmdService (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey
 
-    if args.ServiceList then
+    if args.ServiceSnapshot.IsSome then
+        let mutable payload = []
+        if args.ServiceSnapshotName.IsSome then
+            payload <- payload @ [("name", box args.ServiceSnapshotName.Value)]
+        if args.ServiceHot then
+            payload <- payload @ [("hot", box true)]
+        let result = apiRequest (sprintf "/services/%s/snapshot" args.ServiceSnapshot.Value) "POST" (Some payload) publicKey secretKey
+        printfn "%sSnapshot created%s" green reset
+        printfn "%s" (toJson (box result))
+    elif args.ServiceRestore.IsSome then
+        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
+        let result = apiRequest (sprintf "/snapshots/%s/restore" args.ServiceRestore.Value) "POST" None publicKey secretKey
+        printfn "%sService restored from snapshot%s" green reset
+        printfn "%s" (toJson (box result))
+    elif args.ServiceList then
         let result = apiRequest "/services" "GET" None publicKey secretKey
         printfn "%-20s %-15s %-10s %-15s %s" "ID" "Name" "Status" "Ports" "Domains"
         printfn "No services (list parsing not implemented)"
@@ -580,6 +657,11 @@ let parseArgs (argv: string[]) =
         SessionList = false
         SessionShell = None
         SessionKill = None
+        SessionSnapshot = None
+        SessionRestore = None
+        SessionFrom = None
+        SessionSnapshotName = None
+        SessionHot = false
         ServiceList = false
         ServiceName = None
         ServicePorts = None
@@ -596,6 +678,19 @@ let parseArgs (argv: string[]) =
         ServiceCommand = None
         ServiceDumpBootstrap = None
         ServiceDumpFile = None
+        ServiceSnapshot = None
+        ServiceRestore = None
+        ServiceFrom = None
+        ServiceSnapshotName = None
+        ServiceHot = false
+        SnapshotList = false
+        SnapshotInfo = None
+        SnapshotDelete = None
+        SnapshotClone = None
+        SnapshotType = None
+        SnapshotName = None
+        SnapshotShell = None
+        SnapshotPorts = None
         KeyExtend = false
     }
 
@@ -604,6 +699,7 @@ let parseArgs (argv: string[]) =
         match argv.[i] with
         | "session" -> args.Command <- Some "session"
         | "service" -> args.Command <- Some "service"
+        | "snapshot" -> args.Command <- Some "snapshot"
         | "key" -> args.Command <- Some "key"
         | "-k" | "--api-key" -> i <- i + 1; args.ApiKey <- Some argv.[i]
         | "-n" | "--network" -> i <- i + 1; args.Network <- Some argv.[i]
@@ -617,14 +713,69 @@ let parseArgs (argv: string[]) =
             | Some "session" -> args.SessionList <- true
             | Some "service" -> args.ServiceList <- true
             | _ -> ()
-        | "-s" | "--shell" -> i <- i + 1; args.SessionShell <- Some argv.[i]
+        | "-s" | "--shell" ->
+            i <- i + 1
+            match args.Command with
+            | Some "snapshot" -> args.SnapshotShell <- Some argv.[i]
+            | _ -> args.SessionShell <- Some argv.[i]
         | "--kill" -> i <- i + 1; args.SessionKill <- Some argv.[i]
-        | "--name" -> i <- i + 1; args.ServiceName <- Some argv.[i]
-        | "--ports" -> i <- i + 1; args.ServicePorts <- Some argv.[i]
-        | "--type" -> i <- i + 1; args.ServiceType <- Some argv.[i]
+        | "--snapshot" ->
+            i <- i + 1
+            match args.Command with
+            | Some "session" -> args.SessionSnapshot <- Some argv.[i]
+            | Some "service" -> args.ServiceSnapshot <- Some argv.[i]
+            | _ -> ()
+        | "--restore" ->
+            i <- i + 1
+            match args.Command with
+            | Some "session" -> args.SessionRestore <- Some argv.[i]
+            | Some "service" -> args.ServiceRestore <- Some argv.[i]
+            | _ -> ()
+        | "--from" ->
+            i <- i + 1
+            match args.Command with
+            | Some "session" -> args.SessionFrom <- Some argv.[i]
+            | Some "service" -> args.ServiceFrom <- Some argv.[i]
+            | _ -> ()
+        | "--snapshot-name" ->
+            i <- i + 1
+            match args.Command with
+            | Some "session" -> args.SessionSnapshotName <- Some argv.[i]
+            | Some "service" -> args.ServiceSnapshotName <- Some argv.[i]
+            | _ -> ()
+        | "--hot" ->
+            match args.Command with
+            | Some "session" -> args.SessionHot <- true
+            | Some "service" -> args.ServiceHot <- true
+            | _ -> ()
+        | "--info" ->
+            i <- i + 1
+            match args.Command with
+            | Some "snapshot" -> args.SnapshotInfo <- Some argv.[i]
+            | _ -> args.ServiceInfo <- Some argv.[i]
+        | "--delete" ->
+            i <- i + 1
+            match args.Command with
+            | Some "snapshot" -> args.SnapshotDelete <- Some argv.[i]
+            | _ -> ()
+        | "--clone" -> i <- i + 1; args.SnapshotClone <- Some argv.[i]
+        | "--type" ->
+            i <- i + 1
+            match args.Command with
+            | Some "snapshot" -> args.SnapshotType <- Some argv.[i]
+            | _ -> args.ServiceType <- Some argv.[i]
+        | "--name" ->
+            i <- i + 1
+            match args.Command with
+            | Some "snapshot" -> args.SnapshotName <- Some argv.[i]
+            | _ -> args.ServiceName <- Some argv.[i]
+        | "--ports" ->
+            i <- i + 1
+            match args.Command with
+            | Some "snapshot" -> args.SnapshotPorts <- Some argv.[i]
+            | _ -> args.ServicePorts <- Some argv.[i]
         | "--bootstrap" -> i <- i + 1; args.ServiceBootstrap <- Some argv.[i]
         | "--bootstrap-file" -> i <- i + 1; args.ServiceBootstrapFile <- Some argv.[i]
-        | "--info" -> i <- i + 1; args.ServiceInfo <- Some argv.[i]
         | "--logs" -> i <- i + 1; args.ServiceLogs <- Some argv.[i]
         | "--tail" -> i <- i + 1; args.ServiceTail <- Some argv.[i]
         | "--freeze" -> i <- i + 1; args.ServiceSleep <- Some argv.[i]
@@ -694,6 +845,7 @@ let main argv =
         match args.Command with
         | Some "session" -> cmdSession args; 0
         | Some "service" -> cmdService args; 0
+        | Some "snapshot" -> cmdSnapshot args; 0
         | Some "key" -> cmdKey args; 0
         | _ ->
             match args.SourceFile with

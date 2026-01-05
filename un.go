@@ -330,7 +330,31 @@ func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts boo
 	os.Exit(exitCode)
 }
 
-func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int, tmux, screen bool, files inputFiles, publicKey, secretKey string) {
+func cmdSession(sessionList, sessionKill, sessionShell, sessionSnapshot, sessionRestore, sessionSnapshotName string, sessionHot bool, network string, vcpu int, tmux, screen bool, files inputFiles, publicKey, secretKey string) {
+	if sessionSnapshot != "" {
+		payload := map[string]interface{}{}
+		if sessionSnapshotName != "" {
+			payload["name"] = sessionSnapshotName
+		}
+		if sessionHot {
+			payload["hot"] = true
+		}
+		result := apiRequest("/sessions/"+sessionSnapshot+"/snapshot", "POST", payload, publicKey, secretKey)
+		fmt.Printf("%sSnapshot created%s\n", Green, Reset)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
+	if sessionRestore != "" {
+		// --restore takes snapshot ID directly, calls /snapshots/:id/restore
+		result := apiRequest("/snapshots/"+sessionRestore+"/restore", "POST", nil, publicKey, secretKey)
+		fmt.Printf("%sSession restored from snapshot%s\n", Green, Reset)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
 	if sessionList != "" {
 		result := apiRequest("/sessions", "GET", nil, publicKey, secretKey)
 		sessions := result["sessions"].([]interface{})
@@ -395,7 +419,31 @@ func cmdSession(sessionList, sessionKill, sessionShell, network string, vcpu int
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, network string, vcpu int, files inputFiles, publicKey, secretKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, serviceSnapshot, serviceRestore, serviceSnapshotName string, serviceHot bool, network string, vcpu int, files inputFiles, publicKey, secretKey string) {
+	if serviceSnapshot != "" {
+		payload := map[string]interface{}{}
+		if serviceSnapshotName != "" {
+			payload["name"] = serviceSnapshotName
+		}
+		if serviceHot {
+			payload["hot"] = true
+		}
+		result := apiRequest("/services/"+serviceSnapshot+"/snapshot", "POST", payload, publicKey, secretKey)
+		fmt.Printf("%sSnapshot created%s\n", Green, Reset)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
+	if serviceRestore != "" {
+		// --restore takes snapshot ID directly, calls /snapshots/:id/restore
+		result := apiRequest("/snapshots/"+serviceRestore+"/restore", "POST", nil, publicKey, secretKey)
+		fmt.Printf("%sService restored from snapshot%s\n", Green, Reset)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
 	if serviceList != "" {
 		result := apiRequest("/services", "GET", nil, publicKey, secretKey)
 		services := result["services"].([]interface{})
@@ -566,6 +614,60 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	os.Exit(1)
 }
 
+func cmdSnapshot(snapshotList, snapshotInfo, snapshotDelete, snapshotClone, snapshotType, snapshotName, snapshotShell, snapshotPorts, publicKey, secretKey string) {
+	if snapshotList != "" || snapshotList == "" && snapshotInfo == "" && snapshotDelete == "" && snapshotClone == "" {
+		result := apiRequest("/snapshots", "GET", nil, publicKey, secretKey)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
+	if snapshotInfo != "" {
+		result := apiRequest("/snapshots/"+snapshotInfo, "GET", nil, publicKey, secretKey)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
+	if snapshotDelete != "" {
+		apiRequest("/snapshots/"+snapshotDelete, "DELETE", nil, publicKey, secretKey)
+		fmt.Printf("%sSnapshot deleted: %s%s\n", Green, snapshotDelete, Reset)
+		return
+	}
+
+	if snapshotClone != "" {
+		if snapshotType == "" {
+			fmt.Fprintf(os.Stderr, "%sError: --type required (session or service)%s\n", Red, Reset)
+			os.Exit(1)
+		}
+		payload := map[string]interface{}{
+			"type": snapshotType,
+		}
+		if snapshotName != "" {
+			payload["name"] = snapshotName
+		}
+		if snapshotShell != "" {
+			payload["shell"] = snapshotShell
+		}
+		if snapshotPorts != "" {
+			var ports []int
+			for _, p := range strings.Split(snapshotPorts, ",") {
+				port, _ := strconv.Atoi(strings.TrimSpace(p))
+				ports = append(ports, port)
+			}
+			payload["ports"] = ports
+		}
+		result := apiRequest("/snapshots/"+snapshotClone+"/clone", "POST", payload, publicKey, secretKey)
+		fmt.Printf("%sCreated from snapshot%s\n", Green, Reset)
+		jsonData, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(jsonData))
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "%sError: Use --list, --info ID, --delete ID, or --clone ID --type TYPE%s\n", Red, Reset)
+	os.Exit(1)
+}
+
 func openBrowser(url string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -647,14 +749,14 @@ func validateKey(publicKey, secretKey string, extend bool) {
 
 	valid, _ := result["valid"].(bool)
 	expired, _ := result["expired"].(bool)
-	publicKey, _ := result["public_key"].(string)
+	pubKey, _ := result["public_key"].(string)
 	tier, _ := result["tier"].(string)
 	status, _ := result["status"].(string)
 
 	if expired {
 		// Expired key
 		fmt.Printf("%sExpired%s\n", Red, Reset)
-		fmt.Printf("Public Key: %s\n", publicKey)
+		fmt.Printf("Public Key: %s\n", pubKey)
 		fmt.Printf("Tier: %s\n", tier)
 		if expiresAt, ok := result["expires_at"].(string); ok {
 			fmt.Printf("Expired: %s\n", expiresAt)
@@ -662,7 +764,7 @@ func validateKey(publicKey, secretKey string, extend bool) {
 		fmt.Printf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", Yellow, Reset)
 
 		if extend {
-			extendURL := PortalBase + "/keys/extend?pk=" + publicKey
+			extendURL := PortalBase + "/keys/extend?pk=" + pubKey
 			fmt.Printf("\n%sOpening browser to extend key...%s\n", Green, Reset)
 			if err := openBrowser(extendURL); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError opening browser: %v%s\n", Red, err, Reset)
@@ -675,7 +777,7 @@ func validateKey(publicKey, secretKey string, extend bool) {
 	if valid {
 		// Valid key
 		fmt.Printf("%sValid%s\n", Green, Reset)
-		fmt.Printf("Public Key: %s\n", publicKey)
+		fmt.Printf("Public Key: %s\n", pubKey)
 		fmt.Printf("Tier: %s\n", tier)
 		fmt.Printf("Status: %s\n", status)
 
@@ -703,7 +805,7 @@ func validateKey(publicKey, secretKey string, extend bool) {
 		}
 
 		if extend {
-			extendURL := PortalBase + "/keys/extend?pk=" + publicKey
+			extendURL := PortalBase + "/keys/extend?pk=" + pubKey
 			fmt.Printf("\n%sOpening browser to extend key...%s\n", Green, Reset)
 			if err := openBrowser(extendURL); err != nil {
 				fmt.Fprintf(os.Stderr, "%sError opening browser: %v%s\n", Red, err, Reset)
@@ -741,6 +843,10 @@ func main() {
 	sessionShell := sessionCmd.String("shell", "", "Shell/REPL to use")
 	sessionTmux := sessionCmd.Bool("tmux", false, "Enable tmux persistence")
 	sessionScreen := sessionCmd.Bool("screen", false, "Enable screen persistence")
+	sessionSnapshot := sessionCmd.String("snapshot", "", "Create snapshot of session")
+	sessionRestore := sessionCmd.String("restore", "", "Restore from snapshot ID")
+	sessionSnapshotName := sessionCmd.String("snapshot-name", "", "Name for snapshot")
+	sessionHot := sessionCmd.Bool("hot", false, "Take snapshot without freezing")
 	var sessionFiles inputFiles
 	sessionCmd.Var(&sessionFiles, "f", "Input file")
 	sessionNetwork := sessionCmd.String("n", "", "Network mode")
@@ -768,9 +874,25 @@ func main() {
 	serviceCommand := serviceCmd.String("command", "", "Command to execute (with -execute)")
 	serviceDumpBootstrap := serviceCmd.String("dump-bootstrap", "", "Dump bootstrap script")
 	serviceDumpFile := serviceCmd.String("dump-file", "", "File to save bootstrap (with -dump-bootstrap)")
+	serviceSnapshot := serviceCmd.String("snapshot", "", "Create snapshot of service")
+	serviceRestore := serviceCmd.String("restore", "", "Restore from snapshot ID")
+	serviceSnapshotName := serviceCmd.String("snapshot-name", "", "Name for snapshot")
+	serviceHot := serviceCmd.Bool("hot", false, "Take snapshot without freezing")
 	serviceNetwork := serviceCmd.String("n", "", "Network mode")
 	serviceVcpu := serviceCmd.Int("v", 0, "vCPU count")
 	serviceKey := serviceCmd.String("k", "", "API key")
+
+	// Snapshot flags
+	snapshotCmd := flag.NewFlagSet("snapshot", flag.ExitOnError)
+	snapshotList := snapshotCmd.String("list", "", "List snapshots")
+	snapshotInfo := snapshotCmd.String("info", "", "Get snapshot info")
+	snapshotDelete := snapshotCmd.String("delete", "", "Delete snapshot")
+	snapshotClone := snapshotCmd.String("clone", "", "Clone snapshot")
+	snapshotType := snapshotCmd.String("type", "", "Clone type (session/service)")
+	snapshotName := snapshotCmd.String("name", "", "Name for cloned resource")
+	snapshotShell := snapshotCmd.String("shell", "", "Shell for cloned session")
+	snapshotPorts := snapshotCmd.String("ports", "", "Ports for cloned service")
+	snapshotKey := snapshotCmd.String("k", "", "API key")
 
 	// Key flags
 	keyCmd := flag.NewFlagSet("key", flag.ExitOnError)
@@ -793,7 +915,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdSession(*sessionList, *sessionKill, *sessionShell, net, vc, *sessionTmux, *sessionScreen, sessionFiles, publicKey, secretKey)
+			cmdSession(*sessionList, *sessionKill, *sessionShell, *sessionSnapshot, *sessionRestore, *sessionSnapshotName, *sessionHot, net, vc, *sessionTmux, *sessionScreen, sessionFiles, publicKey, secretKey)
 			return
 
 		case "service":
@@ -807,7 +929,13 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, net, vc, serviceFiles, publicKey, secretKey)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, *serviceSnapshot, *serviceRestore, *serviceSnapshotName, *serviceHot, net, vc, serviceFiles, publicKey, secretKey)
+			return
+
+		case "snapshot":
+			snapshotCmd.Parse(os.Args[2:])
+			publicKey, secretKey := getAPIKeys(*snapshotKey)
+			cmdSnapshot(*snapshotList, *snapshotInfo, *snapshotDelete, *snapshotClone, *snapshotType, *snapshotName, *snapshotShell, *snapshotPorts, publicKey, secretKey)
 			return
 
 		case "key":
@@ -823,6 +951,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] <source_file>\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "       %s session [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "       %s service [options]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s snapshot [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "       %s key [options]\n", os.Args[0])
 		os.Exit(1)
 	}
