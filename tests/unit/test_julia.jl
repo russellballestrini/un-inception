@@ -71,19 +71,19 @@ end)
 println("\n=== HMAC Signature Tests ===")
 
 run_test("HMAC-SHA256 generates 64 character hex string", () -> begin
-    sig = bytes2hex(hmac_sha256("test-secret", "test-message"))
+    sig = bytes2hex(hmac_sha256(Vector{UInt8}("test-secret"), "test-message"))
     assert_equal(length(sig), 64)
 end)
 
 run_test("Same input produces same signature", () -> begin
-    sig1 = bytes2hex(hmac_sha256("key", "msg"))
-    sig2 = bytes2hex(hmac_sha256("key", "msg"))
+    sig1 = bytes2hex(hmac_sha256(Vector{UInt8}("key"), "msg"))
+    sig2 = bytes2hex(hmac_sha256(Vector{UInt8}("key"), "msg"))
     assert_equal(sig1, sig2)
 end)
 
 run_test("Different secrets produce different signatures", () -> begin
-    sig1 = bytes2hex(hmac_sha256("key1", "msg"))
-    sig2 = bytes2hex(hmac_sha256("key2", "msg"))
+    sig1 = bytes2hex(hmac_sha256(Vector{UInt8}("key1"), "msg"))
+    sig2 = bytes2hex(hmac_sha256(Vector{UInt8}("key2"), "msg"))
     assert_not_equal(sig1, sig2)
 end)
 
