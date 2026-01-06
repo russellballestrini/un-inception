@@ -1,5 +1,9 @@
 # Claude AI Instructions for un-inception
 
+## Commit Messages
+
+**NEVER add Claude attribution to commit messages.** No robot emoji, no "Generated with Claude Code", no "Co-Authored-By: Claude". Just write the commit message like a human wrote it.
+
 ## Project Overview
 
 UN CLI Inception - The UN CLI written in every language it can execute. 42 implementations, one unified interface.
@@ -143,7 +147,36 @@ Each implementation must support:
 
 The `-f FILE` flag must work for ALL three commands (execute, session, service) - files go to `/tmp/` in the container.
 
+## Git Remotes & Mirroring
+
+This repo pushes to multiple remotes automatically. No git hooks needed - just uses git's built-in multi-push URL feature.
+
+**Remotes:**
+- `origin` - Primary (fetches from unturf, pushes to both)
+- `github` - Public mirror at GitHub
+
+**Configuration:**
+```
+origin	ssh://git@git.unturf.com:2222/engineering/unturf/un-inception.git (fetch)
+origin	ssh://git@git.unturf.com:2222/engineering/unturf/un-inception.git (push)
+origin	git@github.com:russellballestrini/un-inception.git (push)
+github	git@github.com:russellballestrini/un-inception.git (fetch/push)
+```
+
+**Usage:**
+- `git push origin` - Pushes to both unturf AND GitHub automatically
+- `git push github` - Pushes only to GitHub (if needed)
+- `git pull` - Pulls from unturf (origin)
+
+**To replicate this setup:**
+```bash
+git remote add github git@github.com:russellballestrini/un-inception.git
+git remote set-url --add --push origin ssh://git@git.unturf.com:2222/engineering/unturf/un-inception.git
+git remote set-url --add --push origin git@github.com:russellballestrini/un-inception.git
+```
+
 ## Related Repos
 
 - `~/git/unsandbox.com/` - Portal (contains un.c CLI at cli/un.c)
 - `~/git/api.unsandbox.com/` - API server
+- https://github.com/russellballestrini/un-inception - Public GitHub mirror

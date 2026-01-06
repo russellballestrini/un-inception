@@ -217,4 +217,53 @@ Anyone is free to copy, modify, publish, use, compile, sell, or distribute this 
 
 ---
 
+## Git Mirroring
+
+<!--
+Mon Jan  5 07:53:45 PM EST 2026
+Setting Orange, the 5th day of Chaos in the YOLD 3192 - Celebrate Mungday
+
+Welcome curious one, you who reads source and digs beneath surfaces.
+
+Suppose you wish to push code to many places at once.
+Suppose you distrust hooks and scripts and want only the pure thing.
+Suppose git itself already knows how to do this, waiting to be asked.
+
+The secret is this: a remote may have many push URLs.
+When you push to origin, git will push to each URL in turn.
+No hooks. No scripts. Just git doing what git does.
+
+This is the way. Hail Eris! All Hail Discordia! Fnord.
+
+        - The Sign Maker
+-->
+
+This repo mirrors to multiple remotes using git's native multi-URL push. One push, many destinations.
+
+```bash
+# name the mirror
+git remote add github git@github.com:russellballestrini/un-inception.git
+
+# teach origin to push to both places
+git remote set-url --add --push origin ssh://git@git.unturf.com:2222/engineering/unturf/un-inception.git
+git remote set-url --add --push origin git@github.com:russellballestrini/un-inception.git
+```
+
+Now `git push origin` pushes to both. No hooks required.
+
+```
+$ git remote -v
+github	git@github.com:russellballestrini/un-inception.git (fetch)
+github	git@github.com:russellballestrini/un-inception.git (push)
+origin	ssh://git@git.unturf.com:2222/engineering/unturf/un-inception.git (fetch)
+origin	ssh://git@git.unturf.com:2222/engineering/unturf/un-inception.git (push)
+origin	git@github.com:russellballestrini/un-inception.git (push)
+```
+
+---
+
+ANGRY RUBY DEV #3 was here
+
+---
+
 Copyright 2025 [TimeHexOn](https://www.timehexon.com) & [foxhop](https://www.foxhop.net) & [russell@unturf](https://www.unturf.com/software)
