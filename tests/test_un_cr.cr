@@ -11,9 +11,27 @@ RED = "\033[31m"
 BLUE = "\033[34m"
 RESET = "\033[0m"
 
-# Test counters
-@@passed = 0
-@@failed = 0
+# Test counters - use class with class variables
+class TestCounter
+  @@passed = 0
+  @@failed = 0
+
+  def self.passed
+    @@passed
+  end
+
+  def self.failed
+    @@failed
+  end
+
+  def self.inc_passed
+    @@passed += 1
+  end
+
+  def self.inc_failed
+    @@failed += 1
+  end
+end
 
 # Extension to language mapping (from un.cr)
 EXT_MAP = {
@@ -44,10 +62,10 @@ end
 def print_test(name : String, result : Bool)
   if result
     puts "#{GREEN}✓ PASS#{RESET}: #{name}"
-    @@passed += 1
+    TestCounter.inc_passed
   else
     puts "#{RED}✗ FAIL#{RESET}: #{name}"
-    @@failed += 1
+    TestCounter.inc_failed
   end
 end
 
@@ -143,11 +161,11 @@ print_test("Multiple dots in filename", detect_language("my.test.py") == "python
 puts "\n#{BLUE}========================================#{RESET}"
 puts "#{BLUE}Test Summary#{RESET}"
 puts "#{BLUE}========================================#{RESET}"
-puts "#{GREEN}Passed: #{@@passed}#{RESET}"
-puts "#{RED}Failed: #{@@failed}#{RESET}"
-puts "#{BLUE}Total:  #{@@passed + @@failed}#{RESET}"
+puts "#{GREEN}Passed: #{TestCounter.passed}#{RESET}"
+puts "#{RED}Failed: #{TestCounter.failed}#{RESET}"
+puts "#{BLUE}Total:  #{TestCounter.passed + TestCounter.failed}#{RESET}"
 
-if @@failed > 0
+if TestCounter.failed > 0
   puts "\n#{RED}TESTS FAILED#{RESET}"
   exit 1
 else

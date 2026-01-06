@@ -179,6 +179,36 @@ Each implementation supports:
 ./tests/run_all_tests.sh
 ```
 
+### Unit Tests
+
+Every implementation has unit tests that verify core functionality without requiring API calls:
+
+```bash
+# Run unit tests for any language
+python3 tests/unit/test_python.py
+node tests/unit/test_javascript.js
+ruby tests/unit/test_ruby.rb
+go test -v tests/unit/test_go.go
+julia tests/unit/test_julia.jl
+elixir tests/unit/test_elixir.exs
+```
+
+Unit tests cover:
+- **Extension mapping** - File extensions map to correct languages
+- **HMAC signatures** - SHA256 signing produces valid 64-char hex strings
+- **Signature format** - Message format is `timestamp:METHOD:path:body`
+- **Language detection** - Shebang parsing and extension detection
+- **Argument parsing** - `-e KEY=VALUE` format handling
+- **File operations** - Base64 encoding, path extraction
+
+### CI/CD
+
+GitHub Actions runs the full test matrix on every push:
+
+[![Inception Matrix](https://github.com/russellballestrini/un-inception/actions/workflows/inception-matrix.yml/badge.svg)](https://github.com/russellballestrini/un-inception/actions/workflows/inception-matrix.yml)
+
+The workflow tests all 42 implementations across their respective runtimes.
+
 ## The Inception Matrix
 
 **Use un to run un inside un!** Don't have a language installed locally? Run its implementation through unsandbox using `un` (the C implementation):
