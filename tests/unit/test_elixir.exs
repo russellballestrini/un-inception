@@ -2,9 +2,6 @@
 # Unit tests for un.ex - tests internal functions without API calls
 
 defmodule UnTest do
-  @passed Agent.start_link(fn -> 0 end, name: :passed)
-  @failed Agent.start_link(fn -> 0 end, name: :failed)
-
   def run do
     Agent.start_link(fn -> 0 end, name: :passed)
     Agent.start_link(fn -> 0 end, name: :failed)

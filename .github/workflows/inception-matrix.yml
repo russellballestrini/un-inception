@@ -49,6 +49,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: false
       - name: Run Go unit tests
         run: go run tests/unit/test_go.go
 
@@ -334,6 +335,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: false
       - name: Run Go tests
         run: go run tests/test_un_go.go
       - name: Integration test
@@ -824,6 +826,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache: false
 
       - name: Build un.go as inception runner
         run: go build -o un un.go
