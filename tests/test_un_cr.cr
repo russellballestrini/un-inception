@@ -107,7 +107,8 @@ else
     response = HTTP::Client.post(url, headers: headers, body: body)
     result = JSON.parse(response.body)
 
-    api_works = result["stdout"]? && result["stdout"].as_s.includes?("Hello from test")
+    stdout = result["stdout"]?
+    api_works = !stdout.nil? && stdout.as_s.includes?("Hello from test")
     print_test("API endpoint reachable and functional", api_works)
   rescue ex
     print_test("API endpoint reachable and functional", false)

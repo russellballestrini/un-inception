@@ -179,19 +179,19 @@ fn cmd_key(extend bool, api_key string) {
 
 		// Try xdg-open (Linux), open (macOS), or start (Windows)
 		mut opened := false
-		result := os.execute('xdg-open "${url}"')
-		if result.exit_code == 0 {
+		xdg_result := os.execute('xdg-open "${url}"')
+		if xdg_result.exit_code == 0 {
 			opened = true
 		}
 		if !opened {
-			result2 := os.execute('open "${url}"')
-			if result2.exit_code == 0 {
+			mac_result := os.execute('open "${url}"')
+			if mac_result.exit_code == 0 {
 				opened = true
 			}
 		}
 		if !opened {
-			result3 := os.execute('cmd /c start "${url}"')
-			if result3.exit_code != 0 {
+			win_result := os.execute('cmd /c start "${url}"')
+			if win_result.exit_code != 0 {
 				eprintln('${red}Error: Could not open browser${reset}')
 			}
 		}
