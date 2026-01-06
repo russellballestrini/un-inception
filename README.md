@@ -4,6 +4,25 @@ The UN CLI written in every language it can execute. **42 implementations, one u
 
 > "If you replace every line of un.c with a different programming language, but it still executes code on unsandbox... is it still un?"
 
+## Download UN CLI
+
+| Platform | Download | Size |
+|----------|----------|------|
+| Linux x86_64 | [un](https://unsandbox.com/downloads/un) | 850KB |
+| Source (C) | [un.c](https://unsandbox.com/downloads/un.c) | 45KB |
+| Man Page | [un.1](https://unsandbox.com/downloads/un.1) | - |
+
+```bash
+# Quick install (Linux x86_64)
+curl -fsSL https://unsandbox.com/downloads/un -o un && chmod +x un
+
+# Or build from source
+curl -fsSL https://unsandbox.com/downloads/un.c -o un.c
+gcc -Wall -O2 -o un un.c -lcurl -lwebsockets
+```
+
+Build dependencies: `libcurl-dev`, `libwebsockets-dev`
+
 ## Quick Start
 
 ```bash
