@@ -162,15 +162,14 @@ test("Signature format is timestamp:METHOD:path:body", function()
     local timestamp = "1704067200"
     local method = "POST"
     local endpoint = "/execute"
-    local body = '{"language":"python","code":"print(1)"}'
+    local body = '{"language":"python"}'
 
     local message = timestamp .. ":" .. method .. ":" .. endpoint .. ":" .. body
 
-    assert_contains(message, ":")
-    local count = 0
-    for _ in message:gmatch(":") do count = count + 1 end
-    assert_equal(count, 3)
+    -- Verify format by checking structure, not counting colons (body may contain colons)
     assert_true(message:sub(1, #timestamp) == timestamp)
+    assert_contains(message, ":POST:")
+    assert_contains(message, ":/execute:")
 end)
 
 -- ============================================================================

@@ -568,21 +568,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ocaml/setup-ocaml@v2
-        with:
-          ocaml-compiler: 5
-      - name: Install dependencies
+      - name: Install OCaml
         run: |
-          opam install -y cohttp-lwt-unix yojson digestif || true
+          sudo apt-get update
+          sudo apt-get install -y ocaml
       - name: Run OCaml tests
-        run: |
-          eval $(opam env)
-          ocaml str.cma unix.cma tests/test_un_ml.ml || true
+        run: ocaml str.cma unix.cma tests/test_un_ml.ml || true
       - name: Integration test
         if: env.UNSANDBOX_PUBLIC_KEY != ''
         run: |
-          eval $(opam env)
-          ocaml un.ml test/fib.py 2>&1 | tee output.txt || true
+          ocaml str.cma unix.cma un.ml test/fib.py 2>&1 | tee output.txt || true
           grep -q "fib(10) = 55" output.txt || echo "OCaml integration pending"
 
   clojure:
