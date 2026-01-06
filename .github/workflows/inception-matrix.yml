@@ -19,6 +19,63 @@ env:
 
 jobs:
   # ============================================================================
+  # UNIT TESTS - Test internal logic without API calls
+  # ============================================================================
+  unit-tests:
+    name: "Unit Tests: ${{ matrix.lang }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lang: Python
+            run: python3 tests/unit/test_python.py
+          - lang: JavaScript
+            run: node tests/unit/test_javascript.js
+          - lang: Ruby
+            run: ruby tests/unit/test_ruby.rb
+          - lang: Go
+            run: go run tests/unit/test_go.go
+          - lang: Bash
+            run: bash tests/unit/test_bash.sh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        if: matrix.lang == 'Go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run ${{ matrix.lang }} unit tests
+        run: ${{ matrix.run }}
+
+  unit-tests-lua:
+    name: "Unit Tests: Lua"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+      - name: Run Lua unit tests
+        run: lua tests/unit/test_lua.lua
+
+  # ============================================================================
+  # INTEGRATION TESTS - Test component interactions without real API calls
+  # ============================================================================
+  integration-tests:
+    name: "Integration Tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Python integration tests
+        run: python3 tests/integration/test_request_building.py
+
+  # ============================================================================
   # TIER 1: Scripting Languages (fast, native runners)
   # ============================================================================
   scripting:
