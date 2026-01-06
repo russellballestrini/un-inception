@@ -47,13 +47,33 @@ run_test() {
 echo -e "${CYAN}━━━ Scripting Languages ━━━${NC}"
 run_test "Python" "python3 test_python.py" "python3"
 run_test "JavaScript" "node test_javascript.js" "node"
+run_test "TypeScript" "npx ts-node test_typescript.ts" "npx"
 run_test "Ruby" "ruby test_ruby.rb" "ruby"
+run_test "PHP" "php test_php.php" "php"
+run_test "Perl" "perl test_perl.pl" "perl"
 run_test "Lua" "lua test_lua.lua" "lua"
 run_test "Bash" "bash test_bash.sh" "bash"
 echo ""
 
 echo -e "${CYAN}━━━ Systems Languages ━━━${NC}"
 run_test "Go" "go run test_go.go" "go"
+echo ""
+
+echo -e "${CYAN}━━━ Functional Languages ━━━${NC}"
+run_test "Elixir" "elixir test_elixir.exs" "elixir"
+run_test "Erlang" "escript test_erlang.erl" "escript"
+run_test "Clojure" "clj -M test_clojure.clj" "clj"
+echo ""
+
+echo -e "${CYAN}━━━ Scientific Languages ━━━${NC}"
+run_test "Julia" "julia test_julia.jl" "julia"
+run_test "R" "Rscript test_r.R" "Rscript"
+echo ""
+
+echo -e "${CYAN}━━━ Other Languages ━━━${NC}"
+run_test "Dart" "dart run test_dart.dart" "dart"
+run_test "TCL" "tclsh test_tcl.tcl" "tclsh"
+run_test "PowerShell" "pwsh test_powershell.ps1" "pwsh"
 echo ""
 
 # Summary

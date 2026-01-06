@@ -21,8 +21,8 @@ jobs:
   # ============================================================================
   # UNIT TESTS - Test internal logic without API calls
   # ============================================================================
-  unit-tests:
-    name: "Unit Tests: ${{ matrix.lang }}"
+  unit-tests-scripting:
+    name: "Unit: ${{ matrix.lang }}"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,34 +34,144 @@ jobs:
             run: node tests/unit/test_javascript.js
           - lang: Ruby
             run: ruby tests/unit/test_ruby.rb
-          - lang: Go
-            run: go run tests/unit/test_go.go
           - lang: Bash
             run: bash tests/unit/test_bash.sh
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Go
-        if: matrix.lang == 'Go'
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
       - name: Run ${{ matrix.lang }} unit tests
         run: ${{ matrix.run }}
 
+  unit-tests-go:
+    name: "Unit: Go"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Run Go unit tests
+        run: go run tests/unit/test_go.go
+
   unit-tests-lua:
-    name: "Unit Tests: Lua"
+    name: "Unit: Lua"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Lua
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lua5.4
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
       - name: Run Lua unit tests
         run: lua tests/unit/test_lua.lua
+
+  unit-tests-php:
+    name: "Unit: PHP"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - name: Run PHP unit tests
+        run: php tests/unit/test_php.php
+
+  unit-tests-perl:
+    name: "Unit: Perl"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Perl unit tests
+        run: perl tests/unit/test_perl.pl
+
+  unit-tests-elixir:
+    name: "Unit: Elixir"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26'
+          elixir-version: '1.15'
+      - name: Run Elixir unit tests
+        run: elixir tests/unit/test_elixir.exs
+
+  unit-tests-erlang:
+    name: "Unit: Erlang"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '26'
+      - name: Run Erlang unit tests
+        run: escript tests/unit/test_erlang.erl
+
+  unit-tests-julia:
+    name: "Unit: Julia"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v1
+        with:
+          version: '1'
+      - name: Run Julia unit tests
+        run: julia tests/unit/test_julia.jl
+
+  unit-tests-r:
+    name: "Unit: R"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+      - name: Install R packages
+        run: Rscript -e 'install.packages(c("openssl", "base64enc"), repos="https://cloud.r-project.org")'
+      - name: Run R unit tests
+        run: Rscript tests/unit/test_r.R
+
+  unit-tests-clojure:
+    name: "Unit: Clojure"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Clojure
+        run: |
+          curl -L -O https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+          chmod +x linux-install.sh
+          sudo ./linux-install.sh
+      - name: Run Clojure unit tests
+        run: clj -M tests/unit/test_clojure.clj
+
+  unit-tests-dart:
+    name: "Unit: Dart"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+      - name: Install crypto package
+        run: |
+          cd tests/unit
+          echo 'name: test_dart' > pubspec.yaml
+          echo 'dependencies:' >> pubspec.yaml
+          echo '  crypto: ^3.0.0' >> pubspec.yaml
+          dart pub get
+      - name: Run Dart unit tests
+        run: cd tests/unit && dart run test_dart.dart
+
+  unit-tests-tcl:
+    name: "Unit: TCL"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install TCL
+        run: sudo apt-get update && sudo apt-get install -y tcl
+      - name: Run TCL unit tests
+        run: tclsh tests/unit/test_tcl.tcl
+
+  unit-tests-powershell:
+    name: "Unit: PowerShell"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PowerShell unit tests
+        run: pwsh tests/unit/test_powershell.ps1
 
   # ============================================================================
   # INTEGRATION TESTS - Test component interactions without real API calls
