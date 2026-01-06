@@ -3,9 +3,6 @@
 #
 # Mon Jan  5 07:53:45 PM EST 2026
 # Setting Orange, the 5th day of Chaos in the YOLD 3192 - Celebrate Mungday
-#
-# This workflow is expensive. It installs 42 language runtimes and tests them all.
-# That's the point. Hail Eris.
 
 name: Inception Matrix
 
