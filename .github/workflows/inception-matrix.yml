@@ -57,10 +57,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Lua
-        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Install Lua and OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y lua5.4 openssl
       - name: Run Lua unit tests
-        run: lua tests/unit/test_lua.lua
+        run: lua5.4 tests/unit/test_lua.lua
 
   unit-tests-php:
     name: "Unit: PHP"
@@ -112,6 +112,8 @@ jobs:
       - uses: julia-actions/setup-julia@v1
         with:
           version: '1'
+      - name: Install Julia packages
+        run: julia -e 'using Pkg; Pkg.add("SHA")'
       - name: Run Julia unit tests
         run: julia tests/unit/test_julia.jl
 
@@ -137,7 +139,7 @@ jobs:
           chmod +x linux-install.sh
           sudo ./linux-install.sh
       - name: Run Clojure unit tests
-        run: clj -M tests/unit/test_clojure.clj
+        run: clojure tests/unit/test_clojure.clj
 
   unit-tests-dart:
     name: "Unit: Dart"
@@ -148,12 +150,16 @@ jobs:
       - name: Install crypto package
         run: |
           cd tests/unit
-          echo 'name: test_dart' > pubspec.yaml
-          echo 'dependencies:' >> pubspec.yaml
-          echo '  crypto: ^3.0.0' >> pubspec.yaml
+          cat > pubspec.yaml << 'EOF'
+          name: test_dart
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+          dependencies:
+            crypto: ^3.0.0
+          EOF
           dart pub get
       - name: Run Dart unit tests
-        run: cd tests/unit && dart run test_dart.dart
+        run: cd tests/unit && dart test_dart.dart
 
   unit-tests-tcl:
     name: "Unit: TCL"
@@ -199,25 +205,34 @@ jobs:
             file: un.py
             test: tests/test_un_py.py
             run: python3 $TEST
+            setup: ""
           - lang: JavaScript
             file: un.js
             test: tests/test_un_js.js
             run: node $TEST
+            setup: ""
           - lang: Ruby
             file: un.rb
             test: tests/test_un_rb.rb
             run: ruby $TEST
+            setup: ""
           - lang: Perl
             file: un.pl
             test: tests/test_un_pl.pl
             run: perl $TEST
+            setup: "sudo apt-get update && sudo apt-get install -y libjson-perl libwww-perl"
           - lang: Bash
             file: un.sh
             test: tests/test_un_sh.sh
             run: bash $TEST
+            setup: "chmod +x un.sh"
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup dependencies
+        if: matrix.setup != ''
+        run: ${{ matrix.setup }}
 
       - name: Run ${{ matrix.lang }} tests
         env:
@@ -562,7 +577,7 @@ jobs:
       - name: Run OCaml tests
         run: |
           eval $(opam env)
-          ocaml tests/test_un_ml.ml || true
+          ocaml str.cma unix.cma tests/test_un_ml.ml || true
       - name: Integration test
         if: env.UNSANDBOX_PUBLIC_KEY != ''
         run: |

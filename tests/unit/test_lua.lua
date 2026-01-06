@@ -115,7 +115,8 @@ end)
 print("\n=== HMAC Signature Tests ===")
 
 local function hmac_sha256(secret, message)
-    local cmd = string.format("echo -n '%s' | openssl dgst -sha256 -hmac '%s' 2>/dev/null | sed 's/^.* //'",
+    -- Use printf for better portability and awk to extract just the hash
+    local cmd = string.format("printf '%%s' '%s' | openssl dgst -sha256 -hmac '%s' | awk '{print $NF}'",
         message:gsub("'", "'\\''"), secret:gsub("'", "'\\''"))
     local handle = io.popen(cmd)
     if handle then

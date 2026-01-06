@@ -40,10 +40,12 @@ let starts_with prefix str =
   String.length str >= plen && String.sub str 0 plen = prefix
 
 let contains haystack needle =
-  try
-    let _ = Str.search_forward (Str.regexp_string needle) haystack 0 in
-    true
-  with Not_found -> false
+  let rec search i =
+    if i + String.length needle > String.length haystack then false
+    else if String.sub haystack i (String.length needle) = needle then true
+    else search (i + 1)
+  in
+  search 0
 
 let () =
   print_endline "\n=== Extension Mapping Tests ===";
