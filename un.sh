@@ -937,12 +937,35 @@ validate_key() {
         exit 1
     fi
 
+    # Get keys - api_key might be public key or legacy format
+    local public_key="${UNSANDBOX_PUBLIC_KEY:-$api_key}"
+    local secret_key="${UNSANDBOX_SECRET_KEY:-}"
+
+    # Generate HMAC signature for portal request
+    local timestamp=$(date +%s)
+    local endpoint="/keys/validate"
+    local body=""
+    local sig_input="${timestamp}:POST:${endpoint}:${body}"
+    local signature=""
+
+    if [[ -n "$secret_key" ]]; then
+        signature=$(echo -n "$sig_input" | openssl dgst -sha256 -hmac "$secret_key" | sed 's/^.* //')
+    fi
+
     # Call portal validation endpoint
     local response
     local http_code
-    response=$(curl -s -w "\n%{http_code}" -X POST "${PORTAL_BASE}/keys/validate" \
-        -H "Authorization: Bearer $api_key" \
-        -H "Content-Type: application/json" 2>&1)
+    if [[ -n "$signature" ]]; then
+        response=$(curl -s -w "\n%{http_code}" -X POST "${PORTAL_BASE}${endpoint}" \
+            -H "Authorization: Bearer $public_key" \
+            -H "X-Timestamp: $timestamp" \
+            -H "X-Signature: $signature" \
+            -H "Content-Type: application/json" 2>&1)
+    else
+        response=$(curl -s -w "\n%{http_code}" -X POST "${PORTAL_BASE}${endpoint}" \
+            -H "Authorization: Bearer $public_key" \
+            -H "Content-Type: application/json" 2>&1)
+    fi
 
     http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | head -n-1)
@@ -1048,7 +1071,7 @@ validate_key() {
 }
 
 cmd_key() {
-    local api_key="${UNSANDBOX_API_KEY:-}"
+    local api_key="${UNSANDBOX_API_KEY:-${UNSANDBOX_PUBLIC_KEY:-}}"
     local extend=false
 
     # Parse arguments
