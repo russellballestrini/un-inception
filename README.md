@@ -235,6 +235,58 @@ done
 
 This is the **inception** - each layer executes through unsandbox's remote API, so you can test any implementation using `un` (the canonical C implementation) as the runner.
 
+## Security: Egress Shielding
+
+Sandbox nodes route HTTP/HTTPS through tinyproxy, but raw TCP (SSH, etc.) goes out the direct egress IP. This matters for operational security - an attacker who can trigger outbound SSH could geolocate pool nodes.
+
+**Solution: Transparent proxy with redsocks + microsocks.**
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Sandbox Node                                       │
+│                                                     │
+│  HTTP/HTTPS ──→ tinyproxy ──────→ egress proxy IP  │
+│                                                     │
+│  SSH/raw TCP ──→ redsocks ──→ microsocks ──→ same  │
+│                     ↑              egress proxy IP │
+│              (iptables nat)                         │
+└─────────────────────────────────────────────────────┘
+```
+
+redsocks intercepts ALL outbound TCP and routes through the SOCKS proxy. No per-app configuration needed.
+
+```bash
+# Install
+apt install redsocks
+git clone https://github.com/rofl0r/microsocks && cd microsocks && make
+
+# Run microsocks (SOCKS5 proxy)
+./microsocks -p 1080
+
+# Configure redsocks to use it
+cat > /etc/redsocks.conf <<EOF
+base { log_debug = off; log_info = off; daemon = on; }
+redsocks { local_ip = 127.0.0.1; local_port = 12345; ip = 127.0.0.1; port = 1080; type = socks5; }
+EOF
+
+# iptables: redirect all outbound TCP (except to proxy itself)
+iptables -t nat -N REDSOCKS
+iptables -t nat -A REDSOCKS -d 127.0.0.0/8 -j RETURN
+iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
+iptables -t nat -A OUTPUT -p tcp -j REDSOCKS
+```
+
+Everything exits through one IP. Done.
+
+**What's shielded:**
+- All egress IPs - HTTP, SSH, everything
+
+**What works normally:**
+- Git over SSH (`git clone git@github.com:...`)
+- HTTP/HTTPS
+- All inbound connections (routed through sshpiper)
+- Everything inside the sandbox
+
 ## Links
 
 - [unsandbox.com](https://unsandbox.com) - Remote code execution API
