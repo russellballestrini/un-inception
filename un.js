@@ -321,14 +321,28 @@ async function cmdExecute(args) {
   const { publicKey, secretKey } = getApiKeys(args.apiKey);
 
   let code;
-  try {
-    code = fs.readFileSync(args.sourceFile, 'utf-8');
-  } catch (e) {
-    console.error(`${RED}Error: File not found: ${args.sourceFile}${RESET}`);
-    process.exit(1);
+  let language;
+
+  // Check for inline mode: -s/--shell specified, or sourceFile doesn't exist
+  if (args.execShell) {
+    // Inline mode with specified language
+    code = args.sourceFile;
+    language = args.execShell;
+  } else if (!fs.existsSync(args.sourceFile)) {
+    // File doesn't exist - treat as inline bash code
+    code = args.sourceFile;
+    language = "bash";
+  } else {
+    // Normal file execution
+    try {
+      code = fs.readFileSync(args.sourceFile, 'utf-8');
+    } catch (e) {
+      console.error(`${RED}Error: File not found: ${args.sourceFile}${RESET}`);
+      process.exit(1);
+    }
+    language = detectLanguage(args.sourceFile);
   }
 
-  const language = detectLanguage(args.sourceFile);
   const payload = { language, code };
 
   if (args.env && args.env.length > 0) {
@@ -607,6 +621,7 @@ function parseArgs(argv) {
     dumpBootstrap: null,
     dumpFile: null,
     extend: false,
+    execShell: null,
   };
 
   let i = 2;
@@ -638,7 +653,12 @@ function parseArgs(argv) {
       args.apiKey = argv[++i];
       i++;
     } else if (arg === '-s' || arg === '--shell') {
-      args.shell = argv[++i];
+      // For session command, this is shell type. For execute, it's inline exec language.
+      if (args.command === 'session') {
+        args.shell = argv[++i];
+      } else {
+        args.execShell = argv[++i];
+      }
       i++;
     } else if (arg === '-l' || arg === '--list') {
       args.list = true;

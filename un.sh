@@ -215,10 +215,15 @@ cmd_execute() {
     local network=""
     local vcpu=""
     local api_key="${UNSANDBOX_API_KEY:-}"
+    local exec_shell=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -s|--shell)
+                exec_shell="$2"
+                shift 2
+                ;;
             -e)
                 env_vars+=("$2")
                 shift 2
@@ -258,13 +263,23 @@ cmd_execute() {
         esac
     done
 
-    if [[ ! -f "$source_file" ]]; then
-        echo -e "${RED}Error: File not found: $source_file${RESET}" >&2
-        exit 1
-    fi
+    local code
+    local language
 
-    local code=$(cat "$source_file")
-    local language=$(detect_language "$source_file")
+    # Check for inline mode: -s/--shell specified, or source_file doesn't exist
+    if [[ -n "$exec_shell" ]]; then
+        # Inline mode with specified language
+        code="$source_file"
+        language="$exec_shell"
+    elif [[ ! -f "$source_file" ]]; then
+        # File doesn't exist - treat as inline bash code
+        code="$source_file"
+        language="bash"
+    else
+        # Normal file execution
+        code=$(cat "$source_file")
+        language=$(detect_language "$source_file")
+    fi
 
     # Build JSON payload
     local payload=$(jq -n \

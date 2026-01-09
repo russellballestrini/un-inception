@@ -172,13 +172,20 @@ end
 def cmd_execute(options)
   keys = get_api_keys(options[:api_key])
 
-  unless File.exist?(options[:source_file])
-    warn "#{RED}Error: File not found: #{options[:source_file]}#{RESET}"
-    exit 1
+  # Check for inline mode: -s/--shell specified, or source_file doesn't exist
+  if options[:exec_shell]
+    # Inline mode with specified language
+    code = options[:source_file]
+    language = options[:exec_shell]
+  elsif !File.exist?(options[:source_file])
+    # File doesn't exist - treat as inline bash code
+    code = options[:source_file]
+    language = "bash"
+  else
+    # Normal file execution
+    code = File.read(options[:source_file])
+    language = detect_language(options[:source_file])
   end
-
-  code = File.read(options[:source_file])
-  language = detect_language(options[:source_file])
 
   payload = { language: language, code: code }
 
@@ -670,7 +677,8 @@ def main
     dump_bootstrap: nil,
     dump_file: nil,
     extend: false,
-    bootstrap_file: nil
+    bootstrap_file: nil,
+    exec_shell: nil
   }
 
   # Manual argument parsing
@@ -703,7 +711,12 @@ def main
       options[:api_key] = ARGV[i]
     when '-s', '--shell'
       i += 1
-      options[:shell] = ARGV[i]
+      # For session command, this is shell type. For execute, it's inline exec language.
+      if options[:command] == 'session'
+        options[:shell] = ARGV[i]
+      else
+        options[:exec_shell] = ARGV[i]
+      end
     when '-l', '--list'
       options[:list] = true
     when '--attach'

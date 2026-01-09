@@ -242,10 +242,34 @@ local function base64_decode(data)
     end))
 end
 
+local function file_exists(filename)
+    local file = io.open(filename, "r")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
 local function cmd_execute(options)
     local keys = get_api_keys(options.api_key)
-    local code = read_file(options.source_file)
-    local language = detect_language(options.source_file)
+    local code
+    local language
+
+    -- Check for inline mode: -s/--shell specified, or source_file doesn't exist
+    if options.exec_shell then
+        -- Inline mode with specified language
+        code = options.source_file
+        language = options.exec_shell
+    elseif not file_exists(options.source_file) then
+        -- File doesn't exist - treat as inline bash code
+        code = options.source_file
+        language = "bash"
+    else
+        -- Normal file execution
+        code = read_file(options.source_file)
+        language = detect_language(options.source_file)
+    end
 
     local payload = { language = language, code = code }
 
@@ -668,7 +692,8 @@ local function main()
         command = nil,
         dump_bootstrap = nil,
         dump_file = nil,
-        extend = false
+        extend = false,
+        exec_shell = nil
     }
 
     local i = 1
@@ -699,7 +724,12 @@ local function main()
             options.api_key = arg[i]
         elseif a == "-s" or a == "--shell" then
             i = i + 1
-            options.shell = arg[i]
+            -- For session command, this is shell type. For execute, it's inline exec language.
+            if options.command == "session" then
+                options.shell = arg[i]
+            else
+                options.exec_shell = arg[i]
+            end
         elseif a == "-l" or a == "--list" then
             options.list = true
         elseif a == "--attach" then

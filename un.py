@@ -200,15 +200,28 @@ def cmd_execute(args):
     """Execute source code"""
     public_key, secret_key = get_api_keys(args.api_key)
 
-    # Read source file
-    try:
-        with open(args.source_file, 'r') as f:
-            code = f.read()
-    except FileNotFoundError:
-        print(f"{RED}Error: File not found: {args.source_file}{RESET}", file=sys.stderr)
-        sys.exit(1)
+    # Check for inline mode: -s/--shell specified, or source_file doesn't exist
+    inline_mode = False
+    if args.exec_shell:
+        inline_mode = True
+        language = args.exec_shell
+        code = args.source_file  # The "file" argument is actually the code
+    elif not os.path.exists(args.source_file):
+        # File doesn't exist - treat as inline bash code
+        inline_mode = True
+        language = "bash"
+        code = args.source_file
 
-    language = detect_language(args.source_file)
+    if not inline_mode:
+        # Read source file
+        try:
+            with open(args.source_file, 'r') as f:
+                code = f.read()
+        except FileNotFoundError:
+            print(f"{RED}Error: File not found: {args.source_file}{RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        language = detect_language(args.source_file)
 
     # Build request payload
     payload = {
@@ -746,6 +759,7 @@ Examples:
 
     # Execute options (default command)
     parser.add_argument("source_file", nargs="?", help="Source file to execute")
+    parser.add_argument("-s", "--shell", dest="exec_shell", metavar="LANG", help="Execute inline code with specified language (defaults to bash if arg is not a file)")
     parser.add_argument("-e", "--env", action="append", metavar="KEY=VALUE", help="Set environment variable")
     parser.add_argument("-f", "--files", action="append", metavar="FILE", help="Add input file")
     parser.add_argument("-a", "--artifacts", action="store_true", help="Return artifacts")
