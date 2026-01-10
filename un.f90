@@ -317,7 +317,8 @@ contains
     subroutine handle_service()
         character(len=8192) :: full_cmd
         character(len=256) :: arg, service_id, operation, service_type, service_name
-        character(len=1024) :: input_files
+        character(len=1024) :: input_files, public_key, secret_key
+        character(len=2048) :: svc_envs, svc_env_file, env_action, env_target
         integer :: i, stat
         logical :: list_mode
 
@@ -327,20 +328,49 @@ contains
         service_type = ''
         service_name = ''
         input_files = ''
+        svc_envs = ''
+        svc_env_file = ''
+        env_action = ''
+        env_target = ''
 
         ! Parse service arguments
-        do i = 2, command_argument_count()
+        i = 2
+        do while (i <= command_argument_count())
             call get_command_argument(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
+            else if (trim(arg) == 'env') then
+                ! service env <action> <service_id>
+                if (i+2 <= command_argument_count()) then
+                    call get_command_argument(i+1, env_action)
+                    call get_command_argument(i+2, env_target)
+                    i = i + 2
+                end if
             else if (trim(arg) == '--name') then
                 operation = 'create'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_name)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--type') then
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_type)
+                    i = i + 1
+                end if
+            else if (trim(arg) == '-e') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, arg)
+                    if (len_trim(svc_envs) > 0) then
+                        svc_envs = trim(svc_envs) // char(10) // trim(arg)
+                    else
+                        svc_envs = trim(arg)
+                    end if
+                    i = i + 1
+                end if
+            else if (trim(arg) == '--env-file') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, svc_env_file)
+                    i = i + 1
                 end if
             else if (trim(arg) == '-f') then
                 if (i+1 <= command_argument_count()) then
@@ -350,101 +380,221 @@ contains
                     else
                         input_files = trim(arg)
                     end if
+                    i = i + 1
                 end if
             else if (trim(arg) == '--info') then
                 operation = 'info'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--logs') then
                 operation = 'logs'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--freeze') then
                 operation = 'sleep'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--unfreeze') then
                 operation = 'wake'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--destroy') then
                 operation = 'destroy'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--dump-bootstrap') then
                 operation = 'dump-bootstrap'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
                 end if
             else if (trim(arg) == '--dump-file') then
                 operation = 'dump-file'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_type)
+                    i = i + 1
                 end if
             end if
+            i = i + 1
         end do
 
-        ! Get API key
-        call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
-        if (stat /= 0 .or. len_trim(api_key) == 0) then
-            write(0, '(A)') 'Error: UNSANDBOX_API_KEY not set'
-            stop 1
+        ! Get API keys (try new format first, fall back to old)
+        call get_environment_variable('UNSANDBOX_PUBLIC_KEY', public_key, status=stat)
+        if (stat == 0 .and. len_trim(public_key) > 0) then
+            call get_environment_variable('UNSANDBOX_SECRET_KEY', secret_key, status=stat)
+            if (stat /= 0 .or. len_trim(secret_key) == 0) then
+                write(0, '(A)') 'Error: UNSANDBOX_SECRET_KEY not set'
+                stop 1
+            end if
+        else
+            call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=stat)
+            if (stat /= 0 .or. len_trim(api_key) == 0) then
+                write(0, '(A)') 'Error: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set'
+                stop 1
+            end if
+            public_key = api_key
+            secret_key = api_key
+        end if
+
+        ! Handle env subcommand
+        if (len_trim(env_action) > 0) then
+            if (trim(env_action) == 'status') then
+                write(full_cmd, '(20A)') &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:GET:/services/', trim(env_target), '/env:" | ', &
+                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X GET "https://api.unsandbox.com/services/', trim(env_target), '/env" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" | jq .'
+                call execute_command_line(trim(full_cmd), wait=.true.)
+                return
+            else if (trim(env_action) == 'set') then
+                ! Build env content from -e flags and --env-file
+                write(full_cmd, '(50A)') &
+                    'ENV_CONTENT=""; ', &
+                    'ENV_LINES="', trim(svc_envs), '"; ', &
+                    'if [ -n "$ENV_LINES" ]; then ', &
+                    'ENV_CONTENT="$ENV_LINES"; ', &
+                    'fi; ', &
+                    'ENV_FILE="', trim(svc_env_file), '"; ', &
+                    'if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then ', &
+                    'while IFS= read -r line || [ -n "$line" ]; do ', &
+                    'case "$line" in "#"*|"") continue ;; esac; ', &
+                    'if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT', char(10), '"; fi; ', &
+                    'ENV_CONTENT="$ENV_CONTENT$line"; ', &
+                    'done < "$ENV_FILE"; fi; ', &
+                    'if [ -z "$ENV_CONTENT" ]; then ', &
+                    'echo -e "\x1b[31mError: No environment variables to set\x1b[0m" >&2; exit 1; fi; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:PUT:/services/', trim(env_target), '/env:$ENV_CONTENT" | ', &
+                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X PUT "https://api.unsandbox.com/services/', trim(env_target), '/env" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" ', &
+                    '-H "Content-Type: text/plain" ', &
+                    '--data-binary "$ENV_CONTENT" | jq .'
+                call execute_command_line(trim(full_cmd), wait=.true.)
+                return
+            else if (trim(env_action) == 'export') then
+                write(full_cmd, '(20A)') &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/services/', trim(env_target), '/env/export:" | ', &
+                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST "https://api.unsandbox.com/services/', trim(env_target), '/env/export" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" | jq -r ".content // empty"'
+                call execute_command_line(trim(full_cmd), wait=.true.)
+                return
+            else if (trim(env_action) == 'delete') then
+                write(full_cmd, '(20A)') &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:DELETE:/services/', trim(env_target), '/env:" | ', &
+                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X DELETE "https://api.unsandbox.com/services/', trim(env_target), '/env" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" >/dev/null && ', &
+                    'echo -e "\x1b[32mVault deleted for: ', trim(env_target), '\x1b[0m"'
+                call execute_command_line(trim(full_cmd), wait=.true.)
+                return
+            else
+                write(0, '(A,A)') 'Error: Unknown env action: ', trim(env_action)
+                write(0, '(A)') 'Usage: un.f90 service env <status|set|export|delete> <service_id>'
+                stop 1
+            end if
         end if
 
         if (list_mode) then
             ! List services
-            write(full_cmd, '(10A)') &
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/services:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X GET https://api.unsandbox.com/services ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" | ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | ', &
                 'jq -r ''.services[] | "\(.id) \(.name) \(.status)"'' ', &
                 '2>/dev/null || echo "No services"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'info' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(10A)') &
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X GET https://api.unsandbox.com/services/', &
                 trim(service_id), ' ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" | jq .'
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq .'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'logs' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(10A)') &
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/services/', trim(service_id), '/logs:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X GET https://api.unsandbox.com/services/', &
                 trim(service_id), '/logs ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" | jq -r ".logs"'
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq -r ".logs"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'sleep' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(10A)') &
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/sleep:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X POST https://api.unsandbox.com/services/', &
                 trim(service_id), '/sleep ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" >/dev/null && ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" >/dev/null && ', &
                 'echo -e "\x1b[32mService sleeping: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'wake' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(10A)') &
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/wake:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X POST https://api.unsandbox.com/services/', &
                 trim(service_id), '/wake ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" >/dev/null && ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" >/dev/null && ', &
                 'echo -e "\x1b[32mService waking: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'destroy' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(10A)') &
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X DELETE https://api.unsandbox.com/services/', &
                 trim(service_id), ' ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" >/dev/null && ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" >/dev/null && ', &
                 'echo -e "\x1b[32mService destroyed: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'dump-bootstrap' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(20A)') &
+            write(full_cmd, '(30A)') &
                 'echo "Fetching bootstrap script from ', trim(service_id), '..." >&2; ', &
+                'BODY=''{"command":"cat /tmp/bootstrap.sh"}''; ', &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/execute:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'RESP=$(curl -s -X POST https://api.unsandbox.com/services/', &
                 trim(service_id), '/execute ', &
                 '-H "Content-Type: application/json" ', &
-                '-H "Authorization: Bearer ', trim(api_key), '" ', &
-                '-d ''{"command":"cat /tmp/bootstrap.sh"}''); ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" ', &
+                '-d "$BODY"); ', &
                 'STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); ', &
                 'if [ -n "$STDOUT" ]; then ', &
                 'if [ -n "', trim(service_type), '" ]; then ', &
@@ -454,9 +604,9 @@ contains
                 'else echo -e "\x1b[31mError: Failed to fetch bootstrap\x1b[0m" >&2; exit 1; fi'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'create' .and. len_trim(service_name) > 0) then
-            ! Create service with optional input_files
+            ! Create service with optional input_files and auto-vault
             if (len_trim(input_files) > 0) then
-                write(full_cmd, '(30A)') &
+                write(full_cmd, '(60A)') &
                     'INPUT_FILES=""; ', &
                     'IFS='','' read -ra FILES <<< "', trim(input_files), '"; ', &
                     'for f in "${FILES[@]}"; do ', &
@@ -465,24 +615,78 @@ contains
                     'if [ -n "$INPUT_FILES" ]; then INPUT_FILES="$INPUT_FILES,"; fi; ', &
                     'INPUT_FILES="$INPUT_FILES{\"filename\":\"$name\",\"content\":\"$b64\"}"; ', &
                     'done; ', &
-                    'curl -s -X POST https://api.unsandbox.com/services ', &
+                    'BODY=''{"name":"', trim(service_name), '","input_files":[''"$INPUT_FILES"'']}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/services:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'RESP=$(curl -s -X POST https://api.unsandbox.com/services ', &
                     '-H "Content-Type: application/json" ', &
-                    '-H "Authorization: Bearer ', trim(api_key), '" ', &
-                    '-d ''{"name":"', trim(service_name), '","input_files":[''"$INPUT_FILES"'']}'' | ', &
-                    'jq -r ''.id + " created"'' && ', &
-                    'echo -e "\x1b[32mService created\x1b[0m"'
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" ', &
+                    '-d "$BODY"); ', &
+                    'SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); ', &
+                    'if [ -n "$SVC_ID" ]; then ', &
+                    'echo -e "\x1b[32m$SVC_ID created\x1b[0m"; ', &
+                    'ENV_CONTENT=""; ', &
+                    'ENV_LINES="', trim(svc_envs), '"; ', &
+                    'if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ', &
+                    'ENV_FILE="', trim(svc_env_file), '"; ', &
+                    'if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then ', &
+                    'while IFS= read -r line || [ -n "$line" ]; do ', &
+                    'case "$line" in "#"*|"") continue ;; esac; ', &
+                    'if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT', char(10), '"; fi; ', &
+                    'ENV_CONTENT="$ENV_CONTENT$line"; ', &
+                    'done < "$ENV_FILE"; fi; ', &
+                    'if [ -n "$ENV_CONTENT" ]; then ', &
+                    'TS2=$(date +%s); ', &
+                    'SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X PUT "https://api.unsandbox.com/services/$SVC_ID/env" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS2" ', &
+                    '-H "X-Signature: $SIG2" ', &
+                    '-H "Content-Type: text/plain" ', &
+                    '--data-binary "$ENV_CONTENT" >/dev/null && ', &
+                    'echo -e "\x1b[32mVault configured\x1b[0m"; fi; ', &
+                    'else echo "$RESP" | jq .; fi'
             else
-                write(full_cmd, '(15A)') &
-                    'curl -s -X POST https://api.unsandbox.com/services ', &
+                write(full_cmd, '(60A)') &
+                    'BODY=''{"name":"', trim(service_name), '"}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/services:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'RESP=$(curl -s -X POST https://api.unsandbox.com/services ', &
                     '-H "Content-Type: application/json" ', &
-                    '-H "Authorization: Bearer ', trim(api_key), '" ', &
-                    '-d ''{"name":"', trim(service_name), '"}'' | ', &
-                    'jq -r ''.id + " created"'' && ', &
-                    'echo -e "\x1b[32mService created\x1b[0m"'
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" ', &
+                    '-H "X-Signature: $SIG" ', &
+                    '-d "$BODY"); ', &
+                    'SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); ', &
+                    'if [ -n "$SVC_ID" ]; then ', &
+                    'echo -e "\x1b[32m$SVC_ID created\x1b[0m"; ', &
+                    'ENV_CONTENT=""; ', &
+                    'ENV_LINES="', trim(svc_envs), '"; ', &
+                    'if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ', &
+                    'ENV_FILE="', trim(svc_env_file), '"; ', &
+                    'if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then ', &
+                    'while IFS= read -r line || [ -n "$line" ]; do ', &
+                    'case "$line" in "#"*|"") continue ;; esac; ', &
+                    'if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT', char(10), '"; fi; ', &
+                    'ENV_CONTENT="$ENV_CONTENT$line"; ', &
+                    'done < "$ENV_FILE"; fi; ', &
+                    'if [ -n "$ENV_CONTENT" ]; then ', &
+                    'TS2=$(date +%s); ', &
+                    'SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X PUT "https://api.unsandbox.com/services/$SVC_ID/env" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS2" ', &
+                    '-H "X-Signature: $SIG2" ', &
+                    '-H "Content-Type: text/plain" ', &
+                    '--data-binary "$ENV_CONTENT" >/dev/null && ', &
+                    'echo -e "\x1b[32mVault configured\x1b[0m"; fi; ', &
+                    'else echo "$RESP" | jq .; fi'
             end if
             call execute_command_line(trim(full_cmd), wait=.true.)
         else
-            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --dump-bootstrap, or --name NAME'
+            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --dump-bootstrap, --name, or env'
             stop 1
         end if
     end subroutine handle_service

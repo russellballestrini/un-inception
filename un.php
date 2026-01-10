@@ -178,6 +178,172 @@ function api_request($endpoint, $method = 'GET', $data = null, $keys = null) {
     return json_decode($response, true);
 }
 
+function api_request_text($endpoint, $method, $body, $keys) {
+    $url = API_BASE . $endpoint;
+    $ch = curl_init($url);
+
+    $timestamp = (string)time();
+
+    // Parse URL to get path
+    $parsed_url = parse_url($url);
+    $path = $parsed_url['path'];
+    $message = "$timestamp:$method:$path:$body";
+    $signature = hash_hmac('sha256', $message, $keys['secret_key']);
+
+    $headers = [
+        'Authorization: Bearer ' . $keys['public_key'],
+        'X-Timestamp: ' . $timestamp,
+        'X-Signature: ' . $signature,
+        'Content-Type: text/plain'
+    ];
+
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_TIMEOUT => 300,
+        CURLOPT_POSTFIELDS => $body
+    ]);
+
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+    if ($response === false) {
+        curl_close($ch);
+        return ['error' => curl_error($ch)];
+    }
+
+    curl_close($ch);
+
+    if ($http_code < 200 || $http_code >= 300) {
+        return ['error' => "HTTP $http_code - $response"];
+    }
+
+    return json_decode($response, true);
+}
+
+// ============================================================================
+// Environment Secrets Vault Functions
+// ============================================================================
+
+const MAX_ENV_CONTENT_SIZE = 64 * 1024; // 64KB max
+
+function service_env_status($service_id, $keys) {
+    $result = api_request("/services/$service_id/env", 'GET', null, $keys);
+    $has_vault = $result['has_vault'] ?? false;
+
+    if (!$has_vault) {
+        echo "Vault exists: no\n";
+        echo "Variable count: 0\n";
+    } else {
+        echo "Vault exists: yes\n";
+        echo "Variable count: " . ($result['count'] ?? 0) . "\n";
+        if (isset($result['updated_at'])) {
+            echo "Last updated: " . date('Y-m-d H:i:s', $result['updated_at']) . "\n";
+        }
+    }
+}
+
+function service_env_set($service_id, $env_content, $keys) {
+    if (empty($env_content)) {
+        fwrite(STDERR, RED . "Error: No environment content provided" . RESET . "\n");
+        return false;
+    }
+
+    if (strlen($env_content) > MAX_ENV_CONTENT_SIZE) {
+        fwrite(STDERR, RED . "Error: Environment content too large (max " . MAX_ENV_CONTENT_SIZE . " bytes)" . RESET . "\n");
+        return false;
+    }
+
+    $result = api_request_text("/services/$service_id/env", 'PUT', $env_content, $keys);
+
+    if (isset($result['error'])) {
+        fwrite(STDERR, RED . "Error: " . $result['error'] . RESET . "\n");
+        return false;
+    }
+
+    $count = $result['count'] ?? 0;
+    $plural = $count === 1 ? '' : 's';
+    echo GREEN . "Environment vault updated: $count variable$plural" . RESET . "\n";
+    if (!empty($result['message'])) echo $result['message'] . "\n";
+    return true;
+}
+
+function service_env_export($service_id, $keys) {
+    $result = api_request("/services/$service_id/env/export", 'POST', [], $keys);
+    $env_content = $result['env'] ?? '';
+    if (!empty($env_content)) {
+        echo $env_content;
+        if (!str_ends_with($env_content, "\n")) echo "\n";
+    }
+}
+
+function service_env_delete($service_id, $keys) {
+    api_request("/services/$service_id/env", 'DELETE', null, $keys);
+    echo GREEN . "Environment vault deleted" . RESET . "\n";
+}
+
+function read_env_file($filepath) {
+    if (!file_exists($filepath)) {
+        fwrite(STDERR, RED . "Error: Env file not found: $filepath" . RESET . "\n");
+        exit(1);
+    }
+    return file_get_contents($filepath);
+}
+
+function build_env_content($envs, $env_file) {
+    $parts = [];
+
+    // Read from env file first
+    if (!empty($env_file)) {
+        $parts[] = read_env_file($env_file);
+    }
+
+    // Add -e flags
+    foreach ($envs as $e) {
+        if (str_contains($e, '=')) {
+            $parts[] = $e;
+        }
+    }
+
+    return implode("\n", $parts);
+}
+
+function cmd_service_env($action, $target, $envs, $env_file, $keys) {
+    if (empty($action)) {
+        fwrite(STDERR, RED . "Error: env action required (status, set, export, delete)" . RESET . "\n");
+        exit(1);
+    }
+
+    if (empty($target)) {
+        fwrite(STDERR, RED . "Error: Service ID required for env command" . RESET . "\n");
+        exit(1);
+    }
+
+    switch ($action) {
+        case 'status':
+            service_env_status($target, $keys);
+            break;
+        case 'set':
+            $env_content = build_env_content($envs, $env_file);
+            if (empty($env_content)) {
+                fwrite(STDERR, RED . "Error: No env content provided. Use -e KEY=VAL or --env-file" . RESET . "\n");
+                exit(1);
+            }
+            service_env_set($target, $env_content, $keys);
+            break;
+        case 'export':
+            service_env_export($target, $keys);
+            break;
+        case 'delete':
+            service_env_delete($target, $keys);
+            break;
+        default:
+            fwrite(STDERR, RED . "Error: Unknown env action '$action'. Use: status, set, export, delete" . RESET . "\n");
+            exit(1);
+    }
+}
+
 function cmd_execute($options) {
     $keys = get_api_keys($options['api_key']);
 
@@ -568,9 +734,16 @@ function cmd_service($options) {
         if ($options['vcpu']) $payload['vcpu'] = $options['vcpu'];
 
         $result = api_request('/services', 'POST', $payload, $keys);
-        echo GREEN . "Service created: " . ($result['id'] ?? 'N/A') . RESET . "\n";
+        $service_id = $result['id'] ?? null;
+        echo GREEN . "Service created: " . ($service_id ?? 'N/A') . RESET . "\n";
         echo "Name: " . ($result['name'] ?? 'N/A') . "\n";
         if (!empty($result['url'])) echo "URL: {$result['url']}\n";
+
+        // Auto-set vault if -e or --env-file provided
+        $env_content = build_env_content($options['env'] ?? [], $options['env_file']);
+        if (!empty($env_content) && $service_id) {
+            service_env_set($service_id, $env_content, $keys);
+        }
         return;
     }
 
@@ -614,7 +787,10 @@ function main() {
         'command' => null,
         'dump_bootstrap' => null,
         'dump_file' => null,
-        'extend' => false
+        'extend' => false,
+        'env_file' => null,
+        'env_action' => null,
+        'env_target' => null
     ];
 
     for ($i = 1; $i < count($argv); $i++) {
@@ -688,6 +864,20 @@ function main() {
             case '--bootstrap-file':
                 $options['bootstrap_file'] = $argv[++$i];
                 break;
+            case '--env-file':
+                $options['env_file'] = $argv[++$i];
+                break;
+            case 'env':
+                // Handle "service env <action> <target>" subcommand
+                if ($options['command'] === 'service') {
+                    if (isset($argv[$i + 1])) {
+                        $options['env_action'] = $argv[++$i];
+                    }
+                    if (isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')) {
+                        $options['env_target'] = $argv[++$i];
+                    }
+                }
+                break;
             case '--info':
                 $options['info'] = $argv[++$i];
                 break;
@@ -735,7 +925,13 @@ function main() {
     if ($options['command'] === 'session') {
         cmd_session($options);
     } elseif ($options['command'] === 'service') {
-        cmd_service($options);
+        // Check for "service env" subcommand
+        if ($options['env_action']) {
+            $keys = get_api_keys($options['api_key']);
+            cmd_service_env($options['env_action'], $options['env_target'], $options['env'], $options['env_file'], $keys);
+        } else {
+            cmd_service($options);
+        }
     } elseif ($options['command'] === 'key') {
         cmd_key($options);
     } elseif ($options['source_file']) {

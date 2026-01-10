@@ -169,6 +169,152 @@ rescue => e
   exit 1
 end
 
+def api_request_text(endpoint, method:, body:, keys:)
+  require 'openssl'
+
+  uri = URI("#{API_BASE}#{endpoint}")
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = true
+  http.read_timeout = 300
+
+  timestamp = Time.now.to_i.to_s
+  message = "#{timestamp}:#{method}:#{uri.path}:#{body}"
+  signature = OpenSSL::HMAC.hexdigest('SHA256', keys[:secret_key], message)
+
+  request = case method
+            when 'PUT' then Net::HTTP::Put.new(uri)
+            else raise "Unknown method: #{method}"
+            end
+
+  request['Authorization'] = "Bearer #{keys[:public_key]}"
+  request['X-Timestamp'] = timestamp
+  request['X-Signature'] = signature
+  request['Content-Type'] = 'text/plain'
+  request.body = body
+
+  response = http.request(request)
+  unless response.is_a?(Net::HTTPSuccess)
+    return { 'error' => "HTTP #{response.code} - #{response.body}" }
+  end
+
+  JSON.parse(response.body)
+rescue => e
+  { 'error' => e.message }
+end
+
+# ============================================================================
+# Environment Secrets Vault Functions
+# ============================================================================
+
+MAX_ENV_CONTENT_SIZE = 64 * 1024 # 64KB max env vault size
+
+def service_env_status(service_id, keys)
+  result = api_request("/services/#{service_id}/env", keys: keys)
+  has_vault = result['has_vault']
+
+  if !has_vault
+    puts "Vault exists: no"
+    puts "Variable count: 0"
+  else
+    puts "Vault exists: yes"
+    puts "Variable count: #{result['count'] || 0}"
+    if result['updated_at']
+      puts "Last updated: #{Time.at(result['updated_at']).strftime('%Y-%m-%d %H:%M:%S')}"
+    end
+  end
+end
+
+def service_env_set(service_id, env_content, keys)
+  if env_content.nil? || env_content.empty?
+    warn "#{RED}Error: No environment content provided#{RESET}"
+    return false
+  end
+
+  if env_content.bytesize > MAX_ENV_CONTENT_SIZE
+    warn "#{RED}Error: Environment content too large (max #{MAX_ENV_CONTENT_SIZE} bytes)#{RESET}"
+    return false
+  end
+
+  result = api_request_text("/services/#{service_id}/env", method: 'PUT', body: env_content, keys: keys)
+
+  if result['error']
+    warn "#{RED}Error: #{result['error']}#{RESET}"
+    return false
+  end
+
+  count = result['count'] || 0
+  plural = count == 1 ? '' : 's'
+  puts "#{GREEN}Environment vault updated: #{count} variable#{plural}#{RESET}"
+  puts result['message'] if result['message']
+  true
+end
+
+def service_env_export(service_id, keys)
+  result = api_request("/services/#{service_id}/env/export", method: 'POST', data: {}, keys: keys)
+  env_content = result['env']
+  if env_content && !env_content.empty?
+    print env_content
+    puts unless env_content.end_with?("\n")
+  end
+end
+
+def service_env_delete(service_id, keys)
+  api_request("/services/#{service_id}/env", method: 'DELETE', keys: keys)
+  puts "#{GREEN}Environment vault deleted#{RESET}"
+end
+
+def read_env_file(filepath)
+  File.read(filepath)
+rescue => e
+  warn "#{RED}Error: Env file not found: #{filepath}#{RESET}"
+  exit 1
+end
+
+def build_env_content(envs, env_file)
+  parts = []
+
+  # Read from env file first
+  parts << read_env_file(env_file) if env_file && !env_file.empty?
+
+  # Add -e flags
+  envs.each do |e|
+    parts << e if e.include?('=')
+  end
+
+  parts.join("\n")
+end
+
+def cmd_service_env(action, target, envs, env_file, keys)
+  if action.nil? || action.empty?
+    warn "#{RED}Error: env action required (status, set, export, delete)#{RESET}"
+    exit 1
+  end
+
+  if target.nil? || target.empty?
+    warn "#{RED}Error: Service ID required for env command#{RESET}"
+    exit 1
+  end
+
+  case action
+  when 'status'
+    service_env_status(target, keys)
+  when 'set'
+    env_content = build_env_content(envs, env_file)
+    if env_content.empty?
+      warn "#{RED}Error: No env content provided. Use -e KEY=VAL or --env-file#{RESET}"
+      exit 1
+    end
+    service_env_set(target, env_content, keys)
+  when 'export'
+    service_env_export(target, keys)
+  when 'delete'
+    service_env_delete(target, keys)
+  else
+    warn "#{RED}Error: Unknown env action '#{action}'. Use: status, set, export, delete#{RESET}"
+    exit 1
+  end
+end
+
 def cmd_execute(options)
   keys = get_api_keys(options[:api_key])
 
@@ -620,9 +766,16 @@ def cmd_service(options)
     payload[:vcpu] = options[:vcpu] if options[:vcpu]
 
     result = api_request('/services', method: 'POST', data: payload, keys: keys)
-    puts "#{GREEN}Service created: #{result['id'] || 'N/A'}#{RESET}"
+    service_id = result['id']
+    puts "#{GREEN}Service created: #{service_id || 'N/A'}#{RESET}"
     puts "Name: #{result['name'] || 'N/A'}"
     puts "URL: #{result['url']}" if result['url']
+
+    # Auto-set vault if -e or --env-file provided
+    env_content = build_env_content(options[:env] || [], options[:env_file])
+    if !env_content.empty? && service_id
+      service_env_set(service_id, env_content, keys)
+    end
     return
   end
 
@@ -678,7 +831,10 @@ def main
     dump_file: nil,
     extend: false,
     bootstrap_file: nil,
-    exec_shell: nil
+    exec_shell: nil,
+    env_file: nil,
+    env_action: nil,
+    env_target: nil
   }
 
   # Manual argument parsing
@@ -749,6 +905,21 @@ def main
     when '--bootstrap-file'
       i += 1
       options[:bootstrap_file] = ARGV[i]
+    when '--env-file'
+      i += 1
+      options[:env_file] = ARGV[i]
+    when 'env'
+      # Handle "service env <action> <target>" subcommand
+      if options[:command] == 'service'
+        i += 1
+        options[:env_action] = ARGV[i] if i < ARGV.length
+        i += 1
+        if i < ARGV.length && !ARGV[i].start_with?('-')
+          options[:env_target] = ARGV[i]
+        else
+          i -= 1 # back up if next arg is a flag
+        end
+      end
     when '--info'
       i += 1
       options[:info] = ARGV[i]
@@ -846,7 +1017,13 @@ def main
   when 'session'
     cmd_session(options)
   when 'service'
-    cmd_service(options)
+    # Check for "service env" subcommand
+    if options[:env_action]
+      keys = get_api_keys(options[:api_key])
+      cmd_service_env(options[:env_action], options[:env_target], options[:env], options[:env_file], keys)
+    else
+      cmd_service(options)
+    end
   when 'snapshot'
     cmd_snapshot(options)
   when 'key'

@@ -186,6 +186,52 @@
              response))
       (delete-file tmp-file))))
 
+(defun curl-put-text (api-key endpoint content)
+  "PUT request with text/plain content type (for vault)"
+  (let ((tmp-file (write-temp-file content)))
+    (unwind-protect
+         (destructuring-bind (public-key secret-key) (get-api-keys)
+           (let* ((auth-headers (build-auth-headers public-key secret-key "PUT" endpoint content))
+                  (base-args (list "curl" "-s" "-X" "PUT"
+                                  (format nil "https://api.unsandbox.com~a" endpoint)
+                                  "-H" "Content-Type: text/plain"))
+                  (response (run-curl (append base-args auth-headers (list "--data-binary" (format nil "@~a" tmp-file))))))
+             (check-clock-drift response)
+             response))
+      (delete-file tmp-file))))
+
+(defun build-env-content (env-vars env-file)
+  "Build env content from list of env vars and env file"
+  (let ((lines '()))
+    ;; Add env vars
+    (dolist (var env-vars)
+      (push var lines))
+    ;; Add env file contents
+    (when (and env-file (probe-file env-file))
+      (with-open-file (stream env-file)
+        (loop for line = (read-line stream nil)
+              while line
+              do (let ((trimmed (string-trim '(#\Space #\Tab) line)))
+                   (when (and (> (length trimmed) 0)
+                             (not (char= (char trimmed 0) #\#)))
+                     (push line lines))))))
+    (format nil "~{~a~^~%~}" (nreverse lines))))
+
+(defun service-env-status (api-key service-id)
+  (format t "~a~%" (curl-get api-key (format nil "/services/~a/env" service-id))))
+
+(defun service-env-set (api-key service-id content)
+  (format t "~a~%" (curl-put-text api-key (format nil "/services/~a/env" service-id) content)))
+
+(defun service-env-export (api-key service-id)
+  (let* ((response (curl-post api-key (format nil "/services/~a/env/export" service-id) "{}"))
+         (content (parse-json-field response "content")))
+    (when content (format t "~a" content))))
+
+(defun service-env-delete (api-key service-id)
+  (curl-delete api-key (format nil "/services/~a/env" service-id))
+  (format t "~aVault deleted: ~a~a~%" *green* service-id *reset*))
+
 (defun get-api-keys ()
   (let ((public-key (uiop:getenv "UNSANDBOX_PUBLIC_KEY"))
         (secret-key (uiop:getenv "UNSANDBOX_SECRET_KEY"))
@@ -252,7 +298,7 @@
           (format t "~aSession created (WebSocket required)~a~%" *yellow* *reset*)
           (format t "~a~%" response))))))
 
-(defun service-cmd (action id name ports bootstrap bootstrap-file service-type input-files)
+(defun service-cmd (action id name ports bootstrap bootstrap-file service-type input-files env-vars env-file)
   (let ((api-key (get-api-key)))
     (cond
       ((string= action "list")
@@ -294,6 +340,21 @@
                (progn
                  (format *error-output* "~aError: Failed to fetch bootstrap (service not running or no bootstrap file)~a~%" *red* *reset*)
                  (uiop:quit 1))))))
+      ;; Vault commands
+      ((string= action "env-status")
+       (service-env-status api-key id))
+      ((string= action "env-set")
+       (let ((content (build-env-content env-vars env-file)))
+         (if (> (length content) 0)
+             (service-env-set api-key id content)
+             (progn
+               (format *error-output* "~aError: No environment variables to set~a~%" *red* *reset*)
+               (uiop:quit 1)))))
+      ((string= action "env-export")
+       (service-env-export api-key id))
+      ((string= action "env-delete")
+       (service-env-delete api-key id))
+      ;; Create service
       ((and (string= action "create") name)
        (let* ((ports-json (if ports (format nil ",\"ports\":[~a]" ports) ""))
               (bootstrap-json (if bootstrap (format nil ",\"bootstrap\":\"~a\"" (escape-json bootstrap)) ""))
@@ -303,11 +364,17 @@
               (type-json (if service-type (format nil ",\"service_type\":\"~a\"" service-type) ""))
               (input-files-json (build-input-files-json input-files))
               (json (format nil "{\"name\":\"~a\"~a~a~a~a~a}" name ports-json bootstrap-json bootstrap-content-json type-json input-files-json))
-              (response (curl-post api-key "/services" json)))
+              (response (curl-post api-key "/services" json))
+              (service-id (parse-json-field response "id")))
          (format t "~aService created~a~%" *green* *reset*)
-         (format t "~a~%" response)))
+         (format t "~a~%" response)
+         ;; Auto-set vault if env vars were provided
+         (let ((env-content (build-env-content env-vars env-file)))
+           (when (and service-id (> (length env-content) 0))
+             (format t "~aSetting vault for service...~a~%" *yellow* *reset*)
+             (service-env-set api-key service-id env-content)))))
       (t
-        (format t "Error: --name required to create service~%")
+        (format t "Error: --name required to create service, or use env subcommand~%")
         (uiop:quit 1)))))
 
 (defun parse-json-field (json field)
@@ -444,23 +511,53 @@
           ((string= (first args) "service")
            (cond
              ((and (> (length args) 1) (string= (second args) "--list"))
-              (service-cmd "list" nil nil nil nil nil nil nil))
+              (service-cmd "list" nil nil nil nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--info"))
-              (service-cmd "info" (third args) nil nil nil nil nil nil))
+              (service-cmd "info" (third args) nil nil nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--logs"))
-              (service-cmd "logs" (third args) nil nil nil nil nil nil))
+              (service-cmd "logs" (third args) nil nil nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--freeze"))
-              (service-cmd "sleep" (third args) nil nil nil nil nil nil))
+              (service-cmd "sleep" (third args) nil nil nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--unfreeze"))
-              (service-cmd "wake" (third args) nil nil nil nil nil nil))
+              (service-cmd "wake" (third args) nil nil nil nil nil nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--destroy"))
-              (service-cmd "destroy" (third args) nil nil nil nil nil nil))
+              (service-cmd "destroy" (third args) nil nil nil nil nil nil nil nil))
              ((and (> (length args) 3) (string= (second args) "--execute"))
-              (service-cmd "execute" (third args) nil nil (fourth args) nil nil nil))
+              (service-cmd "execute" (third args) nil nil (fourth args) nil nil nil nil nil))
              ((and (> (length args) 3) (string= (second args) "--dump-bootstrap"))
-              (service-cmd "dump-bootstrap" (third args) nil nil nil nil (fourth args) nil))
+              (service-cmd "dump-bootstrap" (third args) nil nil nil nil (fourth args) nil nil nil))
              ((and (> (length args) 2) (string= (second args) "--dump-bootstrap"))
-              (service-cmd "dump-bootstrap" (third args) nil nil nil nil nil nil))
+              (service-cmd "dump-bootstrap" (third args) nil nil nil nil nil nil nil nil))
+             ;; Service env subcommand: service env <action> <id> [options]
+             ((and (> (length args) 1) (string= (second args) "env"))
+              (if (< (length args) 4)
+                  (progn
+                    (format *error-output* "Usage: un.lisp service env <status|set|export|delete> <service_id> [options]~%")
+                    (uiop:quit 1))
+                  (let* ((env-action (third args))
+                         (service-id (fourth args))
+                         (rest-args (if (> (length args) 4) (nthcdr 4 args) nil)))
+                    (cond
+                      ((string= env-action "status")
+                       (service-cmd "env-status" service-id nil nil nil nil nil nil nil nil))
+                      ((string= env-action "set")
+                       ;; Parse -e and --env-file from rest-args
+                       (let ((env-vars nil)
+                             (env-file nil))
+                         (loop for i from 0 below (1- (length rest-args))
+                               do (let ((opt (nth i rest-args))
+                                        (val (nth (1+ i) rest-args)))
+                                    (cond
+                                      ((string= opt "-e") (push val env-vars))
+                                      ((string= opt "--env-file") (setf env-file val)))))
+                         (service-cmd "env-set" service-id nil nil nil nil nil nil (nreverse env-vars) env-file)))
+                      ((string= env-action "export")
+                       (service-cmd "env-export" service-id nil nil nil nil nil nil nil nil))
+                      ((string= env-action "delete")
+                       (service-cmd "env-delete" service-id nil nil nil nil nil nil nil nil))
+                      (t
+                        (format *error-output* "~aUnknown env action: ~a~a~%" *red* env-action *reset*)
+                        (uiop:quit 1))))))
              ((and (> (length args) 2) (string= (second args) "--name"))
               (let* ((name (third args))
                      (rest-args (nthcdr 3 args))
@@ -468,6 +565,8 @@
                      (bootstrap nil)
                      (bootstrap-file nil)
                      (service-type nil)
+                     (env-vars nil)
+                     (env-file nil)
                      (input-files (parse-input-files rest-args)))
                 (loop for i from 0 below (1- (length rest-args))
                       do (let ((opt (nth i rest-args))
@@ -476,8 +575,10 @@
                              ((string= opt "--ports") (setf ports val))
                              ((string= opt "--bootstrap") (setf bootstrap val))
                              ((string= opt "--bootstrap-file") (setf bootstrap-file val))
-                             ((string= opt "--type") (setf service-type val)))))
-                (service-cmd "create" nil name ports bootstrap bootstrap-file service-type input-files)))
+                             ((string= opt "--type") (setf service-type val))
+                             ((string= opt "-e") (push val env-vars))
+                             ((string= opt "--env-file") (setf env-file val)))))
+                (service-cmd "create" nil name ports bootstrap bootstrap-file service-type input-files (nreverse env-vars) env-file)))
              (t
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))

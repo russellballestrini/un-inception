@@ -230,6 +230,42 @@ service_destroy(ServiceId) :-
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 
+% Service env status
+service_env_status(ServiceId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET "https://api.unsandbox.com/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [ServiceId, SecretKey, ServiceId, PublicKey]),
+    shell(Cmd, 0).
+
+% Service env set
+service_env_set(ServiceId, Envs, EnvFile) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -z "$ENV_CONTENT" ]; then echo -e "\\x1b[31mError: No environment variables to set\\x1b[0m" >&2; exit 1; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PUT:/services/~w/env:$ENV_CONTENT"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "https://api.unsandbox.com/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" | jq .',
+        [Envs, EnvFile, ServiceId, SecretKey, ServiceId, PublicKey]),
+    shell(Cmd, 0).
+
+% Service env export
+service_env_export(ServiceId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/env/export:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST "https://api.unsandbox.com/services/~w/env/export" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".content // empty"',
+        [ServiceId, SecretKey, ServiceId, PublicKey]),
+    shell(Cmd, 0).
+
+% Service env delete
+service_env_delete(ServiceId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE "https://api.unsandbox.com/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mVault deleted for: ~w\\x1b[0m"',
+        [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
+    shell(Cmd, 0).
+
 % Service dump bootstrap
 service_dump_bootstrap(ServiceId, DumpFile) :-
     get_public_key(PublicKey),
@@ -330,57 +366,125 @@ parse_session_args([Arg|Rest], Shell, Files, ShellOut, InputFiles) :-
     ).
 
 % Handle service subcommand
+handle_service(['env', Action, ServiceId|Rest]) :-
+    !,
+    parse_env_args(Rest, '', '', Envs, EnvFile),
+    handle_env_action(Action, ServiceId, Envs, EnvFile).
 handle_service(Args) :-
-    parse_service_args(Args, '', '', '', '', '', [], Action, InputFiles),
+    parse_service_args(Args, '', '', '', '', '', [], '', '', Action, InputFiles),
     execute_service_action(Action, InputFiles).
 
+% Handle env action
+handle_env_action('status', ServiceId, _, _) :- service_env_status(ServiceId).
+handle_env_action('set', ServiceId, Envs, EnvFile) :- service_env_set(ServiceId, Envs, EnvFile).
+handle_env_action('export', ServiceId, _, _) :- service_env_export(ServiceId).
+handle_env_action('delete', ServiceId, _, _) :- service_env_delete(ServiceId).
+handle_env_action(Action, _, _, _) :-
+    format(user_error, 'Error: Unknown env action: ~w~n', [Action]),
+    write(user_error, 'Usage: un.pro service env <status|set|export|delete> <service_id>\n'),
+    halt(1).
+
+% Parse env arguments for -e and --env-file
+parse_env_args([], Envs, EnvFile, Envs, EnvFile).
+parse_env_args(['-e', EnvVal|Rest], Envs, EnvFile, EnvsOut, EnvFileOut) :-
+    (   Envs \= ''
+    ->  format(atom(NewEnvs), '~w\\n~w', [Envs, EnvVal])
+    ;   NewEnvs = EnvVal
+    ),
+    parse_env_args(Rest, NewEnvs, EnvFile, EnvsOut, EnvFileOut).
+parse_env_args(['--env-file', EnvFileVal|Rest], Envs, _, EnvsOut, EnvFileOut) :-
+    parse_env_args(Rest, Envs, EnvFileVal, EnvsOut, EnvFileOut).
+parse_env_args([_|Rest], Envs, EnvFile, EnvsOut, EnvFileOut) :-
+    parse_env_args(Rest, Envs, EnvFile, EnvsOut, EnvFileOut).
+
 % Parse service arguments
-parse_service_args([], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, create, InputFiles) :-
+parse_service_args([], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, create, InputFiles) :-
     (   Name \= ''
-    ->  service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles)
+    ->  service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile)
     ;   write(user_error, 'Error: --name required for service creation\n'),
         halt(1)
     ).
-parse_service_args([], _, _, _, _, _, InputFiles, Action, InputFiles) :-
+parse_service_args([], _, _, _, _, _, InputFiles, _, _, Action, InputFiles) :-
     (   Action = list
     ->  service_list
-    ;   write(user_error, 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --name\n'),
+    ;   write(user_error, 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --name, or env\n'),
         halt(1)
     ).
-parse_service_args(['--list'|_], _, _, _, _, _, _, _, _) :- service_list.
-parse_service_args(['-l'|_], _, _, _, _, _, _, _, _) :- service_list.
-parse_service_args(['--info', ServiceId|_], _, _, _, _, _, _, _, _) :- service_info(ServiceId).
-parse_service_args(['--logs', ServiceId|_], _, _, _, _, _, _, _, _) :- service_logs(ServiceId).
-parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _, _, _, _) :- service_sleep(ServiceId).
-parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _, _, _, _) :- service_wake(ServiceId).
-parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _, _, _, _) :- service_destroy(ServiceId).
-parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _, _, _, _) :-
+parse_service_args(['--list'|_], _, _, _, _, _, _, _, _, _, _) :- service_list.
+parse_service_args(['-l'|_], _, _, _, _, _, _, _, _, _, _) :- service_list.
+parse_service_args(['--info', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_info(ServiceId).
+parse_service_args(['--logs', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_logs(ServiceId).
+parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_sleep(ServiceId).
+parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_wake(ServiceId).
+parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_destroy(ServiceId).
+parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _, _, _, _, _, _) :-
     (   Rest = ['--dump-file', DumpFile|_]
     ->  service_dump_bootstrap(ServiceId, DumpFile)
     ;   service_dump_bootstrap(ServiceId, '')
     ).
-parse_service_args(['--name', Name|Rest], _, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, _, InputFilesOut) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, create, InputFilesOut).
-parse_service_args(['--ports', PortsList|Rest], Name, _, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
-    parse_service_args(Rest, Name, PortsList, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut).
-parse_service_args(['--bootstrap', BootstrapVal|Rest], Name, Ports, _, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
-    parse_service_args(Rest, Name, Ports, BootstrapVal, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut).
-parse_service_args(['--bootstrap-file', BootstrapFileVal|Rest], Name, Ports, Bootstrap, _, ServiceType, InputFiles, Action, InputFilesOut) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFileVal, ServiceType, InputFiles, Action, InputFilesOut).
-parse_service_args(['--type', Type|Rest], Name, Ports, Bootstrap, BootstrapFile, _, InputFiles, Action, InputFilesOut) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, Type, InputFiles, Action, InputFilesOut).
-parse_service_args(['-f', FilePath|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
+parse_service_args(['--name', Name|Rest], _, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, _, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, create, InputFilesOut).
+parse_service_args(['--ports', PortsList|Rest], Name, _, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, PortsList, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut).
+parse_service_args(['--bootstrap', BootstrapVal|Rest], Name, Ports, _, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, BootstrapVal, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut).
+parse_service_args(['--bootstrap-file', BootstrapFileVal|Rest], Name, Ports, Bootstrap, _, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFileVal, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut).
+parse_service_args(['--type', Type|Rest], Name, Ports, Bootstrap, BootstrapFile, _, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, Type, InputFiles, Envs, EnvFile, Action, InputFilesOut).
+parse_service_args(['-e', EnvVal|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
+    (   Envs \= ''
+    ->  format(atom(NewEnvs), '~w\\n~w', [Envs, EnvVal])
+    ;   NewEnvs = EnvVal
+    ),
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, NewEnvs, EnvFile, Action, InputFilesOut).
+parse_service_args(['--env-file', EnvFileVal|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, _, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFileVal, Action, InputFilesOut).
+parse_service_args(['-f', FilePath|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
     (   exists_file(FilePath)
     ->  append(InputFiles, [FilePath], NewInputFiles),
-        parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, NewInputFiles, Action, InputFilesOut)
+        parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, NewInputFiles, Envs, EnvFile, Action, InputFilesOut)
     ;   format(user_error, 'Error: File not found: ~w~n', [FilePath]),
         halt(1)
     ).
-parse_service_args([_|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut) :-
-    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Action, InputFilesOut).
+parse_service_args([_|Rest], Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut) :-
+    parse_service_args(Rest, Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile, Action, InputFilesOut).
 
 % Execute service action (not used, but kept for structure)
 execute_service_action(_, _).
+
+% Service create with auto-vault
+service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles, Envs, EnvFile) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    % Build JSON payload
+    (   Ports \= ''
+    ->  format(atom(PortsJson), ',"ports":[~w]', [Ports])
+    ;   PortsJson = ''
+    ),
+    (   Bootstrap \= ''
+    ->  format(atom(BootstrapJson), ',"bootstrap":"~w"', [Bootstrap])
+    ;   BootstrapJson = ''
+    ),
+    (   BootstrapFile \= ''
+    ->  (   exists_file(BootstrapFile)
+        ->  read_file_content(BootstrapFile, BootstrapContent),
+            format(atom(BootstrapContentJson), ',"bootstrap_content":"~w"', [BootstrapContent])
+        ;   format(user_error, 'Error: Bootstrap file not found: ~w~n', [BootstrapFile]),
+            halt(1)
+        )
+    ;   BootstrapContentJson = ''
+    ),
+    (   ServiceType \= ''
+    ->  format(atom(ServiceTypeJson), ',"service_type":"~w"', [ServiceType])
+    ;   ServiceTypeJson = ''
+    ),
+    % Build file arguments for bash script
+    build_file_args(InputFiles, FileArgs),
+    format(atom(Cmd),
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X POST https://api.unsandbox.com/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "https://api.unsandbox.com/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
+        [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, SecretKey, PublicKey, Envs, EnvFile, SecretKey, PublicKey]),
+    shell(Cmd, 0).
 
 % Main program
 main(Argv) :-

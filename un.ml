@@ -231,6 +231,151 @@ let curl_delete api_key endpoint =
   check_clock_drift output;
   output
 
+let curl_put_text endpoint body =
+  let (public_key, secret_key) = get_api_keys () in
+  let auth_headers = build_auth_headers public_key secret_key "PUT" endpoint body in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.txt" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc body;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT https://api.unsandbox.com%s -H 'Content-Type: text/plain'%s -d @%s"
+    endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let status = try input_line ic with End_of_file -> "0" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  let code = int_of_string (String.trim status) in
+  code >= 200 && code < 300
+
+let max_env_content_size = 65536
+
+let read_env_file path =
+  if not (Sys.file_exists path) then begin
+    Printf.fprintf stderr "%sError: Env file not found: %s%s\n" red path reset;
+    exit 1
+  end;
+  read_file path
+
+let build_env_content envs env_file =
+  let lines = ref envs in
+  (match env_file with
+   | Some path ->
+     let content = read_env_file path in
+     let file_lines = String.split_on_char '\n' content in
+     List.iter (fun line ->
+       let trimmed = String.trim line in
+       if String.length trimmed > 0 && trimmed.[0] <> '#' then
+         lines := trimmed :: !lines
+     ) file_lines
+   | None -> ());
+  String.concat "\n" (List.rev !lines)
+
+let service_env_status service_id =
+  let api_key = get_api_key () in
+  curl_get api_key (Printf.sprintf "/services/%s/env" service_id)
+
+let service_env_set service_id env_content =
+  if String.length env_content > max_env_content_size then begin
+    Printf.fprintf stderr "%sError: Env content exceeds maximum size of 64KB%s\n" red reset;
+    false
+  end else
+    curl_put_text (Printf.sprintf "/services/%s/env" service_id) env_content
+
+let service_env_export service_id =
+  let api_key = get_api_key () in
+  let (public_key, secret_key) = get_api_keys () in
+  let endpoint = Printf.sprintf "/services/%s/env/export" service_id in
+  let auth_headers = build_auth_headers public_key secret_key "POST" endpoint "{}" in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc "{}";
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com%s -H 'Content-Type: application/json'%s -d @%s"
+    endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let response = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  response
+
+let service_env_delete service_id =
+  let api_key = get_api_key () in
+  try
+    let _ = curl_delete api_key (Printf.sprintf "/services/%s/env" service_id) in
+    true
+  with _ -> false
+
+let service_env_command action target envs env_file =
+  match action with
+  | "status" ->
+    (match target with
+     | Some sid ->
+       let response = service_env_status sid in
+       let has_vault = match extract_json_value response "has_vault" with
+         | Some "true" -> true
+         | _ -> false
+       in
+       if has_vault then begin
+         Printf.printf "%sVault: configured%s\n" green reset;
+         (match extract_json_value response "env_count" with
+          | Some c -> Printf.printf "Variables: %s\n" c
+          | None -> ());
+         (match extract_json_value response "updated_at" with
+          | Some u -> Printf.printf "Updated: %s\n" u
+          | None -> ())
+       end else
+         Printf.printf "%sVault: not configured%s\n" yellow reset
+     | None ->
+       Printf.fprintf stderr "%sError: service env status requires service ID%s\n" red reset;
+       exit 1)
+  | "set" ->
+    (match target with
+     | Some sid ->
+       if envs = [] && env_file = None then begin
+         Printf.fprintf stderr "%sError: service env set requires -e or --env-file%s\n" red reset;
+         exit 1
+       end;
+       let env_content = build_env_content envs env_file in
+       if service_env_set sid env_content then
+         Printf.printf "%sVault updated for service %s%s\n" green sid reset
+       else begin
+         Printf.fprintf stderr "%sError: Failed to update vault%s\n" red reset;
+         exit 1
+       end
+     | None ->
+       Printf.fprintf stderr "%sError: service env set requires service ID%s\n" red reset;
+       exit 1)
+  | "export" ->
+    (match target with
+     | Some sid ->
+       let response = service_env_export sid in
+       (match extract_json_value response "content" with
+        | Some content -> Printf.printf "%s" (unescape_json content)
+        | None -> ())
+     | None ->
+       Printf.fprintf stderr "%sError: service env export requires service ID%s\n" red reset;
+       exit 1)
+  | "delete" ->
+    (match target with
+     | Some sid ->
+       if service_env_delete sid then
+         Printf.printf "%sVault deleted for service %s%s\n" green sid reset
+       else begin
+         Printf.fprintf stderr "%sError: Failed to delete vault%s\n" red reset;
+         exit 1
+       end
+     | None ->
+       Printf.fprintf stderr "%sError: service env delete requires service ID%s\n" red reset;
+       exit 1)
+  | _ ->
+    Printf.fprintf stderr "%sError: Unknown env action: %s%s\n" red action reset;
+    Printf.fprintf stderr "Usage: un.ml service env <status|set|export|delete> <service_id>\n";
+    exit 1
+
 (* Extract JSON value - simple regex-based parser *)
 let extract_json_value json_str key =
   let pattern = "\"" ^ key ^ "\"\\s*:\\s*\"\\([^\"]*\\)\"" in
@@ -465,9 +610,17 @@ let session_command action shell network vcpu input_files =
   | _ -> ()
 
 (* Service command *)
-let service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files =
+let service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files envs env_file =
   let api_key = get_api_key () in
   match action with
+  | "env" ->
+    service_env_command (match name with Some n -> n | None -> "") (match ports with Some p -> Some p | None -> None) envs env_file
+  | "env_cmd" ->
+    (match (name, ports) with
+     | (Some act, target) -> service_env_command act target envs env_file
+     | _ ->
+       Printf.fprintf stderr "Error: service env requires action\n";
+       exit 1)
   | "list" ->
     let response = curl_get api_key "/services" in
     Printf.printf "%s\n" response
@@ -622,7 +775,17 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let _ = Unix.close_process_in ic in
        Sys.remove tmp_file;
        Printf.printf "%sService created%s\n" green reset;
-       Printf.printf "%s\n" response
+       Printf.printf "%s\n" response;
+       (* Auto-set vault if env vars were provided *)
+       (match extract_json_value response "id" with
+        | Some service_id when envs <> [] || env_file <> None ->
+          let env_content = build_env_content envs env_file in
+          if String.length env_content > 0 then
+            if service_env_set service_id env_content then
+              Printf.printf "%sVault configured with environment variables%s\n" green reset
+            else
+              Printf.printf "%sWarning: Failed to set vault%s\n" yellow reset
+        | _ -> ())
      | None ->
        Printf.fprintf stderr "Error: --name required to create service\n";
        exit 1)
@@ -649,7 +812,10 @@ let () =
     Printf.printf "Usage: un.ml [options] <source_file>\n";
     Printf.printf "       un.ml session [options]\n";
     Printf.printf "       un.ml service [options]\n";
-    Printf.printf "       un.ml key [--extend]\n";
+    Printf.printf "       un.ml service env <action> <service_id>\n";
+    Printf.printf "       un.ml key [--extend]\n\n";
+    Printf.printf "Service options: --name, --ports, --bootstrap, --bootstrap-file, -e KEY=VALUE, --env-file FILE\n";
+    Printf.printf "Service env commands: status, set, export, delete\n";
     exit 1
   | "key" :: rest ->
     let extend = List.mem "--extend" rest in
@@ -675,28 +841,40 @@ let () =
     parse_session "create" None None None rest
   | "service" :: rest ->
     let input_files = parse_input_files [] rest in
-    let rec parse_service action name ports bootstrap bootstrap_file service_type network vcpu = function
-      | [] -> service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files
-      | "--list" :: rest -> parse_service "list" name ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) bootstrap_file service_type network vcpu rest
-      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) service_type network vcpu rest
-      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap bootstrap_file service_type network vcpu rest
-      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap bootstrap_file service_type network vcpu rest
-      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) bootstrap_file service_type network vcpu rest
-      | "--bootstrap-file" :: f :: rest -> parse_service action name ports bootstrap (Some f) service_type network vcpu rest
-      | "--type" :: t :: rest -> parse_service action name ports bootstrap bootstrap_file (Some t) network vcpu rest
-      | "-n" :: net :: rest -> parse_service action name ports bootstrap bootstrap_file service_type (Some net) vcpu rest
-      | "-v" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) rest
-      | "-f" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu rest (* skip -f, already parsed *)
-      | _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu rest
+    let rec parse_envs acc = function
+      | [] -> List.rev acc
+      | "-e" :: kv :: rest -> parse_envs (kv :: acc) rest
+      | _ :: rest -> parse_envs acc rest
     in
-    parse_service "create" None None None None None None None rest
+    let envs = parse_envs [] rest in
+    let rec parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file = function
+      | [] -> service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files envs env_file
+      | "env" :: env_action :: target :: rest when not (String.length target > 0 && target.[0] = '-') ->
+        parse_service "env_cmd" (Some env_action) (Some target) bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "env" :: env_action :: rest ->
+        parse_service "env_cmd" (Some env_action) None bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--list" :: rest -> parse_service "list" name ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) bootstrap_file service_type network vcpu env_file rest
+      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) service_type network vcpu env_file rest
+      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) bootstrap_file service_type network vcpu env_file rest
+      | "--bootstrap-file" :: f :: rest -> parse_service action name ports bootstrap (Some f) service_type network vcpu env_file rest
+      | "--type" :: t :: rest -> parse_service action name ports bootstrap bootstrap_file (Some t) network vcpu env_file rest
+      | "-n" :: net :: rest -> parse_service action name ports bootstrap bootstrap_file service_type (Some net) vcpu env_file rest
+      | "-v" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) env_file rest
+      | "--env-file" :: f :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu (Some f) rest
+      | "-e" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file rest (* skip -e, already parsed *)
+      | "-f" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file rest (* skip -f, already parsed *)
+      | _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file rest
+    in
+    parse_service "create" None None None None None None None None rest
   | args ->
     let rec parse_execute file env_vars artifacts out_dir network vcpu = function
       | [] -> execute_command file env_vars artifacts out_dir network vcpu

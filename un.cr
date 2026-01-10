@@ -69,6 +69,7 @@ RESET = "\033[0m"
 
 API_BASE = "https://api.unsandbox.com"
 PORTAL_BASE = "https://unsandbox.com"
+MAX_ENV_CONTENT_SIZE = 65536
 
 def detect_language(filename : String) : String
   ext = File.extname(filename).downcase
@@ -141,6 +142,123 @@ def api_request(endpoint : String, public_key : String, secret_key : String?, me
     else
       STDERR.puts "#{RED}Error: Request failed: #{ex.message}#{RESET}"
     end
+    exit 1
+  end
+end
+
+def api_request_text(endpoint : String, public_key : String, secret_key : String?, body : String) : Bool
+  url = URI.parse(API_BASE + endpoint)
+  headers = HTTP::Headers{
+    "Content-Type" => "text/plain"
+  }
+
+  # Add HMAC authentication headers if secret_key is provided
+  if secret_key && !secret_key.empty?
+    timestamp = Time.utc.to_unix.to_s
+    message = "#{timestamp}:PUT:#{endpoint}:#{body}"
+    signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
+    headers["Authorization"] = "Bearer #{public_key}"
+    headers["X-Timestamp"] = timestamp
+    headers["X-Signature"] = signature
+  else
+    headers["Authorization"] = "Bearer #{public_key}"
+  end
+
+  begin
+    response = HTTP::Client.put(url, headers: headers, body: body)
+    return response.status_code >= 200 && response.status_code < 300
+  rescue
+    return false
+  end
+end
+
+def read_env_file(path : String) : String
+  unless File.exists?(path)
+    STDERR.puts "#{RED}Error: Env file not found: #{path}#{RESET}"
+    exit 1
+  end
+  File.read(path)
+end
+
+def build_env_content(envs : Array(String), env_file : String?) : String
+  lines = envs.dup
+  if env_file && !env_file.empty?
+    content = read_env_file(env_file)
+    content.split('\n').each do |line|
+      trimmed = line.strip
+      if !trimmed.empty? && !trimmed.starts_with?('#')
+        lines << trimmed
+      end
+    end
+  end
+  lines.join('\n')
+end
+
+def cmd_service_env(args)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String))
+
+  action = args[:env_action]?.as?(String) || ""
+  target = args[:env_target]?.as?(String) || ""
+
+  case action
+  when "status"
+    if target.empty?
+      STDERR.puts "#{RED}Error: service env status requires service ID#{RESET}"
+      exit 1
+    end
+    result = api_request("/services/#{target}/env", public_key, secret_key)
+    if result["has_vault"]?.try(&.as_bool?) == true
+      puts "#{GREEN}Vault: configured#{RESET}"
+      if env_count = result["env_count"]?
+        puts "Variables: #{env_count}"
+      end
+      if updated_at = result["updated_at"]?.try(&.as_s?)
+        puts "Updated: #{updated_at}"
+      end
+    else
+      puts "#{YELLOW}Vault: not configured#{RESET}"
+    end
+  when "set"
+    if target.empty?
+      STDERR.puts "#{RED}Error: service env set requires service ID#{RESET}"
+      exit 1
+    end
+    svc_envs = args[:svc_envs]?.as?(Array(String)) || [] of String
+    svc_env_file = args[:svc_env_file]?.as?(String)
+    if svc_envs.empty? && (svc_env_file.nil? || svc_env_file.empty?)
+      STDERR.puts "#{RED}Error: service env set requires -e or --env-file#{RESET}"
+      exit 1
+    end
+    env_content = build_env_content(svc_envs, svc_env_file)
+    if env_content.size > MAX_ENV_CONTENT_SIZE
+      STDERR.puts "#{RED}Error: Env content exceeds maximum size of 64KB#{RESET}"
+      exit 1
+    end
+    if api_request_text("/services/#{target}/env", public_key, secret_key, env_content)
+      puts "#{GREEN}Vault updated for service #{target}#{RESET}"
+    else
+      STDERR.puts "#{RED}Error: Failed to update vault#{RESET}"
+      exit 1
+    end
+  when "export"
+    if target.empty?
+      STDERR.puts "#{RED}Error: service env export requires service ID#{RESET}"
+      exit 1
+    end
+    result = api_request("/services/#{target}/env/export", public_key, secret_key, method: "POST", data: JSON.parse("{}"))
+    if content = result["content"]?.try(&.as_s?)
+      print content
+    end
+  when "delete"
+    if target.empty?
+      STDERR.puts "#{RED}Error: service env delete requires service ID#{RESET}"
+      exit 1
+    end
+    api_request("/services/#{target}/env", public_key, secret_key, method: "DELETE")
+    puts "#{GREEN}Vault deleted for service #{target}#{RESET}"
+  else
+    STDERR.puts "#{RED}Error: Unknown env action: #{action}#{RESET}"
+    STDERR.puts "Usage: un.cr service env <status|set|export|delete> <service_id>"
     exit 1
   end
 end
@@ -389,6 +507,14 @@ def cmd_key(args)
 end
 
 def cmd_service(args)
+  # Handle env subcommand
+  if env_action = args[:env_action]?.as?(String)
+    if !env_action.empty?
+      cmd_service_env(args)
+      return
+    end
+  end
+
   public_key, secret_key = get_api_keys(args[:api_key]?)
 
   if args[:list]?.as?(Bool)
@@ -541,6 +667,20 @@ def cmd_service(args)
     if url = result["url"]?.try(&.as_s?)
       puts "URL: #{url}"
     end
+
+    # Auto-set vault if -e or --env-file provided
+    svc_envs = args[:svc_envs]?.as?(Array(String)) || [] of String
+    svc_env_file = args[:svc_env_file]?.as?(String)
+    if !svc_envs.empty? || (svc_env_file && !svc_env_file.empty?)
+      if service_id = result["id"]?.try(&.as_s?)
+        env_content = build_env_content(svc_envs, svc_env_file)
+        if api_request_text("/services/#{service_id}/env", public_key, secret_key, env_content)
+          puts "#{GREEN}Vault configured for service #{service_id}#{RESET}"
+        else
+          STDERR.puts "#{YELLOW}Warning: Failed to set vault#{RESET}"
+        end
+      end
+    end
     return
   end
 
@@ -574,15 +714,22 @@ def main
     service_type: nil,
     bootstrap: nil,
     bootstrap_file: nil,
-    extend: false
+    extend: false,
+    svc_envs: [] of String,
+    svc_env_file: nil,
+    env_action: nil,
+    env_target: nil
   } of Symbol => (String | Array(String) | Bool | Nil)
 
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr session [options]\n       un.cr service [options]\n       un.cr key [options]"
+    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr session [options]\n       un.cr service [options]\n       un.cr service env <action> <service_id> [options]\n       un.cr key [options]\n\nService env commands:\n  env status <id>     Show vault status\n  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n  env export <id>     Export vault contents\n  env delete <id>     Delete vault"
 
     opts.on("-k API_KEY", "--api-key=API_KEY", "API key") { |k| args[:api_key] = k }
     opts.on("-n NETWORK", "--network=NETWORK", "Network mode") { |n| args[:network] = n }
-    opts.on("-e ENV", "--env=ENV", "Environment variable (KEY=VALUE)") { |e| args[:env].as(Array(String)) << e }
+    opts.on("-e ENV", "--env=ENV", "Environment variable (KEY=VALUE)") { |e|
+      args[:env].as(Array(String)) << e
+      args[:svc_envs].as(Array(String)) << e
+    }
     opts.on("-f FILE", "--files=FILE", "Input file") { |f| args[:files].as(Array(String)) << f }
     opts.on("-a", "--artifacts", "Return artifacts") { args[:artifacts] = true }
     opts.on("-o DIR", "--output-dir=DIR", "Output directory") { |d| args[:output_dir] = d }
@@ -603,6 +750,7 @@ def main
     opts.on("--type=TYPE", "Service type for SRV records") { |t| args[:service_type] = t }
     opts.on("--bootstrap=CMD", "Bootstrap command or URI") { |b| args[:bootstrap] = b }
     opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
+    opts.on("--env-file=FILE", "Load env vars from file (for vault)") { |f| args[:svc_env_file] = f }
     opts.on("--extend", "Open browser to extend/renew key") { args[:extend] = true }
 
     opts.unknown_args do |before, after|
@@ -612,6 +760,25 @@ def main
           args[:command] = "session"
         when "service"
           args[:command] = "service"
+          # Check for env subcommand
+          if before.size > 1 && before[1] == "env"
+            if before.size > 2
+              args[:env_action] = before[2]
+            end
+            if before.size > 3 && !before[3].starts_with?("-")
+              args[:env_target] = before[3]
+            end
+            # Parse remaining args for -e
+            i = 4
+            while i < before.size
+              if before[i] == "-e" && i + 1 < before.size
+                args[:svc_envs].as(Array(String)) << before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            end
+          end
         when "key"
           args[:command] = "key"
         else

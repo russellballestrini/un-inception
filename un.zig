@@ -54,6 +54,11 @@ const time = std.time;
 
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
+const MAX_ENV_CONTENT_SIZE: usize = 65536;
+const GREEN = "\x1b[32m";
+const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
+const RESET = "\x1b[0m";
 
 fn computeHmacCmd(allocator: std.mem.Allocator, secret_key: []const u8, message: []const u8) ![]const u8 {
     return try std.fmt.allocPrint(allocator, "echo -n '{s}' | openssl dgst -sha256 -hmac '{s}' -hex 2>/dev/null | sed 's/.*= //'", .{ message, secret_key });
@@ -116,6 +121,136 @@ fn base64EncodeFile(allocator: std.mem.Allocator, filename: []const u8) ![]u8 {
     return try allocator.dupe(u8, trimmed);
 }
 
+fn readEnvFile(allocator: std.mem.Allocator, filename: []const u8) ![]u8 {
+    const content = fs.cwd().readFileAlloc(allocator, filename, MAX_ENV_CONTENT_SIZE) catch |err| {
+        std.debug.print("{s}Error: Cannot read env file: {s} ({s}){s}\n", .{ RED, filename, @errorName(err), RESET });
+        return try allocator.dupe(u8, "");
+    };
+    return content;
+}
+
+fn buildEnvContent(allocator: std.mem.Allocator, envs: std.ArrayList([]const u8), env_file: ?[]const u8) ![]u8 {
+    var list = std.ArrayList(u8).init(allocator);
+    errdefer list.deinit();
+
+    // Add environment variables from -e flags
+    for (envs.items) |env| {
+        try list.appendSlice(env);
+        try list.append('\n');
+    }
+
+    // Add content from env file
+    if (env_file) |ef| {
+        const file_content = try readEnvFile(allocator, ef);
+        defer allocator.free(file_content);
+
+        // Process line by line, skip comments and empty lines
+        var lines = mem.splitScalar(u8, file_content, '\n');
+        while (lines.next()) |line| {
+            const trimmed = mem.trim(u8, line, &std.ascii.whitespace);
+            if (trimmed.len == 0) continue;
+            if (trimmed[0] == '#') continue;
+            try list.appendSlice(trimmed);
+            try list.append('\n');
+        }
+    }
+
+    return list.toOwnedSlice();
+}
+
+fn extractJsonField(json: []const u8, field: []const u8) ?[]const u8 {
+    // Build search pattern: "field":"
+    var pattern_buf: [256]u8 = undefined;
+    const pattern = std.fmt.bufPrint(&pattern_buf, "\"{s}\":\"", .{field}) catch return null;
+
+    if (mem.indexOf(u8, json, pattern)) |start_idx| {
+        const value_start = start_idx + pattern.len;
+        if (mem.indexOfPos(u8, json, value_start, "\"")) |end_idx| {
+            return json[value_start..end_idx];
+        }
+    }
+    return null;
+}
+
+fn execCurlPut(allocator: std.mem.Allocator, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8) !bool {
+    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ API_BASE, endpoint });
+    defer allocator.free(url);
+
+    const auth_headers = try buildAuthCmd(allocator, "PUT", endpoint, body, public_key, secret_key);
+    defer allocator.free(auth_headers);
+
+    // Write body to temp file to avoid shell escaping issues
+    const body_file = "/tmp/unsandbox_env_body.txt";
+    const file = try fs.cwd().createFile(body_file, .{});
+    try file.writeAll(body);
+    file.close();
+    defer fs.cwd().deleteFile(body_file) catch {};
+
+    const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PUT '{s}' -H 'Content-Type: text/plain' {s} --data-binary @{s}", .{ url, auth_headers, body_file });
+    defer allocator.free(cmd);
+
+    const ret = std.c.system(cmd.ptr);
+    return ret == 0;
+}
+
+fn cmdServiceEnv(allocator: std.mem.Allocator, action: []const u8, target: []const u8, envs: std.ArrayList([]const u8), env_file: ?[]const u8, public_key: []const u8, secret_key: []const u8) !void {
+    if (mem.eql(u8, action, "status")) {
+        const path = try std.fmt.allocPrint(allocator, "/services/{s}/env", .{target});
+        defer allocator.free(path);
+        const auth_headers = try buildAuthCmd(allocator, "GET", path, "", public_key, secret_key);
+        defer allocator.free(auth_headers);
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}{s}' {s}", .{ API_BASE, path, auth_headers });
+        defer allocator.free(cmd);
+        _ = std.c.system(cmd.ptr);
+        std.debug.print("\n", .{});
+    } else if (mem.eql(u8, action, "set")) {
+        if (envs.items.len == 0 and env_file == null) {
+            std.debug.print("{s}Error: No environment variables specified. Use -e KEY=VALUE or --env-file FILE{s}\n", .{ RED, RESET });
+            return;
+        }
+        const content = try buildEnvContent(allocator, envs, env_file);
+        defer allocator.free(content);
+
+        if (content.len > MAX_ENV_CONTENT_SIZE) {
+            std.debug.print("{s}Error: Environment content exceeds 64KB limit{s}\n", .{ RED, RESET });
+            return;
+        }
+
+        const path = try std.fmt.allocPrint(allocator, "/services/{s}/env", .{target});
+        defer allocator.free(path);
+
+        _ = try execCurlPut(allocator, path, content, public_key, secret_key);
+        std.debug.print("\n{s}Vault updated for service {s}{s}\n", .{ GREEN, target, RESET });
+    } else if (mem.eql(u8, action, "export")) {
+        const path = try std.fmt.allocPrint(allocator, "/services/{s}/env/export", .{target});
+        defer allocator.free(path);
+        const auth_headers = try buildAuthCmd(allocator, "POST", path, "", public_key, secret_key);
+        defer allocator.free(auth_headers);
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}{s}' {s}", .{ API_BASE, path, auth_headers });
+        defer allocator.free(cmd);
+        _ = std.c.system(cmd.ptr);
+        std.debug.print("\n", .{});
+    } else if (mem.eql(u8, action, "delete")) {
+        const path = try std.fmt.allocPrint(allocator, "/services/{s}/env", .{target});
+        defer allocator.free(path);
+        const auth_headers = try buildAuthCmd(allocator, "DELETE", path, "", public_key, secret_key);
+        defer allocator.free(auth_headers);
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}{s}' {s}", .{ API_BASE, path, auth_headers });
+        defer allocator.free(cmd);
+        _ = std.c.system(cmd.ptr);
+        std.debug.print("\n{s}Vault deleted for service {s}{s}\n", .{ GREEN, target, RESET });
+    } else {
+        std.debug.print("{s}Error: Unknown env action: {s}{s}\n", .{ RED, action, RESET });
+        std.debug.print("Usage: un service env <status|set|export|delete> <service_id>\n", .{});
+    }
+}
+
+fn serviceEnvSet(allocator: std.mem.Allocator, service_id: []const u8, content: []const u8, public_key: []const u8, secret_key: []const u8) !bool {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/env", .{service_id});
+    defer allocator.free(path);
+    return try execCurlPut(allocator, path, content, public_key, secret_key);
+}
+
 fn buildInputFilesJson(allocator: std.mem.Allocator, files: std.ArrayList([]const u8)) ![]u8 {
     if (files.items.len == 0) {
         return try allocator.dupe(u8, "");
@@ -162,7 +297,13 @@ pub fn main() !u8 {
         std.debug.print("Usage: {s} [options] <source_file>\n", .{args[0]});
         std.debug.print("       {s} session [options]\n", .{args[0]});
         std.debug.print("       {s} service [options]\n", .{args[0]});
+        std.debug.print("       {s} service env <action> <service_id> [options]\n", .{args[0]});
         std.debug.print("       {s} key [--extend]\n", .{args[0]});
+        std.debug.print("\nVault commands:\n", .{});
+        std.debug.print("  service env status <id>   Check vault status\n", .{});
+        std.debug.print("  service env set <id>      Set vault (-e KEY=VAL or --env-file FILE)\n", .{});
+        std.debug.print("  service env export <id>   Export vault contents\n", .{});
+        std.debug.print("  service env delete <id>   Delete vault\n", .{});
         return 1;
     }
 
@@ -258,10 +399,21 @@ pub fn main() !u8 {
         var dump_file: ?[]const u8 = null;
         var input_files = std.ArrayList([]const u8).init(allocator);
         defer input_files.deinit();
+        var svc_envs = std.ArrayList([]const u8).init(allocator);
+        defer svc_envs.deinit();
+        var svc_env_file: ?[]const u8 = null;
+        var env_action: ?[]const u8 = null;
+        var env_target: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (mem.eql(u8, args[i], "--list")) {
                 list = true;
+            } else if (mem.eql(u8, args[i], "env") and i + 2 < args.len) {
+                // service env <action> <service_id>
+                i += 1;
+                env_action = args[i];
+                i += 1;
+                env_target = args[i];
             } else if (mem.eql(u8, args[i], "--name") and i + 1 < args.len) {
                 i += 1;
                 name = args[i];
@@ -292,6 +444,12 @@ pub fn main() !u8 {
             } else if (mem.eql(u8, args[i], "--dump-file") and i + 1 < args.len) {
                 i += 1;
                 dump_file = args[i];
+            } else if (mem.eql(u8, args[i], "-e") and i + 1 < args.len) {
+                i += 1;
+                try svc_envs.append(args[i]);
+            } else if (mem.eql(u8, args[i], "--env-file") and i + 1 < args.len) {
+                i += 1;
+                svc_env_file = args[i];
             } else if (mem.eql(u8, args[i], "-k") and i + 1 < args.len) {
                 i += 1;
                 allocator.free(public_key);
@@ -305,6 +463,14 @@ pub fn main() !u8 {
                     return 1;
                 };
                 try input_files.append(file);
+            }
+        }
+
+        // Handle env subcommand
+        if (env_action) |action| {
+            if (env_target) |target| {
+                try cmdServiceEnv(allocator, action, target, svc_envs, svc_env_file, public_key, secret_key);
+                return 0;
             }
         }
 
@@ -441,11 +607,47 @@ pub fn main() !u8 {
 
             const auth_headers = try buildAuthCmd(allocator, "POST", "/services", json_str, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, auth_headers, json_str });
-            defer allocator.free(cmd);
-            std.debug.print("\x1b[33mCreating service...\x1b[0m\n", .{});
-            _ = std.c.system(cmd.ptr);
-            std.debug.print("\n", .{});
+
+            // Check if we need auto-vault
+            const has_env = svc_envs.items.len > 0 or svc_env_file != null;
+
+            if (has_env) {
+                // Capture response to temp file to extract service_id
+                const response_file = "/tmp/unsandbox_service_create.json";
+                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ API_BASE, auth_headers, json_str, response_file });
+                defer allocator.free(cmd);
+                std.debug.print("{s}Creating service...{s}\n", .{ YELLOW, RESET });
+                _ = std.c.system(cmd.ptr);
+
+                // Read response
+                const response_content = fs.cwd().readFileAlloc(allocator, response_file, 1024 * 1024) catch {
+                    std.debug.print("{s}Error: Failed to read service creation response{s}\n", .{ RED, RESET });
+                    return 1;
+                };
+                defer allocator.free(response_content);
+                fs.cwd().deleteFile(response_file) catch {};
+
+                // Print the response
+                std.debug.print("{s}\n", .{response_content});
+
+                // Extract service_id and auto-set vault
+                if (extractJsonField(response_content, "service_id")) |service_id| {
+                    const env_content = try buildEnvContent(allocator, svc_envs, svc_env_file);
+                    defer allocator.free(env_content);
+
+                    if (env_content.len > 0) {
+                        if (try serviceEnvSet(allocator, service_id, env_content, public_key, secret_key)) {
+                            std.debug.print("\n{s}Vault configured for service {s}{s}\n", .{ GREEN, service_id, RESET });
+                        }
+                    }
+                }
+            } else {
+                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, auth_headers, json_str });
+                defer allocator.free(cmd);
+                std.debug.print("{s}Creating service...{s}\n", .{ YELLOW, RESET });
+                _ = std.c.system(cmd.ptr);
+                std.debug.print("\n", .{});
+            }
         }
         return 0;
     }

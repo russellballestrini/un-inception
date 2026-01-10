@@ -55,6 +55,7 @@ def EXT_MAP = [
 
 def API_BASE = 'https://api.unsandbox.com'
 def PORTAL_BASE = 'https://unsandbox.com'
+def MAX_ENV_CONTENT_SIZE = 65536
 def BLUE = '\033[34m'
 def RED = '\033[31m'
 def GREEN = '\033[32m'
@@ -109,6 +110,10 @@ class Args {
     String snapshotShell = null
     String snapshotPorts = null
     Boolean keyExtend = false
+    List<String> svcEnvs = []
+    String svcEnvFile = null
+    String envAction = null
+    String envTarget = null
 }
 
 import javax.crypto.Mac
@@ -202,6 +207,117 @@ def apiRequest(endpoint, method, data, publicKey, secretKey) {
         return output
     } finally {
         tempFile.delete()
+    }
+}
+
+def readEnvFile(filename) {
+    def file = new File(filename)
+    if (!file.exists()) {
+        System.err.println("${RED}Error: Cannot read env file: ${filename}${RESET}")
+        return ''
+    }
+    return file.text
+}
+
+def buildEnvContent(envs, envFile) {
+    def result = new StringBuilder()
+
+    // Add -e flags
+    envs.each { env ->
+        result.append(env).append('\n')
+    }
+
+    // Add content from env file
+    if (envFile) {
+        def content = readEnvFile(envFile)
+        content.split('\n').each { line ->
+            def trimmed = line.trim()
+            if (trimmed && !trimmed.startsWith('#')) {
+                result.append(trimmed).append('\n')
+            }
+        }
+    }
+
+    return result.toString()
+}
+
+def apiRequestText(endpoint, method, body, publicKey, secretKey) {
+    def tempFile = File.createTempFile('un_env_', '.txt')
+    try {
+        if (body) {
+            tempFile.text = body
+        }
+
+        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
+                       '-H', 'Content-Type: text/plain']
+
+        // Add HMAC authentication headers if secretKey is provided
+        if (secretKey) {
+            def timestamp = (System.currentTimeMillis() / 1000) as long
+            def message = "${timestamp}:${method}:${endpoint}:${body ?: ''}"
+
+            def mac = Mac.getInstance("HmacSHA256")
+            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
+            curlCmd += ['-H', "X-Signature: ${signature}"]
+        } else {
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+        }
+
+        if (body) {
+            curlCmd += ['--data-binary', "@${tempFile.absolutePath}"]
+        }
+
+        def proc = curlCmd.execute()
+        def output = proc.text
+        proc.waitFor()
+
+        return proc.exitValue() == 0
+    } finally {
+        tempFile.delete()
+    }
+}
+
+def serviceEnvSet(serviceId, content, publicKey, secretKey) {
+    return apiRequestText("/services/${serviceId}/env", 'PUT', content, publicKey, secretKey)
+}
+
+def cmdServiceEnv(args) {
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    switch (args.envAction) {
+        case 'status':
+            def output = apiRequest("/services/${args.envTarget}/env", 'GET', null, publicKey, secretKey)
+            println(output)
+            break
+        case 'set':
+            if (!args.svcEnvs && !args.svcEnvFile) {
+                System.err.println("${RED}Error: No environment variables specified. Use -e KEY=VALUE or --env-file FILE${RESET}")
+                return
+            }
+            def content = buildEnvContent(args.svcEnvs, args.svcEnvFile)
+            if (content.length() > MAX_ENV_CONTENT_SIZE) {
+                System.err.println("${RED}Error: Environment content exceeds 64KB limit${RESET}")
+                return
+            }
+            if (serviceEnvSet(args.envTarget, content, publicKey, secretKey)) {
+                println("${GREEN}Vault updated for service ${args.envTarget}${RESET}")
+            }
+            break
+        case 'export':
+            def output = apiRequest("/services/${args.envTarget}/env/export", 'POST', null, publicKey, secretKey)
+            println(output)
+            break
+        case 'delete':
+            apiRequest("/services/${args.envTarget}/env", 'DELETE', null, publicKey, secretKey)
+            println("${GREEN}Vault deleted for service ${args.envTarget}${RESET}")
+            break
+        default:
+            System.err.println("${RED}Error: Unknown env action: ${args.envAction}${RESET}")
+            System.err.println("Usage: un service env <status|set|export|delete> <service_id>")
     }
 }
 
@@ -703,8 +819,10 @@ def cmdService(args) {
 
         def output = apiRequest('/services', 'POST', json, publicKey, secretKey)
         def idMatch = output =~ /"id":"([^"]+)"/
+        def serviceId = null
         if (idMatch.find()) {
-            println("${GREEN}Service created: ${idMatch.group(1)}${RESET}")
+            serviceId = idMatch.group(1)
+            println("${GREEN}Service created: ${serviceId}${RESET}")
         }
         def nameMatch = output =~ /"name":"([^"]+)"/
         if (nameMatch.find()) {
@@ -713,6 +831,16 @@ def cmdService(args) {
         def urlMatch = output =~ /"url":"([^"]+)"/
         if (urlMatch.find()) {
             println("URL: ${urlMatch.group(1)}")
+        }
+
+        // Auto-set vault if -e or --env-file provided
+        if (serviceId && (args.svcEnvs || args.svcEnvFile)) {
+            def envContent = buildEnvContent(args.svcEnvs, args.svcEnvFile)
+            if (envContent) {
+                if (serviceEnvSet(serviceId, envContent, publicKey, secretKey)) {
+                    println("${GREEN}Vault configured for service ${serviceId}${RESET}")
+                }
+            }
         }
         return
     }
@@ -731,6 +859,13 @@ def parseArgs(argv) {
                 break
             case 'service':
                 args.command = 'service'
+                break
+            case 'env':
+                // service env <action> <service_id>
+                if (args.command == 'service' && i + 2 < argv.size()) {
+                    args.envAction = argv[++i]
+                    args.envTarget = argv[++i]
+                }
                 break
             case 'snapshot':
                 args.command = 'snapshot'
@@ -752,7 +887,14 @@ def parseArgs(argv) {
                 break
             case '-e':
             case '--env':
-                args.env << argv[++i]
+                def envVal = argv[++i]
+                args.env << envVal
+                if (args.command == 'service') {
+                    args.svcEnvs << envVal
+                }
+                break
+            case '--env-file':
+                args.svcEnvFile = argv[++i]
                 break
             case '-f':
             case '--files':
@@ -877,6 +1019,7 @@ def printHelp() {
     println '''Usage: groovy un.groovy [options] <source_file>
        groovy un.groovy session [options]
        groovy un.groovy service [options]
+       groovy un.groovy service env <action> <service_id> [options]
        groovy un.groovy key [options]
 
 Execute options:
@@ -899,6 +1042,8 @@ Service options:
   --ports PORTS     Comma-separated ports
   --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
+  -e KEY=VALUE      Set env var in vault (when creating service)
+  --env-file FILE   Load env vars from file
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
@@ -909,6 +1054,12 @@ Service options:
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script
   --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
+
+Vault commands:
+  service env status <id>   Check vault status
+  service env set <id>      Set vault (-e KEY=VAL or --env-file FILE)
+  service env export <id>   Export vault contents
+  service env delete <id>   Delete vault
 
 Key options:
   --extend          Open browser to extend key
@@ -923,7 +1074,12 @@ try {
     if (args.command == 'session') {
         cmdSession(args)
     } else if (args.command == 'service') {
-        cmdService(args)
+        // Check for env subcommand
+        if (args.envAction && args.envTarget) {
+            cmdServiceEnv(args)
+        } else {
+            cmdService(args)
+        }
     } else if (args.command == 'snapshot') {
         cmdSnapshot(args)
     } else if (args.command == 'key') {

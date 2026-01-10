@@ -168,6 +168,158 @@ proc api_request {endpoint method data public_key secret_key} {
     return [::json::json2dict $body]
 }
 
+proc api_request_text {endpoint method body public_key secret_key} {
+    set url "${::API_BASE}${endpoint}"
+    set headers [list Authorization "Bearer $public_key" Content-Type "text/plain"]
+
+    # Add HMAC signature if secret_key is present
+    if {$secret_key ne ""} {
+        set timestamp [clock seconds]
+        set sig_input "${timestamp}:${method}:${endpoint}:${body}"
+        set signature [::sha2::hmac -hex -key $secret_key $sig_input]
+        lappend headers X-Timestamp $timestamp
+        lappend headers X-Signature $signature
+    }
+
+    set token [::http::geturl $url -method $method -headers $headers -query $body -timeout 300000]
+    set status [::http::status $token]
+    set ncode [::http::ncode $token]
+    set response [::http::data $token]
+    ::http::cleanup $token
+
+    return [list $ncode $response]
+}
+
+proc read_env_file {path} {
+    if {![file exists $path]} {
+        puts stderr "${::RED}Error: Env file not found: $path${::RESET}"
+        exit 1
+    }
+    set fp [open $path r]
+    set content [read $fp]
+    close $fp
+    return $content
+}
+
+proc build_env_content {envs env_file} {
+    set lines [list]
+
+    # Add from -e flags
+    foreach env $envs {
+        lappend lines $env
+    }
+
+    # Add from --env-file
+    if {$env_file ne ""} {
+        set content [read_env_file $env_file]
+        foreach line [split $content "\n"] {
+            set line [string trim $line]
+            if {$line ne "" && [string index $line 0] ne "#"} {
+                lappend lines $line
+            }
+        }
+    }
+
+    return [join $lines "\n"]
+}
+
+set MAX_ENV_CONTENT_SIZE 65536
+
+proc service_env_status {service_id public_key secret_key} {
+    return [api_request "/services/$service_id/env" "GET" {} $public_key $secret_key]
+}
+
+proc service_env_set {service_id env_content public_key secret_key} {
+    if {[string length $env_content] > $::MAX_ENV_CONTENT_SIZE} {
+        puts stderr "${::RED}Error: Env content exceeds maximum size of 64KB${::RESET}"
+        return 0
+    }
+
+    lassign [api_request_text "/services/$service_id/env" "PUT" $env_content $public_key $secret_key] ncode response
+    if {$ncode == 200 || $ncode == 201} {
+        return 1
+    }
+    return 0
+}
+
+proc service_env_export {service_id public_key secret_key} {
+    return [api_request "/services/$service_id/env/export" "POST" {} $public_key $secret_key]
+}
+
+proc service_env_delete {service_id public_key secret_key} {
+    if {[catch {api_request "/services/$service_id/env" "DELETE" {} $public_key $secret_key}]} {
+        return 0
+    }
+    return 1
+}
+
+proc cmd_service_env {action target envs env_file public_key secret_key} {
+    switch -exact -- $action {
+        status {
+            if {$target eq ""} {
+                puts stderr "${::RED}Error: service env status requires service ID${::RESET}"
+                exit 1
+            }
+            set result [service_env_status $target $public_key $secret_key]
+            if {[dict exists $result has_vault] && [dict get $result has_vault]} {
+                puts "${::GREEN}Vault: configured${::RESET}"
+                if {[dict exists $result env_count]} {
+                    puts "Variables: [dict get $result env_count]"
+                }
+                if {[dict exists $result updated_at]} {
+                    puts "Updated: [dict get $result updated_at]"
+                }
+            } else {
+                puts "${::YELLOW}Vault: not configured${::RESET}"
+            }
+        }
+        set {
+            if {$target eq ""} {
+                puts stderr "${::RED}Error: service env set requires service ID${::RESET}"
+                exit 1
+            }
+            if {[llength $envs] == 0 && $env_file eq ""} {
+                puts stderr "${::RED}Error: service env set requires -e or --env-file${::RESET}"
+                exit 1
+            }
+            set env_content [build_env_content $envs $env_file]
+            if {[service_env_set $target $env_content $public_key $secret_key]} {
+                puts "${::GREEN}Vault updated for service $target${::RESET}"
+            } else {
+                puts stderr "${::RED}Error: Failed to update vault${::RESET}"
+                exit 1
+            }
+        }
+        export {
+            if {$target eq ""} {
+                puts stderr "${::RED}Error: service env export requires service ID${::RESET}"
+                exit 1
+            }
+            set result [service_env_export $target $public_key $secret_key]
+            if {[dict exists $result content]} {
+                puts -nonewline [dict get $result content]
+            }
+        }
+        delete {
+            if {$target eq ""} {
+                puts stderr "${::RED}Error: service env delete requires service ID${::RESET}"
+                exit 1
+            }
+            if {[service_env_delete $target $public_key $secret_key]} {
+                puts "${::GREEN}Vault deleted for service $target${::RESET}"
+            } else {
+                puts stderr "${::RED}Error: Failed to delete vault${::RESET}"
+                exit 1
+            }
+        }
+        default {
+            puts stderr "${::RED}Error: Unknown env action: $action${::RESET}"
+            puts stderr "Usage: un.tcl service env <status|set|export|delete> <service_id>"
+            exit 1
+        }
+    }
+}
+
 proc cmd_execute {args} {
     lassign [get_api_keys] public_key secret_key
     set source_file ""
@@ -533,11 +685,32 @@ proc cmd_service {args} {
     set network ""
     set vcpu 0
     set input_files [list]
+    set envs [list]
+    set env_file ""
+    set env_action ""
+    set env_target ""
 
     # Parse arguments
     for {set i 0} {$i < [llength $args]} {incr i} {
         set arg [lindex $args $i]
         switch -exact -- $arg {
+            env {
+                # Parse: env <action> [target]
+                if {$i + 1 < [llength $args]} {
+                    set next [lindex $args [expr {$i + 1}]]
+                    if {[string index $next 0] ne "-"} {
+                        incr i
+                        set env_action $next
+                        if {$i + 1 < [llength $args]} {
+                            set next2 [lindex $args [expr {$i + 1}]]
+                            if {[string index $next2 0] ne "-"} {
+                                incr i
+                                set env_target $next2
+                            }
+                        }
+                    }
+                }
+            }
             --list {
                 set list_mode 1
             }
@@ -601,7 +774,21 @@ proc cmd_service {args} {
                 incr i
                 lappend input_files [lindex $args $i]
             }
+            -e {
+                incr i
+                lappend envs [lindex $args $i]
+            }
+            --env-file {
+                incr i
+                set env_file [lindex $args $i]
+            }
         }
+    }
+
+    # Handle env subcommand
+    if {$env_action ne ""} {
+        cmd_service_env $env_action $env_target $envs $env_file $public_key $secret_key
+        return
     }
 
     if {$list_mode} {
@@ -740,10 +927,23 @@ proc cmd_service {args} {
         }
 
         set result [api_request "/services" "POST" $payload $public_key $secret_key]
-        puts "${::GREEN}Service created: [dict get $result id]${::RESET}"
+        set service_id [dict get $result id]
+        puts "${::GREEN}Service created: $service_id${::RESET}"
         puts "Name: [dict get $result name]"
         if {[dict exists $result url]} {
             puts "URL: [dict get $result url]"
+        }
+
+        # Auto-set vault if env vars were provided
+        if {[llength $envs] > 0 || $env_file ne ""} {
+            set env_content [build_env_content $envs $env_file]
+            if {$env_content ne ""} {
+                if {[service_env_set $service_id $env_content $public_key $secret_key]} {
+                    puts "${::GREEN}Vault configured with environment variables${::RESET}"
+                } else {
+                    puts stderr "${::YELLOW}Warning: Failed to set vault${::RESET}"
+                }
+            }
         }
         return
     }
@@ -757,7 +957,18 @@ proc main {argv} {
         puts stderr "Usage: un.tcl \[options\] <source_file>"
         puts stderr "       un.tcl session \[options\]"
         puts stderr "       un.tcl service \[options\]"
+        puts stderr "       un.tcl service env <action> <service_id> \[options\]"
         puts stderr "       un.tcl key \[--extend\]"
+        puts stderr ""
+        puts stderr "Service env commands:"
+        puts stderr "  env status ID     Check vault status"
+        puts stderr "  env set ID        Set vault (use -e or --env-file)"
+        puts stderr "  env export ID     Export vault contents"
+        puts stderr "  env delete ID     Delete vault"
+        puts stderr ""
+        puts stderr "Service vault options:"
+        puts stderr "  -e KEY=VALUE      Set vault env var (with --name or env set)"
+        puts stderr "  --env-file FILE   Load vault vars from file"
         exit 1
     }
 

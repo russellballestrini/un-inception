@@ -155,12 +155,15 @@ data ServiceOpts = ServiceOpts
   , svcSnapshotName :: Maybe String
   , svcSnapshotFrom :: Maybe String
   , svcHot :: Bool
+  , svcEnvs :: [(String, String)]
+  , svcEnvFile :: Maybe String
   }
 
 data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
                    | ServiceSleep String | ServiceWake String | ServiceDestroy String
                    | ServiceExecute String String | ServiceDumpBootstrap String (Maybe String)
                    | ServiceCreate | ServiceSnapshot String | ServiceRestore String
+                   | ServiceEnv String (Maybe String)  -- action, target
 
 data SnapshotOpts = SnapshotOpts
   { snapAction :: SnapshotAction
@@ -229,7 +232,7 @@ parseSession args = return $ parseSessionArgs args defaultSessionOpts
 parseService :: [String] -> IO ServiceOpts
 parseService args = return $ parseServiceArgs args defaultServiceOpts
   where
-    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing [] Nothing Nothing False
+    defaultServiceOpts = ServiceOpts ServiceCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing [] Nothing Nothing False [] Nothing
     parseServiceArgs [] opts = opts
     parseServiceArgs ("--list":rest) opts = parseServiceArgs rest opts { svcAction = ServiceList }
     parseServiceArgs ("--info":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceInfo id }
@@ -242,6 +245,8 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--execute":id:"--command":cmd:rest) opts = parseServiceArgs rest opts { svcAction = ServiceExecute id cmd }
     parseServiceArgs ("--dump-bootstrap":id:file:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id (Just file) }
     parseServiceArgs ("--dump-bootstrap":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id Nothing }
+    parseServiceArgs ("env":action:target:rest) opts = parseServiceArgs rest opts { svcAction = ServiceEnv action (Just target) }
+    parseServiceArgs ("env":action:rest) opts = parseServiceArgs rest opts { svcAction = ServiceEnv action Nothing }
     parseServiceArgs ("--name":n:rest) opts = parseServiceArgs rest opts { svcName = Just n }
     parseServiceArgs ("--ports":p:rest) opts = parseServiceArgs rest opts { svcPorts = Just p }
     parseServiceArgs ("--type":t:rest) opts = parseServiceArgs rest opts { svcType = Just t }
@@ -253,6 +258,10 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("-n":net:rest) opts = parseServiceArgs rest opts { svcNetwork = Just net }
     parseServiceArgs ("-v":v:rest) opts = parseServiceArgs rest opts { svcVcpu = Just (read v) }
     parseServiceArgs ("-f":f:rest) opts = parseServiceArgs rest opts { svcFiles = svcFiles opts ++ [f] }
+    parseServiceArgs ("-e":kv:rest) opts =
+      let (k, v) = span (/= '=') kv
+      in parseServiceArgs rest opts { svcEnvs = svcEnvs opts ++ [(k, drop 1 v)] }
+    parseServiceArgs ("--env-file":f:rest) opts = parseServiceArgs rest opts { svcEnvFile = Just f }
     parseServiceArgs (_:rest) opts = parseServiceArgs rest opts
 
 parseExecute :: [String] -> IO Command
@@ -298,6 +307,7 @@ printHelp = do
   putStrLn "  un.hs [options] <source_file>         Execute code"
   putStrLn "  un.hs session [options]                Manage sessions"
   putStrLn "  un.hs service [options]                Manage services"
+  putStrLn "  un.hs service env <action> <id>        Manage service vault"
   putStrLn "  un.hs snapshot [options]               Manage snapshots"
   putStrLn "  un.hs key [options]                    Validate/extend API key"
   putStrLn ""
@@ -308,6 +318,16 @@ printHelp = do
   putStrLn "  -o DIR          Output directory"
   putStrLn "  -n MODE         Network mode (zerotrust|semitrusted)"
   putStrLn "  -v N            vCPU count (1-8)"
+  putStrLn ""
+  putStrLn "Service options:"
+  putStrLn "  -e KEY=VALUE         Set vault env var (with --name or env set)"
+  putStrLn "  --env-file FILE      Load vault vars from file"
+  putStrLn ""
+  putStrLn "Service env commands:"
+  putStrLn "  env status ID        Check vault status"
+  putStrLn "  env set ID           Set vault (use -e or --env-file)"
+  putStrLn "  env export ID        Export vault contents"
+  putStrLn "  env delete ID        Delete vault"
   putStrLn ""
   putStrLn "Session snapshot options:"
   putStrLn "  --snapshot ID        Create snapshot of session"
@@ -483,6 +503,66 @@ serviceCommand opts = do
       (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ snapshotId ++ "/restore") "{}"
       putStrLn $ green ++ "Service restored from snapshot" ++ reset
       putStrLn stdout
+    ServiceEnv action maybeTarget -> do
+      case action of
+        "status" -> case maybeTarget of
+          Just target -> do
+            result <- serviceEnvStatus target
+            let hasVault = "\"has_vault\":true" `isPrefixOf` dropWhile (/= 'h') result
+            if hasVault
+              then do
+                putStrLn $ green ++ "Vault: configured" ++ reset
+                case extractJsonString result "env_count" of
+                  Just count -> putStrLn $ "Variables: " ++ count
+                  Nothing -> return ()
+                case extractJsonString result "updated_at" of
+                  Just updated -> putStrLn $ "Updated: " ++ updated
+                  Nothing -> return ()
+              else putStrLn $ yellow ++ "Vault: not configured" ++ reset
+          Nothing -> do
+            hPutStrLn stderr $ red ++ "Error: service env status requires service ID" ++ reset
+            exitFailure
+        "set" -> case maybeTarget of
+          Just target -> do
+            if null (svcEnvs opts) && svcEnvFile opts == Nothing
+              then do
+                hPutStrLn stderr $ red ++ "Error: service env set requires -e or --env-file" ++ reset
+                exitFailure
+              else do
+                envContent <- buildEnvContent (svcEnvs opts) (svcEnvFile opts)
+                success <- serviceEnvSet target envContent
+                if success
+                  then putStrLn $ green ++ "Vault updated for service " ++ target ++ reset
+                  else do
+                    hPutStrLn stderr $ red ++ "Error: Failed to update vault" ++ reset
+                    exitFailure
+          Nothing -> do
+            hPutStrLn stderr $ red ++ "Error: service env set requires service ID" ++ reset
+            exitFailure
+        "export" -> case maybeTarget of
+          Just target -> do
+            result <- serviceEnvExport target
+            case extractJsonString result "content" of
+              Just content -> putStr content
+              Nothing -> return ()
+          Nothing -> do
+            hPutStrLn stderr $ red ++ "Error: service env export requires service ID" ++ reset
+            exitFailure
+        "delete" -> case maybeTarget of
+          Just target -> do
+            success <- serviceEnvDelete target
+            if success
+              then putStrLn $ green ++ "Vault deleted for service " ++ target ++ reset
+              else do
+                hPutStrLn stderr $ red ++ "Error: Failed to delete vault" ++ reset
+                exitFailure
+          Nothing -> do
+            hPutStrLn stderr $ red ++ "Error: service env delete requires service ID" ++ reset
+            exitFailure
+        _ -> do
+          hPutStrLn stderr $ red ++ "Error: Unknown env action: " ++ action ++ reset
+          hPutStrLn stderr "Usage: un.hs service env <status|set|export|delete> <service_id>"
+          exitFailure
     ServiceCreate -> do
       case svcName opts of
         Nothing -> do
@@ -514,6 +594,18 @@ serviceCommand opts = do
           (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/services" json
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout
+
+          -- Auto-set vault if env vars were provided
+          when (not (null (svcEnvs opts)) || svcEnvFile opts /= Nothing) $ do
+            case extractJsonString stdout "id" of
+              Just serviceId -> do
+                envContent <- buildEnvContent (svcEnvs opts) (svcEnvFile opts)
+                when (not (null envContent)) $ do
+                  success <- serviceEnvSet serviceId envContent
+                  if success
+                    then putStrLn $ green ++ "Vault configured with environment variables" ++ reset
+                    else hPutStrLn stderr $ yellow ++ "Warning: Failed to set vault" ++ reset
+              Nothing -> return ()
 
 -- Check for clock drift error
 checkClockDriftError :: String -> IO ()
@@ -574,6 +666,71 @@ curlDelete apiKey url = do
   -- Check for clock drift error
   checkClockDriftError stdout
   return (exitCode, stdout, stderr)
+
+curlPut :: String -> String -> String -> IO (ExitCode, String, String)
+curlPut apiKey url body = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "PUT" path body
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
+    ([ "-s", "-X", "PUT"
+     , url
+     , "-H", "Content-Type: text/plain"
+     ] ++ authHeaders ++ ["-d", body]) ""
+  checkClockDriftError stdout
+  return (exitCode, stdout, stderr)
+
+-- Vault helper functions
+maxEnvContentSize :: Int
+maxEnvContentSize = 65536
+
+readEnvFile :: String -> IO String
+readEnvFile path = do
+  content <- readFile path
+  return content
+
+buildEnvContent :: [(String, String)] -> Maybe String -> IO String
+buildEnvContent envs maybeEnvFile = do
+  -- Add from -e flags
+  let envLines = map (\(k, v) -> k ++ "=" ++ v) envs
+
+  -- Add from --env-file
+  fileLines <- case maybeEnvFile of
+    Just path -> do
+      content <- readEnvFile path
+      return $ filter (not . null) $ filter (not . isPrefixOf "#") $ map (filter (/= '\r')) $ lines content
+    Nothing -> return []
+
+  return $ intercalate "\n" (envLines ++ fileLines)
+
+serviceEnvStatus :: String -> IO String
+serviceEnvStatus serviceId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/services/" ++ serviceId ++ "/env")
+  return stdout
+
+serviceEnvSet :: String -> String -> IO Bool
+serviceEnvSet serviceId envContent = do
+  if length envContent > maxEnvContentSize
+    then do
+      hPutStrLn stderr $ red ++ "Error: Env content exceeds maximum size of 64KB" ++ reset
+      return False
+    else do
+      apiKey <- getApiKey
+      (exitCode, _, _) <- curlPut apiKey (apiBase ++ "/services/" ++ serviceId ++ "/env") envContent
+      return (exitCode == ExitSuccess)
+
+serviceEnvExport :: String -> IO String
+serviceEnvExport serviceId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/env/export") "{}"
+  return stdout
+
+serviceEnvDelete :: String -> IO Bool
+serviceEnvDelete serviceId = do
+  apiKey <- getApiKey
+  (exitCode, _, _) <- curlDelete apiKey (apiBase ++ "/services/" ++ serviceId ++ "/env")
+  return (exitCode == ExitSuccess)
 
 -- Get API keys from environment
 getApiKeys :: IO (String, Maybe String)

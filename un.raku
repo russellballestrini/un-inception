@@ -139,7 +139,7 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$public-key!, Str :$sec
     @args.append: $url;
 
     my $proc = run |@args, :out, :err;
-    my $body = $proc.out.slurp;
+    my $resp-body = $proc.out.slurp;
     my $err = $proc.err.slurp;
 
     if $proc.exitcode != 0 {
@@ -149,7 +149,7 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$public-key!, Str :$sec
     }
 
     # Check for clock drift errors
-    if $body.contains('timestamp') && ($body.contains('401') || $body.contains('expired') || $body.contains('invalid')) {
+    if $resp-body.contains('timestamp') && ($resp-body.contains('401') || $resp-body.contains('expired') || $resp-body.contains('invalid')) {
         note "{$RED}Error: Request timestamp expired (must be within 5 minutes of server time){$RESET}";
         note "{$YELLOW}Your computer's clock may have drifted.{$RESET}";
         note "{$YELLOW}Check your system time and sync with NTP if needed:{$RESET}";
@@ -159,7 +159,32 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$public-key!, Str :$sec
         exit 1;
     }
 
-    return from-json($body);
+    return from-json($resp-body);
+}
+
+# API request for PUT with text/plain body (used for vault)
+sub api-request-put-text(Str $endpoint, Str $content, Str :$public-key!, Str :$secret-key!) {
+    my $url = $API_BASE ~ $endpoint;
+    my @args = 'curl', '-s', '-X', 'PUT';
+    @args.append: '-H', 'Content-Type: text/plain';
+    @args.append: '-H', "Authorization: Bearer $public-key";
+
+    # Add HMAC signature if secret-key is present
+    if $secret-key {
+        my $timestamp = now.Int;
+        my $sig-input = "{$timestamp}:PUT:{$endpoint}:{$content}";
+        my $signature = hmac-hex($sig-input, $secret-key, &sha256);
+        @args.append: '-H', "X-Timestamp: $timestamp";
+        @args.append: '-H', "X-Signature: $signature";
+    }
+
+    @args.append: '--data-binary', $content;
+    @args.append: $url;
+
+    my $proc = run |@args, :out, :err;
+    my $resp-body = $proc.out.slurp;
+
+    return from-json($resp-body);
 }
 
 sub cmd-execute(@args) {
@@ -370,6 +395,41 @@ sub cmd-session(@args) {
     say "{$YELLOW}(Interactive sessions require WebSocket - use un2 for full support){$RESET}";
 }
 
+# Service vault functions
+sub service-env-status(Str $service-id, Str :$public-key!, Str :$secret-key!) {
+    my %result = api-request("/services/$service-id/env", 'GET', :$public-key, :$secret-key);
+    say to-json(%result, :pretty);
+}
+
+sub service-env-set(Str $service-id, Str $content, Str :$public-key!, Str :$secret-key!) {
+    my %result = api-request-put-text("/services/$service-id/env", $content, :$public-key, :$secret-key);
+    say to-json(%result, :pretty);
+}
+
+sub service-env-export(Str $service-id, Str :$public-key!, Str :$secret-key!) {
+    my %result = api-request("/services/$service-id/env/export", 'POST', :$public-key, :$secret-key);
+    say %result<content> if %result<content>;
+}
+
+sub service-env-delete(Str $service-id, Str :$public-key!, Str :$secret-key!) {
+    api-request("/services/$service-id/env", 'DELETE', :$public-key, :$secret-key);
+    say "{$GREEN}Vault deleted for: $service-id{$RESET}";
+}
+
+sub build-env-content(@env-vars, Str $env-file --> Str) {
+    my @lines;
+    for @env-vars -> $var {
+        @lines.push($var);
+    }
+    if $env-file && $env-file.IO.e {
+        for $env-file.IO.lines -> $line {
+            next if $line.starts-with('#') || $line.trim eq '';
+            @lines.push($line);
+        }
+    }
+    return @lines.join("\n");
+}
+
 sub cmd-service(@args) {
     my ($public-key, $secret-key) = get-api-keys();
     my $list-mode = False;
@@ -388,6 +448,61 @@ sub cmd-service(@args) {
     my $network = '';
     my $vcpu = 0;
     my @input-files;
+    my @env-vars;
+    my $env-file = '';
+    my $env-action = '';
+    my $env-target = '';
+
+    # Check for 'env' subcommand first
+    if @args.elems >= 1 && @args[0] eq 'env' {
+        if @args.elems < 3 {
+            note "Usage: un.raku service env <status|set|export|delete> <service_id> [options]";
+            exit 1;
+        }
+        $env-action = @args[1];
+        $env-target = @args[2];
+
+        # Parse remaining args for -e and --env-file
+        my $i = 3;
+        while $i < @args.elems {
+            given @args[$i] {
+                when '-e' {
+                    $i++;
+                    @env-vars.push(@args[$i]);
+                }
+                when '--env-file' {
+                    $i++;
+                    $env-file = @args[$i];
+                }
+            }
+            $i++;
+        }
+
+        given $env-action {
+            when 'status' {
+                service-env-status($env-target, :$public-key, :$secret-key);
+            }
+            when 'set' {
+                my $content = build-env-content(@env-vars, $env-file);
+                if !$content {
+                    note "{$RED}Error: No environment variables to set{$RESET}";
+                    exit 1;
+                }
+                service-env-set($env-target, $content, :$public-key, :$secret-key);
+            }
+            when 'export' {
+                service-env-export($env-target, :$public-key, :$secret-key);
+            }
+            when 'delete' {
+                service-env-delete($env-target, :$public-key, :$secret-key);
+            }
+            default {
+                note "{$RED}Error: Unknown env action '$env-action'. Use status, set, export, or delete{$RESET}";
+                exit 1;
+            }
+        }
+        return;
+    }
 
     # Parse arguments
     my $i = 0;
@@ -455,6 +570,14 @@ sub cmd-service(@args) {
             when '-f' {
                 $i++;
                 @input-files.push(@args[$i]);
+            }
+            when '-e' {
+                $i++;
+                @env-vars.push(@args[$i]);
+            }
+            when '--env-file' {
+                $i++;
+                $env-file = @args[$i];
             }
         }
         $i++;
@@ -579,10 +702,17 @@ sub cmd-service(@args) {
         say "{$GREEN}Service created: {%result<id>}{$RESET}";
         say "Name: {%result<name>}";
         say "URL: {%result<url>}" if %result<url>;
+
+        # Auto-set vault if -e or --env-file were provided
+        my $env-content = build-env-content(@env-vars, $env-file);
+        if $env-content && %result<id> {
+            say "{$YELLOW}Setting vault for service...{$RESET}";
+            service-env-set(%result<id>, $env-content, :$public-key, :$secret-key);
+        }
         return;
     }
 
-    note "{$RED}Error: Specify --name to create a service, or use --list, --info, etc.{$RESET}";
+    note "{$RED}Error: Specify --name to create a service, or use --list, --info, env, etc.{$RESET}";
     exit 1;
 }
 

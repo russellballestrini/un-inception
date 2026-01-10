@@ -126,6 +126,181 @@ function Invoke-Api {
     }
 }
 
+function Invoke-ApiText {
+    param($Endpoint, $Method, $Body, $BaseUrl = $null)
+
+    $publicKey, $secretKey = Get-ApiKeys
+    $headers = @{
+        "Authorization" = "Bearer $publicKey"
+        "Content-Type" = "text/plain"
+    }
+
+    # Add HMAC signature if secret key exists
+    if ($secretKey) {
+        $timestamp = [int][double]::Parse((Get-Date -UFormat %s))
+        $bodyContent = if ($Body) { $Body } else { "" }
+        $sigInput = "${timestamp}:${Method}:${Endpoint}:${bodyContent}"
+
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($secretKey)
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sigInput))
+        $signature = [System.BitConverter]::ToString($hash).Replace("-", "").ToLower()
+
+        $headers["X-Timestamp"] = $timestamp.ToString()
+        $headers["X-Signature"] = $signature
+    }
+
+    $base = if ($BaseUrl) { $BaseUrl } else { $API_BASE }
+    $uri = "$base$Endpoint"
+
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method $Method -Headers $headers -Body $Body
+        return @{ Success = $true; Data = $response }
+    } catch {
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Read-EnvFile {
+    param($Path)
+
+    if (-not (Test-Path $Path)) {
+        Write-Error "Error: Env file not found: $Path"
+        exit 1
+    }
+    return Get-Content -Raw $Path
+}
+
+function Build-EnvContent {
+    param($Envs, $EnvFile)
+
+    $lines = @()
+
+    # Add from -e flags
+    foreach ($env in $Envs) {
+        $lines += $env
+    }
+
+    # Add from --env-file
+    if ($EnvFile) {
+        $content = Read-EnvFile -Path $EnvFile
+        foreach ($line in ($content -split "`n")) {
+            $trimmed = $line.Trim()
+            if ($trimmed -and -not $trimmed.StartsWith("#")) {
+                $lines += $trimmed
+            }
+        }
+    }
+
+    return $lines -join "`n"
+}
+
+$MAX_ENV_CONTENT_SIZE = 65536
+
+function Invoke-ServiceEnvStatus {
+    param($ServiceId)
+
+    return Invoke-Api -Endpoint "/services/$ServiceId/env"
+}
+
+function Invoke-ServiceEnvSet {
+    param($ServiceId, $EnvContent)
+
+    if ($EnvContent.Length -gt $MAX_ENV_CONTENT_SIZE) {
+        Write-Host "`e[31mError: Env content exceeds maximum size of 64KB`e[0m"
+        return $false
+    }
+
+    $result = Invoke-ApiText -Endpoint "/services/$ServiceId/env" -Method "PUT" -Body $EnvContent
+    return $result.Success
+}
+
+function Invoke-ServiceEnvExport {
+    param($ServiceId)
+
+    return Invoke-Api -Endpoint "/services/$ServiceId/env/export" -Method "POST" -Body "{}"
+}
+
+function Invoke-ServiceEnvDelete {
+    param($ServiceId)
+
+    try {
+        Invoke-Api -Endpoint "/services/$ServiceId/env" -Method "DELETE"
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-ServiceEnv {
+    param($Action, $Target, $Envs, $EnvFile)
+
+    switch ($Action) {
+        "status" {
+            if (-not $Target) {
+                Write-Error "Error: service env status requires service ID"
+                exit 1
+            }
+            $result = Invoke-ServiceEnvStatus -ServiceId $Target
+            if ($result.has_vault) {
+                Write-Host "`e[32mVault: configured`e[0m"
+                if ($result.env_count) {
+                    Write-Host "Variables: $($result.env_count)"
+                }
+                if ($result.updated_at) {
+                    Write-Host "Updated: $($result.updated_at)"
+                }
+            } else {
+                Write-Host "`e[33mVault: not configured`e[0m"
+            }
+        }
+        "set" {
+            if (-not $Target) {
+                Write-Error "Error: service env set requires service ID"
+                exit 1
+            }
+            if ($Envs.Count -eq 0 -and -not $EnvFile) {
+                Write-Error "Error: service env set requires -e or --env-file"
+                exit 1
+            }
+            $envContent = Build-EnvContent -Envs $Envs -EnvFile $EnvFile
+            if (Invoke-ServiceEnvSet -ServiceId $Target -EnvContent $envContent) {
+                Write-Host "`e[32mVault updated for service $Target`e[0m"
+            } else {
+                Write-Error "Error: Failed to update vault"
+                exit 1
+            }
+        }
+        "export" {
+            if (-not $Target) {
+                Write-Error "Error: service env export requires service ID"
+                exit 1
+            }
+            $result = Invoke-ServiceEnvExport -ServiceId $Target
+            if ($result.content) {
+                Write-Host $result.content -NoNewline
+            }
+        }
+        "delete" {
+            if (-not $Target) {
+                Write-Error "Error: service env delete requires service ID"
+                exit 1
+            }
+            if (Invoke-ServiceEnvDelete -ServiceId $Target) {
+                Write-Host "`e[32mVault deleted for service $Target`e[0m"
+            } else {
+                Write-Error "Error: Failed to delete vault"
+                exit 1
+            }
+        }
+        default {
+            Write-Error "Error: Unknown env action: $Action"
+            Write-Host "Usage: pwsh un.ps1 service env <status|set|export|delete> <service_id>"
+            exit 1
+        }
+    }
+}
+
 function Invoke-Execute {
     param($SourceFile, $EnvVars = @{}, $Network = $null)
 
@@ -283,6 +458,41 @@ function Invoke-Key {
 function Invoke-Service {
     param($Args)
 
+    # Parse env subcommand and -e/--env-file
+    $envAction = $null
+    $envTarget = $null
+    $envs = @()
+    $envFile = $null
+
+    for ($i = 0; $i -lt $Args.Count; $i++) {
+        if ($Args[$i] -eq "env" -and ($i + 1) -lt $Args.Count) {
+            $next = $Args[$i + 1]
+            if (-not $next.StartsWith("-")) {
+                $envAction = $next
+                $i++
+                if (($i + 1) -lt $Args.Count) {
+                    $next2 = $Args[$i + 1]
+                    if (-not $next2.StartsWith("-")) {
+                        $envTarget = $next2
+                        $i++
+                    }
+                }
+            }
+        } elseif ($Args[$i] -eq "-e" -and ($i + 1) -lt $Args.Count) {
+            $envs += $Args[$i + 1]
+            $i++
+        } elseif ($Args[$i] -eq "--env-file" -and ($i + 1) -lt $Args.Count) {
+            $envFile = $Args[$i + 1]
+            $i++
+        }
+    }
+
+    # Handle env subcommand
+    if ($envAction) {
+        Invoke-ServiceEnv -Action $envAction -Target $envTarget -Envs $envs -EnvFile $envFile
+        return
+    }
+
     if ($Args -contains "--list" -or $Args -contains "-l") {
         $result = Invoke-Api -Endpoint "/services"
         $result | ConvertTo-Json -Depth 5
@@ -417,8 +627,21 @@ function Invoke-Service {
 
         $body = $payload | ConvertTo-Json -Depth 10
         $result = Invoke-Api -Endpoint "/services" -Method "POST" -Body $body
-        Write-Host "`e[32mService created`e[0m"
+        $serviceId = $result.id
+        Write-Host "`e[32mService created: $serviceId`e[0m"
         $result | ConvertTo-Json -Depth 5
+
+        # Auto-set vault if env vars were provided
+        if ($envs.Count -gt 0 -or $envFile) {
+            $envContent = Build-EnvContent -Envs $envs -EnvFile $envFile
+            if ($envContent) {
+                if (Invoke-ServiceEnvSet -ServiceId $serviceId -EnvContent $envContent) {
+                    Write-Host "`e[32mVault configured with environment variables`e[0m"
+                } else {
+                    Write-Host "`e[33mWarning: Failed to set vault`e[0m"
+                }
+            }
+        }
         return
     }
 
@@ -450,6 +673,8 @@ Service options:
   --type TYPE          Service type (minecraft, mumble, teamspeak, source, tcp, udp)
   --bootstrap CMD      Bootstrap command
   -f FILE              Input file (can be repeated)
+  -e KEY=VALUE         Environment variable for vault (can be repeated)
+  --env-file FILE      Load vault variables from file
   --list, -l           List services
   --info ID            Get service info
   --logs ID            Get logs
@@ -458,6 +683,12 @@ Service options:
   --destroy ID         Destroy service
   --dump-bootstrap ID  Dump bootstrap script from service
   --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)
+
+Service env commands:
+  env status ID        Show vault status
+  env set ID           Set vault (-e KEY=VALUE or --env-file FILE)
+  env export ID        Export vault contents
+  env delete ID        Delete vault
 
 Key options:
   --extend        Open browser to extend key

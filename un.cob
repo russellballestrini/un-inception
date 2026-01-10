@@ -80,6 +80,10 @@
        01  WS-PORTAL-BASE      PIC X(256) VALUE
            "https://unsandbox.com".
        01  WS-EXTEND-FLAG      PIC X(8).
+       01  WS-SVC-ENVS         PIC X(2048).
+       01  WS-SVC-ENV-FILE     PIC X(256).
+       01  WS-ENV-ACTION       PIC X(32).
+       01  WS-ENV-TARGET       PIC X(256).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -177,12 +181,26 @@
            END-IF.
 
        HANDLE-SERVICE.
-      * Get API key
-           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
-           IF WS-API-KEY = SPACES
-               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
-               MOVE 1 TO RETURN-CODE
-               STOP RUN
+      * Get API keys (try new format first, fall back to old)
+           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
+           IF WS-PUBLIC-KEY NOT = SPACES
+               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
+               IF WS-SECRET-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
+                       UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+           ELSE
+               ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
+               IF WS-API-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
+                       "UNSANDBOX_API_KEY not set" UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+               MOVE WS-API-KEY TO WS-PUBLIC-KEY
+               MOVE WS-API-KEY TO WS-SECRET-KEY
            END-IF.
 
       * Initialize service parameters
@@ -193,12 +211,21 @@
            MOVE SPACES TO WS-BOOTSTRAP.
            MOVE SPACES TO WS-BOOTSTRAP-FILE.
            MOVE SPACES TO WS-INPUT-FILES.
+           MOVE SPACES TO WS-SVC-ENVS.
+           MOVE SPACES TO WS-SVC-ENV-FILE.
+           MOVE SPACES TO WS-ENV-ACTION.
+           MOVE SPACES TO WS-ENV-TARGET.
 
       * Parse service arguments
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
 
            IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
                PERFORM SERVICE-LIST
+           ELSE IF WS-ARG2 = "env"
+               ACCEPT WS-ENV-ACTION FROM ARGUMENT-VALUE
+               ACCEPT WS-ENV-TARGET FROM ARGUMENT-VALUE
+               PERFORM PARSE-SERVICE-ENV-ARGS
+               PERFORM SERVICE-ENV
            ELSE IF WS-ARG2 = "--info"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-INFO
@@ -223,7 +250,8 @@
                PERFORM SERVICE-CREATE
            ELSE
                DISPLAY "Error: Use --list, --info, --logs, "
-                   "--freeze, --unfreeze, --destroy, --dump-bootstrap, or --name" UPON SYSERR
+                   "--freeze, --unfreeze, --destroy, --dump-bootstrap, "
+                   "--name, or env" UPON SYSERR
                MOVE 1 TO RETURN-CODE
            END-IF.
 
@@ -558,6 +586,18 @@
                    ACCEPT WS-BOOTSTRAP FROM ARGUMENT-VALUE
                ELSE IF WS-ARG3 = "--bootstrap-file"
                    ACCEPT WS-BOOTSTRAP-FILE FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "-e"
+                   ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+                   IF WS-SVC-ENVS NOT = SPACES
+                       STRING FUNCTION TRIM(WS-SVC-ENVS) X"0A"
+                           FUNCTION TRIM(WS-ARG3)
+                           DELIMITED BY SIZE INTO WS-SVC-ENVS
+                       END-STRING
+                   ELSE
+                       MOVE WS-ARG3 TO WS-SVC-ENVS
+                   END-IF
+               ELSE IF WS-ARG3 = "--env-file"
+                   ACCEPT WS-SVC-ENV-FILE FROM ARGUMENT-VALUE
                ELSE IF WS-ARG3 = "-f"
                    ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
                    IF WS-INPUT-FILES NOT = SPACES
@@ -572,23 +612,160 @@
                ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
            END-PERFORM.
 
+       PARSE-SERVICE-ENV-ARGS.
+      * Parse -e and --env-file for env set command
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "-e"
+                   ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+                   IF WS-SVC-ENVS NOT = SPACES
+                       STRING FUNCTION TRIM(WS-SVC-ENVS) X"0A"
+                           FUNCTION TRIM(WS-ARG3)
+                           DELIMITED BY SIZE INTO WS-SVC-ENVS
+                       END-STRING
+                   ELSE
+                       MOVE WS-ARG3 TO WS-SVC-ENVS
+                   END-IF
+               ELSE IF WS-ARG3 = "--env-file"
+                   ACCEPT WS-SVC-ENV-FILE FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       SERVICE-ENV.
+      * Handle env subcommand (status/set/export/delete)
+           IF WS-ENV-ACTION = "status"
+               PERFORM SERVICE-ENV-STATUS
+           ELSE IF WS-ENV-ACTION = "set"
+               PERFORM SERVICE-ENV-SET
+           ELSE IF WS-ENV-ACTION = "export"
+               PERFORM SERVICE-ENV-EXPORT
+           ELSE IF WS-ENV-ACTION = "delete"
+               PERFORM SERVICE-ENV-DELETE
+           ELSE
+               DISPLAY "Error: Unknown env action: "
+                   FUNCTION TRIM(WS-ENV-ACTION) UPON SYSERR
+               DISPLAY "Usage: un.cob service env "
+                   "<status|set|export|delete> <service_id>" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+           END-IF.
+
+       SERVICE-ENV-STATUS.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:GET:/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env:\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X GET 'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-ENV-SET.
+           STRING "ENV_CONTENT=''; "
+               "ENV_LINES='"
+               FUNCTION TRIM(WS-SVC-ENVS)
+               "'; "
+               "if [ -n \"$ENV_LINES\" ]; then "
+               "ENV_CONTENT=\"$ENV_LINES\"; fi; "
+               "ENV_FILE='"
+               FUNCTION TRIM(WS-SVC-ENV-FILE)
+               "'; "
+               "if [ -n \"$ENV_FILE\" ] && [ -f \"$ENV_FILE\" ]; then "
+               "while IFS= read -r line || [ -n \"$line\" ]; do "
+               "case \"$line\" in \"#\"*|\"\") continue ;; esac; "
+               "if [ -n \"$ENV_CONTENT\" ]; then "
+               "ENV_CONTENT=\"$ENV_CONTENT"
+               X"0A"
+               "\"; fi; "
+               "ENV_CONTENT=\"$ENV_CONTENT$line\"; "
+               "done < \"$ENV_FILE\"; fi; "
+               "if [ -z \"$ENV_CONTENT\" ]; then "
+               "echo -e '\x1b[31mError: No environment variables "
+               "to set\x1b[0m' >&2; exit 1; fi; "
+               "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:PUT:/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env:$ENV_CONTENT\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X PUT 'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-H 'Content-Type: text/plain' "
+               "--data-binary \"$ENV_CONTENT\" | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-ENV-EXPORT.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:POST:/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env/export:\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env/export' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq -r '.content // empty'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SERVICE-ENV-DELETE.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:DELETE:/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env:\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X DELETE 'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "/env' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG >/dev/null && "
+               "echo -e '\x1b[32mVault deleted for: "
+               FUNCTION TRIM(WS-ENV-TARGET)
+               "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
        SERVICE-CREATE.
-      * Build JSON payload for service creation
-      * Start with base payload containing name
-           STRING "curl -s -X POST "
-               "https://api.unsandbox.com/services "
-               "-H 'Content-Type: application/json' "
-               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -d '{""name"":"""
-               FUNCTION TRIM(WS-NAME)
-               """"
+      * Build service creation with HMAC auth and auto-vault
+           STRING "BODY='{\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
       * Add ports if provided
            IF WS-PORTS NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",""ports"":[" FUNCTION TRIM(WS-PORTS) "]"
+                   ",\"ports\":[" FUNCTION TRIM(WS-PORTS) "]"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -596,9 +773,7 @@
       * Add domains if provided
            IF WS-DOMAINS NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",""domains"":["""
-                   FUNCTION TRIM(WS-DOMAINS)
-                   """]"
+                   ",\"domains\":[\"" FUNCTION TRIM(WS-DOMAINS) "\"]"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -606,9 +781,7 @@
       * Add service_type if provided
            IF WS-SERVICE-TYPE NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",""service_type"":"""
-                   FUNCTION TRIM(WS-SERVICE-TYPE)
-                   """"
+                   ",\"service_type\":\"" FUNCTION TRIM(WS-SERVICE-TYPE) "\""
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -616,53 +789,57 @@
       * Add bootstrap if provided
            IF WS-BOOTSTRAP NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",""bootstrap"":"""
-                   FUNCTION TRIM(WS-BOOTSTRAP)
-                   """"
+                   ",\"bootstrap\":\"" FUNCTION TRIM(WS-BOOTSTRAP) "\""
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
-      * Add bootstrap_content from file if provided
-           IF WS-BOOTSTRAP-FILE NOT = SPACES
-               STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "' | jq --rawfile b '"
-                   FUNCTION TRIM(WS-BOOTSTRAP-FILE)
-                   "' '. + {bootstrap_content: $b}' | tr -d '\\n' | curl "
-                   "-s -X POST https://api.unsandbox.com/services "
-                   "-H 'Content-Type: application/json' "
-                   "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-                   "' -d @- | jq -r '.id + "" created""'"
-                   DELIMITED BY SIZE INTO WS-CURL-CMD
-               END-STRING
-               CALL "SYSTEM" USING WS-CURL-CMD
-               EXIT PARAGRAPH
-           END-IF.
+      * Close JSON body
+           STRING FUNCTION TRIM(WS-CURL-CMD) "}'; "
+               "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:POST:/services:$BODY\" | "
+               "openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP=$(curl -s -X POST https://api.unsandbox.com/services "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\"); "
+               "SVC_ID=$(echo \"$RESP\" | jq -r '.id // empty'); "
+               "if [ -n \"$SVC_ID\" ]; then "
+               "echo -e '\x1b[32m'\"$SVC_ID\"' created\x1b[0m'; "
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
 
-      * Add input_files if provided (use shell script for base64)
-           IF WS-INPUT-FILES NOT = SPACES
-               STRING "INPUT_FILES=''; "
-                   "IFS=',' read -ra FILES <<< '"
-                   FUNCTION TRIM(WS-INPUT-FILES)
-                   "'; "
-                   "for f in \"${FILES[@]}\"; do "
-                   "b64=$(base64 -w0 \"$f\" 2>/dev/null || base64 \"$f\"); "
-                   "name=$(basename \"$f\"); "
-                   "if [ -n \"$INPUT_FILES\" ]; then INPUT_FILES=\"$INPUT_FILES,\"; fi; "
-                   "INPUT_FILES=\"$INPUT_FILES{\\\"filename\\\":\\\"$name\\\",\\\"content\\\":\\\"$b64\\\"}\"; "
-                   "done; "
-                   FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"input_files\":['\"$INPUT_FILES\"']}' | "
-                   "jq -r '.id + "" created""'"
-                   DELIMITED BY SIZE INTO WS-CURL-CMD
-               END-STRING
-               CALL "SYSTEM" USING WS-CURL-CMD
-               EXIT PARAGRAPH
-           END-IF.
-
-      * Close JSON and add output formatting
+      * Add auto-vault logic
            STRING FUNCTION TRIM(WS-CURL-CMD)
-               "}' | jq -r '.id + "" created""'"
+               "ENV_CONTENT=''; "
+               "ENV_LINES='" FUNCTION TRIM(WS-SVC-ENVS) "'; "
+               "if [ -n \"$ENV_LINES\" ]; then ENV_CONTENT=\"$ENV_LINES\"; fi; "
+               "ENV_FILE='" FUNCTION TRIM(WS-SVC-ENV-FILE) "'; "
+               "if [ -n \"$ENV_FILE\" ] && [ -f \"$ENV_FILE\" ]; then "
+               "while IFS= read -r line || [ -n \"$line\" ]; do "
+               "case \"$line\" in \"#\"*|\"\") continue ;; esac; "
+               "if [ -n \"$ENV_CONTENT\" ]; then "
+               "ENV_CONTENT=\"$ENV_CONTENT" X"0A" "\"; fi; "
+               "ENV_CONTENT=\"$ENV_CONTENT$line\"; "
+               "done < \"$ENV_FILE\"; fi; "
+               "if [ -n \"$ENV_CONTENT\" ]; then "
+               "TS2=$(date +%s); "
+               "SIG2=$(echo -n \"$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT\" | "
+               "openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X PUT \"https://api.unsandbox.com/services/$SVC_ID/env\" "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
+               "-H 'X-Timestamp: '$TS2 "
+               "-H 'X-Signature: '$SIG2 "
+               "-H 'Content-Type: text/plain' "
+               "--data-binary \"$ENV_CONTENT\" >/dev/null && "
+               "echo -e '\x1b[32mVault configured\x1b[0m'; fi; "
+               "else echo \"$RESP\" | jq .; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

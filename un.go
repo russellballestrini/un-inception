@@ -231,6 +231,183 @@ func apiRequest(endpoint, method string, data map[string]interface{}, publicKey,
 	return result
 }
 
+func apiRequestText(endpoint, method, body, publicKey, secretKey string) (map[string]interface{}, error) {
+	url := APIBase + endpoint
+
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	// HMAC authentication
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	signature := computeHMAC(secretKey, timestamp, method, endpoint, body)
+
+	req.Header.Set("Authorization", "Bearer "+publicKey)
+	req.Header.Set("X-Timestamp", timestamp)
+	req.Header.Set("X-Signature", signature)
+	req.Header.Set("Content-Type", "text/plain")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("HTTP %d - %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// ============================================================================
+// Environment Secrets Vault Functions
+// ============================================================================
+
+const MaxEnvContentSize = 64 * 1024 // 64KB max env vault size
+
+func serviceEnvStatus(serviceID, publicKey, secretKey string) {
+	result := apiRequest("/services/"+serviceID+"/env", "GET", nil, publicKey, secretKey)
+	hasVault, _ := result["has_vault"].(bool)
+
+	if !hasVault {
+		fmt.Println("Vault exists: no")
+		fmt.Println("Variable count: 0")
+	} else {
+		fmt.Println("Vault exists: yes")
+		if count, ok := result["count"].(float64); ok {
+			fmt.Printf("Variable count: %d\n", int(count))
+		}
+		if updatedAt, ok := result["updated_at"].(float64); ok {
+			t := time.Unix(int64(updatedAt), 0)
+			fmt.Printf("Last updated: %s\n", t.Format("2006-01-02 15:04:05"))
+		}
+	}
+}
+
+func serviceEnvSet(serviceID, envContent, publicKey, secretKey string) bool {
+	if envContent == "" {
+		fmt.Fprintf(os.Stderr, "%sError: No environment content provided%s\n", Red, Reset)
+		return false
+	}
+
+	if len(envContent) > MaxEnvContentSize {
+		fmt.Fprintf(os.Stderr, "%sError: Environment content too large (max %d bytes)%s\n", Red, MaxEnvContentSize, Reset)
+		return false
+	}
+
+	result, err := apiRequestText("/services/"+serviceID+"/env", "PUT", envContent, publicKey, secretKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", Red, err, Reset)
+		return false
+	}
+
+	if count, ok := result["count"].(float64); ok {
+		plural := "s"
+		if int(count) == 1 {
+			plural = ""
+		}
+		fmt.Printf("%sEnvironment vault updated: %d variable%s%s\n", Green, int(count), plural, Reset)
+	} else {
+		fmt.Printf("%sEnvironment vault updated%s\n", Green, Reset)
+	}
+
+	if message, ok := result["message"].(string); ok && message != "" {
+		fmt.Println(message)
+	}
+
+	return true
+}
+
+func serviceEnvExport(serviceID, publicKey, secretKey string) {
+	result := apiRequest("/services/"+serviceID+"/env/export", "POST", map[string]interface{}{}, publicKey, secretKey)
+	if envContent, ok := result["env"].(string); ok && envContent != "" {
+		fmt.Print(envContent)
+		if !strings.HasSuffix(envContent, "\n") {
+			fmt.Println()
+		}
+	}
+}
+
+func serviceEnvDelete(serviceID, publicKey, secretKey string) {
+	apiRequest("/services/"+serviceID+"/env", "DELETE", nil, publicKey, secretKey)
+	fmt.Printf("%sEnvironment vault deleted%s\n", Green, Reset)
+}
+
+func readEnvFile(filepath string) (string, error) {
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func buildEnvContent(envs envVars, envFile string) string {
+	var parts []string
+
+	// Read from env file first
+	if envFile != "" {
+		content, err := readEnvFile(envFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sError: Env file not found: %s%s\n", Red, envFile, Reset)
+			os.Exit(1)
+		}
+		parts = append(parts, content)
+	}
+
+	// Add -e flags
+	for _, e := range envs {
+		if strings.Contains(e, "=") {
+			parts = append(parts, e)
+		}
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+func cmdServiceEnv(action, target string, envs envVars, envFile, publicKey, secretKey string) {
+	if action == "" {
+		fmt.Fprintf(os.Stderr, "%sError: env action required (status, set, export, delete)%s\n", Red, Reset)
+		os.Exit(1)
+	}
+
+	if target == "" {
+		fmt.Fprintf(os.Stderr, "%sError: Service ID required for env command%s\n", Red, Reset)
+		os.Exit(1)
+	}
+
+	switch action {
+	case "status":
+		serviceEnvStatus(target, publicKey, secretKey)
+	case "set":
+		envContent := buildEnvContent(envs, envFile)
+		if envContent == "" {
+			fmt.Fprintf(os.Stderr, "%sError: No env content provided. Use -e KEY=VAL, --env-file, or pipe to stdin%s\n", Red, Reset)
+			os.Exit(1)
+		}
+		serviceEnvSet(target, envContent, publicKey, secretKey)
+	case "export":
+		serviceEnvExport(target, publicKey, secretKey)
+	case "delete":
+		serviceEnvDelete(target, publicKey, secretKey)
+	default:
+		fmt.Fprintf(os.Stderr, "%sError: Unknown env action '%s'. Use: status, set, export, delete%s\n", Red, action, Reset)
+		os.Exit(1)
+	}
+}
+
 func cmdExecute(sourceFile string, envs envVars, files inputFiles, artifacts bool, outputDir, network string, vcpu int, publicKey, secretKey string) {
 	code, err := os.ReadFile(sourceFile)
 	if err != nil {
@@ -419,7 +596,7 @@ func cmdSession(sessionList, sessionKill, sessionShell, sessionSnapshot, session
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, serviceSnapshot, serviceRestore, serviceSnapshotName string, serviceHot bool, network string, vcpu int, files inputFiles, publicKey, secretKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, serviceSnapshot, serviceRestore, serviceSnapshotName string, serviceHot bool, network string, vcpu int, files inputFiles, envs envVars, envFile, publicKey, secretKey string) {
 	if serviceSnapshot != "" {
 		payload := map[string]interface{}{}
 		if serviceSnapshotName != "" {
@@ -602,10 +779,17 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 		}
 
 		result := apiRequest("/services", "POST", payload, publicKey, secretKey)
-		fmt.Printf("%sService created: %s%s\n", Green, result["id"], Reset)
+		serviceID := result["id"].(string)
+		fmt.Printf("%sService created: %s%s\n", Green, serviceID, Reset)
 		fmt.Printf("Name: %s\n", result["name"])
 		if url, ok := result["url"]; ok {
 			fmt.Printf("URL: %s\n", url)
+		}
+
+		// Auto-set vault if -e or --env-file provided
+		envContent := buildEnvContent(envs, envFile)
+		if envContent != "" {
+			serviceEnvSet(serviceID, envContent, publicKey, secretKey)
 		}
 		return
 	}
@@ -863,6 +1047,9 @@ func main() {
 	serviceBootstrapFile := serviceCmd.String("bootstrap-file", "", "Upload local file as bootstrap script")
 	var serviceFiles inputFiles
 	serviceCmd.Var(&serviceFiles, "f", "Input file")
+	var serviceEnvs envVars
+	serviceCmd.Var(&serviceEnvs, "e", "Environment variable (KEY=VALUE)")
+	serviceEnvFile := serviceCmd.String("env-file", "", "Environment file (.env format)")
 	serviceList := serviceCmd.String("list", "", "List services")
 	serviceInfo := serviceCmd.String("info", "", "Get service info")
 	serviceLogs := serviceCmd.String("logs", "", "Get service logs")
@@ -919,6 +1106,33 @@ func main() {
 			return
 
 		case "service":
+			// Check for "service env" subcommand
+			if len(os.Args) > 2 && os.Args[2] == "env" {
+				// Parse env subcommand: service env <action> <service_id> [options]
+				envCmd := flag.NewFlagSet("service env", flag.ExitOnError)
+				var envFlags envVars
+				envCmd.Var(&envFlags, "e", "Environment variable (KEY=VALUE)")
+				envFile := envCmd.String("env-file", "", "Environment file")
+				envKey := envCmd.String("k", "", "API key")
+
+				if len(os.Args) < 4 {
+					fmt.Fprintf(os.Stderr, "%sError: env action required (status, set, export, delete)%s\n", Red, Reset)
+					os.Exit(1)
+				}
+				action := os.Args[3]
+				target := ""
+				argsStart := 4
+				if len(os.Args) > 4 && !strings.HasPrefix(os.Args[4], "-") {
+					target = os.Args[4]
+					argsStart = 5
+				}
+				envCmd.Parse(os.Args[argsStart:])
+
+				publicKey, secretKey := getAPIKeys(*envKey)
+				cmdServiceEnv(action, target, envFlags, *envFile, publicKey, secretKey)
+				return
+			}
+
 			serviceCmd.Parse(os.Args[2:])
 			publicKey, secretKey := getAPIKeys(*serviceKey)
 			net := *serviceNetwork
@@ -929,7 +1143,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, *serviceSnapshot, *serviceRestore, *serviceSnapshotName, *serviceHot, net, vc, serviceFiles, publicKey, secretKey)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, *serviceSnapshot, *serviceRestore, *serviceSnapshotName, *serviceHot, net, vc, serviceFiles, serviceEnvs, *serviceEnvFile, publicKey, secretKey)
 			return
 
 		case "snapshot":

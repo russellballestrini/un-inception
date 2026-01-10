@@ -118,6 +118,9 @@ type Args = {
     mutable SnapshotName: string option
     mutable SnapshotShell: string option
     mutable SnapshotPorts: string option
+    mutable EnvFile: string option
+    mutable EnvAction: string option
+    mutable EnvTarget: string option
     mutable KeyExtend: bool
 }
 
@@ -310,6 +313,164 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
             exit 1
 
         failwithf "HTTP error - %s" errorMsg
+
+let apiRequestText (endpoint: string) (method: string) (body: string) (publicKey: string) (secretKey: string) =
+    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
+
+    let request = WebRequest.Create(apiBase + endpoint) :?> HttpWebRequest
+    request.Method <- method
+    request.ContentType <- "text/plain"
+    request.Timeout <- 300000
+
+    let bodyContent = if body = null then "" else body
+
+    // Add HMAC authentication headers if secretKey is provided
+    if not (String.IsNullOrEmpty(secretKey)) then
+        let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let message = sprintf "%d:%s:%s:%s" timestamp method endpoint bodyContent
+
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
+        let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message))
+        let signature = BitConverter.ToString(hash).Replace("-", "").ToLower()
+
+        request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+        request.Headers.Add("X-Timestamp", timestamp.ToString())
+        request.Headers.Add("X-Signature", signature)
+    else
+        request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+
+    if not (String.IsNullOrEmpty(bodyContent)) then
+        let bytes = Encoding.UTF8.GetBytes(bodyContent)
+        request.ContentLength <- int64 bytes.Length
+        use stream = request.GetRequestStream()
+        stream.Write(bytes, 0, bytes.Length)
+
+    try
+        use response = request.GetResponse() :?> HttpWebResponse
+        use reader = new StreamReader(response.GetResponseStream())
+        reader.ReadToEnd()
+    with
+    | :? WebException as ex ->
+        let errorMsg =
+            if ex.Response <> null then
+                use reader = new StreamReader(ex.Response.GetResponseStream())
+                reader.ReadToEnd()
+            else
+                ex.Message
+        failwithf "HTTP error - %s" errorMsg
+
+let readEnvFile (path: string) =
+    if not (File.Exists(path)) then
+        failwithf "Env file not found: %s" path
+    File.ReadAllText(path)
+
+let buildEnvContent (envs: ResizeArray<string>) (envFile: string option) =
+    let lines = ResizeArray<string>()
+
+    // Add from -e flags
+    for env in envs do
+        lines.Add(env)
+
+    // Add from --env-file
+    match envFile with
+    | Some path ->
+        let content = readEnvFile path
+        for line in content.Split('\n') do
+            let trimmed = line.Trim()
+            if not (String.IsNullOrEmpty(trimmed)) && not (trimmed.StartsWith("#")) then
+                lines.Add(trimmed)
+    | None -> ()
+
+    String.Join("\n", lines)
+
+let serviceEnvStatus (serviceId: string) (publicKey: string) (secretKey: string) =
+    apiRequest (sprintf "/services/%s/env" serviceId) "GET" None publicKey secretKey
+
+let serviceEnvSet (serviceId: string) (envContent: string) (publicKey: string) (secretKey: string) =
+    let maxEnvContentSize = 65536
+    if envContent.Length > maxEnvContentSize then
+        eprintfn "%sError: Env content exceeds maximum size of 64KB%s" red reset
+        false
+    else
+        try
+            apiRequestText (sprintf "/services/%s/env" serviceId) "PUT" envContent publicKey secretKey |> ignore
+            true
+        with _ ->
+            false
+
+let serviceEnvExport (serviceId: string) (publicKey: string) (secretKey: string) =
+    apiRequest (sprintf "/services/%s/env/export" serviceId) "POST" None publicKey secretKey
+
+let serviceEnvDelete (serviceId: string) (publicKey: string) (secretKey: string) =
+    try
+        apiRequest (sprintf "/services/%s/env" serviceId) "DELETE" None publicKey secretKey |> ignore
+        true
+    with _ ->
+        false
+
+let cmdServiceEnv (args: Args) (publicKey: string) (secretKey: string) =
+    match args.EnvAction with
+    | Some "status" ->
+        match args.EnvTarget with
+        | Some target ->
+            let result = serviceEnvStatus target publicKey secretKey
+            match result.TryFind "has_vault" with
+            | Some hasVault when hasVault.ToString() = "True" ->
+                printfn "%sVault: configured%s" green reset
+                match result.TryFind "env_count" with
+                | Some count -> printfn "Variables: %s" (count.ToString())
+                | None -> ()
+                match result.TryFind "updated_at" with
+                | Some updated -> printfn "Updated: %s" (updated.ToString())
+                | None -> ()
+            | _ ->
+                printfn "%sVault: not configured%s" yellow reset
+        | None ->
+            eprintfn "%sError: service env status requires service ID%s" red reset
+            exit 1
+    | Some "set" ->
+        match args.EnvTarget with
+        | Some target ->
+            if args.Env.Count = 0 && args.EnvFile.IsNone then
+                eprintfn "%sError: service env set requires -e or --env-file%s" red reset
+                exit 1
+            let envContent = buildEnvContent args.Env args.EnvFile
+            if serviceEnvSet target envContent publicKey secretKey then
+                printfn "%sVault updated for service %s%s" green target reset
+            else
+                eprintfn "%sError: Failed to update vault%s" red reset
+                exit 1
+        | None ->
+            eprintfn "%sError: service env set requires service ID%s" red reset
+            exit 1
+    | Some "export" ->
+        match args.EnvTarget with
+        | Some target ->
+            let result = serviceEnvExport target publicKey secretKey
+            match result.TryFind "content" with
+            | Some content -> printf "%s" (content.ToString())
+            | None -> ()
+        | None ->
+            eprintfn "%sError: service env export requires service ID%s" red reset
+            exit 1
+    | Some "delete" ->
+        match args.EnvTarget with
+        | Some target ->
+            if serviceEnvDelete target publicKey secretKey then
+                printfn "%sVault deleted for service %s%s" green target reset
+            else
+                eprintfn "%sError: Failed to delete vault%s" red reset
+                exit 1
+        | None ->
+            eprintfn "%sError: service env delete requires service ID%s" red reset
+            exit 1
+    | Some action ->
+        eprintfn "%sError: Unknown env action: %s%s" red action reset
+        eprintfn "Usage: un.fs service env <status|set|export|delete> <service_id>"
+        exit 1
+    | None ->
+        eprintfn "%sError: env action required%s" red reset
+        exit 1
 
 let cmdExecute (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey
@@ -531,7 +692,10 @@ let cmdSnapshot (args: Args) =
 let cmdService (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey
 
-    if args.ServiceSnapshot.IsSome then
+    // Handle env subcommand
+    if args.EnvAction.IsSome then
+        cmdServiceEnv args publicKey secretKey
+    elif args.ServiceSnapshot.IsSome then
         let mutable payload = []
         if args.ServiceSnapshotName.IsSome then
             payload <- payload @ [("name", box args.ServiceSnapshotName.Value)]
@@ -630,8 +794,9 @@ let cmdService (args: Args) =
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
         let result = apiRequest "/services" "POST" (Some payload) publicKey secretKey
-        match result.TryFind "id" with
-        | Some id -> printfn "%sService created: %s%s" green (id.ToString()) reset
+        let serviceId = match result.TryFind "id" with | Some id -> Some (id.ToString()) | None -> None
+        match serviceId with
+        | Some id -> printfn "%sService created: %s%s" green id reset
         | None -> printfn "%sService created%s" green reset
         match result.TryFind "name" with
         | Some name -> printfn "Name: %s" (name.ToString())
@@ -639,6 +804,17 @@ let cmdService (args: Args) =
         match result.TryFind "url" with
         | Some url -> printfn "URL: %s" (url.ToString())
         | None -> ()
+
+        // Auto-set vault if env vars were provided
+        match serviceId with
+        | Some id when args.Env.Count > 0 || args.EnvFile.IsSome ->
+            let envContent = buildEnvContent args.Env args.EnvFile
+            if not (String.IsNullOrEmpty(envContent)) then
+                if serviceEnvSet id envContent publicKey secretKey then
+                    printfn "%sVault configured with environment variables%s" green reset
+                else
+                    eprintfn "%sWarning: Failed to set vault%s" yellow reset
+        | _ -> ()
     else
         eprintfn "%sError: Specify --name to create a service, or use --list, --info, etc.%s" red reset
         exit 1
@@ -691,6 +867,9 @@ let parseArgs (argv: string[]) =
         SnapshotName = None
         SnapshotShell = None
         SnapshotPorts = None
+        EnvFile = None
+        EnvAction = None
+        EnvTarget = None
         KeyExtend = false
     }
 
@@ -701,10 +880,19 @@ let parseArgs (argv: string[]) =
         | "service" -> args.Command <- Some "service"
         | "snapshot" -> args.Command <- Some "snapshot"
         | "key" -> args.Command <- Some "key"
+        | "env" when args.Command = Some "service" ->
+            // Parse: service env <action> <target>
+            if i + 1 < argv.Length && not (argv.[i + 1].StartsWith("-")) then
+                i <- i + 1
+                args.EnvAction <- Some argv.[i]
+                if i + 1 < argv.Length && not (argv.[i + 1].StartsWith("-")) then
+                    i <- i + 1
+                    args.EnvTarget <- Some argv.[i]
         | "-k" | "--api-key" -> i <- i + 1; args.ApiKey <- Some argv.[i]
         | "-n" | "--network" -> i <- i + 1; args.Network <- Some argv.[i]
         | "-v" | "--vcpu" -> i <- i + 1; args.Vcpu <- int argv.[i]
         | "-e" | "--env" -> i <- i + 1; args.Env.Add(argv.[i])
+        | "--env-file" -> i <- i + 1; args.EnvFile <- Some argv.[i]
         | "-f" | "--files" -> i <- i + 1; args.Files.Add(argv.[i])
         | "-a" | "--artifacts" -> args.Artifacts <- true
         | "-o" | "--output-dir" -> i <- i + 1; args.OutputDir <- Some argv.[i]
@@ -800,6 +988,7 @@ let printHelp () =
     printfn "Usage: un [options] <source_file>"
     printfn "       un session [options]"
     printfn "       un service [options]"
+    printfn "       un service env <action> <service_id> [options]"
     printfn "       un key [options]"
     printfn ""
     printfn "Execute options:"
@@ -825,13 +1014,21 @@ let printHelp () =
     printfn "  --info ID         Get service details"
     printfn "  --logs ID         Get all logs"
     printfn "  --tail ID         Get last 9000 lines"
-    printfn "  --freeze ID        Freeze service"
-    printfn "  --unfreeze ID         Unfreeze service"
+    printfn "  --freeze ID       Freeze service"
+    printfn "  --unfreeze ID     Unfreeze service"
     printfn "  --destroy ID      Destroy service"
     printfn "  --execute ID      Execute command in service"
     printfn "  --command CMD     Command to execute (with --execute)"
     printfn "  --dump-bootstrap ID   Dump bootstrap script"
     printfn "  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)"
+    printfn "  -e KEY=VALUE      Set vault env var (with --name or env set)"
+    printfn "  --env-file FILE   Load vault vars from file"
+    printfn ""
+    printfn "Service env commands:"
+    printfn "  env status ID     Check vault status"
+    printfn "  env set ID        Set vault (use -e or --env-file)"
+    printfn "  env export ID     Export vault contents"
+    printfn "  env delete ID     Delete vault"
     printfn ""
     printfn "Key options:"
     printfn "  --extend          Open browser to extend key"

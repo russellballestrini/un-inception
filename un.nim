@@ -123,6 +123,130 @@ proc execCurl(cmd: string): string =
     stderr.writeLine("  Windows: w32tm /resync")
     quit(1)
 
+proc execCurlPut(endpoint, body, publicKey, secretKey: string): bool =
+  let tmpFile = fmt"/tmp/un_nim_{epochTime().int mod 999999}.txt"
+  writeFile(tmpFile, body)
+  let authHeaders = buildAuthHeaders("PUT", endpoint, body, publicKey, secretKey)
+  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X PUT '{API_BASE}{endpoint}' -H 'Content-Type: text/plain' {authHeaders} -d @{tmpFile}"""
+  let output = execProcess(cmd).strip()
+  removeFile(tmpFile)
+  try:
+    let status = parseInt(output)
+    return status >= 200 and status < 300
+  except:
+    return false
+
+const MAX_ENV_CONTENT_SIZE = 65536
+
+proc readEnvFile(path: string): string =
+  if not fileExists(path):
+    stderr.writeLine(RED & "Error: Env file not found: " & path & RESET)
+    quit(1)
+  return readFile(path)
+
+proc buildEnvContent(envs: seq[string], envFile: string): string =
+  var lines: seq[string] = envs
+  if envFile != "":
+    let content = readEnvFile(envFile)
+    for line in content.splitLines():
+      let trimmed = line.strip()
+      if trimmed.len > 0 and not trimmed.startsWith("#"):
+        lines.add(trimmed)
+  return lines.join("\n")
+
+proc serviceEnvStatus(serviceId, publicKey, secretKey: string): string =
+  let path = fmt"/services/{serviceId}/env"
+  let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+  let cmd = fmt"""curl -s -X GET '{API_BASE}/services/{serviceId}/env' {authHeaders}"""
+  return execCurl(cmd)
+
+proc serviceEnvSet(serviceId, envContent, publicKey, secretKey: string): bool =
+  if envContent.len > MAX_ENV_CONTENT_SIZE:
+    stderr.writeLine(RED & "Error: Env content exceeds maximum size of 64KB" & RESET)
+    return false
+  return execCurlPut(fmt"/services/{serviceId}/env", envContent, publicKey, secretKey)
+
+proc serviceEnvExport(serviceId, publicKey, secretKey: string): string =
+  let path = fmt"/services/{serviceId}/env/export"
+  let authHeaders = buildAuthHeaders("POST", path, "{}", publicKey, secretKey)
+  let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{serviceId}/env/export' -H 'Content-Type: application/json' {authHeaders} -d '{{}}'"""
+  return execCurl(cmd)
+
+proc serviceEnvDelete(serviceId, publicKey, secretKey: string): bool =
+  let path = fmt"/services/{serviceId}/env"
+  let authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey)
+  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X DELETE '{API_BASE}/services/{serviceId}/env' {authHeaders}"""
+  let output = execProcess(cmd).strip()
+  try:
+    let status = parseInt(output)
+    return status >= 200 and status < 300
+  except:
+    return false
+
+proc extractJsonField(response, field: string): string =
+  let fieldStart = response.find("\"" & field & "\":\"")
+  if fieldStart >= 0:
+    let start = fieldStart + field.len + 4
+    var endPos = start
+    while endPos < response.len:
+      if response[endPos] == '"' and (endPos == 0 or response[endPos-1] != '\\'):
+        break
+      inc endPos
+    if endPos > start:
+      return response[start..<endPos]
+  return ""
+
+proc cmdServiceEnv(action, target: string, envs: seq[string], envFile, publicKey, secretKey: string) =
+  case action
+  of "status":
+    if target == "":
+      stderr.writeLine(RED & "Error: service env status requires service ID" & RESET)
+      quit(1)
+    let response = serviceEnvStatus(target, publicKey, secretKey)
+    if response.contains("\"has_vault\":true"):
+      echo GREEN & "Vault: configured" & RESET
+      let envCount = extractJsonField(response, "env_count")
+      if envCount != "": echo "Variables: " & envCount
+      let updatedAt = extractJsonField(response, "updated_at")
+      if updatedAt != "": echo "Updated: " & updatedAt
+    else:
+      echo YELLOW & "Vault: not configured" & RESET
+  of "set":
+    if target == "":
+      stderr.writeLine(RED & "Error: service env set requires service ID" & RESET)
+      quit(1)
+    if envs.len == 0 and envFile == "":
+      stderr.writeLine(RED & "Error: service env set requires -e or --env-file" & RESET)
+      quit(1)
+    let envContent = buildEnvContent(envs, envFile)
+    if serviceEnvSet(target, envContent, publicKey, secretKey):
+      echo GREEN & "Vault updated for service " & target & RESET
+    else:
+      stderr.writeLine(RED & "Error: Failed to update vault" & RESET)
+      quit(1)
+  of "export":
+    if target == "":
+      stderr.writeLine(RED & "Error: service env export requires service ID" & RESET)
+      quit(1)
+    let response = serviceEnvExport(target, publicKey, secretKey)
+    let content = extractJsonField(response, "content")
+    if content != "":
+      var output = content.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\")
+      stdout.write(output)
+  of "delete":
+    if target == "":
+      stderr.writeLine(RED & "Error: service env delete requires service ID" & RESET)
+      quit(1)
+    if serviceEnvDelete(target, publicKey, secretKey):
+      echo GREEN & "Vault deleted for service " & target & RESET
+    else:
+      stderr.writeLine(RED & "Error: Failed to delete vault" & RESET)
+      quit(1)
+  else:
+    stderr.writeLine(RED & "Error: Unknown env action: " & action & RESET)
+    stderr.writeLine("Usage: un.nim service env <status|set|export|delete> <service_id>")
+    quit(1)
+
 proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network: string, vcpu: int, publicKey: string, secretKey: string) =
   let lang = detectLanguage(sourceFile)
   if lang == "":
@@ -178,7 +302,12 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, inputFiles: seq[string], publicKey: string, secretKey: string) =
+proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
+  # Handle env subcommand
+  if envAction != "":
+    cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey)
+    return
+
   if list:
     let authHeaders = buildAuthHeaders("GET", "/services", "", publicKey, secretKey)
     let cmd = fmt"""curl -s -X GET '{API_BASE}/services' {authHeaders}"""
@@ -326,7 +455,18 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     echo YELLOW & "Creating service..." & RESET
     let authHeaders = buildAuthHeaders("POST", "/services", json, publicKey, secretKey)
     let cmd = fmt"""curl -s -X POST '{API_BASE}/services' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
-    echo execCurl(cmd)
+    let response = execCurl(cmd)
+    echo response
+
+    # Auto-set vault if -e or --env-file provided
+    if svcEnvs.len > 0 or svcEnvFile != "":
+      let serviceId = extractJsonField(response, "service_id")
+      if serviceId != "":
+        let envContent = buildEnvContent(svcEnvs, svcEnvFile)
+        if serviceEnvSet(serviceId, envContent, publicKey, secretKey):
+          echo GREEN & "Vault configured for service " & serviceId & RESET
+        else:
+          stderr.writeLine(YELLOW & "Warning: Failed to set vault" & RESET)
     return
 
   stderr.writeLine(RED & "Error: Specify --name to create a service" & RESET)
@@ -422,7 +562,18 @@ proc main() =
     stderr.writeLine("Usage: un.nim [options] <source_file>")
     stderr.writeLine("       un.nim session [options]")
     stderr.writeLine("       un.nim service [options]")
+    stderr.writeLine("       un.nim service env <action> <service_id> [options]")
     stderr.writeLine("       un.nim key [options]")
+    stderr.writeLine("")
+    stderr.writeLine("Service env commands:")
+    stderr.writeLine("  env status <id>     Show vault status")
+    stderr.writeLine("  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)")
+    stderr.writeLine("  env export <id>     Export vault contents")
+    stderr.writeLine("  env delete <id>     Delete vault")
+    stderr.writeLine("")
+    stderr.writeLine("Service options:")
+    stderr.writeLine("  -e KEY=VALUE        Set environment variable (for vault)")
+    stderr.writeLine("  --env-file FILE     Load env vars from file (for vault)")
     quit(1)
 
   if args[0] == "key":
@@ -472,7 +623,28 @@ proc main() =
     var info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network = ""
     var vcpu = 0
     var inputFiles: seq[string] = @[]
+    var svcEnvs: seq[string] = @[]
+    var svcEnvFile = ""
+    var envAction, envTarget = ""
     var i = 1
+
+    # Check for env subcommand
+    if args.len > 1 and args[1] == "env":
+      if args.len > 2:
+        envAction = args[2]
+      if args.len > 3:
+        envTarget = args[3]
+      i = 4
+      while i < args.len:
+        case args[i]
+        of "-e": svcEnvs.add(args[i+1]); inc i
+        of "--env-file": svcEnvFile = args[i+1]; inc i
+        of "-k": publicKey = args[i+1]; inc i
+        else: discard
+        inc i
+      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+      return
+
     while i < args.len:
       case args[i]
       of "--name": name = args[i+1]; inc i
@@ -494,6 +666,8 @@ proc main() =
       of "-n": network = args[i+1]; inc i
       of "-v": vcpu = parseInt(args[i+1]); inc i
       of "-k": publicKey = args[i+1]; inc i
+      of "-e": svcEnvs.add(args[i+1]); inc i
+      of "--env-file": svcEnvFile = args[i+1]; inc i
       of "-f":
         let file = args[i+1]
         if fileExists(file):
@@ -504,7 +678,7 @@ proc main() =
         inc i
       else: discard
       inc i
-    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, publicKey, secretKey)
+    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
     return
 
   # Execute mode

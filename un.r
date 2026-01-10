@@ -66,6 +66,7 @@ RESET <- "\033[0m"
 
 API_BASE <- "https://api.unsandbox.com"
 PORTAL_BASE <- "https://unsandbox.com"
+MAX_ENV_CONTENT_SIZE <- 65536
 
 detect_language <- function(filename) {
     ext <- tolower(sub(".*(\\..*)$", "\\1", filename))
@@ -156,6 +157,138 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
         cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
         quit(status = 1)
     })
+}
+
+api_request_text <- function(endpoint, public_key, secret_key, body) {
+    url <- paste0(API_BASE, endpoint)
+    headers <- add_headers(
+        `Content-Type` = "text/plain",
+        `Authorization` = paste("Bearer", public_key)
+    )
+
+    # Add HMAC signature if secret_key is present
+    if (secret_key != "") {
+        timestamp <- as.integer(Sys.time())
+        sig_input <- paste0(timestamp, ":PUT:", endpoint, ":", body)
+        signature <- hmac(sig_input, secret_key, algo = "sha256")
+        headers <- add_headers(
+            `Content-Type` = "text/plain",
+            `Authorization` = paste("Bearer", public_key),
+            `X-Timestamp` = as.character(timestamp),
+            `X-Signature` = signature
+        )
+    }
+
+    tryCatch({
+        response <- PUT(url, headers, body = body, encode = "raw", timeout(300))
+        status_code <- status_code(response)
+        return(status_code >= 200 && status_code < 300)
+    }, error = function(e) {
+        return(FALSE)
+    })
+}
+
+read_env_file <- function(path) {
+    if (!file.exists(path)) {
+        cat(sprintf("%sError: Env file not found: %s%s\n", RED, path, RESET), file = stderr())
+        quit(status = 1)
+    }
+    return(paste(readLines(path, warn = FALSE), collapse = "\n"))
+}
+
+build_env_content <- function(envs, env_file) {
+    lines <- c()
+    if (!is.null(envs)) {
+        lines <- c(lines, envs)
+    }
+    if (!is.null(env_file) && env_file != "") {
+        content <- read_env_file(env_file)
+        for (line in strsplit(content, "\n")[[1]]) {
+            trimmed <- trimws(line)
+            if (nchar(trimmed) > 0 && !startsWith(trimmed, "#")) {
+                lines <- c(lines, trimmed)
+            }
+        }
+    }
+    return(paste(lines, collapse = "\n"))
+}
+
+cmd_service_env <- function(args) {
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
+
+    action <- args$env_action
+    target <- args$env_target
+
+    if (action == "status") {
+        if (is.null(target) || target == "") {
+            cat(sprintf("%sError: service env status requires service ID%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        result <- api_request(paste0("/services/", target, "/env"), public_key, secret_key)
+        if (!is.null(result$has_vault) && result$has_vault) {
+            cat(sprintf("%sVault: configured%s\n", GREEN, RESET))
+            if (!is.null(result$env_count)) {
+                cat(sprintf("Variables: %s\n", result$env_count))
+            }
+            if (!is.null(result$updated_at)) {
+                cat(sprintf("Updated: %s\n", result$updated_at))
+            }
+        } else {
+            cat(sprintf("%sVault: not configured%s\n", YELLOW, RESET))
+        }
+        return()
+    }
+
+    if (action == "set") {
+        if (is.null(target) || target == "") {
+            cat(sprintf("%sError: service env set requires service ID%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        if ((is.null(args$svc_envs) || length(args$svc_envs) == 0) && (is.null(args$svc_env_file) || args$svc_env_file == "")) {
+            cat(sprintf("%sError: service env set requires -e or --env-file%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        env_content <- build_env_content(args$svc_envs, args$svc_env_file)
+        if (nchar(env_content) > MAX_ENV_CONTENT_SIZE) {
+            cat(sprintf("%sError: Env content exceeds maximum size of 64KB%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        if (api_request_text(paste0("/services/", target, "/env"), public_key, secret_key, env_content)) {
+            cat(sprintf("%sVault updated for service %s%s\n", GREEN, target, RESET))
+        } else {
+            cat(sprintf("%sError: Failed to update vault%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        return()
+    }
+
+    if (action == "export") {
+        if (is.null(target) || target == "") {
+            cat(sprintf("%sError: service env export requires service ID%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        result <- api_request(paste0("/services/", target, "/env/export"), public_key, secret_key, method = "POST", data = list())
+        if (!is.null(result$content)) {
+            cat(result$content)
+        }
+        return()
+    }
+
+    if (action == "delete") {
+        if (is.null(target) || target == "") {
+            cat(sprintf("%sError: service env delete requires service ID%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        result <- api_request(paste0("/services/", target, "/env"), public_key, secret_key, method = "DELETE")
+        cat(sprintf("%sVault deleted for service %s%s\n", GREEN, target, RESET))
+        return()
+    }
+
+    cat(sprintf("%sError: Unknown env action: %s%s\n", RED, action, RESET), file = stderr())
+    cat("Usage: un.r service env <status|set|export|delete> <service_id>\n", file = stderr())
+    quit(status = 1)
 }
 
 cmd_execute <- function(args) {
@@ -517,6 +650,12 @@ cmd_snapshot <- function(args) {
 }
 
 cmd_service <- function(args) {
+    # Handle env subcommand
+    if (!is.null(args$env_action) && args$env_action != "") {
+        cmd_service_env(args)
+        return()
+    }
+
     keys <- get_api_keys(args$api_key)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
@@ -686,6 +825,19 @@ cmd_service <- function(args) {
         if (!is.null(result$url)) {
             cat(sprintf("URL: %s\n", result$url))
         }
+
+        # Auto-set vault if -e or --env-file provided
+        if ((!is.null(args$svc_envs) && length(args$svc_envs) > 0) || (!is.null(args$svc_env_file) && args$svc_env_file != "")) {
+            service_id <- result$id
+            if (!is.null(service_id)) {
+                env_content <- build_env_content(args$svc_envs, args$svc_env_file)
+                if (api_request_text(paste0("/services/", service_id, "/env"), public_key, secret_key, env_content)) {
+                    cat(sprintf("%sVault configured for service %s%s\n", GREEN, service_id, RESET))
+                } else {
+                    cat(sprintf("%sWarning: Failed to set vault%s\n", YELLOW, RESET), file = stderr())
+                }
+            }
+        }
         return()
     }
 
@@ -732,7 +884,11 @@ parse_args <- function() {
         bootstrap = NULL,
         bootstrap_file = NULL,
         vcpu = NULL,
-        extend = FALSE
+        extend = FALSE,
+        svc_envs = NULL,
+        svc_env_file = NULL,
+        env_action = NULL,
+        env_target = NULL
     )
 
     i <- 1
@@ -745,6 +901,18 @@ parse_args <- function() {
         } else if (arg == "service") {
             result$command <- "service"
             i <- i + 1
+            # Check for env subcommand
+            if (i <= length(args) && args[i] == "env") {
+                i <- i + 1
+                if (i <= length(args)) {
+                    result$env_action <- args[i]
+                    i <- i + 1
+                }
+                if (i <= length(args) && !startsWith(args[i], "-")) {
+                    result$env_target <- args[i]
+                    i <- i + 1
+                }
+            }
         } else if (arg == "key") {
             result$command <- "key"
             i <- i + 1
@@ -761,7 +929,15 @@ parse_args <- function() {
             i <- i + 1
         } else if (arg %in% c("-e", "--env")) {
             i <- i + 1
-            result$env <- c(result$env, args[i])
+            if (!is.null(result$command) && result$command == "service") {
+                result$svc_envs <- c(result$svc_envs, args[i])
+            } else {
+                result$env <- c(result$env, args[i])
+            }
+            i <- i + 1
+        } else if (arg == "--env-file") {
+            i <- i + 1
+            result$svc_env_file <- args[i]
             i <- i + 1
         } else if (arg %in% c("-f", "--files")) {
             i <- i + 1
@@ -887,8 +1063,14 @@ parse_args <- function() {
             cat("Usage: un.r [options] <source_file>\n", file = stderr())
             cat("       un.r session [options]\n", file = stderr())
             cat("       un.r service [options]\n", file = stderr())
+            cat("       un.r service env <action> <service_id> [options]\n", file = stderr())
             cat("       un.r snapshot [options]\n", file = stderr())
             cat("       un.r key [options]\n", file = stderr())
+            cat("\nService env commands:\n", file = stderr())
+            cat("  env status <id>     Show vault status\n", file = stderr())
+            cat("  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n", file = stderr())
+            cat("  env export <id>     Export vault contents\n", file = stderr())
+            cat("  env delete <id>     Delete vault\n", file = stderr())
             quit(status = 1)
         }
     }
@@ -913,8 +1095,14 @@ main <- function() {
         cat("Usage: un.r [options] <source_file>\n", file = stderr())
         cat("       un.r session [options]\n", file = stderr())
         cat("       un.r service [options]\n", file = stderr())
+        cat("       un.r service env <action> <service_id> [options]\n", file = stderr())
         cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
+        cat("\nService env commands:\n", file = stderr())
+        cat("  env status <id>     Show vault status\n", file = stderr())
+        cat("  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n", file = stderr())
+        cat("  env export <id>     Export vault contents\n", file = stderr())
+        cat("  env delete <id>     Delete vault\n", file = stderr())
         quit(status = 1)
     }
 }

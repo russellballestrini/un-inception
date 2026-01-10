@@ -159,6 +159,147 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
     end
 end
 
+function api_request_text(endpoint::String, public_key::String, secret_key::String, body::String)::Bool
+    url = API_BASE * endpoint
+    timestamp = Int64(floor(time()))
+    signature = compute_signature(secret_key, timestamp, "PUT", endpoint, body)
+
+    headers = [
+        "Authorization" => "Bearer $public_key",
+        "X-Timestamp" => string(timestamp),
+        "X-Signature" => signature,
+        "Content-Type" => "text/plain"
+    ]
+
+    try
+        response = HTTP.put(url, headers, body, readtimeout=300)
+        return response.status >= 200 && response.status < 300
+    catch e
+        return false
+    end
+end
+
+const MAX_ENV_CONTENT_SIZE = 65536
+
+function read_env_file(path::String)::String
+    if !isfile(path)
+        println(stderr, "$(RED)Error: Env file not found: $path$(RESET)")
+        exit(1)
+    end
+    return read(path, String)
+end
+
+function build_env_content(envs::Vector{String}, env_file::Union{String,Nothing})::String
+    lines = copy(envs)
+    if env_file !== nothing
+        content = read_env_file(env_file)
+        for line in split(content, '\n')
+            trimmed = strip(line)
+            if !isempty(trimmed) && !startswith(trimmed, "#")
+                push!(lines, trimmed)
+            end
+        end
+    end
+    return join(lines, "\n")
+end
+
+function service_env_status(service_id::String, public_key::String, secret_key::String)
+    return api_request("/services/$service_id/env", public_key, secret_key)
+end
+
+function service_env_set(service_id::String, env_content::String, public_key::String, secret_key::String)::Bool
+    if length(env_content) > MAX_ENV_CONTENT_SIZE
+        println(stderr, "$(RED)Error: Env content exceeds maximum size of 64KB$(RESET)")
+        return false
+    end
+    return api_request_text("/services/$service_id/env", public_key, secret_key, env_content)
+end
+
+function service_env_export(service_id::String, public_key::String, secret_key::String)
+    return api_request("/services/$service_id/env/export", public_key, secret_key, method="POST", data=Dict())
+end
+
+function service_env_delete(service_id::String, public_key::String, secret_key::String)::Bool
+    try
+        api_request("/services/$service_id/env", public_key, secret_key, method="DELETE")
+        return true
+    catch
+        return false
+    end
+end
+
+function cmd_service_env(args)
+    (public_key, secret_key) = get_api_keys(args["api-key"])
+
+    action = get(args, "env-action", nothing)
+    target = get(args, "env-target", nothing)
+
+    if action == "status"
+        if target === nothing
+            println(stderr, "$(RED)Error: service env status requires service ID$(RESET)")
+            exit(1)
+        end
+        result = service_env_status(target, public_key, secret_key)
+        has_vault = get(result, "has_vault", false)
+        if has_vault
+            println("$(GREEN)Vault: configured$(RESET)")
+            env_count = get(result, "env_count", nothing)
+            if env_count !== nothing
+                println("Variables: $env_count")
+            end
+            updated_at = get(result, "updated_at", nothing)
+            if updated_at !== nothing
+                println("Updated: $updated_at")
+            end
+        else
+            println("$(YELLOW)Vault: not configured$(RESET)")
+        end
+    elseif action == "set"
+        if target === nothing
+            println(stderr, "$(RED)Error: service env set requires service ID$(RESET)")
+            exit(1)
+        end
+        envs = something(args["vault-env"], String[])
+        env_file = get(args, "env-file", nothing)
+        if isempty(envs) && env_file === nothing
+            println(stderr, "$(RED)Error: service env set requires -e or --env-file$(RESET)")
+            exit(1)
+        end
+        env_content = build_env_content(envs, env_file)
+        if service_env_set(target, env_content, public_key, secret_key)
+            println("$(GREEN)Vault updated for service $target$(RESET)")
+        else
+            println(stderr, "$(RED)Error: Failed to update vault$(RESET)")
+            exit(1)
+        end
+    elseif action == "export"
+        if target === nothing
+            println(stderr, "$(RED)Error: service env export requires service ID$(RESET)")
+            exit(1)
+        end
+        result = service_env_export(target, public_key, secret_key)
+        content = get(result, "content", nothing)
+        if content !== nothing
+            print(content)
+        end
+    elseif action == "delete"
+        if target === nothing
+            println(stderr, "$(RED)Error: service env delete requires service ID$(RESET)")
+            exit(1)
+        end
+        if service_env_delete(target, public_key, secret_key)
+            println("$(GREEN)Vault deleted for service $target$(RESET)")
+        else
+            println(stderr, "$(RED)Error: Failed to delete vault$(RESET)")
+            exit(1)
+        end
+    else
+        println(stderr, "$(RED)Error: Unknown env action: $action$(RESET)")
+        println(stderr, "Usage: un.jl service env <status|set|export|delete> <service_id>")
+        exit(1)
+    end
+end
+
 function cmd_execute(args)
     (public_key, secret_key) = get_api_keys(args["api-key"])
 
@@ -311,6 +452,12 @@ end
 function cmd_service(args)
     (public_key, secret_key) = get_api_keys(args["api-key"])
 
+    # Handle env subcommand
+    if get(args, "env-action", nothing) !== nothing
+        cmd_service_env(args)
+        return
+    end
+
     if args["list"]
         result = api_request("/services", public_key, secret_key)
         services = get(result, "services", [])
@@ -449,10 +596,25 @@ function cmd_service(args)
         end
 
         result = api_request("/services", public_key, secret_key, method="POST", data=payload)
-        println("$(GREEN)Service created: $(get(result, "id", "N/A"))$(RESET)")
+        service_id = get(result, "id", nothing)
+        println("$(GREEN)Service created: $(something(service_id, "N/A"))$(RESET)")
         println("Name: $(get(result, "name", "N/A"))")
         if haskey(result, "url")
             println("URL: $(result["url"])")
+        end
+
+        # Auto-set vault if env vars were provided
+        vault_envs = something(args["vault-env"], String[])
+        vault_env_file = get(args, "env-file", nothing)
+        if service_id !== nothing && (!isempty(vault_envs) || vault_env_file !== nothing)
+            env_content = build_env_content(vault_envs, vault_env_file)
+            if !isempty(env_content)
+                if service_env_set(service_id, env_content, public_key, secret_key)
+                    println("$(GREEN)Vault configured with environment variables$(RESET)")
+                else
+                    println("$(YELLOW)Warning: Failed to set vault$(RESET)")
+                end
+            end
         end
         return
     end
@@ -674,6 +836,11 @@ function main()
         "--files", "-f"
             help = "Add input file"
             action = :append_arg
+        "--vault-env", "-e"
+            help = "Environment variable for vault (KEY=VALUE)"
+            action = :append_arg
+        "--env-file"
+            help = "Load vault variables from file"
         "--network", "-n"
             help = "Network mode"
             arg_type = String
@@ -699,6 +866,30 @@ function main()
             help = "Dump bootstrap script from service"
         "--dump-file"
             help = "File to save bootstrap (with --dump-bootstrap)"
+        "--env-action"
+            help = "Env action (status, set, export, delete)"
+        "--env-target"
+            help = "Service ID for env commands"
+        "--api-key", "-k"
+            help = "API key"
+        "env"
+            help = "Manage service environment vault"
+            action = :command
+    end
+
+    @add_arg_table! s["service"]["env"] begin
+        "action"
+            help = "Env action: status, set, export, delete"
+            required = true
+        "service_id"
+            help = "Service ID"
+            required = false
+        "-e"
+            help = "Environment variable (KEY=VALUE)"
+            action = :append_arg
+            dest_name = "vault-env"
+        "--env-file"
+            help = "Load vault variables from file"
         "--api-key", "-k"
             help = "API key"
     end
@@ -716,7 +907,18 @@ function main()
     if args["%COMMAND%"] == "session"
         cmd_session(args["session"])
     elseif args["%COMMAND%"] == "service"
-        cmd_service(args["service"])
+        service_args = args["service"]
+        # Check if env subcommand was used
+        if get(service_args, "%COMMAND%", nothing) == "env"
+            env_args = service_args["env"]
+            # Copy env args to service args
+            service_args["env-action"] = get(env_args, "action", nothing)
+            service_args["env-target"] = get(env_args, "service_id", nothing)
+            service_args["vault-env"] = get(env_args, "vault-env", nothing)
+            service_args["env-file"] = get(env_args, "env-file", nothing)
+            service_args["api-key"] = get(env_args, "api-key", nothing)
+        end
+        cmd_service(service_args)
     elseif args["%COMMAND%"] == "key"
         cmd_key(args["key"])
     elseif args["source_file"] !== nothing

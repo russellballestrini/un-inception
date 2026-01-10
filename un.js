@@ -189,6 +189,157 @@ function apiRequest(endpoint, method = "GET", data = null, publicKey = null, sec
   });
 }
 
+function apiRequestText(endpoint, method = "PUT", body = "", publicKey = null, secretKey = null) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(API_BASE + endpoint);
+
+    // Generate HMAC signature
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signatureInput = `${timestamp}:${method}:${endpoint}:${body}`;
+    const signature = crypto.createHmac('sha256', secretKey)
+      .update(signatureInput)
+      .digest('hex');
+
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: method,
+      headers: {
+        'Authorization': `Bearer ${publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
+        'Content-Type': 'text/plain'
+      },
+      timeout: 300000
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', chunk => responseBody += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(responseBody));
+          } catch (e) {
+            resolve(responseBody);
+          }
+        } else {
+          console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
+          resolve(null);
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      console.error(`${RED}Error: ${e.message}${RESET}`);
+      resolve(null);
+    });
+
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
+}
+
+// ============================================================================
+// Environment Secrets Vault Functions
+// ============================================================================
+
+const MAX_ENV_CONTENT_SIZE = 64 * 1024; // 64KB max env vault size
+
+async function serviceEnvStatus(publicKey, secretKey, serviceId) {
+  const result = await apiRequest(`/services/${serviceId}/env`, "GET", null, publicKey, secretKey);
+  const hasVault = result.has_vault || false;
+
+  if (!hasVault) {
+    console.log("Vault exists: no");
+    console.log("Variable count: 0");
+  } else {
+    console.log("Vault exists: yes");
+    console.log(`Variable count: ${result.count || 0}`);
+    if (result.updated_at) {
+      const dt = new Date(result.updated_at * 1000);
+      console.log(`Last updated: ${dt.toISOString().replace('T', ' ').substring(0, 19)}`);
+    }
+  }
+}
+
+async function serviceEnvSet(publicKey, secretKey, serviceId, envContent) {
+  if (!envContent || envContent.length === 0) {
+    console.error(`${RED}Error: No environment content provided${RESET}`);
+    return false;
+  }
+
+  if (envContent.length > MAX_ENV_CONTENT_SIZE) {
+    console.error(`${RED}Error: Environment content too large (max ${MAX_ENV_CONTENT_SIZE} bytes)${RESET}`);
+    return false;
+  }
+
+  const result = await apiRequestText(`/services/${serviceId}/env`, "PUT", envContent, publicKey, secretKey);
+  if (result === null) {
+    return false;
+  }
+
+  const count = result.count !== undefined ? result.count : -1;
+  if (count >= 0) {
+    console.log(`${GREEN}Environment vault updated: ${count} variable${count !== 1 ? 's' : ''}${RESET}`);
+  } else {
+    console.log(`${GREEN}Environment vault updated${RESET}`);
+  }
+
+  if (result.message) {
+    console.log(result.message);
+  }
+
+  return true;
+}
+
+async function serviceEnvExport(publicKey, secretKey, serviceId) {
+  const result = await apiRequest(`/services/${serviceId}/env/export`, "POST", {}, publicKey, secretKey);
+  const envContent = result.env || "";
+  if (envContent) {
+    process.stdout.write(envContent);
+    if (!envContent.endsWith('\n')) {
+      console.log();
+    }
+  }
+}
+
+async function serviceEnvDelete(publicKey, secretKey, serviceId) {
+  await apiRequest(`/services/${serviceId}/env`, "DELETE", null, publicKey, secretKey);
+  console.log(`${GREEN}Environment vault deleted${RESET}`);
+}
+
+function readEnvFile(filepath) {
+  try {
+    return fs.readFileSync(filepath, 'utf-8');
+  } catch (e) {
+    console.error(`${RED}Error: Env file not found: ${filepath}${RESET}`);
+    process.exit(1);
+  }
+}
+
+function buildEnvContent(envVars, envFile) {
+  const parts = [];
+
+  // Read from env file first
+  if (envFile) {
+    parts.push(readEnvFile(envFile));
+  }
+
+  // Add -e flags (these override/append to file)
+  if (envVars && envVars.length > 0) {
+    envVars.forEach(e => {
+      if (e.includes('=')) {
+        parts.push(e);
+      }
+    });
+  }
+
+  return parts.length > 0 ? parts.join('\n') : null;
+}
+
 function portalRequest(endpoint, method = "GET", data = null, publicKey = null, secretKey = null) {
   return new Promise((resolve, reject) => {
     const url = new URL(PORTAL_BASE + endpoint);
@@ -456,6 +607,43 @@ async function cmdSession(args) {
 async function cmdService(args) {
   const { publicKey, secretKey } = getApiKeys(args.apiKey);
 
+  // Handle env subcommand: un.js service env <action> <id>
+  if (args.envSubcommand === 'env') {
+    const action = args.envAction;
+    const target = args.envTarget;
+
+    if (!action) {
+      console.error(`${RED}Error: env action required (status, set, export, delete)${RESET}`);
+      process.exit(1);
+    }
+    if (!target) {
+      console.error(`${RED}Error: Service ID required for env command${RESET}`);
+      process.exit(1);
+    }
+
+    if (action === 'status') {
+      await serviceEnvStatus(publicKey, secretKey, target);
+      return;
+    } else if (action === 'set') {
+      let envContent = buildEnvContent(args.env, args.envFile);
+      if (!envContent) {
+        console.error(`${RED}Error: No env content provided. Use -e KEY=VAL, --env-file, or pipe to stdin${RESET}`);
+        process.exit(1);
+      }
+      await serviceEnvSet(publicKey, secretKey, target, envContent);
+      return;
+    } else if (action === 'export') {
+      await serviceEnvExport(publicKey, secretKey, target);
+      return;
+    } else if (action === 'delete') {
+      await serviceEnvDelete(publicKey, secretKey, target);
+      return;
+    } else {
+      console.error(`${RED}Error: Unknown env action '${action}'. Use: status, set, export, delete${RESET}`);
+      process.exit(1);
+    }
+  }
+
   if (args.list) {
     const result = await apiRequest("/services", "GET", null, publicKey, secretKey);
     const services = result.services || [];
@@ -578,9 +766,21 @@ async function cmdService(args) {
     if (args.vcpu) payload.vcpu = args.vcpu;
 
     const result = await apiRequest("/services", "POST", payload, publicKey, secretKey);
-    console.log(`${GREEN}Service created: ${result.id || 'N/A'}${RESET}`);
+    const createdId = result.id;
+    console.log(`${GREEN}Service created: ${createdId || 'N/A'}${RESET}`);
     console.log(`Name: ${result.name || 'N/A'}`);
     if (result.url) console.log(`URL: ${result.url}`);
+
+    // Set environment vault if -e or --env-file provided
+    if (createdId) {
+      const envContent = buildEnvContent(args.env, args.envFile);
+      if (envContent) {
+        console.error(`${YELLOW}Setting environment vault...${RESET}`);
+        if (!await serviceEnvSet(publicKey, secretKey, createdId, envContent)) {
+          console.error(`${YELLOW}Warning: Failed to set environment vault${RESET}`);
+        }
+      }
+    }
     return;
   }
 
@@ -622,6 +822,10 @@ function parseArgs(argv) {
     dumpFile: null,
     extend: false,
     execShell: null,
+    envFile: null,
+    envSubcommand: null,
+    envAction: null,
+    envTarget: null,
   };
 
   let i = 2;
@@ -631,6 +835,19 @@ function parseArgs(argv) {
     if (arg === 'session' || arg === 'service' || arg === 'key') {
       args.command = arg;
       i++;
+      // Check for env subcommand: service env <action> <target>
+      if (arg === 'service' && i < argv.length && argv[i] === 'env') {
+        args.envSubcommand = 'env';
+        i++;
+        if (i < argv.length && !argv[i].startsWith('-')) {
+          args.envAction = argv[i];
+          i++;
+        }
+        if (i < argv.length && !argv[i].startsWith('-')) {
+          args.envTarget = argv[i];
+          i++;
+        }
+      }
     } else if (arg === '-e' && i + 1 < argv.length) {
       args.env.push(argv[++i]);
       i++;
@@ -725,6 +942,9 @@ function parseArgs(argv) {
       i++;
     } else if (arg === '--dump-file' && i + 1 < argv.length) {
       args.dumpFile = argv[++i];
+      i++;
+    } else if (arg === '--env-file' && i + 1 < argv.length) {
+      args.envFile = argv[++i];
       i++;
     } else if (arg === '--extend') {
       args.extend = true;

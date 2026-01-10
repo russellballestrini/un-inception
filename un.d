@@ -60,6 +60,7 @@ immutable string RED = "\033[31m";
 immutable string GREEN = "\033[32m";
 immutable string YELLOW = "\033[33m";
 immutable string RESET = "\033[0m";
+immutable size_t MAX_ENV_CONTENT_SIZE = 65536;
 
 string detectLanguage(string filename) {
     string[string] langMap = [
@@ -164,6 +165,151 @@ string execCurl(string cmd) {
     return output;
 }
 
+bool execCurlPut(string endpoint, string body, string publicKey, string secretKey) {
+    import std.file : write, remove;
+    import std.random : uniform;
+    string tmpFile = format("/tmp/un_d_%d.txt", uniform(0, 999999));
+    write(tmpFile, body);
+    string authHeaders = buildAuthHeaders("PUT", endpoint, body, publicKey, secretKey);
+    string cmd = format(`curl -s -o /dev/null -w '%%{http_code}' -X PUT '%s%s' -H 'Content-Type: text/plain' %s -d @%s`, API_BASE, endpoint, authHeaders, tmpFile);
+    auto result = executeShell(cmd);
+    remove(tmpFile);
+    try {
+        int status = to!int(result.output.strip());
+        return status >= 200 && status < 300;
+    } catch (Exception e) {
+        return false;
+    }
+}
+
+string readEnvFile(string path) {
+    if (!exists(path)) {
+        stderr.writefln("%sError: Env file not found: %s%s", RED, path, RESET);
+        exit(1);
+    }
+    return readText(path);
+}
+
+string buildEnvContent(string[] envs, string envFile) {
+    string[] lines = envs.dup;
+    if (!envFile.empty) {
+        string content = readEnvFile(envFile);
+        foreach (line; content.split("\n")) {
+            string trimmed = line.strip();
+            if (!trimmed.empty && !trimmed.startsWith("#")) {
+                lines ~= trimmed;
+            }
+        }
+    }
+    import std.array : join;
+    return lines.join("\n");
+}
+
+string extractJsonField(string response, string field) {
+    import std.algorithm : findSplitAfter;
+    auto search = response.findSplitAfter(format(`"%s":"`, field));
+    if (search[0].length > 0 && search[1].length > 0) {
+        auto endSearch = search[1].findSplitAfter(`"`);
+        if (endSearch[0].length > 1) {
+            return endSearch[0][0..$-1];
+        }
+    }
+    return "";
+}
+
+void cmdServiceEnv(string action, string target, string[] svcEnvs, string svcEnvFile, string publicKey, string secretKey) {
+    if (action == "status") {
+        if (target.empty) {
+            stderr.writefln("%sError: service env status requires service ID%s", RED, RESET);
+            exit(1);
+        }
+        string path = format("/services/%s/env", target);
+        string authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/services/%s/env' %s`, API_BASE, target, authHeaders);
+        string response = execCurl(cmd);
+
+        import std.algorithm : canFind;
+        if (response.canFind(`"has_vault":true`)) {
+            writefln("%sVault: configured%s", GREEN, RESET);
+            string envCount = extractJsonField(response, "env_count");
+            if (!envCount.empty) writefln("Variables: %s", envCount);
+            string updatedAt = extractJsonField(response, "updated_at");
+            if (!updatedAt.empty) writefln("Updated: %s", updatedAt);
+        } else {
+            writefln("%sVault: not configured%s", YELLOW, RESET);
+        }
+        return;
+    }
+
+    if (action == "set") {
+        if (target.empty) {
+            stderr.writefln("%sError: service env set requires service ID%s", RED, RESET);
+            exit(1);
+        }
+        if (svcEnvs.length == 0 && svcEnvFile.empty) {
+            stderr.writefln("%sError: service env set requires -e or --env-file%s", RED, RESET);
+            exit(1);
+        }
+        string envContent = buildEnvContent(svcEnvs, svcEnvFile);
+        if (envContent.length > MAX_ENV_CONTENT_SIZE) {
+            stderr.writefln("%sError: Env content exceeds maximum size of 64KB%s", RED, RESET);
+            exit(1);
+        }
+        if (execCurlPut(format("/services/%s/env", target), envContent, publicKey, secretKey)) {
+            writefln("%sVault updated for service %s%s", GREEN, target, RESET);
+        } else {
+            stderr.writefln("%sError: Failed to update vault%s", RED, RESET);
+            exit(1);
+        }
+        return;
+    }
+
+    if (action == "export") {
+        if (target.empty) {
+            stderr.writefln("%sError: service env export requires service ID%s", RED, RESET);
+            exit(1);
+        }
+        string path = format("/services/%s/env/export", target);
+        string authHeaders = buildAuthHeaders("POST", path, "{}", publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/services/%s/env/export' -H 'Content-Type: application/json' %s -d '{}'`, API_BASE, target, authHeaders);
+        string response = execCurl(cmd);
+        string content = extractJsonField(response, "content");
+        if (!content.empty) {
+            content = content.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\");
+            write(content);
+        }
+        return;
+    }
+
+    if (action == "delete") {
+        if (target.empty) {
+            stderr.writefln("%sError: service env delete requires service ID%s", RED, RESET);
+            exit(1);
+        }
+        string path = format("/services/%s/env", target);
+        string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -o /dev/null -w '%%{http_code}' -X DELETE '%s/services/%s/env' %s`, API_BASE, target, authHeaders);
+        auto result = executeShell(cmd);
+        try {
+            int status = to!int(result.output.strip());
+            if (status >= 200 && status < 300) {
+                writefln("%sVault deleted for service %s%s", GREEN, target, RESET);
+            } else {
+                stderr.writefln("%sError: Failed to delete vault%s", RED, RESET);
+                exit(1);
+            }
+        } catch (Exception e) {
+            stderr.writefln("%sError: Failed to delete vault%s", RED, RESET);
+            exit(1);
+        }
+        return;
+    }
+
+    stderr.writefln("%sError: Unknown env action: %s%s", RED, action, RESET);
+    stderr.writeln("Usage: un.d service env <status|set|export|delete> <service_id>");
+    exit(1);
+}
+
 void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network, int vcpu, string publicKey, string secretKey) {
     string lang = detectLanguage(sourceFile);
     if (lang.empty) {
@@ -229,7 +375,13 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string[] inputFiles, string publicKey, string secretKey) {
+void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string[] inputFiles, string[] svcEnvs, string svcEnvFile, string envAction, string envTarget, string publicKey, string secretKey) {
+    // Handle env subcommand
+    if (!envAction.empty) {
+        cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey);
+        return;
+    }
+
     if (list) {
         string authHeaders = buildAuthHeaders("GET", "/services", "", publicKey, secretKey);
         string cmd = format(`curl -s -X GET '%s/services' %s`, API_BASE, authHeaders);
@@ -385,7 +537,22 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         writefln("%sCreating service...%s", YELLOW, RESET);
         string authHeaders = buildAuthHeaders("POST", "/services", json, publicKey, secretKey);
         string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
-        writeln(execCurl(cmd));
+        string response = execCurl(cmd);
+        writeln(response);
+
+        // Auto-set vault if -e or --env-file provided
+        if (svcEnvs.length > 0 || !svcEnvFile.empty) {
+            string serviceId = extractJsonField(response, "service_id");
+            if (serviceId.empty) serviceId = extractJsonField(response, "id");
+            if (!serviceId.empty) {
+                string envContent = buildEnvContent(svcEnvs, svcEnvFile);
+                if (execCurlPut(format("/services/%s/env", serviceId), envContent, publicKey, secretKey)) {
+                    writefln("%sVault configured for service %s%s", GREEN, serviceId, RESET);
+                } else {
+                    stderr.writefln("%sWarning: Failed to set vault%s", YELLOW, RESET);
+                }
+            }
+        }
         return;
     }
 
@@ -527,7 +694,14 @@ int main(string[] args) {
         stderr.writefln("Usage: %s [options] <source_file>", args[0]);
         stderr.writefln("       %s session [options]", args[0]);
         stderr.writefln("       %s service [options]", args[0]);
+        stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
+        stderr.writeln("");
+        stderr.writeln("Service env commands:");
+        stderr.writeln("  env status <id>     Show vault status");
+        stderr.writeln("  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)");
+        stderr.writeln("  env export <id>     Export vault contents");
+        stderr.writeln("  env delete <id>     Delete vault");
         return 1;
     }
 
@@ -560,6 +734,22 @@ int main(string[] args) {
         string info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network;
         int vcpu = 0;
         string[] inputFiles;
+        string[] svcEnvs;
+        string svcEnvFile;
+        string envAction, envTarget;
+
+        // Check for env subcommand
+        if (args.length > 2 && args[2] == "env") {
+            if (args.length > 3) envAction = args[3];
+            if (args.length > 4 && !args[4].startsWith("-")) envTarget = args[4];
+            for (size_t i = 5; i < args.length; i++) {
+                if (args[i] == "-e" && i+1 < args.length) svcEnvs ~= args[++i];
+                else if (args[i] == "--env-file" && i+1 < args.length) svcEnvFile = args[++i];
+                else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            }
+            cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
+            return 0;
+        }
 
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--name" && i+1 < args.length) name = args[++i];
@@ -581,10 +771,12 @@ int main(string[] args) {
             else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
             else if (args[i] == "-f" && i+1 < args.length) inputFiles ~= args[++i];
+            else if (args[i] == "-e" && i+1 < args.length) svcEnvs ~= args[++i];
+            else if (args[i] == "--env-file" && i+1 < args.length) svcEnvFile = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, publicKey, secretKey);
+        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
         return 0;
     }
 

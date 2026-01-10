@@ -98,6 +98,9 @@ class Args {
   String? serviceDumpBootstrap;
   String? serviceDumpFile;
   bool keyExtend = false;
+  String? envFile;
+  String? envAction;
+  String? envTarget;
 }
 
 List<String?> getApiKeys(String? argsKey) {
@@ -189,6 +192,180 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
     return jsonDecode(response) as Map<String, dynamic>;
   } finally {
     await tempFile.delete();
+  }
+}
+
+Future<Map<String, dynamic>?> apiRequestTextCurl(String endpoint, String method, String body, String publicKey, String? secretKey) async {
+  final tempFile = await File('${Directory.systemTemp.path}/un_request_${DateTime.now().millisecondsSinceEpoch}.txt').create();
+
+  try {
+    await tempFile.writeAsString(body);
+
+    final args = ['curl', '-s', '-X', method, '$apiBase$endpoint',
+                  '-H', 'Content-Type: text/plain'];
+
+    if (secretKey != null && secretKey.isNotEmpty) {
+      final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      final message = '$timestamp:$method:$endpoint:$body';
+
+      final key = utf8.encode(secretKey);
+      final bytes = utf8.encode(message);
+      final hmacSha256 = Hmac(sha256, key);
+      final digest = hmacSha256.convert(bytes);
+      final signature = digest.toString();
+
+      args.addAll(['-H', 'Authorization: Bearer $publicKey']);
+      args.addAll(['-H', 'X-Timestamp: $timestamp']);
+      args.addAll(['-H', 'X-Signature: $signature']);
+    } else {
+      args.addAll(['-H', 'Authorization: Bearer $publicKey']);
+    }
+
+    args.addAll(['-d', '@${tempFile.path}', '-w', '%{http_code}']);
+
+    final result = await Process.run(args[0], args.sublist(1));
+    final output = result.stdout as String;
+
+    // Last 3 characters are the status code
+    if (output.length >= 3) {
+      final statusCode = int.tryParse(output.substring(output.length - 3)) ?? 0;
+      final responseBody = output.substring(0, output.length - 3);
+      if (statusCode >= 200 && statusCode < 300) {
+        if (responseBody.isNotEmpty) {
+          try {
+            return jsonDecode(responseBody) as Map<String, dynamic>;
+          } catch (e) {
+            return {'success': true};
+          }
+        }
+        return {'success': true};
+      }
+    }
+    return null;
+  } finally {
+    await tempFile.delete();
+  }
+}
+
+const int maxEnvContentSize = 65536;
+
+Future<String> readEnvFile(String path) async {
+  final file = File(path);
+  if (!await file.exists()) {
+    stderr.writeln('${red}Error: Env file not found: $path$reset');
+    exit(1);
+  }
+  return await file.readAsString();
+}
+
+Future<String> buildEnvContent(List<String> envs, String? envFile) async {
+  final lines = <String>[];
+  lines.addAll(envs);
+  if (envFile != null) {
+    final content = await readEnvFile(envFile);
+    for (final line in content.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isNotEmpty && !trimmed.startsWith('#')) {
+        lines.add(trimmed);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+Future<Map<String, dynamic>> serviceEnvStatus(String serviceId, String publicKey, String? secretKey) async {
+  return await apiRequestCurl('/services/$serviceId/env', 'GET', null, publicKey, secretKey);
+}
+
+Future<bool> serviceEnvSet(String serviceId, String envContent, String publicKey, String? secretKey) async {
+  if (envContent.length > maxEnvContentSize) {
+    stderr.writeln('${red}Error: Env content exceeds maximum size of 64KB$reset');
+    return false;
+  }
+  final result = await apiRequestTextCurl('/services/$serviceId/env', 'PUT', envContent, publicKey, secretKey);
+  return result != null;
+}
+
+Future<Map<String, dynamic>> serviceEnvExport(String serviceId, String publicKey, String? secretKey) async {
+  return await apiRequestCurl('/services/$serviceId/env/export', 'POST', '{}', publicKey, secretKey);
+}
+
+Future<bool> serviceEnvDelete(String serviceId, String publicKey, String? secretKey) async {
+  try {
+    await apiRequestCurl('/services/$serviceId/env', 'DELETE', null, publicKey, secretKey);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+Future<void> cmdServiceEnv(Args args) async {
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
+  final action = args.envAction;
+  final target = args.envTarget;
+
+  switch (action) {
+    case 'status':
+      if (target == null) {
+        stderr.writeln('${red}Error: service env status requires service ID$reset');
+        exit(1);
+      }
+      final result = await serviceEnvStatus(target, publicKey, secretKey);
+      final hasVault = result['has_vault'] as bool? ?? false;
+      if (hasVault) {
+        print('${green}Vault: configured$reset');
+        final envCount = result['env_count'];
+        if (envCount != null) print('Variables: $envCount');
+        final updatedAt = result['updated_at'];
+        if (updatedAt != null) print('Updated: $updatedAt');
+      } else {
+        print('${yellow}Vault: not configured$reset');
+      }
+      break;
+    case 'set':
+      if (target == null) {
+        stderr.writeln('${red}Error: service env set requires service ID$reset');
+        exit(1);
+      }
+      if (args.env.isEmpty && args.envFile == null) {
+        stderr.writeln('${red}Error: service env set requires -e or --env-file$reset');
+        exit(1);
+      }
+      final envContent = await buildEnvContent(args.env, args.envFile);
+      if (await serviceEnvSet(target, envContent, publicKey, secretKey)) {
+        print('${green}Vault updated for service $target$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to update vault$reset');
+        exit(1);
+      }
+      break;
+    case 'export':
+      if (target == null) {
+        stderr.writeln('${red}Error: service env export requires service ID$reset');
+        exit(1);
+      }
+      final result = await serviceEnvExport(target, publicKey, secretKey);
+      final content = result['content'] as String?;
+      if (content != null) stdout.write(content);
+      break;
+    case 'delete':
+      if (target == null) {
+        stderr.writeln('${red}Error: service env delete requires service ID$reset');
+        exit(1);
+      }
+      if (await serviceEnvDelete(target, publicKey, secretKey)) {
+        print('${green}Vault deleted for service $target$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to delete vault$reset');
+        exit(1);
+      }
+      break;
+    default:
+      stderr.writeln('${red}Error: Unknown env action: $action$reset');
+      stderr.writeln('Usage: dart un.dart service env <status|set|export|delete> <service_id>');
+      exit(1);
   }
 }
 
@@ -335,6 +512,12 @@ Future<void> cmdService(Args args) async {
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
+  // Handle env subcommand
+  if (args.envAction != null) {
+    await cmdServiceEnv(args);
+    return;
+  }
+
   if (args.serviceList) {
     final result = await apiRequestCurl('/services', 'GET', null, publicKey, secretKey);
     final services = result['services'] as List? ?? [];
@@ -480,10 +663,23 @@ Future<void> cmdService(Args args) async {
     }
 
     final result = await apiRequestCurl('/services', 'POST', jsonEncode(payload), publicKey, secretKey);
-    print('${green}Service created: ${result['id'] ?? 'N/A'}$reset');
+    final serviceId = result['id'] as String?;
+    print('${green}Service created: ${serviceId ?? 'N/A'}$reset');
     print('Name: ${result['name'] ?? 'N/A'}');
     if (result.containsKey('url')) {
       print('URL: ${result['url']}');
+    }
+
+    // Auto-set vault if env vars were provided
+    if (serviceId != null && (args.env.isNotEmpty || args.envFile != null)) {
+      final envContent = await buildEnvContent(args.env, args.envFile);
+      if (envContent.isNotEmpty) {
+        if (await serviceEnvSet(serviceId, envContent, publicKey, secretKey)) {
+          print('${green}Vault configured with environment variables$reset');
+        } else {
+          print('${yellow}Warning: Failed to set vault$reset');
+        }
+      }
     }
     return;
   }
@@ -655,6 +851,17 @@ Args parseArgs(List<String> argv) {
       case '--extend':
         args.keyExtend = true;
         break;
+      case '--env-file':
+        args.envFile = argv[++i];
+        break;
+      case 'env':
+        if (args.command == 'service' && i + 1 < argv.length) {
+          args.envAction = argv[++i];
+          if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+            args.envTarget = argv[++i];
+          }
+        }
+        break;
       default:
         if (argv[i].startsWith('-')) {
           stderr.writeln('${RED}Unknown option: ${argv[i]}${RESET}');
@@ -695,16 +902,24 @@ Service options:
   --ports PORTS     Comma-separated ports
   --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
+  -e KEY=VALUE      Environment variable for vault
+  --env-file FILE   Load vault variables from file
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --freeze ID        Freeze service
-  --unfreeze ID         Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID     Unfreeze service
   --destroy ID      Destroy service
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script
   --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
+
+Service env commands:
+  env status ID     Show vault status
+  env set ID        Set vault (-e KEY=VALUE or --env-file FILE)
+  env export ID     Export vault contents
+  env delete ID     Delete vault
 
 Key options:
   --extend          Open browser to extend key

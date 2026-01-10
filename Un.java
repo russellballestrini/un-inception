@@ -234,6 +234,12 @@ public class Un {
         String publicKey = keys[0];
         String secretKey = keys[1];
 
+        // Handle service env subcommand
+        if (args.envAction != null) {
+            cmdServiceEnv(args, publicKey, secretKey);
+            return;
+        }
+
         if (args.serviceList) {
             Map<String, Object> result = apiRequest("/services", "GET", null, publicKey, secretKey);
             @SuppressWarnings("unchecked")
@@ -374,10 +380,24 @@ public class Un {
             }
 
             Map<String, Object> result = apiRequest("/services", "POST", payload, publicKey, secretKey);
-            System.out.println(GREEN + "Service created: " + result.getOrDefault("id", "N/A") + RESET);
+            String serviceId = (String) result.get("id");
+            System.out.println(GREEN + "Service created: " + (serviceId != null ? serviceId : "N/A") + RESET);
             System.out.println("Name: " + result.getOrDefault("name", "N/A"));
             if (result.containsKey("url")) {
                 System.out.println("URL: " + result.get("url"));
+            }
+
+            // Auto-set vault if env vars provided
+            if (serviceId != null && (!args.env.isEmpty() || (args.envFile != null && !args.envFile.isEmpty()))) {
+                try {
+                    String envContent = buildEnvContent(args.env, args.envFile);
+                    if (!envContent.isEmpty() && envContent.length() <= 65536) {
+                        serviceEnvSet(serviceId, envContent, publicKey, secretKey);
+                        System.out.println(GREEN + "Vault configured with environment variables" + RESET);
+                    }
+                } catch (Exception e) {
+                    System.err.println(YELLOW + "Warning: Failed to set vault: " + e.getMessage() + RESET);
+                }
             }
             return;
         }
@@ -599,6 +619,141 @@ public class Un {
         return parseJson(response);
     }
 
+    private static String apiRequestText(String endpoint, String method, String body, String publicKey, String secretKey) throws Exception {
+        long timestamp = System.currentTimeMillis() / 1000;
+        String signatureData = timestamp + ":" + method + ":" + endpoint + ":" + body;
+        String signature = hmacSha256(secretKey, signatureData);
+
+        URL url = new URL(API_BASE + endpoint);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod(method);
+        conn.setRequestProperty("Authorization", "Bearer " + (publicKey != null ? publicKey : secretKey));
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signature);
+        conn.setRequestProperty("Content-Type", "text/plain");
+        conn.setConnectTimeout(30000);
+        conn.setReadTimeout(300000);
+
+        if (body != null && !body.isEmpty()) {
+            conn.setDoOutput(true);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body.getBytes("UTF-8"));
+            }
+        }
+
+        int status = conn.getResponseCode();
+        if (status < 200 || status >= 300) {
+            String error = readStream(conn.getErrorStream());
+            throw new Exception("HTTP " + status + " - " + error);
+        }
+
+        return readStream(conn.getInputStream());
+    }
+
+    private static String readEnvFile(String path) throws Exception {
+        return new String(Files.readAllBytes(Paths.get(path)), "UTF-8");
+    }
+
+    private static String buildEnvContent(List<String> envs, String envFile) throws Exception {
+        StringBuilder parts = new StringBuilder();
+        if (envFile != null && !envFile.isEmpty()) {
+            parts.append(readEnvFile(envFile).trim());
+        }
+        for (String e : envs) {
+            if (e.contains("=")) {
+                if (parts.length() > 0) parts.append("\n");
+                parts.append(e);
+            }
+        }
+        return parts.toString();
+    }
+
+    private static Map<String, Object> serviceEnvStatus(String serviceId, String publicKey, String secretKey) throws Exception {
+        return apiRequest("/services/" + serviceId + "/env", "GET", null, publicKey, secretKey);
+    }
+
+    private static boolean serviceEnvSet(String serviceId, String envContent, String publicKey, String secretKey) throws Exception {
+        apiRequestText("/services/" + serviceId + "/env", "PUT", envContent, publicKey, secretKey);
+        return true;
+    }
+
+    private static Map<String, Object> serviceEnvExport(String serviceId, String publicKey, String secretKey) throws Exception {
+        return apiRequest("/services/" + serviceId + "/env/export", "POST", null, publicKey, secretKey);
+    }
+
+    private static boolean serviceEnvDelete(String serviceId, String publicKey, String secretKey) throws Exception {
+        apiRequest("/services/" + serviceId + "/env", "DELETE", null, publicKey, secretKey);
+        return true;
+    }
+
+    private static void cmdServiceEnv(Args args, String publicKey, String secretKey) throws Exception {
+        String action = args.envAction;
+        String target = args.envTarget;
+
+        if (action == null) {
+            System.err.println(RED + "Error: Usage: service env <status|set|export|delete> <service_id>" + RESET);
+            System.exit(1);
+        }
+
+        if (action.equals("status")) {
+            if (target == null) {
+                System.err.println(RED + "Error: Usage: service env status <service_id>" + RESET);
+                System.exit(1);
+            }
+            Map<String, Object> result = serviceEnvStatus(target, publicKey, secretKey);
+            Boolean hasEnv = (Boolean) result.get("has_env");
+            Number size = (Number) result.get("size");
+            String updatedAt = (String) result.get("updated_at");
+            System.out.println("Service: " + target);
+            System.out.println("Has Vault: " + (hasEnv != null && hasEnv ? "Yes" : "No"));
+            if (hasEnv != null && hasEnv) {
+                System.out.println("Size: " + (size != null ? size.intValue() : 0) + " bytes");
+                System.out.println("Updated: " + (updatedAt != null ? updatedAt : "N/A"));
+            }
+        } else if (action.equals("set")) {
+            if (target == null) {
+                System.err.println(RED + "Error: Usage: service env set <service_id> [-e KEY=VAL] [--env-file FILE]" + RESET);
+                System.exit(1);
+            }
+            String envContent = buildEnvContent(args.env, args.envFile);
+            if (envContent.isEmpty()) {
+                System.err.println(RED + "Error: No environment variables specified. Use -e KEY=VAL or --env-file FILE" + RESET);
+                System.exit(1);
+            }
+            if (envContent.length() > 65536) {
+                System.err.println(RED + "Error: Environment content exceeds 64KB limit" + RESET);
+                System.exit(1);
+            }
+            serviceEnvSet(target, envContent, publicKey, secretKey);
+            System.out.println(GREEN + "Vault updated for service: " + target + RESET);
+        } else if (action.equals("export")) {
+            if (target == null) {
+                System.err.println(RED + "Error: Usage: service env export <service_id>" + RESET);
+                System.exit(1);
+            }
+            Map<String, Object> result = serviceEnvExport(target, publicKey, secretKey);
+            String content = (String) result.get("content");
+            if (content != null && !content.isEmpty()) {
+                System.out.print(content);
+                if (!content.endsWith("\n")) {
+                    System.out.println();
+                }
+            } else {
+                System.err.println(YELLOW + "Vault is empty" + RESET);
+            }
+        } else if (action.equals("delete")) {
+            if (target == null) {
+                System.err.println(RED + "Error: Usage: service env delete <service_id>" + RESET);
+                System.exit(1);
+            }
+            serviceEnvDelete(target, publicKey, secretKey);
+            System.out.println(GREEN + "Vault deleted for service: " + target + RESET);
+        } else {
+            System.err.println(RED + "Error: Unknown env action: " + action + ". Use status, set, export, or delete" + RESET);
+            System.exit(1);
+        }
+    }
+
     private static String readStream(InputStream is) throws IOException {
         if (is == null) return "";
         StringBuilder sb = new StringBuilder();
@@ -810,6 +965,11 @@ public class Un {
         String serviceDumpBootstrap = null;
         String serviceDumpFile = null;
 
+        // Vault args
+        String envFile = null;
+        String envAction = null;
+        String envTarget = null;
+
         // Key args
         boolean keyExtend = false;
     }
@@ -873,6 +1033,16 @@ public class Un {
                 result.serviceDumpBootstrap = args[++i];
             } else if (arg.equals("--dump-file")) {
                 result.serviceDumpFile = args[++i];
+            } else if (arg.equals("--env-file")) {
+                result.envFile = args[++i];
+            } else if (arg.equals("env") && "service".equals(result.command)) {
+                // service env <action> <target>
+                if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+                    result.envAction = args[++i];
+                    if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+                        result.envTarget = args[++i];
+                    }
+                }
             } else if (arg.equals("--extend")) {
                 result.keyExtend = true;
             } else if (!arg.startsWith("-")) {
@@ -922,6 +1092,13 @@ public class Un {
         System.out.println("  --command CMD     Command to execute (with --execute)");
         System.out.println("  --dump-bootstrap ID   Dump bootstrap script");
         System.out.println("  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)");
+        System.out.println();
+        System.out.println("Service env (vault) commands:");
+        System.out.println("  service env status ID          Check vault status");
+        System.out.println("  service env set ID [-e K=V]    Set vault contents");
+        System.out.println("  service env export ID          Export vault contents");
+        System.out.println("  service env delete ID          Delete vault");
+        System.out.println("  --env-file FILE                Read env vars from file");
         System.out.println();
         System.out.println("Key options:");
         System.out.println("  --extend          Open browser to extend key");

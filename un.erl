@@ -277,6 +277,32 @@ service_command(["--restore", SnapshotId | _Rest]) ->
     io:format("\033[32mService restored from snapshot\033[0m~n"),
     io:format("~s~n", [Response]);
 
+%% Service env vault subcommand: service env <action> <id> [options]
+service_command(["env", "status", ServiceId | _]) ->
+    service_env_status(ServiceId);
+
+service_command(["env", "set", ServiceId | Rest]) ->
+    EnvVars = get_env_vars(Rest),
+    EnvFile = get_env_file(Rest),
+    Content = build_env_content(EnvVars, EnvFile),
+    case Content of
+        "" ->
+            io:format(standard_error, "Error: No environment variables specified. Use -e KEY=VALUE or --env-file FILE~n", []),
+            halt(1);
+        _ ->
+            service_env_set(ServiceId, Content)
+    end;
+
+service_command(["env", "export", ServiceId | _]) ->
+    service_env_export(ServiceId);
+
+service_command(["env", "delete", ServiceId | _]) ->
+    service_env_delete(ServiceId);
+
+service_command(["env" | _]) ->
+    io:format(standard_error, "Usage: un.erl service env <status|set|export|delete> <service_id> [options]~n", []),
+    halt(1);
+
 service_command(Args) ->
     case get_service_name(Args) of
         undefined ->
@@ -289,6 +315,8 @@ service_command(Args) ->
             BootstrapFile = get_service_bootstrap_file(Args),
             Type = get_service_type(Args),
             InputFiles = get_input_files(Args),
+            EnvVars = get_env_vars(Args),
+            EnvFile = get_env_file(Args),
             PortsJson = case Ports of
                 undefined -> "";
                 P -> ",\"ports\":[" ++ P ++ "]"
@@ -319,7 +347,20 @@ service_command(Args) ->
             Response = curl_post(ApiKey, "/services", TmpFile),
             file:delete(TmpFile),
             io:format("\033[32mService created\033[0m~n"),
-            io:format("~s~n", [Response])
+            io:format("~s~n", [Response]),
+            %% Auto-vault: set env vars if provided
+            EnvContent = build_env_content(EnvVars, EnvFile),
+            case EnvContent of
+                "" -> ok;
+                _ ->
+                    ServiceId = extract_json_field(Response, "id"),
+                    case ServiceId of
+                        "" -> ok;
+                        _ ->
+                            io:format("Setting vault for ~s...~n", [ServiceId]),
+                            service_env_set(ServiceId, EnvContent)
+                    end
+            end
     end.
 
 %% Snapshot command
@@ -647,6 +688,64 @@ curl_delete(ApiKey, Endpoint) ->
     check_clock_drift_error(Result),
     Result.
 
+curl_put_text(Endpoint, Content) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    TmpFile = write_temp_file(Content),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PUT", Endpoint, Content),
+    Cmd = "curl -s -X PUT https://api.unsandbox.com" ++ Endpoint ++
+          " -H 'Content-Type: text/plain'" ++
+          AuthHeaders ++
+          " --data-binary @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    check_clock_drift_error(Result),
+    Result.
+
+build_env_content(EnvVars, EnvFile) ->
+    % Build env content from list of env vars and env file
+    VarLines = EnvVars,
+    FileLines = case EnvFile of
+        undefined -> [];
+        "" -> [];
+        _ ->
+            case file:read_file(EnvFile) of
+                {ok, Bin} ->
+                    Lines = string:split(binary_to_list(Bin), "\n", all),
+                    [L || L <- Lines,
+                          length(string:trim(L)) > 0,
+                          not lists:prefix("#", string:trim(L))];
+                {error, _} -> []
+            end
+    end,
+    string:join(VarLines ++ FileLines, "\n").
+
+service_env_status(ServiceId) ->
+    ApiKey = get_api_key(),
+    Endpoint = "/services/" ++ ServiceId ++ "/env",
+    Response = curl_get(ApiKey, Endpoint),
+    io:format("~s~n", [Response]).
+
+service_env_set(ServiceId, Content) ->
+    Endpoint = "/services/" ++ ServiceId ++ "/env",
+    Response = curl_put_text(Endpoint, Content),
+    io:format("~s~n", [Response]).
+
+service_env_export(ServiceId) ->
+    ApiKey = get_api_key(),
+    Endpoint = "/services/" ++ ServiceId ++ "/env/export",
+    TmpFile = write_temp_file("{}"),
+    Response = curl_post(ApiKey, Endpoint, TmpFile),
+    file:delete(TmpFile),
+    case extract_json_field(Response, "content") of
+        "" -> io:format("~s~n", [Response]);
+        ContentStr -> io:format("~s", [ContentStr])
+    end.
+
+service_env_delete(ServiceId) ->
+    ApiKey = get_api_key(),
+    _ = curl_delete(ApiKey, "/services/" ++ ServiceId ++ "/env"),
+    io:format("\033[32mVault deleted: ~s\033[0m~n", [ServiceId]).
+
 %% Argument parsing
 parse_exec_args([], Opts) ->
     {maps:get(file, Opts), Opts};
@@ -690,6 +789,16 @@ get_input_files([_ | Rest], Acc) -> get_input_files(Rest, Acc).
 has_extend_flag([]) -> false;
 has_extend_flag(["--extend" | _]) -> true;
 has_extend_flag([_ | Rest]) -> has_extend_flag(Rest).
+
+get_env_vars(Args) -> get_env_vars(Args, []).
+
+get_env_vars([], Acc) -> lists:reverse(Acc);
+get_env_vars(["-e", EnvVar | Rest], Acc) -> get_env_vars(Rest, [EnvVar | Acc]);
+get_env_vars([_ | Rest], Acc) -> get_env_vars(Rest, Acc).
+
+get_env_file([]) -> undefined;
+get_env_file(["--env-file", EnvFile | _]) -> EnvFile;
+get_env_file([_ | Rest]) -> get_env_file(Rest).
 
 %% Simple JSON field extraction (works for simple string fields)
 extract_json_field(Json, Field) ->

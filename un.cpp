@@ -174,6 +174,140 @@ string build_auth_headers(const string& method, const string& path, const string
            "-H 'X-Signature: " + signature + "'";
 }
 
+string build_env_content(const vector<string>& envs, const string& env_file) {
+    ostringstream parts;
+    if (!env_file.empty()) {
+        string content = read_file(env_file);
+        // Trim trailing whitespace
+        while (!content.empty() && (content.back() == '\n' || content.back() == '\r' || content.back() == ' ')) {
+            content.pop_back();
+        }
+        parts << content;
+    }
+    for (const auto& e : envs) {
+        if (e.find('=') != string::npos) {
+            if (parts.str().length() > 0) parts << "\n";
+            parts << e;
+        }
+    }
+    return parts.str();
+}
+
+string service_env_status(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/env";
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+bool service_env_set(const string& service_id, const string& env_content, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/env";
+    string timestamp = get_timestamp();
+    string message = timestamp + ":PUT:" + path + ":" + env_content;
+    string signature = compute_hmac(secret_key, message);
+
+    string cmd = "curl -s -X PUT '" + API_BASE + path + "' "
+                 "-H 'Content-Type: text/plain' "
+                 "-H 'Authorization: Bearer " + public_key + "' "
+                 "-H 'X-Timestamp: " + timestamp + "' "
+                 "-H 'X-Signature: " + signature + "' "
+                 "-d '" + env_content + "'";
+    exec_curl(cmd);
+    return true;
+}
+
+string service_env_export(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/env/export";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+bool service_env_delete(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/env";
+    string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
+    string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    exec_curl(cmd);
+    return true;
+}
+
+void cmd_service_env(const string& action, const string& target, const vector<string>& envs, const string& env_file, const string& public_key, const string& secret_key) {
+    if (action == "status") {
+        if (target.empty()) {
+            cerr << RED << "Error: Usage: service env status <service_id>" << RESET << endl;
+            exit(1);
+        }
+        string result = service_env_status(target, public_key, secret_key);
+        bool has_env = result.find("\"has_env\":true") != string::npos;
+        cout << "Service: " << target << endl;
+        cout << "Has Vault: " << (has_env ? "Yes" : "No") << endl;
+        if (has_env) {
+            size_t size_pos = result.find("\"size\":");
+            if (size_pos != string::npos) {
+                size_pos += 7;
+                size_t end = result.find_first_not_of("0123456789", size_pos);
+                cout << "Size: " << result.substr(size_pos, end - size_pos) << " bytes" << endl;
+            }
+            size_t updated_pos = result.find("\"updated_at\":\"");
+            if (updated_pos != string::npos) {
+                updated_pos += 14;
+                size_t end = result.find("\"", updated_pos);
+                cout << "Updated: " << result.substr(updated_pos, end - updated_pos) << endl;
+            }
+        }
+    } else if (action == "set") {
+        if (target.empty()) {
+            cerr << RED << "Error: Usage: service env set <service_id> [-e KEY=VAL] [--env-file FILE]" << RESET << endl;
+            exit(1);
+        }
+        string env_content = build_env_content(envs, env_file);
+        if (env_content.empty()) {
+            cerr << RED << "Error: No environment variables specified. Use -e KEY=VAL or --env-file FILE" << RESET << endl;
+            exit(1);
+        }
+        if (env_content.length() > 65536) {
+            cerr << RED << "Error: Environment content exceeds 64KB limit" << RESET << endl;
+            exit(1);
+        }
+        service_env_set(target, env_content, public_key, secret_key);
+        cout << GREEN << "Vault updated for service: " << target << RESET << endl;
+    } else if (action == "export") {
+        if (target.empty()) {
+            cerr << RED << "Error: Usage: service env export <service_id>" << RESET << endl;
+            exit(1);
+        }
+        string result = service_env_export(target, public_key, secret_key);
+        size_t content_pos = result.find("\"content\":\"");
+        if (content_pos != string::npos) {
+            content_pos += 11;
+            size_t end = result.find("\"", content_pos);
+            while (end > 0 && result[end-1] == '\\') end = result.find("\"", end+1);
+            if (end != string::npos) {
+                string content = result.substr(content_pos, end - content_pos);
+                // Unescape
+                size_t pos = 0;
+                while ((pos = content.find("\\n", pos)) != string::npos) {
+                    content.replace(pos, 2, "\n");
+                }
+                cout << content;
+                if (!content.empty() && content.back() != '\n') cout << endl;
+            }
+        } else {
+            cerr << YELLOW << "Vault is empty" << RESET << endl;
+        }
+    } else if (action == "delete") {
+        if (target.empty()) {
+            cerr << RED << "Error: Usage: service env delete <service_id>" << RESET << endl;
+            exit(1);
+        }
+        service_env_delete(target, public_key, secret_key);
+        cout << GREEN << "Vault deleted for service: " << target << RESET << endl;
+    } else {
+        cerr << RED << "Error: Unknown env action: " << action << ". Use status, set, export, or delete" << RESET << endl;
+        exit(1);
+    }
+}
+
 void cmd_execute(const string& source_file, const vector<string>& envs, const vector<string>& files, bool artifacts, const string& network, int vcpu, const string& public_key, const string& secret_key) {
     string lang = detect_language(source_file);
     if (lang.empty()) {
@@ -305,7 +439,13 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const string& public_key, const string& secret_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& public_key, const string& secret_key) {
+    // Handle service env subcommand
+    if (!env_action.empty()) {
+        cmd_service_env(env_action, env_target, envs, env_file, public_key, secret_key);
+        return;
+    }
+
     if (list) {
         string auth_headers = build_auth_headers("GET", "/services", "", public_key, secret_key);
         string cmd = "curl -s -X GET '" + API_BASE + "/services' " + auth_headers;
@@ -494,7 +634,26 @@ void cmd_service(const string& name, const string& ports, const string& type, co
                      "-H 'Content-Type: application/json' "
                      + auth_headers + " "
                      "-d '" + json.str() + "'";
-        cout << exec_curl(cmd) << endl;
+        string result = exec_curl(cmd);
+        cout << result << endl;
+
+        // Auto-set vault if env vars provided
+        if (!envs.empty() || !env_file.empty()) {
+            // Extract service ID from result
+            size_t id_pos = result.find("\"id\":\"");
+            if (id_pos != string::npos) {
+                id_pos += 6;
+                size_t id_end = result.find("\"", id_pos);
+                if (id_end != string::npos) {
+                    string service_id = result.substr(id_pos, id_end - id_pos);
+                    string env_content = build_env_content(envs, env_file);
+                    if (!env_content.empty() && env_content.length() <= 65536) {
+                        service_env_set(service_id, env_content, public_key, secret_key);
+                        cout << GREEN << "Vault configured with environment variables" << RESET << endl;
+                    }
+                }
+            }
+        }
         return;
     }
 
@@ -633,6 +792,8 @@ int main(int argc, char* argv[]) {
         string info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network;
         int vcpu = 0;
         vector<string> files;
+        vector<string> envs;
+        string env_file, env_action, env_target;
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
@@ -642,6 +803,17 @@ int main(int argc, char* argv[]) {
             else if (arg == "--bootstrap" && i+1 < argc) bootstrap = argv[++i];
             else if (arg == "--bootstrap-file" && i+1 < argc) bootstrap_file = argv[++i];
             else if (arg == "-f" && i+1 < argc) files.push_back(argv[++i]);
+            else if (arg == "-e" && i+1 < argc) envs.push_back(argv[++i]);
+            else if (arg == "--env-file" && i+1 < argc) env_file = argv[++i];
+            else if (arg == "env" && env_action.empty()) {
+                // service env <action> <target>
+                if (i+1 < argc && string(argv[i+1])[0] != '-') {
+                    env_action = argv[++i];
+                    if (i+1 < argc && string(argv[i+1])[0] != '-') {
+                        env_target = argv[++i];
+                    }
+                }
+            }
             else if (arg == "--list") list = true;
             else if (arg == "--info" && i+1 < argc) info = argv[++i];
             else if (arg == "--logs" && i+1 < argc) logs = argv[++i];
@@ -658,7 +830,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, public_key, secret_key);
+        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, envs, env_file, env_action, env_target, public_key, secret_key);
         return 0;
     }
 

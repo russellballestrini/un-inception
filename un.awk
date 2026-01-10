@@ -409,7 +409,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
     print response
 }
 
-function service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, boot_content, line, input_files_json) {
+function service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, boot_content, line, input_files_json, response) {
     get_api_keys()
 
     # Build JSON payload
@@ -494,6 +494,12 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
 
     # Clean up
     system("rm -f " tmp)
+
+    # Extract service ID for auto-vault
+    LAST_SERVICE_ID = ""
+    if (match(response, /"id":"([^"]+)"/, arr)) {
+        LAST_SERVICE_ID = arr[1]
+    }
 
     # Print response
     print response
@@ -833,6 +839,141 @@ function service_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     print GREEN "Service restored from snapshot" RESET
 }
 
+# Build env content from env_vars array and env_file
+function build_env_content(env_vars_str, env_file    , content, n, vars, i, line) {
+    content = ""
+    # Parse comma-separated env vars
+    if (env_vars_str != "") {
+        n = split(env_vars_str, vars, ",")
+        for (i = 1; i <= n; i++) {
+            if (content != "") content = content "\n"
+            content = content vars[i]
+        }
+    }
+    # Read env file if provided
+    if (env_file != "") {
+        while ((getline line < env_file) > 0) {
+            # Skip empty lines and comments
+            if (line ~ /^[[:space:]]*$/) continue
+            if (line ~ /^[[:space:]]*#/) continue
+            if (content != "") content = content "\n"
+            content = content line
+        }
+        close(env_file)
+    }
+    return content
+}
+
+function service_env_status(id    , endpoint, timestamp, sig_headers, signature, sig_input, sig_cmd, line) {
+    get_api_keys()
+    endpoint = "/services/" id "/env"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function service_env_set(id, content    , endpoint, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/services/" id "/env"
+
+    # Write content to temp file
+    tmp = "/tmp/un_awk_env_" PROCINFO["pid"] ".txt"
+    print content > tmp
+    close(tmp)
+
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":PUT:" endpoint ":" content
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    cmd = "curl -s -X PUT '" API_BASE endpoint "' " \
+          "-H 'Content-Type: text/plain' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "--data-binary '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+    print response
+}
+
+function service_env_export(id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/services/" id "/env/export"
+    json = "{}"
+
+    tmp = "/tmp/un_awk_envexp_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+
+    # Extract content field from response
+    if (match(response, /"content":"([^"]*)"/, arr)) {
+        content = arr[1]
+        gsub(/\\n/, "\n", content)
+        printf "%s", content
+    } else {
+        print response
+    }
+}
+
+function service_env_delete(id    , endpoint, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    endpoint = "/services/" id "/env"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    system(cmd)
+    print GREEN "Vault deleted: " id RESET
+}
+
 function show_help() {
     print "Usage: awk -f un.awk <source_file>"
     print "       awk -f un.awk session --list"
@@ -842,11 +983,15 @@ function show_help() {
     print "       awk -f un.awk session --restore SNAPSHOT_ID"
     print "       awk -f un.awk key [--extend]"
     print "       awk -f un.awk service --list"
-    print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-f FILE]..."
+    print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-e KEY=VAL] [--env-file FILE] [-f FILE]..."
     print "       awk -f un.awk service --destroy ID"
     print "       awk -f un.awk service --dump-bootstrap ID [--dump-file FILE]"
     print "       awk -f un.awk service --snapshot SERVICE_ID [--snapshot-name NAME] [--hot]"
     print "       awk -f un.awk service --restore SNAPSHOT_ID"
+    print "       awk -f un.awk service env status ID"
+    print "       awk -f un.awk service env set ID [-e KEY=VAL]... [--env-file FILE]"
+    print "       awk -f un.awk service env export ID"
+    print "       awk -f un.awk service env delete ID"
     print "       awk -f un.awk snapshot --list"
     print "       awk -f un.awk snapshot --info ID"
     print "       awk -f un.awk snapshot --delete ID"
@@ -867,11 +1012,19 @@ function show_help() {
     print "  --bootstrap CMD    Bootstrap command or script"
     print "  --dump-bootstrap ID    Dump bootstrap script from service"
     print "  --dump-file FILE       Save bootstrap to file (with --dump-bootstrap)"
+    print "  -e KEY=VAL             Environment variable for vault (can be repeated)"
+    print "  --env-file FILE        Load env vars from file for vault"
     print "  -f FILE                Input file to upload (can be repeated)"
     print "  --snapshot SERVICE_ID  Create snapshot of service"
     print "  --restore SNAPSHOT_ID  Restore from snapshot ID"
     print "  --snapshot-name N      Name for snapshot"
     print "  --hot                  Take snapshot without freezing (live snapshot)"
+    print ""
+    print "Vault options (service env):"
+    print "  status ID          Check vault status"
+    print "  set ID             Set vault contents"
+    print "  export ID          Export vault contents"
+    print "  delete ID          Delete vault"
     print ""
     print "Snapshot options:"
     print "  -l, --list         List all snapshots"
@@ -1013,6 +1166,50 @@ END {
         } else if (ARGC >= 4 && ARGV[2] == "--restore") {
             # --restore takes snapshot ID directly
             service_restore(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "env") {
+            # Service vault commands: service env <action> <id> [options]
+            env_action = ARGV[3]
+            if (ARGC < 5) {
+                print RED "Error: service env requires action and service ID" RESET > "/dev/stderr"
+                print "Usage: awk -f un.awk service env <status|set|export|delete> <service_id> [options]" > "/dev/stderr"
+                exit 1
+            }
+            env_service_id = ARGV[4]
+
+            if (env_action == "status") {
+                service_env_status(env_service_id)
+            } else if (env_action == "set") {
+                # Parse -e and --env-file options
+                env_vars = ""
+                env_file = ""
+                i = 5
+                while (i < ARGC) {
+                    if (ARGV[i] == "-e" && i + 1 < ARGC) {
+                        if (env_vars != "") env_vars = env_vars ","
+                        env_vars = env_vars ARGV[i + 1]
+                        i += 2
+                    } else if (ARGV[i] == "--env-file" && i + 1 < ARGC) {
+                        env_file = ARGV[i + 1]
+                        i += 2
+                    } else {
+                        i++
+                    }
+                }
+                env_content = build_env_content(env_vars, env_file)
+                if (env_content == "") {
+                    print RED "Error: No environment variables to set. Use -e KEY=VALUE or --env-file FILE" RESET > "/dev/stderr"
+                    exit 1
+                }
+                service_env_set(env_service_id, env_content)
+            } else if (env_action == "export") {
+                service_env_export(env_service_id)
+            } else if (env_action == "delete") {
+                service_env_delete(env_service_id)
+            } else {
+                print RED "Unknown env action: " env_action RESET > "/dev/stderr"
+                print "Usage: awk -f un.awk service env <status|set|export|delete> <service_id>" > "/dev/stderr"
+                exit 1
+            }
         } else if (ARGV[2] == "--create") {
             # Parse service creation arguments
             name = ""
@@ -1022,6 +1219,8 @@ END {
             bootstrap = ""
             bootstrap_file = ""
             input_files = ""
+            env_vars = ""
+            env_file = ""
 
             i = 3
             while (i < ARGC) {
@@ -1047,6 +1246,13 @@ END {
                     if (input_files != "") input_files = input_files ","
                     input_files = input_files ARGV[i + 1]
                     i += 2
+                } else if (ARGV[i] == "-e" && i + 1 < ARGC) {
+                    if (env_vars != "") env_vars = env_vars ","
+                    env_vars = env_vars ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--env-file" && i + 1 < ARGC) {
+                    env_file = ARGV[i + 1]
+                    i += 2
                 } else {
                     i++
                 }
@@ -1058,6 +1264,16 @@ END {
             }
 
             service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files)
+
+            # Auto-set vault if env vars were provided
+            env_content = build_env_content(env_vars, env_file)
+            if (env_content != "") {
+                # Extract service ID from response (stored in LAST_SERVICE_ID global)
+                if (LAST_SERVICE_ID != "") {
+                    print YELLOW "Setting vault for service..." RESET
+                    service_env_set(LAST_SERVICE_ID, env_content)
+                }
+            }
         } else {
             print "Usage: awk -f un.awk service --list|--create|--destroy ID"
         }

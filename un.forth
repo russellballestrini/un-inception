@@ -356,6 +356,112 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
+\ Service env status
+: service-env-status ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SERVICE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/services/$SERVICE_ID/env:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X GET \"https://api.unsandbox.com/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Service env set (with -e and --env-file support via shell script)
+: service-env-set ( -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SERVICE_ID=''; ENV_CONTENT=''; ENV_FILE=''" r@ write-line throw
+    s" i=4" r@ write-line throw
+    s" SERVICE_ID=$3" r@ write-line throw
+    s" while [ $i -le $# ]; do" r@ write-line throw
+    s"   arg=${!i}" r@ write-line throw
+    s"   case \"$arg\" in" r@ write-line throw
+    s"     -e) ((i++)); VAL=${!i}" r@ write-line throw
+    s"       if [ -n \"$ENV_CONTENT\" ]; then ENV_CONTENT=\"$ENV_CONTENT\n$VAL\"; else ENV_CONTENT=\"$VAL\"; fi ;;" r@ write-line throw
+    s"     --env-file) ((i++)); ENV_FILE=${!i} ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s"   ((i++))" r@ write-line throw
+    s" done" r@ write-line throw
+    s" if [ -n \"$ENV_FILE\" ] && [ -f \"$ENV_FILE\" ]; then" r@ write-line throw
+    s"   while IFS= read -r line || [ -n \"$line\" ]; do" r@ write-line throw
+    s"     case \"$line\" in \"#\"*|\"\") continue ;; esac" r@ write-line throw
+    s"     if [ -n \"$ENV_CONTENT\" ]; then ENV_CONTENT=\"$ENV_CONTENT\n$line\"; else ENV_CONTENT=\"$line\"; fi" r@ write-line throw
+    s"   done < \"$ENV_FILE\"" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ -z \"$ENV_CONTENT\" ]; then echo -e '\\x1b[31mError: No environment variables to set\\x1b[0m' >&2; exit 1; fi" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:PUT:/services/$SERVICE_ID/env:$ENV_CONTENT\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" echo -e \"$ENV_CONTENT\" | curl -s -X PUT \"https://api.unsandbox.com/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: text/plain' --data-binary @- | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Service env export
+: service-env-export ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SERVICE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/env/export:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST \"https://api.unsandbox.com/services/$SERVICE_ID/env/export\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.content // empty'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Service env delete
+: service-env-delete ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SERVICE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:DELETE:/services/$SERVICE_ID/env:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X DELETE \"https://api.unsandbox.com/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mVault deleted for: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
 \ Service dump bootstrap
 : service-dump-bootstrap ( service-id-addr service-id-len file-addr file-len -- )
     get-api-key
@@ -400,7 +506,7 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
-\ Service create (requires --name, optional --ports, --domains, --type, --bootstrap, -f)
+\ Service create (requires --name, optional --ports, --domains, --type, --bootstrap, -f, -e, --env-file)
 : service-create ( -- )
     get-api-key
     \ Parse arguments (simplified - in real implementation would iterate through args)
@@ -414,6 +520,7 @@
     get-secret-key r@ write-file throw
     s" '" r@ write-line throw
     s" NAME=''; PORTS=''; DOMAINS=''; TYPE=''; BOOTSTRAP=''; BOOTSTRAP_FILE=''; INPUT_FILES=''" r@ write-line throw
+    s" ENV_CONTENT=''; ENV_FILE=''" r@ write-line throw
     s" i=3" r@ write-line throw
     s" while [ $i -lt $# ]; do" r@ write-line throw
     s"   arg=${!i}" r@ write-line throw
@@ -424,6 +531,9 @@
     s"     --type) ((i++)); TYPE=${!i} ;;" r@ write-line throw
     s"     --bootstrap) ((i++)); BOOTSTRAP=${!i} ;;" r@ write-line throw
     s"     --bootstrap-file) ((i++)); BOOTSTRAP_FILE=${!i} ;;" r@ write-line throw
+    s"     -e) ((i++)); VAL=${!i}" r@ write-line throw
+    s"       if [ -n \"$ENV_CONTENT\" ]; then ENV_CONTENT=\"$ENV_CONTENT\n$VAL\"; else ENV_CONTENT=\"$VAL\"; fi ;;" r@ write-line throw
+    s"     --env-file) ((i++)); ENV_FILE=${!i} ;;" r@ write-line throw
     s"     -f) ((i++)); FILE=${!i}" r@ write-line throw
     s"       if [ -f \"$FILE\" ]; then" r@ write-line throw
     s"         BASENAME=$(basename \"$FILE\")" r@ write-line throw
@@ -440,6 +550,13 @@
     s"   esac" r@ write-line throw
     s"   ((i++))" r@ write-line throw
     s" done" r@ write-line throw
+    s" # Parse env file if specified" r@ write-line throw
+    s" if [ -n \"$ENV_FILE\" ] && [ -f \"$ENV_FILE\" ]; then" r@ write-line throw
+    s"   while IFS= read -r line || [ -n \"$line\" ]; do" r@ write-line throw
+    s"     case \"$line\" in \"#\"*|\"\") continue ;; esac" r@ write-line throw
+    s"     if [ -n \"$ENV_CONTENT\" ]; then ENV_CONTENT=\"$ENV_CONTENT\n$line\"; else ENV_CONTENT=\"$line\"; fi" r@ write-line throw
+    s"   done < \"$ENV_FILE\"" r@ write-line throw
+    s" fi" r@ write-line throw
     s" [ -z \"$NAME\" ] && echo 'Error: --name required' && exit 1" r@ write-line throw
     s" PAYLOAD='{\"name\":\"'\"$NAME\"'\"}'" r@ write-line throw
     s" [ -n \"$PORTS\" ] && PAYLOAD=$(echo $PAYLOAD | jq --arg p \"$PORTS\" '. + {ports: ($p | split(\",\") | map(tonumber))}')" r@ write-line throw
@@ -456,7 +573,19 @@
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
     s" MESSAGE=\"$TIMESTAMP:POST:/services:$PAYLOAD\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X POST https://api.unsandbox.com/services -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$PAYLOAD\" | jq ." r@ write-line throw
+    s" RESP=$(curl -s -X POST https://api.unsandbox.com/services -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$PAYLOAD\")" r@ write-line throw
+    s" echo \"$RESP\" | jq ." r@ write-line throw
+    s" # Auto-set vault if env vars were provided" r@ write-line throw
+    s" if [ -n \"$ENV_CONTENT\" ]; then" r@ write-line throw
+    s"   SERVICE_ID=$(echo \"$RESP\" | jq -r '.id // empty')" r@ write-line throw
+    s"   if [ -n \"$SERVICE_ID\" ]; then" r@ write-line throw
+    s"     echo -e '\\x1b[33mSetting vault for service...\\x1b[0m'" r@ write-line throw
+    s"     TIMESTAMP=$(date +%s)" r@ write-line throw
+    s"     MESSAGE=\"$TIMESTAMP:PUT:/services/$SERVICE_ID/env:$ENV_CONTENT\"" r@ write-line throw
+    s"     SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s"     echo -e \"$ENV_CONTENT\" | curl -s -X PUT \"https://api.unsandbox.com/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: text/plain' --data-binary @- | jq ." r@ write-line throw
+    s"   fi" r@ write-line throw
+    s" fi" r@ write-line throw
     r> close-file throw
     s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
@@ -738,8 +867,56 @@
         0 (bye)
     then
 
+    \ Handle env subcommand: service env <action> <service_id> [options]
+    2dup s" env" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Usage: un.forth service env <status|set|export|delete> <service_id> [options]" type cr
+            1 (bye)
+        then
+        3 arg 2dup s" status" compare 0= if
+            2drop
+            argc @ 5 < if
+                s" Error: status requires service ID" type cr
+                1 (bye)
+            then
+            4 arg service-env-status
+            0 (bye)
+        then
+        2dup s" set" compare 0= if
+            2drop
+            argc @ 5 < if
+                s" Error: set requires service ID" type cr
+                1 (bye)
+            then
+            service-env-set
+            0 (bye)
+        then
+        2dup s" export" compare 0= if
+            2drop
+            argc @ 5 < if
+                s" Error: export requires service ID" type cr
+                1 (bye)
+            then
+            4 arg service-env-export
+            0 (bye)
+        then
+        2dup s" delete" compare 0= if
+            2drop
+            argc @ 5 < if
+                s" Error: delete requires service ID" type cr
+                1 (bye)
+            then
+            4 arg service-env-delete
+            0 (bye)
+        then
+        2drop
+        s" Error: Unknown env action. Use status, set, export, or delete" type cr
+        1 (bye)
+    then
+
     2drop
-    s" Error: Use --name (create), --list, --info, --logs, --freeze, --unfreeze, --destroy, or --dump-bootstrap" type cr
+    s" Error: Use --name (create), --list, --info, --logs, --freeze, --unfreeze, --destroy, --dump-bootstrap, or env" type cr
     1 (bye)
 ;
 

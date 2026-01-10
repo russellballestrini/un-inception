@@ -196,6 +196,149 @@ def api_request(endpoint, method="GET", data=None, public_key=None, secret_key=N
         sys.exit(1)
 
 
+def api_request_text(endpoint, method="PUT", body="", public_key=None, secret_key=None):
+    """Make API request with text/plain body and HMAC authentication"""
+    url = f"{API_BASE}{endpoint}"
+
+    # Generate HMAC signature
+    timestamp = str(int(time.time()))
+    signature_input = f"{timestamp}:{method}:{endpoint}:{body}"
+    signature = hmac.new(
+        secret_key.encode('utf-8'),
+        signature_input.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+    headers = {
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": timestamp,
+        "X-Signature": signature,
+        "Content-Type": "text/plain"
+    }
+
+    req = urllib.request.Request(url, method=method, headers=headers)
+    if body:
+        req.data = body.encode('utf-8')
+
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8') if e.fp else str(e)
+        print(f"{RED}Error: HTTP {e.code} - {error_body}{RESET}", file=sys.stderr)
+        return None
+    except urllib.error.URLError as e:
+        print(f"{RED}Error: {e.reason}{RESET}", file=sys.stderr)
+        return None
+
+
+# ============================================================================
+# Environment Secrets Vault Functions
+# ============================================================================
+
+MAX_ENV_CONTENT_SIZE = 64 * 1024  # 64KB max env vault size
+
+
+def service_env_status(public_key, secret_key, service_id):
+    """Get environment vault status for a service"""
+    result = api_request(f"/services/{service_id}/env", public_key=public_key, secret_key=secret_key)
+
+    has_vault = result.get("has_vault", False)
+    if not has_vault:
+        print("Vault exists: no")
+        print("Variable count: 0")
+    else:
+        print("Vault exists: yes")
+        count = result.get("count", 0)
+        print(f"Variable count: {count}")
+        updated_at = result.get("updated_at")
+        if updated_at:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(updated_at)
+            print(f"Last updated: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def service_env_set(public_key, secret_key, service_id, env_content):
+    """Set environment vault for a service (PUT /services/:id/env)"""
+    if not env_content or len(env_content) == 0:
+        print(f"{RED}Error: No environment content provided{RESET}", file=sys.stderr)
+        return False
+
+    if len(env_content) > MAX_ENV_CONTENT_SIZE:
+        print(f"{RED}Error: Environment content too large (max {MAX_ENV_CONTENT_SIZE} bytes){RESET}", file=sys.stderr)
+        return False
+
+    result = api_request_text(f"/services/{service_id}/env", method="PUT", body=env_content,
+                               public_key=public_key, secret_key=secret_key)
+    if result is None:
+        return False
+
+    count = result.get("count", -1)
+    if count >= 0:
+        print(f"{GREEN}Environment vault updated: {count} variable{'s' if count != 1 else ''}{RESET}")
+    else:
+        print(f"{GREEN}Environment vault updated{RESET}")
+
+    message = result.get("message")
+    if message:
+        print(message)
+
+    return True
+
+
+def service_env_export(public_key, secret_key, service_id):
+    """Export environment vault for a service (POST /services/:id/env/export)"""
+    result = api_request(f"/services/{service_id}/env/export", method="POST", data={},
+                          public_key=public_key, secret_key=secret_key)
+
+    env_content = result.get("env", "")
+    if env_content:
+        print(env_content, end='')
+        if not env_content.endswith('\n'):
+            print()
+
+
+def service_env_delete(public_key, secret_key, service_id):
+    """Delete environment vault for a service (DELETE /services/:id/env)"""
+    result = api_request(f"/services/{service_id}/env", method="DELETE",
+                          public_key=public_key, secret_key=secret_key)
+
+    print(f"{GREEN}Environment vault deleted{RESET}")
+    message = result.get("message")
+    if message:
+        print(message)
+
+
+def read_env_file(filepath):
+    """Read .env file contents"""
+    try:
+        with open(filepath, 'r') as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"{RED}Error: Env file not found: {filepath}{RESET}", file=sys.stderr)
+        sys.exit(1)
+    except IOError as e:
+        print(f"{RED}Error reading env file: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+
+def build_env_content(env_vars, env_file=None):
+    """Build .env format content from -e flags and/or --env-file"""
+    content_parts = []
+
+    # Read from env file first
+    if env_file:
+        content_parts.append(read_env_file(env_file))
+
+    # Add -e flags (these override/append to file)
+    if env_vars:
+        for e in env_vars:
+            if '=' in e:
+                content_parts.append(e)
+
+    return '\n'.join(content_parts) if content_parts else None
+
+
 def cmd_execute(args):
     """Execute source code"""
     public_key, secret_key = get_api_keys(args.api_key)
@@ -521,6 +664,43 @@ def cmd_service(args):
     """Manage persistent services"""
     public_key, secret_key = get_api_keys(args.api_key)
 
+    # Handle env subcommand: un.py service env <action> <id>
+    if getattr(args, 'subcommand', None) == "env":
+        action = getattr(args, 'env_action', None)
+        target = getattr(args, 'env_target', None)
+
+        if not action:
+            print(f"{RED}Error: env action required (status, set, export, delete){RESET}", file=sys.stderr)
+            sys.exit(1)
+        if not target:
+            print(f"{RED}Error: Service ID required for env command{RESET}", file=sys.stderr)
+            sys.exit(1)
+
+        if action == "status":
+            service_env_status(public_key, secret_key, target)
+            return
+        elif action == "set":
+            env_content = build_env_content(args.env, args.env_file)
+            if not env_content:
+                # Try reading from stdin
+                import select
+                if select.select([sys.stdin], [], [], 0.0)[0]:
+                    env_content = sys.stdin.read()
+            if not env_content:
+                print(f"{RED}Error: No env content provided. Use -e KEY=VAL, --env-file, or pipe to stdin{RESET}", file=sys.stderr)
+                sys.exit(1)
+            service_env_set(public_key, secret_key, target, env_content)
+            return
+        elif action == "export":
+            service_env_export(public_key, secret_key, target)
+            return
+        elif action == "delete":
+            service_env_delete(public_key, secret_key, target)
+            return
+        else:
+            print(f"{RED}Error: Unknown env action '{action}'. Use: status, set, export, delete{RESET}", file=sys.stderr)
+            sys.exit(1)
+
     if args.list:
         result = api_request("/services", public_key=public_key, secret_key=secret_key)
         services = result.get("services", [])
@@ -658,10 +838,19 @@ def cmd_service(args):
             payload["vcpu"] = args.vcpu
 
         result = api_request("/services", method="POST", data=payload, public_key=public_key, secret_key=secret_key)
-        print(f"{GREEN}Service created: {result.get('id', 'N/A')}{RESET}")
+        created_id = result.get('id')
+        print(f"{GREEN}Service created: {created_id or 'N/A'}{RESET}")
         print(f"Name: {result.get('name', 'N/A')}")
         if result.get('url'):
             print(f"URL: {result.get('url')}")
+
+        # Set environment vault if -e or --env-file provided
+        if created_id:
+            env_content = build_env_content(args.env, args.env_file)
+            if env_content:
+                print(f"{YELLOW}Setting environment vault...{RESET}", file=sys.stderr)
+                if not service_env_set(public_key, secret_key, created_id, env_content):
+                    print(f"{YELLOW}Warning: Failed to set environment vault{RESET}", file=sys.stderr)
         return
 
     print(f"{RED}Error: Specify --name to create a service, or use --list, --info, etc.{RESET}", file=sys.stderr)
@@ -719,6 +908,10 @@ Examples:
 
     # Service subcommand
     service_parser = subparsers.add_parser("service", help="Persistent services")
+    # For env subcommand: un.py service env <action> <id>
+    service_parser.add_argument("subcommand", nargs="?", help="Subcommand (env)")
+    service_parser.add_argument("env_action", nargs="?", help="Env vault action (status, set, export, delete)")
+    service_parser.add_argument("env_target", nargs="?", help="Service ID for env command")
     service_parser.add_argument("--name", help="Service name")
     service_parser.add_argument("--ports", help="Comma-separated ports")
     service_parser.add_argument("--domains", help="Comma-separated custom domains")
@@ -726,6 +919,8 @@ Examples:
     service_parser.add_argument("--bootstrap", help="Bootstrap command or URI")
     service_parser.add_argument("--bootstrap-file", dest="bootstrap_file", help="Upload local file as bootstrap script")
     service_parser.add_argument("-f", "--files", action="append", metavar="FILE", help="Add input file")
+    service_parser.add_argument("-e", "--env", action="append", metavar="KEY=VALUE", help="Set environment variable (stored in vault)")
+    service_parser.add_argument("--env-file", dest="env_file", metavar="FILE", help="Load env vars from .env file")
     service_parser.add_argument("-l", "--list", action="store_true", help="List services")
     service_parser.add_argument("--info", metavar="ID", help="Get service details")
     service_parser.add_argument("--tail", metavar="ID", help="Get last 9000 lines of logs")

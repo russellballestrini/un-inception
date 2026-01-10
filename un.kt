@@ -101,7 +101,10 @@ data class Args(
     var serviceCommand: String? = null,
     var serviceDumpBootstrap: String? = null,
     var serviceDumpFile: String? = null,
-    var keyExtend: Boolean = false
+    var keyExtend: Boolean = false,
+    var envFile: String? = null,
+    var envAction: String? = null,
+    var envTarget: String? = null
 )
 
 fun main(args: Array<String>) {
@@ -264,6 +267,12 @@ fun cmdSession(args: Args) {
 fun cmdService(args: Args) {
     val (publicKey, secretKey) = getApiKeys(args.apiKey)
 
+    // Handle env subcommand
+    if (args.envAction != null) {
+        cmdServiceEnv(args)
+        return
+    }
+
     if (args.serviceList) {
         val result = apiRequest("/services", "GET", null, publicKey, secretKey)
         @Suppress("UNCHECKED_CAST")
@@ -412,10 +421,23 @@ fun cmdService(args: Args) {
         }
 
         val result = apiRequest("/services", "POST", payload, publicKey, secretKey)
-        println("${GREEN}Service created: ${result["id"] ?: "N/A"}${RESET}")
+        val serviceId = result["id"] as? String
+        println("${GREEN}Service created: ${serviceId ?: "N/A"}${RESET}")
         println("Name: ${result["name"] ?: "N/A"}")
         if (result.containsKey("url")) {
             println("URL: ${result["url"]}")
+        }
+
+        // Auto-set vault if env vars were provided
+        if (serviceId != null && (args.env.isNotEmpty() || args.envFile != null)) {
+            val envContent = buildEnvContent(args.env, args.envFile)
+            if (envContent.isNotEmpty()) {
+                if (serviceEnvSet(serviceId, envContent, publicKey, secretKey)) {
+                    println("${GREEN}Vault configured with environment variables${RESET}")
+                } else {
+                    println("${YELLOW}Warning: Failed to set vault${RESET}")
+                }
+            }
         }
         return
     }
@@ -587,6 +609,153 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
     return parseJson(response)
 }
 
+fun apiRequestText(endpoint: String, method: String, body: String, publicKey: String?, secretKey: String): Pair<Boolean, String> {
+    val timestamp = System.currentTimeMillis() / 1000
+    val signatureData = "$timestamp:$method:$endpoint:$body"
+    val signature = hmacSha256(secretKey, signatureData)
+
+    val url = URL(API_BASE + endpoint)
+    val connection = url.openConnection() as HttpURLConnection
+
+    connection.requestMethod = method
+    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("X-Timestamp", timestamp.toString())
+    connection.setRequestProperty("X-Signature", signature)
+    connection.setRequestProperty("Content-Type", "text/plain")
+    connection.connectTimeout = 30000
+    connection.readTimeout = 300000
+
+    connection.doOutput = true
+    connection.outputStream.use { it.write(body.toByteArray()) }
+
+    return if (connection.responseCode in 200..299) {
+        Pair(true, connection.inputStream.bufferedReader().readText())
+    } else {
+        Pair(false, connection.errorStream?.bufferedReader()?.readText() ?: "")
+    }
+}
+
+const val MAX_ENV_CONTENT_SIZE = 65536
+
+fun readEnvFile(path: String): String {
+    val file = File(path)
+    if (!file.exists()) {
+        System.err.println("${RED}Error: Env file not found: $path${RESET}")
+        exitProcess(1)
+    }
+    return file.readText()
+}
+
+fun buildEnvContent(envs: List<String>, envFile: String?): String {
+    val lines = mutableListOf<String>()
+    lines.addAll(envs)
+    if (envFile != null) {
+        val content = readEnvFile(envFile)
+        for (line in content.lines()) {
+            val trimmed = line.trim()
+            if (trimmed.isNotEmpty() && !trimmed.startsWith("#")) {
+                lines.add(trimmed)
+            }
+        }
+    }
+    return lines.joinToString("\n")
+}
+
+fun serviceEnvStatus(serviceId: String, publicKey: String?, secretKey: String): Map<String, Any> {
+    return apiRequest("/services/$serviceId/env", "GET", null, publicKey, secretKey)
+}
+
+fun serviceEnvSet(serviceId: String, envContent: String, publicKey: String?, secretKey: String): Boolean {
+    if (envContent.length > MAX_ENV_CONTENT_SIZE) {
+        System.err.println("${RED}Error: Env content exceeds maximum size of 64KB${RESET}")
+        return false
+    }
+    val (success, _) = apiRequestText("/services/$serviceId/env", "PUT", envContent, publicKey, secretKey)
+    return success
+}
+
+fun serviceEnvExport(serviceId: String, publicKey: String?, secretKey: String): Map<String, Any> {
+    return apiRequest("/services/$serviceId/env/export", "POST", emptyMap(), publicKey, secretKey)
+}
+
+fun serviceEnvDelete(serviceId: String, publicKey: String?, secretKey: String): Boolean {
+    return try {
+        apiRequest("/services/$serviceId/env", "DELETE", null, publicKey, secretKey)
+        true
+    } catch (e: Exception) {
+        false
+    }
+}
+
+fun cmdServiceEnv(args: Args) {
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val action = args.envAction
+    val target = args.envTarget
+
+    when (action) {
+        "status" -> {
+            if (target == null) {
+                System.err.println("${RED}Error: service env status requires service ID${RESET}")
+                exitProcess(1)
+            }
+            val result = serviceEnvStatus(target, publicKey, secretKey)
+            val hasVault = result["has_vault"] as? Boolean ?: false
+            if (hasVault) {
+                println("${GREEN}Vault: configured${RESET}")
+                val envCount = result["env_count"]
+                if (envCount != null) println("Variables: $envCount")
+                val updatedAt = result["updated_at"]
+                if (updatedAt != null) println("Updated: $updatedAt")
+            } else {
+                println("${YELLOW}Vault: not configured${RESET}")
+            }
+        }
+        "set" -> {
+            if (target == null) {
+                System.err.println("${RED}Error: service env set requires service ID${RESET}")
+                exitProcess(1)
+            }
+            if (args.env.isEmpty() && args.envFile == null) {
+                System.err.println("${RED}Error: service env set requires -e or --env-file${RESET}")
+                exitProcess(1)
+            }
+            val envContent = buildEnvContent(args.env, args.envFile)
+            if (serviceEnvSet(target, envContent, publicKey, secretKey)) {
+                println("${GREEN}Vault updated for service $target${RESET}")
+            } else {
+                System.err.println("${RED}Error: Failed to update vault${RESET}")
+                exitProcess(1)
+            }
+        }
+        "export" -> {
+            if (target == null) {
+                System.err.println("${RED}Error: service env export requires service ID${RESET}")
+                exitProcess(1)
+            }
+            val result = serviceEnvExport(target, publicKey, secretKey)
+            val content = result["content"] as? String
+            if (content != null) print(content)
+        }
+        "delete" -> {
+            if (target == null) {
+                System.err.println("${RED}Error: service env delete requires service ID${RESET}")
+                exitProcess(1)
+            }
+            if (serviceEnvDelete(target, publicKey, secretKey)) {
+                println("${GREEN}Vault deleted for service $target${RESET}")
+            } else {
+                System.err.println("${RED}Error: Failed to delete vault${RESET}")
+                exitProcess(1)
+            }
+        }
+        else -> {
+            System.err.println("${RED}Error: Unknown env action: $action${RESET}")
+            System.err.println("Usage: kotlin UnKt service env <status|set|export|delete> <service_id>")
+            exitProcess(1)
+        }
+    }
+}
+
 fun toJson(obj: Any?): String = when (obj) {
     null -> "null"
     is String -> "\"${obj.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")}\""
@@ -748,6 +917,15 @@ fun parseArgs(args: Array<String>): Args {
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
             "--extend" -> result.keyExtend = true
+            "--env-file" -> result.envFile = args[++i]
+            "env" -> {
+                if (result.command == "service" && i + 1 < args.size) {
+                    result.envAction = args[++i]
+                    if (i + 1 < args.size && !args[i + 1].startsWith("-")) {
+                        result.envTarget = args[++i]
+                    }
+                }
+            }
             else -> {
                 if (args[i].startsWith("-")) {
                     System.err.println("${RED}Unknown option: ${args[i]}${RESET}")
@@ -789,16 +967,24 @@ Service options:
   --ports PORTS     Comma-separated ports
   --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
   --bootstrap CMD   Bootstrap command
+  -e KEY=VALUE      Environment variable for vault
+  --env-file FILE   Load vault variables from file
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --freeze ID        Freeze service
-  --unfreeze ID         Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID     Unfreeze service
   --destroy ID      Destroy service
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script
   --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
+
+Service env commands:
+  env status ID     Show vault status
+  env set ID        Set vault (-e KEY=VALUE or --env-file FILE)
+  env export ID     Export vault contents
+  env delete ID     Delete vault
 
 Key options:
   --extend          Open browser to extend key

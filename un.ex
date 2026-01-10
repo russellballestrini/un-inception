@@ -86,8 +86,12 @@ defmodule Un do
     IO.puts("Usage: un.ex [options] <source_file>")
     IO.puts("       un.ex session [options]")
     IO.puts("       un.ex service [options]")
+    IO.puts("       un.ex service env <action> <service_id>")
     IO.puts("       un.ex snapshot [options]")
     IO.puts("       un.ex key [--extend]")
+    IO.puts("")
+    IO.puts("Service options: --name, --ports, --bootstrap, -e KEY=VALUE, --env-file FILE")
+    IO.puts("Service env commands: status, set, export, delete")
     System.halt(1)
   end
 
@@ -293,6 +297,56 @@ defmodule Un do
     end
   end
 
+  defp service_command(["env", "status", service_id | _]) do
+    response = service_env_status(service_id)
+    has_vault = extract_json_value(response, "has_vault") == "true"
+    if has_vault do
+      IO.puts("#{@green}Vault: configured#{@reset}")
+      env_count = extract_json_value(response, "env_count")
+      if env_count, do: IO.puts("Variables: #{env_count}")
+      updated_at = extract_json_value(response, "updated_at")
+      if updated_at, do: IO.puts("Updated: #{updated_at}")
+    else
+      IO.puts("#{@yellow}Vault: not configured#{@reset}")
+    end
+  end
+
+  defp service_command(["env", "set", service_id | rest]) do
+    envs = get_all_opts(rest, "-e")
+    env_file = get_opt(rest, "--env-file", nil, nil)
+    if Enum.empty?(envs) and is_nil(env_file) do
+      IO.puts(:stderr, "#{@red}Error: service env set requires -e or --env-file#{@reset}")
+      System.halt(1)
+    end
+    env_content = build_env_content(envs, env_file)
+    if service_env_set(service_id, env_content) do
+      IO.puts("#{@green}Vault updated for service #{service_id}#{@reset}")
+    else
+      IO.puts(:stderr, "#{@red}Error: Failed to update vault#{@reset}")
+      System.halt(1)
+    end
+  end
+
+  defp service_command(["env", "export", service_id | _]) do
+    response = service_env_export(service_id)
+    content = extract_json_value(response, "content")
+    if content, do: IO.write(content)
+  end
+
+  defp service_command(["env", "delete", service_id | _]) do
+    if service_env_delete(service_id) do
+      IO.puts("#{@green}Vault deleted for service #{service_id}#{@reset}")
+    else
+      IO.puts(:stderr, "#{@red}Error: Failed to delete vault#{@reset}")
+      System.halt(1)
+    end
+  end
+
+  defp service_command(["env" | _]) do
+    IO.puts(:stderr, "#{@red}Error: Usage: un.ex service env <status|set|export|delete> <service_id>#{@reset}")
+    System.halt(1)
+  end
+
   defp service_command(args) do
     name = get_opt(args, "--name", nil, nil)
 
@@ -309,6 +363,8 @@ defmodule Un do
     vcpu = get_opt(args, "-v", nil, nil)
     service_type = get_opt(args, "--type", nil, nil)
     input_files = get_all_opts(args, "-f")
+    envs = get_all_opts(args, "-e")
+    env_file = get_opt(args, "--env-file", nil, nil)
 
     ports_json = if ports, do: ",\"ports\":[#{ports}]", else: ""
     bootstrap_json = if bootstrap, do: ",\"bootstrap\":\"#{escape_json(bootstrap)}\"", else: ""
@@ -331,6 +387,19 @@ defmodule Un do
     response = curl_post(api_key, "/services", json)
     IO.puts("#{@green}Service created#{@reset}")
     IO.puts(response)
+
+    # Auto-set vault if env vars were provided
+    service_id = extract_json_value(response, "id")
+    if service_id and (not Enum.empty?(envs) or env_file) do
+      env_content = build_env_content(envs, env_file)
+      if String.length(env_content) > 0 do
+        if service_env_set(service_id, env_content) do
+          IO.puts("#{@green}Vault configured with environment variables#{@reset}")
+        else
+          IO.puts("#{@yellow}Warning: Failed to set vault#{@reset}")
+        end
+      end
+    end
   end
 
   # Snapshot command
@@ -679,6 +748,78 @@ defmodule Un do
 
     check_clock_drift(output)
     output
+  end
+
+  defp curl_put_text(endpoint, body) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.txt"
+    File.write!(tmp_file, body)
+
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "PUT", endpoint, body)
+
+    args = [
+      "-s", "-o", "/dev/null", "-w", "%{http_code}",
+      "-X", "PUT",
+      "https://api.unsandbox.com#{endpoint}",
+      "-H", "Content-Type: text/plain"
+    ] ++ headers ++ ["-d", "@#{tmp_file}"]
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+    status_code = String.trim(output) |> String.to_integer()
+    status_code >= 200 and status_code < 300
+  end
+
+  @max_env_content_size 65536
+
+  defp read_env_file(path) do
+    case File.read(path) do
+      {:ok, content} -> content
+      {:error, _} ->
+        IO.puts(:stderr, "#{@red}Error: Env file not found: #{path}#{@reset}")
+        System.halt(1)
+    end
+  end
+
+  defp build_env_content(envs, env_file) do
+    file_lines = if env_file do
+      content = read_env_file(env_file)
+      content
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.filter(fn line ->
+        String.length(line) > 0 and not String.starts_with?(line, "#")
+      end)
+    else
+      []
+    end
+    (envs ++ file_lines) |> Enum.join("\n")
+  end
+
+  defp service_env_status(service_id) do
+    api_key = get_api_key()
+    curl_get(api_key, "/services/#{service_id}/env")
+  end
+
+  defp service_env_set(service_id, env_content) do
+    if String.length(env_content) > @max_env_content_size do
+      IO.puts(:stderr, "#{@red}Error: Env content exceeds maximum size of 64KB#{@reset}")
+      false
+    else
+      curl_put_text("/services/#{service_id}/env", env_content)
+    end
+  end
+
+  defp service_env_export(service_id) do
+    api_key = get_api_key()
+    curl_post(api_key, "/services/#{service_id}/env/export", "{}")
+  end
+
+  defp service_env_delete(service_id) do
+    api_key = get_api_key()
+    curl_delete(api_key, "/services/#{service_id}/env")
+    true
   end
 
   defp parse_exec_args(args) do

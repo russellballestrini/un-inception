@@ -206,6 +206,177 @@ api_request() {
     echo "$body"
 }
 
+api_request_text() {
+    local endpoint="$1"
+    local method="${2:-PUT}"
+    local body="${3:-}"
+    local public_key="${4:-${UNSANDBOX_PUBLIC_KEY:-}}"
+    local secret_key="${5:-${UNSANDBOX_SECRET_KEY:-}}"
+
+    # Fallback to old UNSANDBOX_API_KEY for backwards compat
+    if [[ -z "$public_key" ]] && [[ -n "${UNSANDBOX_API_KEY:-}" ]]; then
+        public_key="${UNSANDBOX_API_KEY}"
+        secret_key=""
+    fi
+
+    if [[ -z "$public_key" ]]; then
+        echo -e "${RED}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set${RESET}" >&2
+        return 1
+    fi
+
+    local url="${API_BASE}${endpoint}"
+    local timestamp=$(date +%s)
+
+    # Build HMAC signature: timestamp:METHOD:path:body
+    local sig_input="${timestamp}:${method}:${endpoint}:${body}"
+    local signature=""
+
+    if [[ -n "$secret_key" ]]; then
+        signature=$(echo -n "$sig_input" | openssl dgst -sha256 -hmac "$secret_key" | sed 's/^.* //')
+    fi
+
+    local response
+    if [[ -n "$signature" ]]; then
+        response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
+            -H "Authorization: Bearer $public_key" \
+            -H "X-Timestamp: $timestamp" \
+            -H "X-Signature: $signature" \
+            -H "Content-Type: text/plain" \
+            -d "$body" 2>&1)
+    else
+        response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" \
+            -H "Authorization: Bearer $public_key" \
+            -H "Content-Type: text/plain" \
+            -d "$body" 2>&1)
+    fi
+
+    local http_code=$(echo "$response" | tail -n1)
+    local resp_body=$(echo "$response" | head -n-1)
+
+    if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+        echo -e "${RED}Error: HTTP $http_code - $resp_body${RESET}" >&2
+        return 1
+    fi
+
+    echo "$resp_body"
+}
+
+# ============================================================================
+# Environment Secrets Vault Functions
+# ============================================================================
+
+MAX_ENV_CONTENT_SIZE=65536  # 64KB max env vault size
+
+service_env_status() {
+    local service_id="$1"
+    local api_key="${2:-${UNSANDBOX_API_KEY:-}}"
+
+    local result=$(api_request "/services/$service_id/env" "GET" "" "$api_key")
+    local has_vault=$(echo "$result" | jq -r '.has_vault // false')
+
+    if [[ "$has_vault" != "true" ]]; then
+        echo "Vault exists: no"
+        echo "Variable count: 0"
+    else
+        echo "Vault exists: yes"
+        local count=$(echo "$result" | jq -r '.count // 0')
+        echo "Variable count: $count"
+        local updated_at=$(echo "$result" | jq -r '.updated_at // ""')
+        if [[ -n "$updated_at" ]] && [[ "$updated_at" != "null" ]]; then
+            local dt=$(date -d "@$updated_at" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || date -r "$updated_at" "+%Y-%m-%d %H:%M:%S" 2>/dev/null || echo "$updated_at")
+            echo "Last updated: $dt"
+        fi
+    fi
+}
+
+service_env_set() {
+    local service_id="$1"
+    local env_content="$2"
+    local api_key="${3:-${UNSANDBOX_API_KEY:-}}"
+
+    if [[ -z "$env_content" ]]; then
+        echo -e "${RED}Error: No environment content provided${RESET}" >&2
+        return 1
+    fi
+
+    local content_size=${#env_content}
+    if [[ $content_size -gt $MAX_ENV_CONTENT_SIZE ]]; then
+        echo -e "${RED}Error: Environment content too large (max $MAX_ENV_CONTENT_SIZE bytes)${RESET}" >&2
+        return 1
+    fi
+
+    local result
+    result=$(api_request_text "/services/$service_id/env" "PUT" "$env_content" "$api_key")
+    if [[ $? -ne 0 ]]; then
+        return 1
+    fi
+
+    local count=$(echo "$result" | jq -r '.count // -1')
+    if [[ "$count" != "-1" ]]; then
+        local plural="s"
+        [[ "$count" == "1" ]] && plural=""
+        echo -e "${GREEN}Environment vault updated: $count variable$plural${RESET}"
+    else
+        echo -e "${GREEN}Environment vault updated${RESET}"
+    fi
+
+    local message=$(echo "$result" | jq -r '.message // ""')
+    [[ -n "$message" ]] && echo "$message"
+
+    return 0
+}
+
+service_env_export() {
+    local service_id="$1"
+    local api_key="${2:-${UNSANDBOX_API_KEY:-}}"
+
+    local result=$(api_request "/services/$service_id/env/export" "POST" "{}" "$api_key")
+    local env_content=$(echo "$result" | jq -r '.env // ""')
+    if [[ -n "$env_content" ]]; then
+        echo -n "$env_content"
+        [[ "${env_content: -1}" != $'\n' ]] && echo
+    fi
+}
+
+service_env_delete() {
+    local service_id="$1"
+    local api_key="${2:-${UNSANDBOX_API_KEY:-}}"
+
+    api_request "/services/$service_id/env" "DELETE" "" "$api_key" > /dev/null
+    echo -e "${GREEN}Environment vault deleted${RESET}"
+}
+
+read_env_file() {
+    local filepath="$1"
+    if [[ ! -f "$filepath" ]]; then
+        echo -e "${RED}Error: Env file not found: $filepath${RESET}" >&2
+        exit 1
+    fi
+    cat "$filepath"
+}
+
+build_env_content() {
+    local env_file="$1"
+    shift
+    local -a env_vars=("$@")
+    local parts=""
+
+    # Read from env file first
+    if [[ -n "$env_file" ]]; then
+        parts+=$(read_env_file "$env_file")
+    fi
+
+    # Add -e flags (these override/append to file)
+    for e in "${env_vars[@]}"; do
+        if [[ "$e" == *"="* ]]; then
+            [[ -n "$parts" ]] && parts+=$'\n'
+            parts+="$e"
+        fi
+    done
+
+    echo "$parts"
+}
+
 cmd_execute() {
     local source_file=""
     local -a env_vars=()
@@ -523,6 +694,71 @@ cmd_session() {
     echo -e "${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}"
 }
 
+cmd_service_env() {
+    local action="$1"
+    local target="$2"
+    shift 2
+
+    local api_key="${UNSANDBOX_API_KEY:-}"
+    local env_file=""
+    local -a env_vars=()
+
+    # Parse remaining args for -e and --env-file
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -e)
+                env_vars+=("$2")
+                shift 2
+                ;;
+            --env-file)
+                env_file="$2"
+                shift 2
+                ;;
+            -k)
+                api_key="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$action" ]]; then
+        echo -e "${RED}Error: env action required (status, set, export, delete)${RESET}" >&2
+        exit 1
+    fi
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}Error: Service ID required for env command${RESET}" >&2
+        exit 1
+    fi
+
+    case "$action" in
+        status)
+            service_env_status "$target" "$api_key"
+            ;;
+        set)
+            local env_content=$(build_env_content "$env_file" "${env_vars[@]}")
+            if [[ -z "$env_content" ]]; then
+                echo -e "${RED}Error: No env content provided. Use -e KEY=VAL, --env-file, or pipe to stdin${RESET}" >&2
+                exit 1
+            fi
+            service_env_set "$target" "$env_content" "$api_key"
+            ;;
+        export)
+            service_env_export "$target" "$api_key"
+            ;;
+        delete)
+            service_env_delete "$target" "$api_key"
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown env action '$action'. Use: status, set, export, delete${RESET}" >&2
+            exit 1
+            ;;
+    esac
+}
+
 cmd_service() {
     local name=""
     local ports=""
@@ -543,6 +779,8 @@ cmd_service() {
     local vcpu=""
     local api_key="${UNSANDBOX_API_KEY:-}"
     local -a input_files=()
+    local -a env_vars=()
+    local env_file=""
     local snapshot=""
     local restore=""
     local from_snapshot=""
@@ -551,6 +789,14 @@ cmd_service() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -e)
+                env_vars+=("$2")
+                shift 2
+                ;;
+            --env-file)
+                env_file="$2"
+                shift 2
+                ;;
             --name)
                 name="$2"
                 shift 2
@@ -826,6 +1072,17 @@ cmd_service() {
         echo -e "${GREEN}Service created: $service_id${RESET}"
         echo "Name: $service_name"
         [[ -n "$service_url" ]] && echo "URL: $service_url"
+
+        # Set environment vault if -e or --env-file provided
+        if [[ "$service_id" != "N/A" ]]; then
+            local env_content=$(build_env_content "$env_file" "${env_vars[@]}")
+            if [[ -n "$env_content" ]]; then
+                echo -e "${YELLOW}Setting environment vault...${RESET}" >&2
+                if ! service_env_set "$service_id" "$env_content" "$api_key"; then
+                    echo -e "${YELLOW}Warning: Failed to set environment vault${RESET}" >&2
+                fi
+            fi
+        fi
         return
     fi
 
@@ -1198,7 +1455,13 @@ if [[ "$1" == "session" ]]; then
     cmd_session "$@"
 elif [[ "$1" == "service" ]]; then
     shift
-    cmd_service "$@"
+    # Check for env subcommand: service env <action> <target>
+    if [[ "${1:-}" == "env" ]]; then
+        shift
+        cmd_service_env "$@"
+    else
+        cmd_service "$@"
+    fi
 elif [[ "$1" == "snapshot" ]]; then
     shift
     cmd_snapshot "$@"

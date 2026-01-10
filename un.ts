@@ -125,6 +125,9 @@ interface Args {
   clonePorts: string | null;
   dumpBootstrap: string | null;
   dumpFile: string | null;
+  envFile: string | null;
+  envAction: string | null;
+  envTarget: string | null;
 }
 
 interface ApiKeys {
@@ -275,6 +278,175 @@ function portalRequest(endpoint: string, method: string = "GET", data: any = nul
     }
     req.end();
   });
+}
+
+function apiRequestText(endpoint: string, method: string, body: string, keys: ApiKeys): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(API_BASE + endpoint);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const message = `${timestamp}:${method}:${url.pathname}:${body}`;
+    const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
+
+    const options: https.RequestOptions = {
+      hostname: url.hostname,
+      path: url.pathname,
+      method: method,
+      headers: {
+        'Authorization': `Bearer ${keys.publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
+        'Content-Type': 'text/plain'
+      },
+      timeout: 300000
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', chunk => responseBody += chunk);
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(responseBody));
+          } catch (e) {
+            resolve({ error: responseBody });
+          }
+        } else {
+          resolve({ error: `HTTP ${res.statusCode} - ${responseBody}` });
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      resolve({ error: e.message });
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
+
+// ============================================================================
+// Environment Secrets Vault Functions
+// ============================================================================
+
+const MAX_ENV_CONTENT_SIZE = 64 * 1024; // 64KB max
+
+async function serviceEnvStatus(serviceId: string, keys: ApiKeys): Promise<void> {
+  const result = await apiRequest(`/services/${serviceId}/env`, "GET", null, keys);
+  const hasVault = result.has_vault;
+
+  if (!hasVault) {
+    console.log("Vault exists: no");
+    console.log("Variable count: 0");
+  } else {
+    console.log("Vault exists: yes");
+    console.log(`Variable count: ${result.count || 0}`);
+    if (result.updated_at) {
+      const date = new Date(result.updated_at * 1000);
+      console.log(`Last updated: ${date.toISOString().replace('T', ' ').split('.')[0]}`);
+    }
+  }
+}
+
+async function serviceEnvSet(serviceId: string, envContent: string, keys: ApiKeys): Promise<boolean> {
+  if (!envContent) {
+    console.error(`${RED}Error: No environment content provided${RESET}`);
+    return false;
+  }
+
+  if (envContent.length > MAX_ENV_CONTENT_SIZE) {
+    console.error(`${RED}Error: Environment content too large (max ${MAX_ENV_CONTENT_SIZE} bytes)${RESET}`);
+    return false;
+  }
+
+  const result = await apiRequestText(`/services/${serviceId}/env`, "PUT", envContent, keys);
+
+  if (result.error) {
+    console.error(`${RED}Error: ${result.error}${RESET}`);
+    return false;
+  }
+
+  const count = result.count || 0;
+  const plural = count === 1 ? '' : 's';
+  console.log(`${GREEN}Environment vault updated: ${count} variable${plural}${RESET}`);
+  if (result.message) console.log(result.message);
+  return true;
+}
+
+async function serviceEnvExport(serviceId: string, keys: ApiKeys): Promise<void> {
+  const result = await apiRequest(`/services/${serviceId}/env/export`, "POST", {}, keys);
+  const envContent = result.env || '';
+  if (envContent) {
+    process.stdout.write(envContent);
+    if (!envContent.endsWith('\n')) console.log();
+  }
+}
+
+async function serviceEnvDelete(serviceId: string, keys: ApiKeys): Promise<void> {
+  await apiRequest(`/services/${serviceId}/env`, "DELETE", null, keys);
+  console.log(`${GREEN}Environment vault deleted${RESET}`);
+}
+
+function readEnvFile(filepath: string): string {
+  try {
+    return fs.readFileSync(filepath, 'utf-8');
+  } catch (e) {
+    console.error(`${RED}Error: Env file not found: ${filepath}${RESET}`);
+    process.exit(1);
+  }
+}
+
+function buildEnvContent(envs: string[], envFile: string | null): string {
+  const parts: string[] = [];
+
+  // Read from env file first
+  if (envFile) {
+    parts.push(readEnvFile(envFile));
+  }
+
+  // Add -e flags
+  envs.forEach(e => {
+    if (e.includes('=')) {
+      parts.push(e);
+    }
+  });
+
+  return parts.join('\n');
+}
+
+async function cmdServiceEnv(action: string, target: string, envs: string[], envFile: string | null, keys: ApiKeys): Promise<void> {
+  if (!action) {
+    console.error(`${RED}Error: env action required (status, set, export, delete)${RESET}`);
+    process.exit(1);
+  }
+
+  if (!target) {
+    console.error(`${RED}Error: Service ID required for env command${RESET}`);
+    process.exit(1);
+  }
+
+  switch (action) {
+    case 'status':
+      await serviceEnvStatus(target, keys);
+      break;
+    case 'set':
+      const envContent = buildEnvContent(envs, envFile);
+      if (!envContent) {
+        console.error(`${RED}Error: No env content provided. Use -e KEY=VAL or --env-file${RESET}`);
+        process.exit(1);
+      }
+      await serviceEnvSet(target, envContent, keys);
+      break;
+    case 'export':
+      await serviceEnvExport(target, keys);
+      break;
+    case 'delete':
+      await serviceEnvDelete(target, keys);
+      break;
+    default:
+      console.error(`${RED}Error: Unknown env action '${action}'. Use: status, set, export, delete${RESET}`);
+      process.exit(1);
+  }
 }
 
 async function cmdExecute(args: Args): Promise<void> {
@@ -524,9 +696,16 @@ async function cmdService(args: Args): Promise<void> {
     if (args.vcpu) payload.vcpu = args.vcpu;
 
     const result = await apiRequest("/services", "POST", payload, keys);
-    console.log(`${GREEN}Service created: ${result.id || 'N/A'}${RESET}`);
+    const serviceId = result.id;
+    console.log(`${GREEN}Service created: ${serviceId || 'N/A'}${RESET}`);
     console.log(`Name: ${result.name || 'N/A'}`);
     if (result.url) console.log(`URL: ${result.url}`);
+
+    // Auto-set vault if -e or --env-file provided
+    const envContent = buildEnvContent(args.env || [], args.envFile);
+    if (envContent && serviceId) {
+      await serviceEnvSet(serviceId, envContent, keys);
+    }
     return;
   }
 
@@ -639,6 +818,9 @@ function parseArgs(argv: string[]): Args {
     dumpBootstrap: null,
     dumpFile: null,
     extend: false,
+    envFile: null,
+    envAction: null,
+    envTarget: null,
   };
 
   let i = 2;
@@ -708,6 +890,20 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--bootstrap-file' && i + 1 < argv.length) {
       args.bootstrapFile = argv[++i];
       i++;
+    } else if (arg === '--env-file' && i + 1 < argv.length) {
+      args.envFile = argv[++i];
+      i++;
+    } else if (arg === 'env') {
+      // Handle "service env <action> <target>" subcommand
+      if (args.command === 'service') {
+        if (i + 1 < argv.length) {
+          args.envAction = argv[++i];
+        }
+        if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+          args.envTarget = argv[++i];
+        }
+      }
+      i++;
     } else if (arg === '--info' && i + 1 < argv.length) {
       args.info = argv[++i];
       i++;
@@ -759,7 +955,13 @@ async function main(): Promise<void> {
   if (args.command === 'session') {
     await cmdSession(args);
   } else if (args.command === 'service') {
-    await cmdService(args);
+    // Check for "service env" subcommand
+    if (args.envAction) {
+      const keys = getApiKeys(args.apiKey);
+      await cmdServiceEnv(args.envAction, args.envTarget!, args.env, args.envFile, keys);
+    } else {
+      await cmdService(args);
+    }
   } else if (args.command === 'key') {
     await cmdKey(args);
   } else if (args.sourceFile) {

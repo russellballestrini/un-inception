@@ -169,6 +169,164 @@ sub api_request {
     return decode_json($response->content);
 }
 
+sub api_request_text {
+    my ($endpoint, $method, $body, $public_key, $secret_key) = @_;
+
+    my $url = "$API_BASE$endpoint";
+    my $ua = LWP::UserAgent->new(timeout => 300);
+    my $request = HTTP::Request->new($method => $url);
+    $request->header('Authorization' => "Bearer $public_key");
+    $request->header('Content-Type' => 'text/plain');
+    $request->content($body);
+
+    # Add HMAC signature if secret_key is present
+    if ($secret_key) {
+        my $timestamp = time();
+        my $sig_input = "${timestamp}:${method}:${endpoint}:${body}";
+        my $signature = hmac_sha256_hex($sig_input, $secret_key);
+        $request->header('X-Timestamp' => $timestamp);
+        $request->header('X-Signature' => $signature);
+    }
+
+    my $response = $ua->request($request);
+
+    unless ($response->is_success) {
+        return { error => "HTTP " . $response->code . " - " . $response->content };
+    }
+
+    return decode_json($response->content);
+}
+
+# ============================================================================
+# Environment Secrets Vault Functions
+# ============================================================================
+
+my $MAX_ENV_CONTENT_SIZE = 64 * 1024;  # 64KB max
+
+sub service_env_status {
+    my ($service_id, $public_key, $secret_key) = @_;
+    my $result = api_request("/services/$service_id/env", 'GET', undef, $public_key, $secret_key);
+    my $has_vault = $result->{has_vault};
+
+    if (!$has_vault) {
+        print "Vault exists: no\n";
+        print "Variable count: 0\n";
+    } else {
+        print "Vault exists: yes\n";
+        print "Variable count: ", ($result->{count} // 0), "\n";
+        if ($result->{updated_at}) {
+            my @t = localtime($result->{updated_at});
+            printf "Last updated: %04d-%02d-%02d %02d:%02d:%02d\n",
+                $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0];
+        }
+    }
+}
+
+sub service_env_set {
+    my ($service_id, $env_content, $public_key, $secret_key) = @_;
+
+    unless ($env_content) {
+        print STDERR "${RED}Error: No environment content provided${RESET}\n";
+        return 0;
+    }
+
+    if (length($env_content) > $MAX_ENV_CONTENT_SIZE) {
+        print STDERR "${RED}Error: Environment content too large (max $MAX_ENV_CONTENT_SIZE bytes)${RESET}\n";
+        return 0;
+    }
+
+    my $result = api_request_text("/services/$service_id/env", 'PUT', $env_content, $public_key, $secret_key);
+
+    if ($result->{error}) {
+        print STDERR "${RED}Error: $result->{error}${RESET}\n";
+        return 0;
+    }
+
+    my $count = $result->{count} // 0;
+    my $plural = $count == 1 ? '' : 's';
+    print "${GREEN}Environment vault updated: $count variable$plural${RESET}\n";
+    print "$result->{message}\n" if $result->{message};
+    return 1;
+}
+
+sub service_env_export {
+    my ($service_id, $public_key, $secret_key) = @_;
+    my $result = api_request("/services/$service_id/env/export", 'POST', {}, $public_key, $secret_key);
+    my $env_content = $result->{env} // '';
+    if ($env_content) {
+        print $env_content;
+        print "\n" unless $env_content =~ /\n$/;
+    }
+}
+
+sub service_env_delete {
+    my ($service_id, $public_key, $secret_key) = @_;
+    api_request("/services/$service_id/env", 'DELETE', undef, $public_key, $secret_key);
+    print "${GREEN}Environment vault deleted${RESET}\n";
+}
+
+sub read_env_file {
+    my ($filepath) = @_;
+    unless (-e $filepath) {
+        print STDERR "${RED}Error: Env file not found: $filepath${RESET}\n";
+        exit 1;
+    }
+    open my $fh, '<', $filepath or die "Cannot read file: $!";
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+    return $content;
+}
+
+sub build_env_content {
+    my ($envs, $env_file) = @_;
+    my @parts;
+
+    # Read from env file first
+    if ($env_file) {
+        push @parts, read_env_file($env_file);
+    }
+
+    # Add -e flags
+    foreach my $e (@$envs) {
+        push @parts, $e if $e =~ /=/;
+    }
+
+    return join("\n", @parts);
+}
+
+sub cmd_service_env {
+    my ($action, $target, $envs, $env_file, $public_key, $secret_key) = @_;
+
+    unless ($action) {
+        print STDERR "${RED}Error: env action required (status, set, export, delete)${RESET}\n";
+        exit 1;
+    }
+
+    unless ($target) {
+        print STDERR "${RED}Error: Service ID required for env command${RESET}\n";
+        exit 1;
+    }
+
+    if ($action eq 'status') {
+        service_env_status($target, $public_key, $secret_key);
+    } elsif ($action eq 'set') {
+        my $env_content = build_env_content($envs, $env_file);
+        unless ($env_content) {
+            print STDERR "${RED}Error: No env content provided. Use -e KEY=VAL or --env-file${RESET}\n";
+            exit 1;
+        }
+        service_env_set($target, $env_content, $public_key, $secret_key);
+    } elsif ($action eq 'export') {
+        service_env_export($target, $public_key, $secret_key);
+    } elsif ($action eq 'delete') {
+        service_env_delete($target, $public_key, $secret_key);
+    } else {
+        print STDERR "${RED}Error: Unknown env action '$action'. Use: status, set, export, delete${RESET}\n";
+        exit 1;
+    }
+}
+
 sub cmd_execute {
     my ($options) = @_;
     my ($public_key, $secret_key) = get_api_key($options->{api_key});
@@ -451,9 +609,16 @@ sub cmd_service {
         $payload->{vcpu} = $options->{vcpu} if $options->{vcpu};
 
         my $result = api_request('/services', 'POST', $payload, $public_key, $secret_key);
-        print "${GREEN}Service created: ", ($result->{id} // 'N/A'), "${RESET}\n";
+        my $service_id = $result->{id};
+        print "${GREEN}Service created: ", ($service_id // 'N/A'), "${RESET}\n";
         print "Name: ", ($result->{name} // 'N/A'), "\n";
         print "URL: $result->{url}\n" if $result->{url};
+
+        # Auto-set vault if -e or --env-file provided
+        my $env_content = build_env_content($options->{env} || [], $options->{env_file});
+        if ($env_content && $service_id) {
+            service_env_set($service_id, $env_content, $public_key, $secret_key);
+        }
         return;
     }
 
@@ -573,7 +738,10 @@ sub main {
         command => undef,
         dump_bootstrap => undef,
         dump_file => undef,
-        extend => 0
+        extend => 0,
+        env_file => undef,
+        env_action => undef,
+        env_target => undef
     );
 
     for (my $i = 0; $i < @ARGV; $i++) {
@@ -621,6 +789,16 @@ sub main {
             $options{bootstrap} = $ARGV[++$i];
         } elsif ($arg eq '--bootstrap-file') {
             $options{bootstrap_file} = $ARGV[++$i];
+        } elsif ($arg eq '--env-file') {
+            $options{env_file} = $ARGV[++$i];
+        } elsif ($arg eq 'env') {
+            # Handle "service env <action> <target>" subcommand
+            if ($options{command} && $options{command} eq 'service') {
+                $options{env_action} = $ARGV[++$i] if defined $ARGV[$i + 1];
+                if (defined $ARGV[$i + 1] && $ARGV[$i + 1] !~ /^-/) {
+                    $options{env_target} = $ARGV[++$i];
+                }
+            }
         } elsif ($arg eq '--info') {
             $options{info} = $ARGV[++$i];
         } elsif ($arg eq '--logs') {
@@ -654,7 +832,13 @@ sub main {
     if ($options{command} && $options{command} eq 'session') {
         cmd_session(\%options);
     } elsif ($options{command} && $options{command} eq 'service') {
-        cmd_service(\%options);
+        # Check for "service env" subcommand
+        if ($options{env_action}) {
+            my ($public_key, $secret_key) = get_api_key($options{api_key});
+            cmd_service_env($options{env_action}, $options{env_target}, $options{env}, $options{env_file}, $public_key, $secret_key);
+        } else {
+            cmd_service(\%options);
+        }
     } elsif ($options{command} && $options{command} eq 'key') {
         cmd_key(\%options);
     } elsif ($options{source_file}) {

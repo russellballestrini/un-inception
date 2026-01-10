@@ -244,6 +244,153 @@ fn api_request(endpoint: &str, method: &str, body: Option<&str>, public_key: &st
     result
 }
 
+fn api_request_text(endpoint: &str, method: &str, body: &str, public_key: &str, secret_key: &str) -> String {
+    let url = format!("{}{}", API_BASE, endpoint);
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    let signature = compute_hmac(secret_key, &timestamp, method, endpoint, body);
+
+    let mut cmd = Command::new("curl");
+    cmd.arg("-s")
+        .arg("-X")
+        .arg(method)
+        .arg(&url)
+        .arg("-H")
+        .arg("Content-Type: text/plain")
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {}", public_key))
+        .arg("-H")
+        .arg(format!("X-Timestamp: {}", timestamp))
+        .arg("-H")
+        .arg(format!("X-Signature: {}", signature));
+
+    if !body.is_empty() {
+        cmd.arg("-d").arg(body);
+    }
+
+    let output = cmd.output().unwrap_or_else(|e| {
+        eprintln!("{}Error running curl: {}{}", RED, e, RESET);
+        process::exit(1);
+    });
+
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+fn read_env_file(path: &str) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("{}Error reading env file: {}{}", RED, e, RESET);
+        process::exit(1);
+    })
+}
+
+fn build_env_content(envs: &[String], env_file: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(path) = env_file {
+        parts.push(read_env_file(path).trim().to_string());
+    }
+    for e in envs {
+        if e.contains('=') {
+            parts.push(e.clone());
+        }
+    }
+    parts.join("\n")
+}
+
+fn service_env_status(service_id: &str, public_key: &str, secret_key: &str) -> String {
+    api_request(&format!("/services/{}/env", service_id), "GET", None, public_key, secret_key)
+}
+
+fn service_env_set(service_id: &str, env_content: &str, public_key: &str, secret_key: &str) -> bool {
+    api_request_text(&format!("/services/{}/env", service_id), "PUT", env_content, public_key, secret_key);
+    true
+}
+
+fn service_env_export(service_id: &str, public_key: &str, secret_key: &str) -> String {
+    api_request(&format!("/services/{}/env/export", service_id), "POST", None, public_key, secret_key)
+}
+
+fn service_env_delete(service_id: &str, public_key: &str, secret_key: &str) -> bool {
+    api_request(&format!("/services/{}/env", service_id), "DELETE", None, public_key, secret_key);
+    true
+}
+
+fn cmd_service_env(
+    action: &str,
+    target: Option<&str>,
+    envs: &[String],
+    env_file: Option<&str>,
+    public_key: &str,
+    secret_key: &str,
+) {
+    match action {
+        "status" => {
+            let id = target.unwrap_or_else(|| {
+                eprintln!("{}Error: Usage: service env status <service_id>{}", RED, RESET);
+                process::exit(1);
+            });
+            let result = service_env_status(id, public_key, secret_key);
+            let has_env = result.contains("\"has_env\":true");
+            let size = extract_json_int(&result, "size");
+            let updated_at = extract_json_string(&result, "updated_at");
+            println!("Service: {}", id);
+            println!("Has Vault: {}", if has_env { "Yes" } else { "No" });
+            if has_env {
+                println!("Size: {} bytes", size);
+                println!("Updated: {}", updated_at);
+            }
+        }
+        "set" => {
+            let id = target.unwrap_or_else(|| {
+                eprintln!("{}Error: Usage: service env set <service_id> [-e KEY=VAL] [--env-file FILE]{}", RED, RESET);
+                process::exit(1);
+            });
+            let env_content = build_env_content(envs, env_file);
+            if env_content.is_empty() {
+                eprintln!("{}Error: No environment variables specified. Use -e KEY=VAL or --env-file FILE{}", RED, RESET);
+                process::exit(1);
+            }
+            if env_content.len() > 65536 {
+                eprintln!("{}Error: Environment content exceeds 64KB limit{}", RED, RESET);
+                process::exit(1);
+            }
+            service_env_set(id, &env_content, public_key, secret_key);
+            println!("{}Vault updated for service: {}{}", GREEN, id, RESET);
+        }
+        "export" => {
+            let id = target.unwrap_or_else(|| {
+                eprintln!("{}Error: Usage: service env export <service_id>{}", RED, RESET);
+                process::exit(1);
+            });
+            let result = service_env_export(id, public_key, secret_key);
+            let content = extract_json_string(&result, "content");
+            if !content.is_empty() {
+                print!("{}", content);
+                if !content.ends_with('\n') {
+                    println!();
+                }
+            } else {
+                eprintln!("{}Vault is empty{}", YELLOW, RESET);
+            }
+        }
+        "delete" => {
+            let id = target.unwrap_or_else(|| {
+                eprintln!("{}Error: Usage: service env delete <service_id>{}", RED, RESET);
+                process::exit(1);
+            });
+            service_env_delete(id, public_key, secret_key);
+            println!("{}Vault deleted for service: {}{}", GREEN, id, RESET);
+        }
+        _ => {
+            eprintln!("{}Error: Unknown env action: {}. Use status, set, export, or delete{}", RED, action, RESET);
+            process::exit(1);
+        }
+    }
+}
+
 fn cmd_execute(
     source_file: &str,
     envs: Vec<String>,
@@ -430,9 +577,19 @@ fn cmd_service(
     dump_file: Option<&str>,
     network: Option<&str>,
     vcpu: Option<i32>,
+    envs: &[String],
+    env_file: Option<&str>,
+    env_action: Option<&str>,
+    env_target: Option<&str>,
     public_key: &str,
     secret_key: &str,
 ) {
+    // Handle service env subcommand
+    if let Some(action) = env_action {
+        cmd_service_env(action, env_target, envs, env_file, public_key, secret_key);
+        return;
+    }
+
     if list {
         let result = api_request("/services", "GET", None, public_key, secret_key);
         println!("{}", result);
@@ -601,6 +758,16 @@ fn cmd_service(
         let result = api_request("/services", "POST", Some(&json), public_key, secret_key);
         let id = extract_json_string(&result, "id");
         println!("{}Service created: {}{}", GREEN, id, RESET);
+
+        // Auto-set vault if env vars provided
+        if !id.is_empty() && (!envs.is_empty() || env_file.is_some()) {
+            let env_content = build_env_content(envs, env_file);
+            if !env_content.is_empty() && env_content.len() <= 65536 {
+                if service_env_set(&id, &env_content, public_key, secret_key) {
+                    println!("{}Vault configured with environment variables{}", GREEN, RESET);
+                }
+            }
+        }
         return;
     }
 
@@ -778,13 +945,36 @@ fn main() {
             }
             "service" => {
                 let (public_key, secret_key) = get_api_keys(api_key.as_deref());
-                // Collect -f files for service
+                // Collect -f files and -e envs for service
                 let mut service_files: Vec<String> = Vec::new();
+                let mut service_envs: Vec<String> = Vec::new();
+                let mut env_file_opt: Option<String> = None;
+                let mut env_action: Option<String> = None;
+                let mut env_target: Option<String> = None;
                 let mut j = i + 1;
                 while j < args.len() {
                     if args[j] == "-f" && j + 1 < args.len() {
                         service_files.push(args[j + 1].clone());
                         j += 2;
+                    } else if args[j] == "-e" && j + 1 < args.len() {
+                        service_envs.push(args[j + 1].clone());
+                        j += 2;
+                    } else if args[j] == "--env-file" && j + 1 < args.len() {
+                        env_file_opt = Some(args[j + 1].clone());
+                        j += 2;
+                    } else if args[j] == "env" && env_action.is_none() {
+                        // service env <action> <target>
+                        if j + 1 < args.len() && !args[j + 1].starts_with('-') {
+                            env_action = Some(args[j + 1].clone());
+                            if j + 2 < args.len() && !args[j + 2].starts_with('-') {
+                                env_target = Some(args[j + 2].clone());
+                                j += 3;
+                            } else {
+                                j += 2;
+                            }
+                        } else {
+                            j += 1;
+                        }
                     } else {
                         j += 1;
                     }
@@ -810,6 +1000,10 @@ fn main() {
                     args.iter().position(|x| x == "--dump-file").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     network.as_deref(),
                     vcpu,
+                    &service_envs,
+                    env_file_opt.as_deref(),
+                    env_action.as_deref(),
+                    env_target.as_deref(),
                     &public_key,
                     &secret_key,
                 );

@@ -338,6 +338,13 @@ class Un
     {
         var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
+        // Handle env subcommand
+        if (!string.IsNullOrEmpty(args.EnvAction))
+        {
+            CmdServiceEnv(args, publicKey, secretKey);
+            return;
+        }
+
         if (args.ServiceList)
         {
             var result = ApiRequest("/services", "GET", null, publicKey, secretKey);
@@ -496,11 +503,29 @@ class Un
             }
 
             var result = ApiRequest("/services", "POST", payload, publicKey, secretKey);
-            Console.WriteLine($"{GREEN}Service created: {result["id"]}{RESET}");
+            string serviceId = result.ContainsKey("id") ? (string)result["id"] : null;
+            Console.WriteLine($"{GREEN}Service created: {serviceId}{RESET}");
             Console.WriteLine($"Name: {result["name"]}");
             if (result.ContainsKey("url"))
             {
                 Console.WriteLine($"URL: {result["url"]}");
+            }
+
+            // Auto-set vault if env vars were provided
+            if (!string.IsNullOrEmpty(serviceId) && (args.Env.Count > 0 || !string.IsNullOrEmpty(args.EnvFile)))
+            {
+                string envContent = BuildEnvContent(args.Env, args.EnvFile);
+                if (!string.IsNullOrEmpty(envContent))
+                {
+                    if (ServiceEnvSet(serviceId, envContent, publicKey, secretKey))
+                    {
+                        Console.WriteLine($"{GREEN}Vault configured with environment variables{RESET}");
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"{YELLOW}Warning: Failed to set vault{RESET}");
+                    }
+                }
             }
             return;
         }
@@ -631,6 +656,242 @@ class Un
             }
 
             throw new Exception($"HTTP error - {error}");
+        }
+    }
+
+    static string ApiRequestText(string endpoint, string method, string body, string publicKey, string secretKey)
+    {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(API_BASE + endpoint);
+        request.Method = method;
+        request.ContentType = "text/plain";
+        request.Timeout = 300000;
+
+        if (body == null) body = "";
+
+        // Add HMAC authentication headers
+        if (!string.IsNullOrEmpty(secretKey))
+        {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+
+            using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
+            {
+                byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
+                string signature = BitConverter.ToString(hash).Replace("-", "").ToLower();
+
+                request.Headers.Add("Authorization", $"Bearer {publicKey}");
+                request.Headers.Add("X-Timestamp", timestamp.ToString());
+                request.Headers.Add("X-Signature", signature);
+            }
+        }
+        else
+        {
+            request.Headers.Add("Authorization", $"Bearer {publicKey}");
+        }
+
+        if (!string.IsNullOrEmpty(body))
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(body);
+            request.ContentLength = bytes.Length;
+            using (Stream stream = request.GetRequestStream())
+            {
+                stream.Write(bytes, 0, bytes.Length);
+            }
+        }
+
+        try
+        {
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            {
+                using (StreamReader reader = new StreamReader(response.GetResponseStream()))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+        }
+        catch (WebException ex)
+        {
+            string error = "";
+            if (ex.Response != null)
+            {
+                using (StreamReader reader = new StreamReader(ex.Response.GetResponseStream()))
+                {
+                    error = reader.ReadToEnd();
+                }
+            }
+            throw new Exception($"HTTP error - {error}");
+        }
+    }
+
+    static string ReadEnvFile(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new Exception($"Env file not found: {path}");
+        }
+        return File.ReadAllText(path);
+    }
+
+    static string BuildEnvContent(List<string> envs, string envFile)
+    {
+        var lines = new List<string>();
+
+        // Add from -e flags
+        foreach (var env in envs)
+        {
+            lines.Add(env);
+        }
+
+        // Add from --env-file
+        if (!string.IsNullOrEmpty(envFile))
+        {
+            string content = ReadEnvFile(envFile);
+            foreach (var line in content.Split('\n'))
+            {
+                string trimmed = line.Trim();
+                if (!string.IsNullOrEmpty(trimmed) && !trimmed.StartsWith("#"))
+                {
+                    lines.Add(trimmed);
+                }
+            }
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    static Dictionary<string, object> ServiceEnvStatus(string serviceId, string publicKey, string secretKey)
+    {
+        return ApiRequest($"/services/{serviceId}/env", "GET", null, publicKey, secretKey);
+    }
+
+    static bool ServiceEnvSet(string serviceId, string envContent, string publicKey, string secretKey)
+    {
+        const int MAX_ENV_CONTENT_SIZE = 65536;
+        if (envContent.Length > MAX_ENV_CONTENT_SIZE)
+        {
+            Console.Error.WriteLine($"{RED}Error: Env content exceeds maximum size of 64KB{RESET}");
+            return false;
+        }
+
+        try
+        {
+            ApiRequestText($"/services/{serviceId}/env", "PUT", envContent, publicKey, secretKey);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static Dictionary<string, object> ServiceEnvExport(string serviceId, string publicKey, string secretKey)
+    {
+        return ApiRequest($"/services/{serviceId}/env/export", "POST", null, publicKey, secretKey);
+    }
+
+    static bool ServiceEnvDelete(string serviceId, string publicKey, string secretKey)
+    {
+        try
+        {
+            ApiRequest($"/services/{serviceId}/env", "DELETE", null, publicKey, secretKey);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static void CmdServiceEnv(Args args, string publicKey, string secretKey)
+    {
+        string action = args.EnvAction;
+        string target = args.EnvTarget;
+
+        if (action == "status")
+        {
+            if (string.IsNullOrEmpty(target))
+            {
+                Console.Error.WriteLine($"{RED}Error: service env status requires service ID{RESET}");
+                Environment.Exit(1);
+            }
+            var result = ServiceEnvStatus(target, publicKey, secretKey);
+            if (result.ContainsKey("has_vault") && (bool)result["has_vault"])
+            {
+                Console.WriteLine($"{GREEN}Vault: configured{RESET}");
+                if (result.ContainsKey("env_count"))
+                {
+                    Console.WriteLine($"Variables: {result["env_count"]}");
+                }
+                if (result.ContainsKey("updated_at"))
+                {
+                    Console.WriteLine($"Updated: {result["updated_at"]}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"{YELLOW}Vault: not configured{RESET}");
+            }
+        }
+        else if (action == "set")
+        {
+            if (string.IsNullOrEmpty(target))
+            {
+                Console.Error.WriteLine($"{RED}Error: service env set requires service ID{RESET}");
+                Environment.Exit(1);
+            }
+            if (args.Env.Count == 0 && string.IsNullOrEmpty(args.EnvFile))
+            {
+                Console.Error.WriteLine($"{RED}Error: service env set requires -e or --env-file{RESET}");
+                Environment.Exit(1);
+            }
+            string envContent = BuildEnvContent(args.Env, args.EnvFile);
+            if (ServiceEnvSet(target, envContent, publicKey, secretKey))
+            {
+                Console.WriteLine($"{GREEN}Vault updated for service {target}{RESET}");
+            }
+            else
+            {
+                Console.Error.WriteLine($"{RED}Error: Failed to update vault{RESET}");
+                Environment.Exit(1);
+            }
+        }
+        else if (action == "export")
+        {
+            if (string.IsNullOrEmpty(target))
+            {
+                Console.Error.WriteLine($"{RED}Error: service env export requires service ID{RESET}");
+                Environment.Exit(1);
+            }
+            var result = ServiceEnvExport(target, publicKey, secretKey);
+            if (result.ContainsKey("content"))
+            {
+                Console.Write(result["content"]);
+            }
+        }
+        else if (action == "delete")
+        {
+            if (string.IsNullOrEmpty(target))
+            {
+                Console.Error.WriteLine($"{RED}Error: service env delete requires service ID{RESET}");
+                Environment.Exit(1);
+            }
+            if (ServiceEnvDelete(target, publicKey, secretKey))
+            {
+                Console.WriteLine($"{GREEN}Vault deleted for service {target}{RESET}");
+            }
+            else
+            {
+                Console.Error.WriteLine($"{RED}Error: Failed to delete vault{RESET}");
+                Environment.Exit(1);
+            }
+        }
+        else
+        {
+            Console.Error.WriteLine($"{RED}Error: Unknown env action: {action}{RESET}");
+            Console.Error.WriteLine("Usage: Un service env <status|set|export|delete> <service_id>");
+            Environment.Exit(1);
         }
     }
 
@@ -884,6 +1145,9 @@ class Un
         public string ServiceCommand = null;
         public string ServiceDumpBootstrap = null;
         public string ServiceDumpFile = null;
+        public string EnvFile = null;
+        public string EnvAction = null;
+        public string EnvTarget = null;
         public bool KeyExtend = false;
     }
 
@@ -896,10 +1160,23 @@ class Un
             if (arg == "session") result.Command = "session";
             else if (arg == "service") result.Command = "service";
             else if (arg == "key") result.Command = "key";
+            else if (arg == "env" && result.Command == "service")
+            {
+                // Parse: service env <action> <target>
+                if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+                {
+                    result.EnvAction = args[++i];
+                    if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
+                    {
+                        result.EnvTarget = args[++i];
+                    }
+                }
+            }
             else if (arg == "-k" || arg == "--api-key") result.ApiKey = args[++i];
             else if (arg == "-n" || arg == "--network") result.Network = args[++i];
             else if (arg == "-v" || arg == "--vcpu") result.Vcpu = int.Parse(args[++i]);
             else if (arg == "-e" || arg == "--env") result.Env.Add(args[++i]);
+            else if (arg == "--env-file") result.EnvFile = args[++i];
             else if (arg == "-f" || arg == "--files") result.Files.Add(args[++i]);
             else if (arg == "-a" || arg == "--artifacts") result.Artifacts = true;
             else if (arg == "-o" || arg == "--output-dir") result.OutputDir = args[++i];
@@ -935,6 +1212,7 @@ class Un
         Console.WriteLine(@"Usage: Un [options] <source_file>
        Un session [options]
        Un service [options]
+       Un service env <action> <service_id> [options]
        Un key [options]
 
 Execute options:
@@ -960,13 +1238,21 @@ Service options:
   --info ID         Get service details
   --logs ID         Get all logs
   --tail ID         Get last 9000 lines
-  --freeze ID        Freeze service
-  --unfreeze ID         Unfreeze service
+  --freeze ID       Freeze service
+  --unfreeze ID     Unfreeze service
   --destroy ID      Destroy service
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script
   --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
+  -e KEY=VALUE      Set vault env var (with --name or env set)
+  --env-file FILE   Load vault vars from file
+
+Service env commands:
+  env status ID     Check vault status
+  env set ID        Set vault (use -e or --env-file)
+  env export ID     Export vault contents
+  env delete ID     Delete vault
 
 Key options:
   --extend          Open browser to extend expired key");

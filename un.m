@@ -203,6 +203,93 @@ NSDictionary* apiRequest(NSString* endpoint, NSString* method, NSDictionary* dat
     return result;
 }
 
+// API request with text/plain body (for vault)
+NSDictionary* apiRequestPutText(NSString* endpoint, NSString* content, NSString* publicKey, NSString* secretKey) {
+    NSString* urlString = [API_BASE stringByAppendingString:endpoint];
+    NSURL* url = [NSURL URLWithString:urlString];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    [request setHTTPMethod:@"PUT"];
+    [request setTimeoutInterval:300];
+    [request setHTTPBody:[content dataUsingEncoding:NSUTF8StringEncoding]];
+
+    // Generate timestamp and signature
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    NSString* signature = computeSignature(secretKey, timestamp, @"PUT", endpoint, content);
+
+    // Set headers
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+    [request setValue:signature forHTTPHeaderField:@"X-Signature"];
+    [request setValue:@"text/plain" forHTTPHeaderField:@"Content-Type"];
+
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* responseData = [NSURLConnection sendSynchronousRequest:request
+                                                 returningResponse:&response
+                                                             error:&error];
+
+    if (error || ([response statusCode] != 200 && [response statusCode] != 201)) {
+        fprintf(stderr, "%sError: HTTP %ld%s\n",
+                [RED UTF8String], (long)[response statusCode], [RESET UTF8String]);
+        if (responseData) {
+            NSString* errMsg = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
+            fprintf(stderr, "%s\n", [errMsg UTF8String]);
+        }
+        exit(1);
+    }
+
+    NSDictionary* result = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:&error];
+    return result;
+}
+
+// Build environment content from -e args and --env-file
+NSString* buildEnvContent(NSArray* envVars, NSString* envFile) {
+    NSMutableArray* lines = [NSMutableArray array];
+    for (NSString* var in envVars) {
+        [lines addObject:var];
+    }
+    if (envFile && [[NSFileManager defaultManager] fileExistsAtPath:envFile]) {
+        NSString* fileContent = [NSString stringWithContentsOfFile:envFile encoding:NSUTF8StringEncoding error:nil];
+        for (NSString* line in [fileContent componentsSeparatedByString:@"\n"]) {
+            NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if ([trimmed length] == 0 || [trimmed hasPrefix:@"#"]) continue;
+            [lines addObject:line];
+        }
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
+// Service vault functions
+void serviceEnvStatus(NSString* serviceId, NSString* publicKey, NSString* secretKey) {
+    NSString* endpoint = [NSString stringWithFormat:@"/services/%@/env", serviceId];
+    NSDictionary* result = apiRequest(endpoint, @"GET", nil, publicKey, secretKey);
+    NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+    NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    printf("%s\n", [jsonString UTF8String]);
+}
+
+void serviceEnvSet(NSString* serviceId, NSString* content, NSString* publicKey, NSString* secretKey) {
+    NSString* endpoint = [NSString stringWithFormat:@"/services/%@/env", serviceId];
+    NSDictionary* result = apiRequestPutText(endpoint, content, publicKey, secretKey);
+    NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+    NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    printf("%s\n", [jsonString UTF8String]);
+}
+
+void serviceEnvExport(NSString* serviceId, NSString* publicKey, NSString* secretKey) {
+    NSString* endpoint = [NSString stringWithFormat:@"/services/%@/env/export", serviceId];
+    NSDictionary* result = apiRequest(endpoint, @"POST", nil, publicKey, secretKey);
+    if (result[@"content"]) {
+        printf("%s", [result[@"content"] UTF8String]);
+    }
+}
+
+void serviceEnvDelete(NSString* serviceId, NSString* publicKey, NSString* secretKey) {
+    NSString* endpoint = [NSString stringWithFormat:@"/services/%@/env", serviceId];
+    apiRequest(endpoint, @"DELETE", nil, publicKey, secretKey);
+    printf("%sVault deleted for: %s%s\n", [GREEN UTF8String], [serviceId UTF8String], [RESET UTF8String]);
+}
+
 void cmdExecute(NSArray* args) {
     NSString* publicKey, *secretKey;
     getApiKeys(&publicKey, &secretKey);
@@ -586,11 +673,53 @@ void cmdService(NSArray* args) {
     NSString* network = nil;
     int vcpu = 0;
     NSMutableArray* inputFiles = [NSMutableArray array];
+    NSMutableArray* envVars = [NSMutableArray array];
+    NSString* envFile = nil;
     NSString* snapshotId = nil;
     NSString* restoreId = nil;
     NSString* fromSnapshot = nil;
     NSString* snapshotName = nil;
     BOOL hotSnapshot = NO;
+
+    // Check for 'env' subcommand first
+    if ([args count] >= 1 && [args[0] isEqualToString:@"env"]) {
+        if ([args count] < 3) {
+            fprintf(stderr, "Usage: un.m service env <status|set|export|delete> <service_id> [options]\n");
+            exit(1);
+        }
+        NSString* envAction = args[1];
+        NSString* envTarget = args[2];
+
+        // Parse remaining args for -e and --env-file
+        for (NSUInteger i = 3; i < [args count]; i++) {
+            NSString* arg = args[i];
+            if ([arg isEqualToString:@"-e"] && i + 1 < [args count]) {
+                [envVars addObject:args[++i]];
+            } else if ([arg isEqualToString:@"--env-file"] && i + 1 < [args count]) {
+                envFile = args[++i];
+            }
+        }
+
+        if ([envAction isEqualToString:@"status"]) {
+            serviceEnvStatus(envTarget, publicKey, secretKey);
+        } else if ([envAction isEqualToString:@"set"]) {
+            NSString* content = buildEnvContent(envVars, envFile);
+            if ([content length] == 0) {
+                fprintf(stderr, "%sError: No environment variables to set%s\n", [RED UTF8String], [RESET UTF8String]);
+                exit(1);
+            }
+            serviceEnvSet(envTarget, content, publicKey, secretKey);
+        } else if ([envAction isEqualToString:@"export"]) {
+            serviceEnvExport(envTarget, publicKey, secretKey);
+        } else if ([envAction isEqualToString:@"delete"]) {
+            serviceEnvDelete(envTarget, publicKey, secretKey);
+        } else {
+            fprintf(stderr, "%sError: Unknown env action '%s'. Use status, set, export, or delete%s\n",
+                    [RED UTF8String], [envAction UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        return;
+    }
 
     // Parse arguments
     for (NSUInteger i = 0; i < [args count]; i++) {
@@ -633,6 +762,10 @@ void cmdService(NSArray* args) {
             bootstrapFile = args[++i];
         } else if ([arg isEqualToString:@"-f"] && i + 1 < [args count]) {
             [inputFiles addObject:args[++i]];
+        } else if ([arg isEqualToString:@"-e"] && i + 1 < [args count]) {
+            [envVars addObject:args[++i]];
+        } else if ([arg isEqualToString:@"--env-file"] && i + 1 < [args count]) {
+            envFile = args[++i];
         } else if ([arg isEqualToString:@"-n"] && i + 1 < [args count]) {
             network = args[++i];
         } else if ([arg isEqualToString:@"-v"] && i + 1 < [args count]) {
@@ -815,10 +948,17 @@ void cmdService(NSArray* args) {
         if (result[@"url"]) {
             printf("URL: %s\n", [result[@"url"] UTF8String]);
         }
+
+        // Auto-set vault if -e or --env-file were provided
+        NSString* envContent = buildEnvContent(envVars, envFile);
+        if ([envContent length] > 0 && result[@"id"]) {
+            printf("%sSetting vault for service...%s\n", [YELLOW UTF8String], [RESET UTF8String]);
+            serviceEnvSet(result[@"id"], envContent, publicKey, secretKey);
+        }
         return;
     }
 
-    fprintf(stderr, "%sError: Specify --name to create a service, or use --list, --info, etc.%s\n",
+    fprintf(stderr, "%sError: Specify --name to create a service, or use --list, --info, env, etc.%s\n",
             [RED UTF8String], [RESET UTF8String]);
     exit(1);
 }

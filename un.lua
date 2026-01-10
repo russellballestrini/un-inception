@@ -201,6 +201,178 @@ local function api_request(endpoint, method, data, keys)
     return json.decode(response)
 end
 
+local function api_request_text(endpoint, method, body, keys)
+    local url = API_BASE .. endpoint
+    local tmpfile = os.tmpname()
+
+    -- Generate timestamp and signature
+    local timestamp = tostring(os.time())
+    local path = endpoint
+
+    -- Create HMAC signature using openssl command
+    local message = timestamp .. ":" .. method .. ":" .. path .. ":" .. body
+    local msg_tmpfile = os.tmpname()
+
+    local f = io.open(msg_tmpfile, "w")
+    f:write(message)
+    f:close()
+
+    local hmac_cmd = "openssl dgst -sha256 -hmac " .. shell_escape(keys.secret_key) .. " -hex " .. shell_escape(msg_tmpfile) .. " | awk '{print $2}'"
+    local sig_handle = io.popen(hmac_cmd)
+    local signature = sig_handle:read("*a"):gsub("%s+$", "")
+    sig_handle:close()
+    os.remove(msg_tmpfile)
+
+    local data_file = os.tmpname()
+    local df = io.open(data_file, "w")
+    df:write(body)
+    df:close()
+
+    local cmd = "curl -s -X " .. method .. " " .. shell_escape(url) ..
+                " -H 'Authorization: Bearer " .. keys.public_key .. "'" ..
+                " -H 'X-Timestamp: " .. timestamp .. "'" ..
+                " -H 'X-Signature: " .. signature .. "'" ..
+                " -H 'Content-Type: text/plain'" ..
+                " -d @" .. shell_escape(data_file) ..
+                " -w '\\n%{http_code}' -o " .. shell_escape(tmpfile)
+
+    local handle = io.popen(cmd)
+    local http_code = handle:read("*a"):match("(%d+)$")
+    handle:close()
+
+    local file = io.open(tmpfile, "r")
+    local response = file:read("*all")
+    file:close()
+    os.remove(tmpfile)
+    os.remove(data_file)
+
+    if not http_code or tonumber(http_code) < 200 or tonumber(http_code) >= 300 then
+        return { error = "HTTP " .. (http_code or "000") .. " - " .. response }
+    end
+
+    return json.decode(response)
+end
+
+-- ============================================================================
+-- Environment Secrets Vault Functions
+-- ============================================================================
+
+local MAX_ENV_CONTENT_SIZE = 64 * 1024 -- 64KB max
+
+local function service_env_status(service_id, keys)
+    local result = api_request("/services/" .. service_id .. "/env", "GET", nil, keys)
+    local has_vault = result.has_vault
+
+    if not has_vault then
+        print("Vault exists: no")
+        print("Variable count: 0")
+    else
+        print("Vault exists: yes")
+        print("Variable count: " .. (result.count or 0))
+        if result.updated_at then
+            print("Last updated: " .. os.date("%Y-%m-%d %H:%M:%S", result.updated_at))
+        end
+    end
+end
+
+local function service_env_set(service_id, env_content, keys)
+    if not env_content or env_content == "" then
+        io.stderr:write(RED .. "Error: No environment content provided" .. RESET .. "\n")
+        return false
+    end
+
+    if #env_content > MAX_ENV_CONTENT_SIZE then
+        io.stderr:write(RED .. "Error: Environment content too large (max " .. MAX_ENV_CONTENT_SIZE .. " bytes)" .. RESET .. "\n")
+        return false
+    end
+
+    local result = api_request_text("/services/" .. service_id .. "/env", "PUT", env_content, keys)
+
+    if result.error then
+        io.stderr:write(RED .. "Error: " .. result.error .. RESET .. "\n")
+        return false
+    end
+
+    local count = result.count or 0
+    local plural = count == 1 and "" or "s"
+    print(GREEN .. "Environment vault updated: " .. count .. " variable" .. plural .. RESET)
+    if result.message then print(result.message) end
+    return true
+end
+
+local function service_env_export(service_id, keys)
+    local result = api_request("/services/" .. service_id .. "/env/export", "POST", {}, keys)
+    local env_content = result.env
+    if env_content and env_content ~= "" then
+        io.write(env_content)
+        if not env_content:match("\n$") then print() end
+    end
+end
+
+local function service_env_delete(service_id, keys)
+    api_request("/services/" .. service_id .. "/env", "DELETE", nil, keys)
+    print(GREEN .. "Environment vault deleted" .. RESET)
+end
+
+local function read_env_file_content(filepath)
+    local file = io.open(filepath, "r")
+    if not file then
+        io.stderr:write(RED .. "Error: Env file not found: " .. filepath .. RESET .. "\n")
+        os.exit(1)
+    end
+    local content = file:read("*all")
+    file:close()
+    return content
+end
+
+local function build_env_content(envs, env_file)
+    local parts = {}
+
+    -- Read from env file first
+    if env_file and env_file ~= "" then
+        table.insert(parts, read_env_file_content(env_file))
+    end
+
+    -- Add -e flags
+    for _, e in ipairs(envs) do
+        if e:find("=") then
+            table.insert(parts, e)
+        end
+    end
+
+    return table.concat(parts, "\n")
+end
+
+local function cmd_service_env(action, target, envs, env_file, keys)
+    if not action or action == "" then
+        io.stderr:write(RED .. "Error: env action required (status, set, export, delete)" .. RESET .. "\n")
+        os.exit(1)
+    end
+
+    if not target or target == "" then
+        io.stderr:write(RED .. "Error: Service ID required for env command" .. RESET .. "\n")
+        os.exit(1)
+    end
+
+    if action == "status" then
+        service_env_status(target, keys)
+    elseif action == "set" then
+        local env_content = build_env_content(envs, env_file)
+        if env_content == "" then
+            io.stderr:write(RED .. "Error: No env content provided. Use -e KEY=VAL or --env-file" .. RESET .. "\n")
+            os.exit(1)
+        end
+        service_env_set(target, env_content, keys)
+    elseif action == "export" then
+        service_env_export(target, keys)
+    elseif action == "delete" then
+        service_env_delete(target, keys)
+    else
+        io.stderr:write(RED .. "Error: Unknown env action '" .. action .. "'. Use: status, set, export, delete" .. RESET .. "\n")
+        os.exit(1)
+    end
+end
+
 local function read_file(filename)
     local file, err = io.open(filename, "rb")
     if not file then
@@ -648,9 +820,16 @@ local function cmd_service(options)
         if options.vcpu then payload.vcpu = options.vcpu end
 
         local result = api_request("/services", "POST", payload, keys)
-        print(GREEN .. "Service created: " .. (result.id or "N/A") .. RESET)
+        local service_id = result.id
+        print(GREEN .. "Service created: " .. (service_id or "N/A") .. RESET)
         print("Name: " .. (result.name or "N/A"))
         if result.url then print("URL: " .. result.url) end
+
+        -- Auto-set vault if -e or --env-file provided
+        local env_content = build_env_content(options.env or {}, options.env_file)
+        if env_content ~= "" and service_id then
+            service_env_set(service_id, env_content, keys)
+        end
         return
     end
 
@@ -693,7 +872,10 @@ local function main()
         dump_bootstrap = nil,
         dump_file = nil,
         extend = false,
-        exec_shell = nil
+        exec_shell = nil,
+        env_file = nil,
+        env_action = nil,
+        env_target = nil
     }
 
     local i = 1
@@ -762,6 +944,23 @@ local function main()
         elseif a == "--bootstrap-file" then
             i = i + 1
             options.bootstrap_file = arg[i]
+        elseif a == "--env-file" then
+            i = i + 1
+            options.env_file = arg[i]
+        elseif a == "env" then
+            -- Handle "service env <action> <target>" subcommand
+            if options.command == "service" then
+                i = i + 1
+                if i <= #arg then
+                    options.env_action = arg[i]
+                end
+                i = i + 1
+                if i <= #arg and not arg[i]:match("^%-") then
+                    options.env_target = arg[i]
+                else
+                    i = i - 1 -- back up if next arg is a flag
+                end
+            end
         elseif a == "--info" then
             i = i + 1
             options.info = arg[i]
@@ -807,7 +1006,13 @@ local function main()
     if options.command == "session" then
         cmd_session(options)
     elseif options.command == "service" then
-        cmd_service(options)
+        -- Check for "service env" subcommand
+        if options.env_action then
+            local keys = get_api_keys(options.api_key)
+            cmd_service_env(options.env_action, options.env_target, options.env, options.env_file, keys)
+        else
+            cmd_service(options)
+        end
     elseif options.command == "key" then
         cmd_key(options)
     elseif options.source_file then

@@ -47,6 +47,7 @@ import os
 
 const api_base = 'https://api.unsandbox.com'
 const portal_base = 'https://unsandbox.com'
+const max_env_content_size = 65536
 const blue = '\x1b[34m'
 const red = '\x1b[31m'
 const green = '\x1b[32m'
@@ -154,6 +155,97 @@ fn extract_json_string(json string, key string) string {
 			.replace('\\\\', '\\')
 	}
 	return ''
+}
+
+fn read_env_file(filename string) string {
+	content := os.read_file(filename) or {
+		eprintln('${red}Error: Cannot read env file: ${filename}${reset}')
+		return ''
+	}
+	return content
+}
+
+fn build_env_content(envs []string, env_file string) string {
+	mut result := ''
+
+	// Add -e flags
+	for env in envs {
+		result += env + '\n'
+	}
+
+	// Add content from env file
+	if env_file != '' {
+		file_content := read_env_file(env_file)
+		for line in file_content.split('\n') {
+			trimmed := line.trim_space()
+			if trimmed.len == 0 || trimmed.starts_with('#') {
+				continue
+			}
+			result += trimmed + '\n'
+		}
+	}
+
+	return result
+}
+
+fn exec_curl_put(endpoint string, body string, public_key string, secret_key string) bool {
+	// Write body to temp file to avoid shell escaping issues
+	body_file := '/tmp/unsandbox_env_body.txt'
+	os.write_file(body_file, body) or {
+		eprintln('${red}Error: Cannot write temp file${reset}')
+		return false
+	}
+	defer {
+		os.rm(body_file) or {}
+	}
+
+	cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:PUT:${endpoint}:${body}\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X PUT '${api_base}${endpoint}' -H 'Content-Type: text/plain' -H 'Authorization: Bearer ${public_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" --data-binary @${body_file}"
+	result := os.execute(cmd)
+	return result.exit_code == 0
+}
+
+fn service_env_set(service_id string, content string, public_key string, secret_key string) bool {
+	endpoint := '/services/${service_id}/env'
+	return exec_curl_put(endpoint, content, public_key, secret_key)
+}
+
+fn cmd_service_env(action string, target string, svc_envs []string, svc_env_file string, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
+	match action {
+		'status' {
+			cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/services/${target}/env:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/services/${target}/env' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+			println(exec_curl(cmd))
+		}
+		'set' {
+			if svc_envs.len == 0 && svc_env_file == '' {
+				eprintln('${red}Error: No environment variables specified. Use -e KEY=VALUE or --env-file FILE${reset}')
+				return
+			}
+			content := build_env_content(svc_envs, svc_env_file)
+			if content.len > max_env_content_size {
+				eprintln('${red}Error: Environment content exceeds 64KB limit${reset}')
+				return
+			}
+			if service_env_set(target, content, pub_key, secret_key) {
+				println('${green}Vault updated for service ${target}${reset}')
+			}
+		}
+		'export' {
+			cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/services/${target}/env/export:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services/${target}/env/export' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+			println(exec_curl(cmd))
+		}
+		'delete' {
+			cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:/services/${target}/env:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/services/${target}/env' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+			exec_curl(cmd)
+			println('${green}Vault deleted for service ${target}${reset}')
+		}
+		else {
+			eprintln('${red}Error: Unknown env action: ${action}${reset}')
+			eprintln('Usage: un service env <status|set|export|delete> <service_id>')
+		}
+	}
 }
 
 fn cmd_key(extend bool, api_key string) {
@@ -318,7 +410,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl(cmd))
 }
 
-fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, svc_envs []string, svc_env_file string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -442,7 +534,21 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 
 		println('${yellow}Creating service...${reset}')
 		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/services:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
-		println(exec_curl(cmd))
+		result := exec_curl(cmd)
+		println(result)
+
+		// Auto-set vault if -e or --env-file provided
+		if svc_envs.len > 0 || svc_env_file != '' {
+			service_id := extract_json_string(result, 'service_id')
+			if service_id != '' {
+				env_content := build_env_content(svc_envs, svc_env_file)
+				if env_content.len > 0 {
+					if service_env_set(service_id, env_content, pub_key, secret_key) {
+						println('${green}Vault configured for service ${service_id}${reset}')
+					}
+				}
+			}
+		}
 		return
 	}
 
@@ -482,7 +588,14 @@ fn main() {
 		eprintln('Usage: ${os.args[0]} [options] <source_file>')
 		eprintln('       ${os.args[0]} session [options]')
 		eprintln('       ${os.args[0]} service [options]')
+		eprintln('       ${os.args[0]} service env <action> <service_id> [options]')
 		eprintln('       ${os.args[0]} key [--extend]')
+		eprintln('')
+		eprintln('Vault commands:')
+		eprintln('  service env status <id>   Check vault status')
+		eprintln('  service env set <id>      Set vault (-e KEY=VAL or --env-file FILE)')
+		eprintln('  service env export <id>   Export vault contents')
+		eprintln('  service env delete <id>   Delete vault')
 		exit(1)
 	}
 
@@ -561,10 +674,23 @@ fn main() {
 		mut network := ''
 		mut vcpu := 0
 		mut input_files := []string{}
+		mut svc_envs := []string{}
+		mut svc_env_file := ''
+		mut env_action := ''
+		mut env_target := ''
 
 		mut i := 2
 		for i < os.args.len {
 			match os.args[i] {
+				'env' {
+					// service env <action> <service_id>
+					if i + 2 < os.args.len {
+						i++
+						env_action = os.args[i]
+						i++
+						env_target = os.args[i]
+					}
+				}
 				'--name' {
 					i++
 					name = os.args[i]
@@ -626,6 +752,14 @@ fn main() {
 					i++
 					dump_file = os.args[i]
 				}
+				'-e' {
+					i++
+					svc_envs << os.args[i]
+				}
+				'--env-file' {
+					i++
+					svc_env_file = os.args[i]
+				}
 				'-n' {
 					i++
 					network = os.args[i]
@@ -653,8 +787,14 @@ fn main() {
 			i++
 		}
 
+		// Handle env subcommand
+		if env_action != '' && env_target != '' {
+			cmd_service_env(env_action, env_target, svc_envs, svc_env_file, api_key)
+			return
+		}
+
 		cmd_service(name, ports, service_type, bootstrap, bootstrap_file, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network,
-			vcpu, input_files, api_key)
+			vcpu, input_files, svc_envs, svc_env_file, api_key)
 		return
 	}
 
