@@ -161,7 +161,7 @@ data ServiceOpts = ServiceOpts
 
 data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
                    | ServiceSleep String | ServiceWake String | ServiceDestroy String
-                   | ServiceExecute String String | ServiceDumpBootstrap String (Maybe String)
+                   | ServiceResize String | ServiceExecute String String | ServiceDumpBootstrap String (Maybe String)
                    | ServiceCreate | ServiceSnapshot String | ServiceRestore String
                    | ServiceEnv String (Maybe String)  -- action, target
 
@@ -240,6 +240,7 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--freeze":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSleep id }
     parseServiceArgs ("--unfreeze":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceWake id }
     parseServiceArgs ("--destroy":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDestroy id }
+    parseServiceArgs ("--resize":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceResize id }
     parseServiceArgs ("--snapshot":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSnapshot id }
     parseServiceArgs ("--restore":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceRestore id }
     parseServiceArgs ("--execute":id:"--command":cmd:rest) opts = parseServiceArgs rest opts { svcAction = ServiceExecute id cmd }
@@ -322,6 +323,10 @@ printHelp = do
   putStrLn "Service options:"
   putStrLn "  -e KEY=VALUE         Set vault env var (with --name or env set)"
   putStrLn "  --env-file FILE      Load vault vars from file"
+  putStrLn "  --freeze ID          Freeze service"
+  putStrLn "  --unfreeze ID        Unfreeze service"
+  putStrLn "  --destroy ID         Destroy service"
+  putStrLn "  --resize ID          Resize service (requires -v N)"
   putStrLn ""
   putStrLn "Service env commands:"
   putStrLn "  env status ID        Check vault status"
@@ -467,6 +472,16 @@ serviceCommand opts = do
     ServiceDestroy sid -> do
       (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/services/" ++ sid)
       putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset
+    ServiceResize sid -> do
+      case svcVcpu opts of
+        Nothing -> do
+          hPutStrLn stderr $ red ++ "Error: --resize requires -v N (1-8)" ++ reset
+          exitFailure
+        Just vcpu -> do
+          let json = "{\"vcpu\":" ++ show vcpu ++ "}"
+          let ram = vcpu * 2
+          (_, stdout, _) <- curlPatch apiKey ("https://api.unsandbox.com/services/" ++ sid) json
+          putStrLn $ green ++ "Service resized to " ++ show vcpu ++ " vCPU, " ++ show ram ++ " GB RAM" ++ reset
     ServiceExecute sid cmd -> do
       let json = "{\"command\":\"" ++ escapeJSON cmd ++ "\"}"
       (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/execute") json
@@ -664,6 +679,19 @@ curlDelete apiKey url = do
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", "-X", "DELETE", url ] ++ authHeaders) ""
   -- Check for clock drift error
+  checkClockDriftError stdout
+  return (exitCode, stdout, stderr)
+
+curlPatch :: String -> String -> String -> IO (ExitCode, String, String)
+curlPatch apiKey url body = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "PATCH" path body
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
+    ([ "-s", "-X", "PATCH"
+     , url
+     , "-H", "Content-Type: application/json"
+     ] ++ authHeaders ++ ["-d", body]) ""
   checkClockDriftError stdout
   return (exitCode, stdout, stderr)
 

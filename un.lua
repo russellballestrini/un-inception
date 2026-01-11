@@ -736,6 +736,23 @@ local function cmd_service(options)
         return
     end
 
+    if options.resize then
+        local vcpu = options.resize_vcpu or options.vcpu
+        if not vcpu then
+            io.stderr:write(RED .. "Error: --resize requires --vcpu or -v" .. RESET .. "\n")
+            os.exit(1)
+        end
+        if vcpu < 1 or vcpu > 8 then
+            io.stderr:write(RED .. "Error: vCPU must be between 1 and 8" .. RESET .. "\n")
+            os.exit(1)
+        end
+        local payload = { vcpu = vcpu }
+        api_request("/services/" .. options.resize, "PATCH", payload, keys)
+        local ram = vcpu * 2
+        print(GREEN .. "Service resized to " .. vcpu .. " vCPU, " .. ram .. " GB RAM" .. RESET)
+        return
+    end
+
     if options.execute then
         local payload = { command = options.command }
         local result = api_request("/services/" .. options.execute .. "/execute", "POST", payload, keys)
@@ -867,6 +884,8 @@ local function main()
         sleep = nil,
         wake = nil,
         destroy = nil,
+        resize = nil,
+        resize_vcpu = nil,
         execute = nil,
         command = nil,
         dump_bootstrap = nil,
@@ -979,6 +998,12 @@ local function main()
         elseif a == "--destroy" then
             i = i + 1
             options.destroy = arg[i]
+        elseif a == "--resize" then
+            i = i + 1
+            options.resize = arg[i]
+        elseif a == "--vcpu" then
+            i = i + 1
+            options.resize_vcpu = tonumber(arg[i])
         elseif a == "--execute" then
             i = i + 1
             options.execute = arg[i]
@@ -1059,6 +1084,7 @@ Service options:
   --freeze ID       Freeze service
   --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
+  --resize ID      Resize service (requires --vcpu)
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script

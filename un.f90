@@ -319,7 +319,7 @@ contains
         character(len=256) :: arg, service_id, operation, service_type, service_name
         character(len=1024) :: input_files, public_key, secret_key
         character(len=2048) :: svc_envs, svc_env_file, env_action, env_target
-        integer :: i, stat
+        integer :: i, stat, resize_vcpu
         logical :: list_mode
 
         list_mode = .false.
@@ -332,6 +332,7 @@ contains
         svc_env_file = ''
         env_action = ''
         env_target = ''
+        resize_vcpu = 0
 
         ! Parse service arguments
         i = 2
@@ -410,6 +411,24 @@ contains
                 operation = 'destroy'
                 if (i+1 <= command_argument_count()) then
                     call get_command_argument(i+1, service_id)
+                    i = i + 1
+                end if
+            else if (trim(arg) == '--resize') then
+                operation = 'resize'
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_id)
+                    i = i + 1
+                end if
+            else if (trim(arg) == '--vcpu') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, arg)
+                    read(arg, *) resize_vcpu
+                    i = i + 1
+                end if
+            else if (trim(arg) == '-v' .and. operation == 'resize') then
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, arg)
+                    read(arg, *) resize_vcpu
                     i = i + 1
                 end if
             else if (trim(arg) == '--dump-bootstrap') then
@@ -581,6 +600,26 @@ contains
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" >/dev/null && ', &
                 'echo -e "\x1b[32mService destroyed: ', trim(service_id), '\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'resize' .and. len_trim(service_id) > 0) then
+            if (resize_vcpu < 1 .or. resize_vcpu > 8) then
+                write(0, '(A)') char(27)//'[31mError: --vcpu must be between 1 and 8'//char(27)//'[0m'
+                stop 1
+            end if
+            write(full_cmd, '(30A,I0,A,I0,A,I0,A)') &
+                'VCPU=', resize_vcpu, '; ', &
+                'RAM=$((VCPU * 2)); ', &
+                'BODY=''{"vcpu":''$VCPU''}''; ', &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:PATCH:/services/', trim(service_id), ':$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X PATCH https://api.unsandbox.com/services/', &
+                trim(service_id), ' ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" ', &
+                '-d "$BODY" >/dev/null && ', &
+                'echo -e "\x1b[32mService resized to ', resize_vcpu, ' vCPU, ', resize_vcpu * 2, ' GB RAM\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'dump-bootstrap' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(30A)') &

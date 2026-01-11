@@ -122,6 +122,8 @@ def api_request(endpoint : String, public_key : String, secret_key : String?, me
       HTTP::Client.get(url, headers: headers)
     when "POST"
       HTTP::Client.post(url, headers: headers, body: body)
+    when "PATCH"
+      HTTP::Client.patch(url, headers: headers, body: body)
     when "DELETE"
       HTTP::Client.delete(url, headers: headers)
     else
@@ -600,6 +602,19 @@ def cmd_service(args)
     return
   end
 
+  if resize_id = args[:resize]?.as?(String)
+    vcpu = args[:vcpu]?.as?(Int32)
+    if vcpu.nil? || vcpu < 1 || vcpu > 8
+      STDERR.puts "#{RED}Error: --resize requires -v N (1-8)#{RESET}"
+      exit 1
+    end
+    payload = JSON.parse({vcpu: vcpu}.to_json)
+    api_request("/services/#{resize_id}", public_key, secret_key, method: "PATCH", data: payload)
+    ram = vcpu * 2
+    puts "#{GREEN}Service resized to #{vcpu} vCPU, #{ram} GB RAM#{RESET}"
+    return
+  end
+
   # Create new service
   if name = args[:name]?.as?(String)
     payload = JSON.parse({name: name}.to_json)
@@ -684,7 +699,7 @@ def cmd_service(args)
     return
   end
 
-  STDERR.puts "#{RED}Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, or --name to create#{RESET}"
+  STDERR.puts "#{RED}Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --resize, or --name to create#{RESET}"
   exit 1
 end
 
@@ -708,6 +723,8 @@ def main
     execute: nil,
     dump_bootstrap: nil,
     dump_file: nil,
+    resize: nil,
+    vcpu: nil,
     name: nil,
     ports: nil,
     domains: nil,
@@ -744,6 +761,8 @@ def main
     opts.on("--command=CMD", "Command to execute (with --execute)") { |cmd| args[:command] = cmd }
     opts.on("--dump-bootstrap=ID", "Dump bootstrap script") { |id| args[:dump_bootstrap] = id }
     opts.on("--dump-file=FILE", "File to save bootstrap (with --dump-bootstrap)") { |file| args[:dump_file] = file }
+    opts.on("--resize=ID", "Resize service vCPU") { |id| args[:resize] = id }
+    opts.on("-v VCPU", "--vcpu=VCPU", "vCPU count (1-8) for resize") { |v| args[:vcpu] = v.to_i }
     opts.on("--name=NAME", "Service name") { |n| args[:name] = n }
     opts.on("--ports=PORTS", "Comma-separated ports") { |p| args[:ports] = p }
     opts.on("--domains=DOMAINS", "Comma-separated domains") { |d| args[:domains] = d }

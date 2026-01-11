@@ -744,6 +744,15 @@ def cmd_service(args):
         print(f"{GREEN}Service destroyed: {args.destroy}{RESET}")
         return
 
+    if args.resize:
+        if not args.vcpu:
+            print(f"{RED}Error: --vcpu required with --resize{RESET}", file=sys.stderr)
+            sys.exit(1)
+        payload = {"vcpu": args.vcpu}
+        result = api_request(f"/services/{args.resize}", method="PATCH", data=payload, public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Service resized to {args.vcpu} vCPU, {args.vcpu * 2}GB RAM{RESET}")
+        return
+
     if args.snapshot:
         payload = {}
         if args.snapshot_name:
@@ -925,9 +934,10 @@ Examples:
     service_parser.add_argument("--info", metavar="ID", help="Get service details")
     service_parser.add_argument("--tail", metavar="ID", help="Get last 9000 lines of logs")
     service_parser.add_argument("--logs", metavar="ID", help="Get all logs")
-    service_parser.add_argument("--freeze", metavar="ID", help="Freeze service")
-    service_parser.add_argument("--unfreeze", metavar="ID", help="Unfreeze service")
+    service_parser.add_argument("--freeze", "--sleep", dest="sleep", metavar="ID", help="Freeze service")
+    service_parser.add_argument("--unfreeze", "--wake", dest="wake", metavar="ID", help="Unfreeze service")
     service_parser.add_argument("--destroy", metavar="ID", help="Destroy service")
+    service_parser.add_argument("--resize", metavar="ID", help="Resize service vCPU/memory")
     service_parser.add_argument("--snapshot", metavar="SERVICE_ID", help="Create snapshot of service")
     service_parser.add_argument("--restore", metavar="SNAPSHOT_ID", help="Restore from snapshot ID")
     service_parser.add_argument("--snapshot-name", metavar="NAME", help="Name for snapshot")

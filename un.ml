@@ -678,6 +678,33 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
      | None ->
        Printf.fprintf stderr "Error: --destroy requires service ID\n";
        exit 1)
+  | "resize" ->
+    (match (name, vcpu) with
+     | (Some sid, Some v) ->
+       if v < 1 || v > 8 then begin
+         Printf.fprintf stderr "%sError: vCPU must be between 1 and 8%s\n" red reset;
+         exit 1
+       end;
+       let json = Printf.sprintf "{\"vcpu\":%d}" v in
+       let endpoint = Printf.sprintf "/services/%s" sid in
+       let (public_key, secret_key) = get_api_keys () in
+       let auth_headers = build_auth_headers public_key secret_key "PATCH" endpoint json in
+       let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+       let oc = open_out tmp_file in
+       output_string oc json;
+       close_out oc;
+       let cmd = Printf.sprintf "curl -s -X PATCH https://api.unsandbox.com%s -H 'Content-Type: application/json'%s -d @%s"
+         endpoint auth_headers tmp_file in
+       let _ = Sys.command cmd in
+       Sys.remove tmp_file;
+       let ram = v * 2 in
+       Printf.printf "%sService resized to %d vCPU, %d GB RAM%s\n" green v ram reset
+     | (Some _, None) ->
+       Printf.fprintf stderr "%sError: --resize requires --vcpu or -v%s\n" red reset;
+       exit 1
+     | (None, _) ->
+       Printf.fprintf stderr "Error: --resize requires service ID\n";
+       exit 1)
   | "execute" ->
     (match name with
      | Some sid ->
@@ -859,6 +886,8 @@ let () =
       | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
       | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
       | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--resize" :: id :: rest -> parse_service "resize" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
+      | "--vcpu" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) env_file rest
       | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) bootstrap_file service_type network vcpu env_file rest
       | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) service_type network vcpu env_file rest
       | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest

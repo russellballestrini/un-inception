@@ -696,6 +696,17 @@ async function cmdService(args) {
     return;
   }
 
+  if (args.resize) {
+    if (!args.vcpu) {
+      console.error(`${RED}Error: --vcpu required with --resize${RESET}`);
+      process.exit(1);
+    }
+    const payload = { vcpu: args.vcpu };
+    await apiRequest(`/services/${args.resize}`, "PATCH", payload, publicKey, secretKey);
+    console.log(`${GREEN}Service resized to ${args.vcpu} vCPU, ${args.vcpu * 2}GB RAM${RESET}`);
+    return;
+  }
+
   if (args.execute) {
     const payload = { command: args.command };
     const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, publicKey, secretKey);
@@ -816,6 +827,7 @@ function parseArgs(argv) {
     sleep: null,
     wake: null,
     destroy: null,
+    resize: null,
     execute: null,
     command_arg: null,
     dumpBootstrap: null,
@@ -931,6 +943,9 @@ function parseArgs(argv) {
     } else if (arg === '--destroy' && i + 1 < argv.length) {
       args.destroy = argv[++i];
       i++;
+    } else if (arg === '--resize' && i + 1 < argv.length) {
+      args.resize = argv[++i];
+      i++;
     } else if (arg === '--execute' && i + 1 < argv.length) {
       args.execute = argv[++i];
       i++;
@@ -1013,6 +1028,7 @@ Service options:
   --freeze ID       Freeze service
   --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
+  --resize ID      Resize service (requires -v)
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script

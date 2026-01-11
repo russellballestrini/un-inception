@@ -272,6 +272,40 @@ function service_destroy(id    , timestamp, sig_headers, signature, sig_input, s
     print GREEN "Service destroyed: " id RESET
 }
 
+function service_resize(id, vcpu    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, ram) {
+    get_api_keys()
+    endpoint = "/services/" id
+    json = "{\"vcpu\":" vcpu "}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_resize_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":PATCH:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    cmd = "curl -s -X PATCH '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    system(cmd " > /dev/null")
+
+    # Clean up
+    system("rm -f " tmp)
+
+    ram = vcpu * 2
+    print GREEN "Service resized to " vcpu " vCPU, " ram " GB RAM" RESET
+}
+
 function service_dump_bootstrap(id, dump_file    , endpoint, json_body, timestamp, sig_headers, signature, sig_input, sig_cmd) {
     get_api_keys()
     print "Fetching bootstrap script from " id "..." > "/dev/stderr"
@@ -985,6 +1019,7 @@ function show_help() {
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-e KEY=VAL] [--env-file FILE] [-f FILE]..."
     print "       awk -f un.awk service --destroy ID"
+    print "       awk -f un.awk service --resize ID -v VCPU"
     print "       awk -f un.awk service --dump-bootstrap ID [--dump-file FILE]"
     print "       awk -f un.awk service --snapshot SERVICE_ID [--snapshot-name NAME] [--hot]"
     print "       awk -f un.awk service --restore SNAPSHOT_ID"
@@ -1010,6 +1045,8 @@ function show_help() {
     print "  --domains DOMAINS  Comma-separated domain names"
     print "  --type TYPE        Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)"
     print "  --bootstrap CMD    Bootstrap command or script"
+    print "  --destroy ID       Destroy service"
+    print "  --resize ID        Resize service (requires -v)"
     print "  --dump-bootstrap ID    Dump bootstrap script from service"
     print "  --dump-file FILE       Save bootstrap to file (with --dump-bootstrap)"
     print "  -e KEY=VAL             Environment variable for vault (can be repeated)"
@@ -1140,6 +1177,24 @@ END {
             service_list()
         } else if (ARGC >= 4 && ARGV[2] == "--destroy") {
             service_destroy(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--resize") {
+            # Parse -v for vcpu
+            resize_id = ARGV[3]
+            resize_vcpu = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "-v" && i + 1 < ARGC) {
+                    resize_vcpu = ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+            if (resize_vcpu == "") {
+                print RED "Error: --vcpu (-v) is required with --resize" RESET > "/dev/stderr"
+                exit 1
+            }
+            service_resize(resize_id, resize_vcpu)
         } else if (ARGC >= 4 && ARGV[2] == "--dump-bootstrap") {
             dump_file = ""
             if (ARGC >= 6 && ARGV[4] == "--dump-file") {

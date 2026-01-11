@@ -596,7 +596,7 @@ func cmdSession(sessionList, sessionKill, sessionShell, sessionSnapshot, session
 	fmt.Printf("%sSession created: %s%s\n", Green, result["id"], Reset)
 }
 
-func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, serviceSnapshot, serviceRestore, serviceSnapshotName string, serviceHot bool, network string, vcpu int, files inputFiles, envs envVars, envFile, publicKey, secretKey string) {
+func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceBootstrap, serviceBootstrapFile, serviceList, serviceInfo, serviceLogs, serviceTail, serviceSleep, serviceWake, serviceDestroy, serviceResize, serviceExecute, serviceCommand, serviceDumpBootstrap, serviceDumpFile, serviceSnapshot, serviceRestore, serviceSnapshotName string, serviceHot bool, network string, vcpu int, files inputFiles, envs envVars, envFile, publicKey, secretKey string) {
 	if serviceSnapshot != "" {
 		payload := map[string]interface{}{}
 		if serviceSnapshotName != "" {
@@ -687,6 +687,17 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	if serviceDestroy != "" {
 		apiRequest("/services/"+serviceDestroy, "DELETE", nil, publicKey, secretKey)
 		fmt.Printf("%sService destroyed: %s%s\n", Green, serviceDestroy, Reset)
+		return
+	}
+
+	if serviceResize != "" {
+		if vcpu <= 0 {
+			fmt.Fprintf(os.Stderr, "%sError: --resize requires -v <vcpu>%s\n", Red, Reset)
+			os.Exit(1)
+		}
+		payload := map[string]interface{}{"vcpu": vcpu}
+		apiRequest("/services/"+serviceResize, "PATCH", payload, publicKey, secretKey)
+		fmt.Printf("%sService resized to %d vCPU, %d GB RAM%s\n", Green, vcpu, vcpu*2, Reset)
 		return
 	}
 
@@ -1057,6 +1068,7 @@ func main() {
 	serviceSleep := serviceCmd.String("sleep", "", "Freeze service")
 	serviceWake := serviceCmd.String("wake", "", "Unfreeze service")
 	serviceDestroy := serviceCmd.String("destroy", "", "Destroy service")
+	serviceResize := serviceCmd.String("resize", "", "Resize service vCPU")
 	serviceExecute := serviceCmd.String("execute", "", "Execute command in service")
 	serviceCommand := serviceCmd.String("command", "", "Command to execute (with -execute)")
 	serviceDumpBootstrap := serviceCmd.String("dump-bootstrap", "", "Dump bootstrap script")
@@ -1143,7 +1155,7 @@ func main() {
 			if vc == 0 {
 				vc = *vcpu
 			}
-			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, *serviceSnapshot, *serviceRestore, *serviceSnapshotName, *serviceHot, net, vc, serviceFiles, serviceEnvs, *serviceEnvFile, publicKey, secretKey)
+			cmdService(*serviceName, *servicePorts, *serviceDomains, *serviceType, *serviceBootstrap, *serviceBootstrapFile, *serviceList, *serviceInfo, *serviceLogs, *serviceTail, *serviceSleep, *serviceWake, *serviceDestroy, *serviceResize, *serviceExecute, *serviceCommand, *serviceDumpBootstrap, *serviceDumpFile, *serviceSnapshot, *serviceRestore, *serviceSnapshotName, *serviceHot, net, vc, serviceFiles, serviceEnvs, *serviceEnvFile, publicKey, secretKey)
 			return
 
 		case "snapshot":

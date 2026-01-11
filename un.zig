@@ -397,6 +397,8 @@ pub fn main() !u8 {
         var command: ?[]const u8 = null;
         var dump_bootstrap: ?[]const u8 = null;
         var dump_file: ?[]const u8 = null;
+        var resize: ?[]const u8 = null;
+        var vcpu: i32 = 0;
         var input_files = std.ArrayList([]const u8).init(allocator);
         defer input_files.deinit();
         var svc_envs = std.ArrayList([]const u8).init(allocator);
@@ -444,6 +446,12 @@ pub fn main() !u8 {
             } else if (mem.eql(u8, args[i], "--dump-file") and i + 1 < args.len) {
                 i += 1;
                 dump_file = args[i];
+            } else if (mem.eql(u8, args[i], "--resize") and i + 1 < args.len) {
+                i += 1;
+                resize = args[i];
+            } else if (mem.eql(u8, args[i], "-v") and i + 1 < args.len) {
+                i += 1;
+                vcpu = std.fmt.parseInt(i32, args[i], 10) catch 0;
             } else if (mem.eql(u8, args[i], "-e") and i + 1 < args.len) {
                 i += 1;
                 try svc_envs.append(args[i]);
@@ -552,6 +560,35 @@ pub fn main() !u8 {
                 std.debug.print("\x1b[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\x1b[0m\n", .{});
                 return 1;
             }
+        } else if (resize) |resize_id| {
+            // Validate vcpu
+            if (vcpu < 1 or vcpu > 8) {
+                std.debug.print("{s}Error: --resize requires -v N (1-8){s}\n", .{ RED, RESET });
+                return 1;
+            }
+
+            // Build JSON body
+            var vcpu_buf: [16]u8 = undefined;
+            const vcpu_str = std.fmt.bufPrint(&vcpu_buf, "{d}", .{vcpu}) catch "0";
+            const json = try std.fmt.allocPrint(allocator, "{{\"vcpu\":{s}}}", .{vcpu_str});
+            defer allocator.free(json);
+
+            // Build path
+            const path = try std.fmt.allocPrint(allocator, "/services/{s}", .{resize_id});
+            defer allocator.free(path);
+
+            // Build auth headers
+            const auth_headers = try buildAuthCmd(allocator, "PATCH", path, json, public_key, secret_key);
+            defer allocator.free(auth_headers);
+
+            // Execute PATCH request
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, resize_id, auth_headers, json });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+
+            // Calculate RAM
+            const ram = vcpu * 2;
+            std.debug.print("\n{s}Service resized to {d} vCPU, {d} GB RAM{s}\n", .{ GREEN, vcpu, ram, RESET });
         } else if (name) |n| {
             var json_buf: [65536]u8 = undefined;
             var json_stream = std.io.fixedBufferStream(&json_buf);

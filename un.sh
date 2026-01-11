@@ -773,6 +773,7 @@ cmd_service() {
     local sleep=""
     local wake=""
     local destroy=""
+    local resize=""
     local execute=""
     local command=""
     local network=""
@@ -851,6 +852,10 @@ cmd_service() {
                 ;;
             --destroy)
                 destroy="$2"
+                shift 2
+                ;;
+            --resize)
+                resize="$2"
                 shift 2
                 ;;
             --execute)
@@ -979,6 +984,18 @@ cmd_service() {
     if [[ -n "$destroy" ]]; then
         api_request "/services/$destroy" "DELETE" "" "$api_key" > /dev/null
         echo -e "${GREEN}Service destroyed: $destroy${RESET}"
+        return
+    fi
+
+    if [[ -n "$resize" ]]; then
+        if [[ -z "$vcpu" ]]; then
+            echo -e "${RED}Error: --vcpu is required with --resize${RESET}" >&2
+            exit 1
+        fi
+        local payload=$(jq -n --argjson v "$vcpu" '{vcpu: $v}')
+        api_request "/services/$resize" "PATCH" "$payload" "$api_key" > /dev/null
+        local ram=$((vcpu * 2))
+        echo -e "${GREEN}Service resized to $vcpu vCPU, $ram GB RAM${RESET}"
         return
     fi
 
@@ -1418,6 +1435,7 @@ Service options:
   --freeze ID       Freeze service
   --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
+  --resize ID      Resize service (requires -v)
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script

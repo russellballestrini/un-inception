@@ -230,6 +230,16 @@ service_destroy(ServiceId) :-
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 
+% Service resize
+service_resize(ServiceId, Vcpu) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    Ram is Vcpu * 2,
+    format(atom(Cmd),
+        'BODY=\'\'{\"vcpu\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH https://api.unsandbox.com/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mService resized to ~w vCPU, ~w GB RAM\\x1b[0m"',
+        [Vcpu, ServiceId, SecretKey, ServiceId, PublicKey, Vcpu, Ram]),
+    shell(Cmd, 0).
+
 % Service env status
 service_env_status(ServiceId) :-
     get_public_key(PublicKey),
@@ -417,6 +427,23 @@ parse_service_args(['--logs', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- ser
 parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_sleep(ServiceId).
 parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_wake(ServiceId).
 parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_destroy(ServiceId).
+parse_service_args(['--resize', ServiceId, '--vcpu', VcpuAtom|_], _, _, _, _, _, _, _, _, _, _) :-
+    atom_number(VcpuAtom, Vcpu),
+    (   Vcpu >= 1, Vcpu =< 8
+    ->  service_resize(ServiceId, Vcpu)
+    ;   write(user_error, '\x1b[31mError: vCPU must be between 1 and 8\x1b[0m\n'),
+        halt(1)
+    ).
+parse_service_args(['--resize', ServiceId, '-v', VcpuAtom|_], _, _, _, _, _, _, _, _, _, _) :-
+    atom_number(VcpuAtom, Vcpu),
+    (   Vcpu >= 1, Vcpu =< 8
+    ->  service_resize(ServiceId, Vcpu)
+    ;   write(user_error, '\x1b[31mError: vCPU must be between 1 and 8\x1b[0m\n'),
+        halt(1)
+    ).
+parse_service_args(['--resize', _|_], _, _, _, _, _, _, _, _, _, _) :-
+    write(user_error, '\x1b[31mError: --resize requires --vcpu or -v\x1b[0m\n'),
+    halt(1).
 parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _, _, _, _, _, _) :-
     (   Rest = ['--dump-file', DumpFile|_]
     ->  service_dump_bootstrap(ServiceId, DumpFile)

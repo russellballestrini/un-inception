@@ -145,6 +145,8 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
             response <- POST(url, headers, body = body_content, encode = "raw", timeout(300))
         } else if (method == "DELETE") {
             response <- DELETE(url, headers, timeout(300))
+        } else if (method == "PATCH") {
+            response <- PATCH(url, headers, body = body_content, encode = "raw", timeout(300))
         } else {
             stop(paste("Unsupported method:", method))
         }
@@ -710,6 +712,18 @@ cmd_service <- function(args) {
         return()
     }
 
+    if (!is.null(args$resize)) {
+        if (is.null(args$vcpu) || args$vcpu < 1 || args$vcpu > 8) {
+            cat(sprintf("%sError: --resize requires --vcpu N (1-8)%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        payload <- list(vcpu = args$vcpu)
+        result <- api_request(paste0("/services/", args$resize), public_key, secret_key, method = "PATCH", data = payload)
+        ram <- args$vcpu * 2
+        cat(sprintf("%sService resized to %d vCPU, %d GB RAM%s\n", GREEN, args$vcpu, ram, RESET))
+        return()
+    }
+
     if (!is.null(args$snapshot_svc)) {
         payload <- list()
         if (!is.null(args$snapshot_name)) {
@@ -871,6 +885,7 @@ parse_args <- function() {
         sleep = NULL,
         wake = NULL,
         destroy = NULL,
+        resize = NULL,
         delete = NULL,
         clone = NULL,
         clone_name = NULL,
@@ -976,6 +991,10 @@ parse_args <- function() {
         } else if (arg == "--destroy") {
             i <- i + 1
             result$destroy <- args[i]
+            i <- i + 1
+        } else if (arg == "--resize") {
+            i <- i + 1
+            result$resize <- args[i]
             i <- i + 1
         } else if (arg == "--dump-bootstrap") {
             i <- i + 1

@@ -213,6 +213,12 @@ service_command(["--destroy", ServiceId | _]) ->
     _ = curl_delete(ApiKey, "/services/" ++ ServiceId),
     io:format("\033[32mService destroyed: ~s\033[0m~n", [ServiceId]);
 
+service_command(["--resize", ServiceId, "--vcpu", VcpuStr | _]) ->
+    service_resize(ServiceId, VcpuStr);
+
+service_command(["--resize", ServiceId, "-v", VcpuStr | _]) ->
+    service_resize(ServiceId, VcpuStr);
+
 service_command(["--execute", ServiceId, "--command", Command | _]) ->
     ApiKey = get_api_key(),
     Json = "{\"command\":\"" ++ escape_json(Command) ++ "\"}",
@@ -688,6 +694,19 @@ curl_delete(ApiKey, Endpoint) ->
     check_clock_drift_error(Result),
     Result.
 
+curl_patch(ApiKey, Endpoint, TmpFile) ->
+    {ok, Body} = file:read_file(TmpFile),
+    BodyStr = binary_to_list(Body),
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PATCH", Endpoint, BodyStr),
+    Cmd = "curl -s -X PATCH https://api.unsandbox.com" ++ Endpoint ++
+          " -H 'Content-Type: application/json'" ++
+          AuthHeaders ++
+          " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    check_clock_drift_error(Result),
+    Result.
+
 curl_put_text(Endpoint, Content) ->
     {PublicKey, SecretKey} = get_api_keys(),
     TmpFile = write_temp_file(Content),
@@ -745,6 +764,22 @@ service_env_delete(ServiceId) ->
     ApiKey = get_api_key(),
     _ = curl_delete(ApiKey, "/services/" ++ ServiceId ++ "/env"),
     io:format("\033[32mVault deleted: ~s\033[0m~n", [ServiceId]).
+
+service_resize(ServiceId, VcpuStr) ->
+    ApiKey = get_api_key(),
+    Vcpu = list_to_integer(VcpuStr),
+    if
+        Vcpu < 1 orelse Vcpu > 8 ->
+            io:format(standard_error, "\033[31mError: --vcpu must be between 1 and 8\033[0m~n", []),
+            halt(1);
+        true -> ok
+    end,
+    Json = "{\"vcpu\":" ++ integer_to_list(Vcpu) ++ "}",
+    TmpFile = write_temp_file(Json),
+    _ = curl_patch(ApiKey, "/services/" ++ ServiceId, TmpFile),
+    file:delete(TmpFile),
+    Ram = Vcpu * 2,
+    io:format("\033[32mService resized to ~B vCPU, ~B GB RAM\033[0m~n", [Vcpu, Ram]).
 
 %% Argument parsing
 parse_exec_args([], Opts) ->

@@ -302,7 +302,7 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
+proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, resize: string, resizeVcpu: int, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
   # Handle env subcommand
   if envAction != "":
     cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey)
@@ -357,6 +357,22 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     let cmd = fmt"""curl -s -X DELETE '{API_BASE}/services/{destroy}' {authHeaders}"""
     discard execCurl(cmd)
     echo GREEN & "Service destroyed: " & destroy & RESET
+    return
+
+  if resize != "":
+    if resizeVcpu <= 0:
+      stderr.writeLine(RED & "Error: --resize requires --vcpu or -v" & RESET)
+      quit(1)
+    if resizeVcpu < 1 or resizeVcpu > 8:
+      stderr.writeLine(RED & "Error: vCPU must be between 1 and 8" & RESET)
+      quit(1)
+    let json = fmt"""{{"vcpu":{resizeVcpu}}}"""
+    let path = fmt"/services/{resize}"
+    let authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X PATCH '{API_BASE}/services/{resize}' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    discard execCurl(cmd)
+    let ram = resizeVcpu * 2
+    echo GREEN & "Service resized to " & $resizeVcpu & " vCPU, " & $ram & " GB RAM" & RESET
     return
 
   if execute != "":
@@ -620,8 +636,9 @@ proc main() =
   if args[0] == "service":
     var name, ports, bootstrap, bootstrapFile, serviceType = ""
     var list = false
-    var info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network = ""
+    var info, logs, tail, sleep, wake, destroy, resize, execute, command, dumpBootstrap, dumpFile, network = ""
     var vcpu = 0
+    var resizeVcpu = 0
     var inputFiles: seq[string] = @[]
     var svcEnvs: seq[string] = @[]
     var svcEnvFile = ""
@@ -642,7 +659,7 @@ proc main() =
         of "-k": publicKey = args[i+1]; inc i
         else: discard
         inc i
-      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
       return
 
     while i < args.len:
@@ -659,6 +676,8 @@ proc main() =
       of "--freeze": sleep = args[i+1]; inc i
       of "--unfreeze": wake = args[i+1]; inc i
       of "--destroy": destroy = args[i+1]; inc i
+      of "--resize": resize = args[i+1]; inc i
+      of "--vcpu": resizeVcpu = parseInt(args[i+1]); inc i
       of "--execute": execute = args[i+1]; inc i
       of "--command": command = args[i+1]; inc i
       of "--dump-bootstrap": dumpBootstrap = args[i+1]; inc i
@@ -678,7 +697,7 @@ proc main() =
         inc i
       else: discard
       inc i
-    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
     return
 
   # Execute mode

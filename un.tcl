@@ -675,6 +675,7 @@ proc cmd_service {args} {
     set sleep_id ""
     set wake_id ""
     set destroy_id ""
+    set resize_id ""
     set dump_bootstrap_id ""
     set dump_file ""
     set name ""
@@ -733,6 +734,10 @@ proc cmd_service {args} {
             --destroy {
                 incr i
                 set destroy_id [lindex $args $i]
+            }
+            --resize {
+                incr i
+                set resize_id [lindex $args $i]
             }
             --dump-bootstrap {
                 incr i
@@ -839,6 +844,18 @@ proc cmd_service {args} {
     if {$destroy_id ne ""} {
         api_request "/services/$destroy_id" "DELETE" {} $public_key $secret_key
         puts "${::GREEN}Service destroyed: $destroy_id${::RESET}"
+        return
+    }
+
+    if {$resize_id ne ""} {
+        if {$vcpu < 1 || $vcpu > 8} {
+            puts stderr "${::RED}Error: --resize requires --vcpu N (1-8)${::RESET}"
+            exit 1
+        }
+        set payload [list vcpu $vcpu]
+        api_request "/services/$resize_id" "PATCH" $payload $public_key $secret_key
+        set ram [expr {$vcpu * 2}]
+        puts "${::GREEN}Service resized to $vcpu vCPU, $ram GB RAM${::RESET}"
         return
     }
 

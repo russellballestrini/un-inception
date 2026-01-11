@@ -539,6 +539,36 @@ function Invoke-Service {
         return
     }
 
+    if ($Args -contains "--resize") {
+        $idx = [array]::IndexOf($Args, "--resize")
+        $serviceId = $Args[$idx + 1]
+
+        # Get vcpu value from --vcpu or -v
+        $vcpuValue = 0
+        if ($Args -contains "--vcpu") {
+            $vIdx = [array]::IndexOf($Args, "--vcpu")
+            $vcpuValue = [int]$Args[$vIdx + 1]
+        } elseif ($Args -contains "-v") {
+            $vIdx = [array]::IndexOf($Args, "-v")
+            $vcpuValue = [int]$Args[$vIdx + 1]
+        }
+
+        if ($vcpuValue -le 0) {
+            Write-Error "Error: --resize requires --vcpu or -v"
+            exit 1
+        }
+        if ($vcpuValue -lt 1 -or $vcpuValue -gt 8) {
+            Write-Error "Error: vCPU must be between 1 and 8"
+            exit 1
+        }
+
+        $payload = @{ vcpu = $vcpuValue } | ConvertTo-Json
+        Invoke-Api -Endpoint "/services/$serviceId" -Method "PATCH" -Body $payload
+        $ram = $vcpuValue * 2
+        Write-Host "`e[32mService resized to $vcpuValue vCPU, $ram GB RAM`e[0m"
+        return
+    }
+
     if ($Args -contains "--dump-bootstrap") {
         $idx = [array]::IndexOf($Args, "--dump-bootstrap")
         $serviceId = $Args[$idx + 1]
@@ -681,6 +711,7 @@ Service options:
   --freeze ID          Freeze service
   --unfreeze ID        Unfreeze service
   --destroy ID         Destroy service
+  --resize ID          Resize service (requires --vcpu or -v)
   --dump-bootstrap ID  Dump bootstrap script from service
   --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)
 

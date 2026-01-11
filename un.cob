@@ -84,6 +84,9 @@
        01  WS-SVC-ENV-FILE     PIC X(256).
        01  WS-ENV-ACTION       PIC X(32).
        01  WS-ENV-TARGET       PIC X(256).
+       01  WS-VCPU             PIC 9(2) VALUE 0.
+       01  WS-VCPU-STR         PIC X(8).
+       01  WS-RAM              PIC 9(4) VALUE 0.
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -244,6 +247,10 @@
            ELSE IF WS-ARG2 = "--dump-bootstrap"
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM SERVICE-DUMP-BOOTSTRAP
+           ELSE IF WS-ARG2 = "--resize"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM PARSE-SERVICE-RESIZE-ARGS
+               PERFORM SERVICE-RESIZE
            ELSE IF WS-ARG2 = "--name"
                ACCEPT WS-NAME FROM ARGUMENT-VALUE
                PERFORM PARSE-SERVICE-CREATE-ARGS
@@ -251,7 +258,7 @@
            ELSE
                DISPLAY "Error: Use --list, --info, --logs, "
                    "--freeze, --unfreeze, --destroy, --dump-bootstrap, "
-                   "--name, or env" UPON SYSERR
+                   "--resize, --name, or env" UPON SYSERR
                MOVE 1 TO RETURN-CODE
            END-IF.
 
@@ -930,6 +937,53 @@
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "rm -f /tmp/unsandbox_key_resp.json"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-SERVICE-RESIZE-ARGS.
+      * Parse -v argument for vcpu
+           MOVE 0 TO WS-VCPU.
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "-v"
+                   ACCEPT WS-VCPU-STR FROM ARGUMENT-VALUE
+                   MOVE FUNCTION NUMVAL(WS-VCPU-STR) TO WS-VCPU
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       SERVICE-RESIZE.
+      * Validate vcpu
+           IF WS-VCPU < 1 OR WS-VCPU > 8
+               DISPLAY "Error: --resize requires -v N (1-8)"
+                   UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Calculate RAM
+           COMPUTE WS-RAM = WS-VCPU * 2.
+
+      * Build and execute resize request with HMAC auth
+           STRING "TS=$(date +%s); "
+               "BODY='{\"vcpu\":" WS-VCPU "}'; "
+               "SIG=$(echo -n \"$TS:PATCH:/services/"
+               FUNCTION TRIM(WS-ID)
+               ":$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X PATCH 'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" >/dev/null && "
+               "echo -e '\x1b[32mService resized to " WS-VCPU
+               " vCPU, " WS-RAM " GB RAM\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

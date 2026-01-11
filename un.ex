@@ -234,6 +234,28 @@ defmodule Un do
     IO.puts("#{@green}Service destroyed: #{service_id}#{@reset}")
   end
 
+  defp service_command(["--resize", service_id | rest]) do
+    vcpu = get_opt(rest, "--vcpu", "-v", nil)
+
+    if is_nil(vcpu) do
+      IO.puts(:stderr, "#{@red}Error: --resize requires --vcpu N#{@reset}")
+      System.halt(1)
+    end
+
+    vcpu_int = String.to_integer(vcpu)
+
+    if vcpu_int < 1 or vcpu_int > 8 do
+      IO.puts(:stderr, "#{@red}Error: --vcpu must be between 1 and 8#{@reset}")
+      System.halt(1)
+    end
+
+    api_key = get_api_key()
+    json = "{\"vcpu\":#{vcpu_int}}"
+    curl_patch(api_key, "/services/#{service_id}", json)
+    ram = vcpu_int * 2
+    IO.puts("#{@green}Service resized to #{vcpu_int} vCPU, #{ram} GB RAM#{@reset}")
+  end
+
   defp service_command(["--snapshot", service_id | rest]) do
     api_key = get_api_key()
     name = get_opt(rest, "--snapshot-name", nil, nil)
@@ -746,6 +768,26 @@ defmodule Un do
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
+    check_clock_drift(output)
+    output
+  end
+
+  defp curl_patch(api_key, endpoint, json) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+    File.write!(tmp_file, json)
+
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "PATCH", endpoint, json)
+
+    args = [
+      "-s", "-X", "PATCH",
+      "https://api.unsandbox.com#{endpoint}",
+      "-H", "Content-Type: application/json"
+    ] ++ headers ++ ["-d", "@#{tmp_file}"]
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
     check_clock_drift(output)
     output
   end

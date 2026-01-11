@@ -571,6 +571,7 @@ fn cmd_service(
     sleep: Option<&str>,
     wake: Option<&str>,
     destroy: Option<&str>,
+    resize: Option<&str>,
     execute: Option<&str>,
     command: Option<&str>,
     dump_bootstrap: Option<&str>,
@@ -629,6 +630,17 @@ fn cmd_service(
     if let Some(id) = destroy {
         api_request(&format!("/services/{}", id), "DELETE", None, public_key, secret_key);
         println!("{}Service destroyed: {}{}", GREEN, id, RESET);
+        return;
+    }
+
+    if let Some(id) = resize {
+        let v = vcpu.unwrap_or_else(|| {
+            eprintln!("{}Error: --resize requires -v <vcpu>{}", RED, RESET);
+            process::exit(1);
+        });
+        let json = format!(r#"{{"vcpu":{}}}"#, v);
+        api_request(&format!("/services/{}", id), "PATCH", Some(&json), public_key, secret_key);
+        println!("{}Service resized to {} vCPU, {} GB RAM{}", GREEN, v, v * 2, RESET);
         return;
     }
 
@@ -994,6 +1006,7 @@ fn main() {
                     args.iter().position(|x| x == "--freeze").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--unfreeze").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--destroy").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
+                    args.iter().position(|x| x == "--resize").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--execute").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--command").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
                     args.iter().position(|x| x == "--dump-bootstrap").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),

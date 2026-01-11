@@ -96,6 +96,7 @@ class Args {
     String serviceCommand = null
     String serviceDumpBootstrap = null
     String serviceDumpFile = null
+    String serviceResize = null
     String serviceSnapshot = null
     String serviceRestore = null
     String serviceFrom = null
@@ -166,6 +167,65 @@ def apiRequest(endpoint, method, data, publicKey, secretKey) {
         if (secretKey) {
             def timestamp = (System.currentTimeMillis() / 1000) as long
             def message = "${timestamp}:${method}:${endpoint}:${body}"
+
+            def mac = Mac.getInstance("HmacSHA256")
+            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
+            curlCmd += ['-H', "X-Signature: ${signature}"]
+        } else {
+            // Legacy API key authentication
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+        }
+
+        if (data) {
+            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+        }
+
+        def proc = curlCmd.execute()
+        def output = proc.text
+        proc.waitFor()
+
+        if (proc.exitValue() != 0) {
+            System.err.println("${RED}Error: curl failed${RESET}")
+            System.exit(1)
+        }
+
+        // Check for timestamp authentication errors
+        if (output.toLowerCase().contains('timestamp') &&
+            (output.contains('401') || output.toLowerCase().contains('expired') || output.toLowerCase().contains('invalid'))) {
+            System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
+            System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
+            System.err.println("Check your system time and sync with NTP if needed:")
+            System.err.println("  Linux:   sudo ntpdate -s time.nist.gov")
+            System.err.println("  macOS:   sudo sntp -sS time.apple.com")
+            System.err.println("  Windows: w32tm /resync")
+            System.exit(1)
+        }
+
+        return output
+    } finally {
+        tempFile.delete()
+    }
+}
+
+def apiRequestPatch(endpoint, data, publicKey, secretKey) {
+    def tempFile = File.createTempFile('un_request_', '.json')
+    try {
+        def body = data ?: ""
+        if (data) {
+            tempFile.text = data
+        }
+
+        def curlCmd = ['curl', '-s', '-X', 'PATCH', "${API_BASE}${endpoint}",
+                       '-H', 'Content-Type: application/json']
+
+        // Add HMAC authentication headers if secretKey is provided
+        if (secretKey) {
+            def timestamp = (System.currentTimeMillis() / 1000) as long
+            def message = "${timestamp}:PATCH:${endpoint}:${body}"
 
             def mac = Mac.getInstance("HmacSHA256")
             mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
@@ -713,6 +773,18 @@ def cmdService(args) {
         return
     }
 
+    if (args.serviceResize) {
+        if (args.vcpu <= 0) {
+            System.err.println("${RED}Error: --resize requires --vcpu N (1-8)${RESET}")
+            System.exit(1)
+        }
+        def json = """{"vcpu":${args.vcpu}}"""
+        apiRequestPatch("/services/${args.serviceResize}", json, publicKey, secretKey)
+        def ram = args.vcpu * 2
+        println("${GREEN}Service resized to ${args.vcpu} vCPU, ${ram} GB RAM${RESET}")
+        return
+    }
+
     if (args.serviceExecute) {
         def json = """{"command":"${args.serviceCommand}"}"""
         def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST', json, publicKey, secretKey)
@@ -987,6 +1059,9 @@ def parseArgs(argv) {
             case '--destroy':
                 args.serviceDestroy = argv[++i]
                 break
+            case '--resize':
+                args.serviceResize = argv[++i]
+                break
             case '--execute':
                 args.serviceExecute = argv[++i]
                 break
@@ -1050,6 +1125,7 @@ Service options:
   --freeze ID        Freeze service
   --unfreeze ID         Unfreeze service
   --destroy ID      Destroy service
+  --resize ID       Resize service (requires --vcpu N)
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script

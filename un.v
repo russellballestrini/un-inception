@@ -410,7 +410,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl(cmd))
 }
 
-fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, svc_envs []string, svc_env_file string, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, resize string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, svc_envs []string, svc_env_file string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -456,6 +456,19 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:/services/${destroy}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/services/${destroy}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
 		exec_curl(cmd)
 		println('${green}Service destroyed: ${destroy}${reset}')
+		return
+	}
+
+	if resize != '' {
+		if vcpu < 1 || vcpu > 8 {
+			eprintln('${red}Error: --resize requires --vcpu N (1-8)${reset}')
+			exit(1)
+		}
+		json := '{"vcpu":${vcpu}}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:PATCH:/services/${resize}:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X PATCH '${api_base}/services/${resize}' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		exec_curl(cmd)
+		ram := vcpu * 2
+		println('${green}Service resized to ${vcpu} vCPU, ${ram} GB RAM${reset}')
 		return
 	}
 
@@ -667,6 +680,7 @@ fn main() {
 		mut sleep := ''
 		mut wake := ''
 		mut destroy := ''
+		mut resize := ''
 		mut execute := ''
 		mut command := ''
 		mut dump_bootstrap := ''
@@ -736,6 +750,10 @@ fn main() {
 					i++
 					destroy = os.args[i]
 				}
+				'--resize' {
+					i++
+					resize = os.args[i]
+				}
 				'--execute' {
 					i++
 					execute = os.args[i]
@@ -793,7 +811,7 @@ fn main() {
 			return
 		}
 
-		cmd_service(name, ports, service_type, bootstrap, bootstrap_file, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network,
+		cmd_service(name, ports, service_type, bootstrap, bootstrap_file, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network,
 			vcpu, input_files, svc_envs, svc_env_file, api_key)
 		return
 	}

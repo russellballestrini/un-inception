@@ -356,6 +356,38 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
+\ Service resize
+: service-resize ( service-id-addr service-id-len vcpu-addr vcpu-len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SERVICE_ID='" r@ write-file throw
+    2over r@ write-file throw
+    s" '" r@ write-line throw
+    s" VCPU='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" if [ \"$VCPU\" -lt 1 ] || [ \"$VCPU\" -gt 8 ]; then" r@ write-line throw
+    s"   echo -e '\\x1b[31mError: --vcpu must be between 1 and 8\\x1b[0m' >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" RAM=$((VCPU * 2))" r@ write-line throw
+    s" BODY='{\"vcpu\":'$VCPU'}'" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:PATCH:/services/$SERVICE_ID:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X PATCH https://api.unsandbox.com/services/$SERVICE_ID -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mService resized to $VCPU vCPU, $RAM GB RAM\\x1b[0m\"" r@ write-line throw
+    r> close-file throw
+    2drop 2drop \ clean up the stack
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
 \ Service env status
 : service-env-status ( addr len -- )
     get-api-key
@@ -839,6 +871,40 @@
         then
         3 arg service-destroy
         0 (bye)
+    then
+
+    2dup s" --resize" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --resize requires service ID" type cr
+            1 (bye)
+        then
+        \ Look for --vcpu or -v in remaining args
+        argc @ 5 < if
+            s" Error: --resize requires --vcpu N" type cr
+            1 (bye)
+        then
+        4 arg 2dup s" --vcpu" compare 0= if
+            2drop
+            argc @ 6 < if
+                s" Error: --vcpu requires a value" type cr
+                1 (bye)
+            then
+            3 arg 5 arg service-resize
+            0 (bye)
+        then
+        2dup s" -v" compare 0= if
+            2drop
+            argc @ 6 < if
+                s" Error: -v requires a value" type cr
+                1 (bye)
+            then
+            3 arg 5 arg service-resize
+            0 (bye)
+        then
+        2drop
+        s" Error: --resize requires --vcpu N" type cr
+        1 (bye)
     then
 
     2dup s" --dump-bootstrap" compare 0= if

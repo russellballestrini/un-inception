@@ -524,6 +524,18 @@ sub cmd_service {
         return;
     }
 
+    if ($options->{resize}) {
+        unless ($options->{vcpu}) {
+            print STDERR "${RED}Error: --vcpu is required with --resize${RESET}\n";
+            exit 1;
+        }
+        my $payload = { vcpu => $options->{vcpu} };
+        api_request("/services/$options->{resize}", 'PATCH', $payload, $public_key, $secret_key);
+        my $ram = $options->{vcpu} * 2;
+        print "${GREEN}Service resized to $options->{vcpu} vCPU, $ram GB RAM${RESET}\n";
+        return;
+    }
+
     if ($options->{execute}) {
         my $payload = { command => $options->{command} };
         my $result = api_request("/services/$options->{execute}/execute", 'POST', $payload, $public_key, $secret_key);
@@ -734,6 +746,7 @@ sub main {
         sleep => undef,
         wake => undef,
         destroy => undef,
+        resize => undef,
         execute => undef,
         command => undef,
         dump_bootstrap => undef,
@@ -811,6 +824,8 @@ sub main {
             $options{wake} = $ARGV[++$i];
         } elsif ($arg eq '--destroy') {
             $options{destroy} = $ARGV[++$i];
+        } elsif ($arg eq '--resize') {
+            $options{resize} = $ARGV[++$i];
         } elsif ($arg eq '--execute') {
             $options{execute} = $ARGV[++$i];
         } elsif ($arg eq '--command') {
@@ -885,6 +900,7 @@ Service options:
   --freeze ID       Freeze service
   --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
+  --resize ID      Resize service (requires -v)
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script

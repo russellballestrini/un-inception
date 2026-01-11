@@ -123,6 +123,13 @@ sub api-request(Str $endpoint, Str $method, %data?, Str :$public-key!, Str :$sec
             $body = to-json(%data);
             @args.append: '-d', $body;
         }
+    } elsif $method eq 'PATCH' {
+        @args.append: '-X', 'PATCH';
+        @args.append: '-H', 'Content-Type: application/json';
+        if %data {
+            $body = to-json(%data);
+            @args.append: '-d', $body;
+        }
     }
 
     @args.append: '-H', "Authorization: Bearer $public-key";
@@ -438,6 +445,7 @@ sub cmd-service(@args) {
     my $sleep-id = '';
     my $wake-id = '';
     my $destroy-id = '';
+    my $resize-id = '';
     my $dump-bootstrap-id = '';
     my $dump-file = '';
     my $name = '';
@@ -530,6 +538,10 @@ sub cmd-service(@args) {
             when '--destroy' {
                 $i++;
                 $destroy-id = @args[$i];
+            }
+            when '--resize' {
+                $i++;
+                $resize-id = @args[$i];
             }
             when '--dump-bootstrap' {
                 $i++;
@@ -627,6 +639,18 @@ sub cmd-service(@args) {
     if $destroy-id {
         api-request("/services/$destroy-id", 'DELETE', :$public-key, :$secret-key);
         say "{$GREEN}Service destroyed: $destroy-id{$RESET}";
+        return;
+    }
+
+    if $resize-id {
+        unless $vcpu >= 1 && $vcpu <= 8 {
+            note "{$RED}Error: --resize requires --vcpu N (1-8){$RESET}";
+            exit 1;
+        }
+        my %payload = vcpu => $vcpu;
+        api-request("/services/$resize-id", 'PATCH', %payload, :$public-key, :$secret-key);
+        my $ram = $vcpu * 2;
+        say "{$GREEN}Service resized to $vcpu vCPU, $ram GB RAM{$RESET}";
         return;
     }
 

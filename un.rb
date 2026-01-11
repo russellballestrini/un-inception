@@ -139,6 +139,7 @@ def api_request(endpoint, method: 'GET', data: nil, keys:)
             when 'GET' then Net::HTTP::Get.new(uri)
             when 'POST' then Net::HTTP::Post.new(uri)
             when 'DELETE' then Net::HTTP::Delete.new(uri)
+            when 'PATCH' then Net::HTTP::Patch.new(uri)
             else raise "Unknown method: #{method}"
             end
 
@@ -678,6 +679,18 @@ def cmd_service(options)
     return
   end
 
+  if options[:resize]
+    unless options[:vcpu]
+      warn "#{RED}Error: --vcpu is required with --resize#{RESET}"
+      exit 1
+    end
+    payload = { vcpu: options[:vcpu] }
+    api_request("/services/#{options[:resize]}", method: 'PATCH', data: payload, keys: keys)
+    ram = options[:vcpu] * 2
+    puts "#{GREEN}Service resized to #{options[:vcpu]} vCPU, #{ram} GB RAM#{RESET}"
+    return
+  end
+
   if options[:snapshot_service]
     payload = {}
     payload[:name] = options[:snapshot_name] if options[:snapshot_name]
@@ -826,6 +839,7 @@ def main
     sleep: nil,
     wake: nil,
     destroy: nil,
+    resize: nil,
     execute: nil,
     dump_bootstrap: nil,
     dump_file: nil,
@@ -938,6 +952,9 @@ def main
     when '--destroy'
       i += 1
       options[:destroy] = ARGV[i]
+    when '--resize'
+      i += 1
+      options[:resize] = ARGV[i]
     when '--execute'
       i += 1
       options[:execute] = ARGV[i]
@@ -1073,6 +1090,7 @@ def main
           --freeze ID       Freeze service
           --unfreeze ID        Unfreeze service
           --destroy ID     Destroy service
+          --resize ID      Resize service (requires -v)
           --execute ID     Execute command in service
           --command CMD    Command to execute (with --execute)
           --dump-bootstrap ID  Dump bootstrap script

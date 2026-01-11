@@ -439,7 +439,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& public_key, const string& secret_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& resize, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& public_key, const string& secret_key) {
     // Handle service env subcommand
     if (!env_action.empty()) {
         cmd_service_env(env_action, env_target, envs, env_file, public_key, secret_key);
@@ -495,6 +495,23 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X DELETE '" + API_BASE + "/services/" + destroy + "' " + auth_headers;
         exec_curl(cmd);
         cout << GREEN << "Service destroyed: " << destroy << RESET << endl;
+        return;
+    }
+
+    if (!resize.empty()) {
+        if (vcpu <= 0) {
+            cerr << RED << "Error: --resize requires -v <vcpu>" << RESET << endl;
+            exit(1);
+        }
+        ostringstream json;
+        json << "{\"vcpu\":" << vcpu << "}";
+        string auth_headers = build_auth_headers("PATCH", "/services/" + resize, json.str(), public_key, secret_key);
+        string cmd = "curl -s -X PATCH '" + API_BASE + "/services/" + resize + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " "
+                     "-d '" + json.str() + "'";
+        exec_curl(cmd);
+        cout << GREEN << "Service resized to " << vcpu << " vCPU, " << (vcpu * 2) << " GB RAM" << RESET << endl;
         return;
     }
 
@@ -685,12 +702,12 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
     size_t status_end = result.find("\"", status_pos);
     string status = result.substr(status_pos, status_end - status_pos);
 
-    // Extract public_key
-    string public_key;
+    // Extract public_key from response
+    string resp_public_key;
     if (public_key_pos != string::npos) {
         public_key_pos += 14;
         size_t pk_end = result.find("\"", public_key_pos);
-        public_key = result.substr(public_key_pos, pk_end - public_key_pos);
+        resp_public_key = result.substr(public_key_pos, pk_end - public_key_pos);
     }
 
     // Extract tier
@@ -711,8 +728,8 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
 
     if (status == "valid") {
         cout << GREEN << "Valid" << RESET << endl;
-        if (!public_key.empty()) {
-            cout << "Public Key: " << public_key << endl;
+        if (!resp_public_key.empty()) {
+            cout << "Public Key: " << resp_public_key << endl;
         }
         if (!tier.empty()) {
             cout << "Tier: " << tier << endl;
@@ -722,8 +739,8 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
         }
     } else if (status == "expired") {
         cout << RED << "Expired" << RESET << endl;
-        if (!public_key.empty()) {
-            cout << "Public Key: " << public_key << endl;
+        if (!resp_public_key.empty()) {
+            cout << "Public Key: " << resp_public_key << endl;
         }
         if (!tier.empty()) {
             cout << "Tier: " << tier << endl;
@@ -733,8 +750,8 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
         }
         cout << YELLOW << "To renew: Visit " << PORTAL_BASE << "/keys/extend" << RESET << endl;
 
-        if (extend && !public_key.empty()) {
-            string url = PORTAL_BASE + "/keys/extend?pk=" + public_key;
+        if (extend && !resp_public_key.empty()) {
+            string url = PORTAL_BASE + "/keys/extend?pk=" + resp_public_key;
             string browser_cmd = "xdg-open '" + url + "' 2>/dev/null || open '" + url + "' 2>/dev/null";
             system(browser_cmd.c_str());
         }
@@ -789,7 +806,7 @@ int main(int argc, char* argv[]) {
     if (cmd_type == "service") {
         string name, ports, type, bootstrap, bootstrap_file;
         bool list = false;
-        string info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network;
+        string info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network;
         int vcpu = 0;
         vector<string> files;
         vector<string> envs;
@@ -821,6 +838,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "--freeze" && i+1 < argc) sleep = argv[++i];
             else if (arg == "--unfreeze" && i+1 < argc) wake = argv[++i];
             else if (arg == "--destroy" && i+1 < argc) destroy = argv[++i];
+            else if (arg == "--resize" && i+1 < argc) resize = argv[++i];
             else if (arg == "--execute" && i+1 < argc) execute = argv[++i];
             else if (arg == "--command" && i+1 < argc) command = argv[++i];
             else if (arg == "--dump-bootstrap" && i+1 < argc) dump_bootstrap = argv[++i];
@@ -830,7 +848,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, execute, command, dump_bootstrap, dump_file, network, vcpu, envs, env_file, env_action, env_target, public_key, secret_key);
+        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network, vcpu, envs, env_file, env_action, env_target, public_key, secret_key);
         return 0;
     }
 

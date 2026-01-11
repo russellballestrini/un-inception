@@ -93,6 +93,8 @@ class Args {
   String? serviceSleep;
   String? serviceWake;
   String? serviceDestroy;
+  String? serviceResize;
+  int serviceResizeVcpu = 0;
   String? serviceExecute;
   String? serviceCommand;
   String? serviceDumpBootstrap;
@@ -571,6 +573,18 @@ Future<void> cmdService(Args args) async {
     return;
   }
 
+  if (args.serviceResize != null) {
+    if (args.serviceResizeVcpu < 1 || args.serviceResizeVcpu > 8) {
+      stderr.writeln('${red}Error: --vcpu must be between 1 and 8$reset');
+      exit(1);
+    }
+    final payload = {'vcpu': args.serviceResizeVcpu};
+    await apiRequestCurl('/services/${args.serviceResize}', 'PATCH', jsonEncode(payload), publicKey, secretKey);
+    final ram = args.serviceResizeVcpu * 2;
+    print('${green}Service resized to ${args.serviceResizeVcpu} vCPU, $ram GB RAM$reset');
+    return;
+  }
+
   if (args.serviceExecute != null) {
     final payload = <String, dynamic>{
       'command': args.serviceCommand,
@@ -835,6 +849,12 @@ Args parseArgs(List<String> argv) {
         break;
       case '--destroy':
         args.serviceDestroy = argv[++i];
+        break;
+      case '--resize':
+        args.serviceResize = argv[++i];
+        break;
+      case '--vcpu':
+        args.serviceResizeVcpu = int.parse(argv[++i]);
         break;
       case '--execute':
         args.serviceExecute = argv[++i];

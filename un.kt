@@ -101,6 +101,7 @@ data class Args(
     var serviceCommand: String? = null,
     var serviceDumpBootstrap: String? = null,
     var serviceDumpFile: String? = null,
+    var serviceResize: String? = null,
     var keyExtend: Boolean = false,
     var envFile: String? = null,
     var envAction: String? = null,
@@ -330,6 +331,18 @@ fun cmdService(args: Args) {
     if (args.serviceDestroy != null) {
         apiRequest("/services/${args.serviceDestroy}", "DELETE", null, publicKey, secretKey)
         println("${GREEN}Service destroyed: ${args.serviceDestroy}${RESET}")
+        return
+    }
+
+    if (args.serviceResize != null) {
+        if (args.vcpu <= 0) {
+            System.err.println("${RED}Error: --resize requires --vcpu N (1-8)${RESET}")
+            exitProcess(1)
+        }
+        val payload = mapOf("vcpu" to args.vcpu)
+        apiRequestPatch("/services/${args.serviceResize}", payload, publicKey, secretKey)
+        val ram = args.vcpu * 2
+        println("${GREEN}Service resized to ${args.vcpu} vCPU, ${ram} GB RAM${RESET}")
         return
     }
 
@@ -590,6 +603,44 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
         connection.doOutput = true
         connection.outputStream.use { it.write(body.toByteArray()) }
     }
+
+    if (connection.responseCode !in 200..299) {
+        val error = connection.errorStream?.bufferedReader()?.readText() ?: ""
+        if (connection.responseCode == 401 && error.lowercase().contains("timestamp")) {
+            System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
+            System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
+            System.err.println("Check your system time and sync with NTP if needed:")
+            System.err.println("  Linux:   sudo ntpdate -s time.nist.gov")
+            System.err.println("  macOS:   sudo sntp -sS time.apple.com")
+            System.err.println("  Windows: w32tm /resync")
+            exitProcess(1)
+        }
+        throw RuntimeException("HTTP ${connection.responseCode} - $error")
+    }
+
+    val response = connection.inputStream.bufferedReader().readText()
+    return parseJson(response)
+}
+
+fun apiRequestPatch(endpoint: String, data: Map<String, Any>, publicKey: String?, secretKey: String): Map<String, Any> {
+    val timestamp = System.currentTimeMillis() / 1000
+    val body = toJson(data)
+    val signatureData = "$timestamp:PATCH:$endpoint:$body"
+    val signature = hmacSha256(secretKey, signatureData)
+
+    val url = URL(API_BASE + endpoint)
+    val connection = url.openConnection() as HttpURLConnection
+
+    connection.requestMethod = "PATCH"
+    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("X-Timestamp", timestamp.toString())
+    connection.setRequestProperty("X-Signature", signature)
+    connection.setRequestProperty("Content-Type", "application/json")
+    connection.connectTimeout = 30000
+    connection.readTimeout = 300000
+
+    connection.doOutput = true
+    connection.outputStream.use { it.write(body.toByteArray()) }
 
     if (connection.responseCode !in 200..299) {
         val error = connection.errorStream?.bufferedReader()?.readText() ?: ""
@@ -912,6 +963,7 @@ fun parseArgs(args: Array<String>): Args {
             "--freeze" -> result.serviceSleep = args[++i]
             "--unfreeze" -> result.serviceWake = args[++i]
             "--destroy" -> result.serviceDestroy = args[++i]
+            "--resize" -> result.serviceResize = args[++i]
             "--execute" -> result.serviceExecute = args[++i]
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
@@ -975,6 +1027,7 @@ Service options:
   --freeze ID       Freeze service
   --unfreeze ID     Unfreeze service
   --destroy ID      Destroy service
+  --resize ID       Resize service (requires --vcpu N)
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script

@@ -663,6 +663,7 @@ void cmdService(NSArray* args) {
     NSString* sleepId = nil;
     NSString* wakeId = nil;
     NSString* destroyId = nil;
+    NSString* resizeId = nil;
     NSString* dumpBootstrapId = nil;
     NSString* dumpFile = nil;
     NSString* name = nil;
@@ -736,6 +737,10 @@ void cmdService(NSArray* args) {
             wakeId = args[++i];
         } else if ([arg isEqualToString:@"--destroy"] && i + 1 < [args count]) {
             destroyId = args[++i];
+        } else if ([arg isEqualToString:@"--resize"] && i + 1 < [args count]) {
+            resizeId = args[++i];
+        } else if ([arg isEqualToString:@"--vcpu"] && i + 1 < [args count]) {
+            vcpu = [args[++i] intValue];
         } else if ([arg isEqualToString:@"--dump-bootstrap"] && i + 1 < [args count]) {
             dumpBootstrapId = args[++i];
         } else if ([arg isEqualToString:@"--dump-file"] && i + 1 < [args count]) {
@@ -830,6 +835,23 @@ void cmdService(NSArray* args) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@", destroyId];
         apiRequest(endpoint, @"DELETE", nil, publicKey, secretKey);
         printf("%sService destroyed: %s%s\n", [GREEN UTF8String], [destroyId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (resizeId) {
+        if (vcpu <= 0) {
+            fprintf(stderr, "%sError: --resize requires --vcpu or -v%s\n", [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        if (vcpu < 1 || vcpu > 8) {
+            fprintf(stderr, "%sError: vCPU must be between 1 and 8%s\n", [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        NSString* endpoint = [NSString stringWithFormat:@"/services/%@", resizeId];
+        NSDictionary* payload = @{@"vcpu": @(vcpu)};
+        apiRequest(endpoint, @"PATCH", payload, publicKey, secretKey);
+        int ram = vcpu * 2;
+        printf("%sService resized to %d vCPU, %d GB RAM%s\n", [GREEN UTF8String], vcpu, ram, [RESET UTF8String]);
         return;
     }
 

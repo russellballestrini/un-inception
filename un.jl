@@ -159,6 +159,46 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
     end
 end
 
+function api_request_patch(endpoint::String, public_key::String, secret_key::String; data=nothing)
+    url = API_BASE * endpoint
+
+    # Prepare body
+    body = data !== nothing ? JSON.json(data) : ""
+
+    # Generate timestamp and signature
+    timestamp = Int64(floor(time()))
+    signature = compute_signature(secret_key, timestamp, "PATCH", endpoint, body)
+
+    headers = [
+        "Authorization" => "Bearer $public_key",
+        "X-Timestamp" => string(timestamp),
+        "X-Signature" => signature,
+        "Content-Type" => "application/json"
+    ]
+
+    try
+        response = HTTP.request("PATCH", url, headers, body, readtimeout=300)
+        return JSON.parse(String(response.body))
+    catch e
+        if isa(e, HTTP.ExceptionRequest.StatusError)
+            error_body = String(e.response.body)
+            if e.status == 401 && occursin("timestamp", lowercase(error_body))
+                println(stderr, "$(RED)Error: Request timestamp expired (must be within 5 minutes of server time)$(RESET)")
+                println(stderr, "$(YELLOW)Your computer's clock may have drifted.$(RESET)")
+                println(stderr, "Check your system time and sync with NTP if needed:")
+                println(stderr, "  Linux:   sudo ntpdate -s time.nist.gov")
+                println(stderr, "  macOS:   sudo sntp -sS time.apple.com")
+                println(stderr, "  Windows: w32tm /resync")
+            else
+                println(stderr, "$(RED)Error: HTTP $(e.status) - $(error_body)$(RESET)")
+            end
+        else
+            println(stderr, "$(RED)Error: Request failed: $e$(RESET)")
+        end
+        exit(1)
+    end
+end
+
 function api_request_text(endpoint::String, public_key::String, secret_key::String, body::String)::Bool
     url = API_BASE * endpoint
     timestamp = Int64(floor(time()))
@@ -505,6 +545,18 @@ function cmd_service(args)
     if args["destroy"] !== nothing
         api_request("/services/$(args["destroy"])", public_key, secret_key, method="DELETE")
         println("$(GREEN)Service destroyed: $(args["destroy"])$(RESET)")
+        return
+    end
+
+    if args["resize"] !== nothing
+        vcpu = args["vcpu"]
+        if vcpu === nothing || vcpu <= 0
+            println(stderr, "$(RED)Error: --resize requires --vcpu N (1-8)$(RESET)")
+            exit(1)
+        end
+        api_request_patch("/services/$(args["resize"])", public_key, secret_key, data=Dict("vcpu" => vcpu))
+        ram = vcpu * 2
+        println("$(GREEN)Service resized to $(vcpu) vCPU, $(ram) GB RAM$(RESET)")
         return
     end
 
@@ -862,6 +914,8 @@ function main()
             help = "Unfreeze service"
         "--destroy"
             help = "Destroy service"
+        "--resize"
+            help = "Resize service (requires --vcpu N)"
         "--dump-bootstrap"
             help = "Dump bootstrap script from service"
         "--dump-file"

@@ -375,7 +375,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string[] inputFiles, string[] svcEnvs, string svcEnvFile, string envAction, string envTarget, string publicKey, string secretKey) {
+void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string resize, int resizeVcpu, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string[] inputFiles, string[] svcEnvs, string svcEnvFile, string envAction, string envTarget, string publicKey, string secretKey) {
     // Handle env subcommand
     if (!envAction.empty) {
         cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey);
@@ -437,6 +437,21 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         string cmd = format(`curl -s -X DELETE '%s/services/%s' %s`, API_BASE, destroy, authHeaders);
         execCurl(cmd);
         writefln("%sService destroyed: %s%s", GREEN, destroy, RESET);
+        return;
+    }
+
+    if (!resize.empty) {
+        if (resizeVcpu < 1 || resizeVcpu > 8) {
+            stderr.writefln("%sError: --vcpu must be between 1 and 8%s", RED, RESET);
+            exit(1);
+        }
+        string json = format(`{"vcpu":%d}`, resizeVcpu);
+        string path = format("/services/%s", resize);
+        string authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X PATCH '%s/services/%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, resize, authHeaders, json);
+        execCurl(cmd);
+        int ram = resizeVcpu * 2;
+        writefln("%sService resized to %d vCPU, %d GB RAM%s", GREEN, resizeVcpu, ram, RESET);
         return;
     }
 
@@ -731,8 +746,9 @@ int main(string[] args) {
     if (args[1] == "service") {
         string name, ports, bootstrap, bootstrapFile, type;
         bool list = false;
-        string info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network;
+        string info, logs, tail, sleep, wake, destroy, resize, execute, command, dumpBootstrap, dumpFile, network;
         int vcpu = 0;
+        int resizeVcpu = 0;
         string[] inputFiles;
         string[] svcEnvs;
         string svcEnvFile;
@@ -747,7 +763,7 @@ int main(string[] args) {
                 else if (args[i] == "--env-file" && i+1 < args.length) svcEnvFile = args[++i];
                 else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
             }
-            cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
+            cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
             return 0;
         }
 
@@ -764,6 +780,8 @@ int main(string[] args) {
             else if (args[i] == "--freeze" && i+1 < args.length) sleep = args[++i];
             else if (args[i] == "--unfreeze" && i+1 < args.length) wake = args[++i];
             else if (args[i] == "--destroy" && i+1 < args.length) destroy = args[++i];
+            else if (args[i] == "--resize" && i+1 < args.length) resize = args[++i];
+            else if (args[i] == "--vcpu" && i+1 < args.length) resizeVcpu = to!int(args[++i]);
             else if (args[i] == "--execute" && i+1 < args.length) execute = args[++i];
             else if (args[i] == "--command" && i+1 < args.length) command = args[++i];
             else if (args[i] == "--dump-bootstrap" && i+1 < args.length) dumpBootstrap = args[++i];
@@ -776,7 +794,7 @@ int main(string[] args) {
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
+        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
         return 0;
     }
 

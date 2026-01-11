@@ -217,6 +217,21 @@
       (let [status (Integer/parseInt (str/trim out))]
         (and (>= status 200) (< status 300))))))
 
+(defn curl-patch [api-key endpoint json-data]
+  (let [tmp-file (str "/tmp/un_clj_" (rand-int 999999) ".json")
+        [public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "PATCH" endpoint json-data)]
+    (spit tmp-file json-data)
+    (let [args (concat ["curl" "-s" "-X" "PATCH"
+                        (str "https://api.unsandbox.com" endpoint)
+                        "-H" "Content-Type: application/json"]
+                       auth-headers
+                       ["-d" (str "@" tmp-file)])
+          {:keys [out]} (apply sh args)]
+      (io/delete-file tmp-file true)
+      (check-clock-drift-error out)
+      out)))
+
 (def max-env-content-size 65536)
 
 (defn read-env-file [path]
@@ -396,6 +411,16 @@
       :destroy (do
                  (curl-delete api-key (str "/services/" sid))
                  (println (str green "Service destroyed: " sid reset)))
+      :resize (when sid
+                (if (or (nil? vcpu) (< vcpu 1) (> vcpu 8))
+                  (do
+                    (binding [*out* *err*]
+                      (println (str red "Error: --resize requires -v N (1-8)" reset)))
+                    (System/exit 1))
+                  (let [json (str "{\"vcpu\":" vcpu "}")
+                        _ (curl-patch api-key (str "/services/" sid) json)
+                        ram (* vcpu 2)]
+                    (println (str green "Service resized to " vcpu " vCPU, " ram " GB RAM" reset)))))
       :execute (when (and sid bootstrap)
                  (let [json (str "{\"command\":\"" (escape-json bootstrap) "\"}")
                        response (curl-post api-key (str "/services/" sid "/execute") json)
@@ -590,6 +615,10 @@
       (and (= mode :service) (= (first args) "--destroy"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              :destroy (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+
+      (and (= mode :service) (= (first args) "--resize"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             :resize (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
 
       (and (= mode :service) (= (first args) "--execute"))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files

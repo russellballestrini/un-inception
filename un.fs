@@ -105,6 +105,7 @@ type Args = {
     mutable ServiceCommand: string option
     mutable ServiceDumpBootstrap: string option
     mutable ServiceDumpFile: string option
+    mutable ServiceResize: string option
     mutable ServiceSnapshot: string option
     mutable ServiceRestore: string option
     mutable ServiceFrom: string option
@@ -285,6 +286,64 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
         use stream = request.GetRequestStream()
         stream.Write(bytes, 0, bytes.Length)
     | None -> ()
+
+    try
+        use response = request.GetResponse() :?> HttpWebResponse
+        if response.StatusCode <> HttpStatusCode.OK then
+            failwithf "HTTP %A" response.StatusCode
+        use reader = new StreamReader(response.GetResponseStream())
+        let responseText = reader.ReadToEnd()
+        parseJson responseText
+    with
+    | :? WebException as ex ->
+        let errorMsg =
+            if ex.Response <> null then
+                use reader = new StreamReader(ex.Response.GetResponseStream())
+                reader.ReadToEnd()
+            else
+                ex.Message
+
+        // Check for clock drift error
+        if errorMsg.Contains("timestamp") && (errorMsg.Contains("401") || errorMsg.Contains("expired") || errorMsg.Contains("invalid")) then
+            eprintfn "%sError: Request timestamp expired (must be within 5 minutes of server time)%s" red reset
+            eprintfn "%sYour computer's clock may have drifted.%s" yellow reset
+            eprintfn "Check your system time and sync with NTP if needed:"
+            eprintfn "  Linux:   sudo ntpdate -s time.nist.gov"
+            eprintfn "  macOS:   sudo sntp -sS time.apple.com"
+            eprintfn "  Windows: w32tm /resync%s" reset
+            exit 1
+
+        failwithf "HTTP error - %s" errorMsg
+
+let apiRequestPatch (endpoint: string) (data: (string * obj) list) (publicKey: string) (secretKey: string) =
+    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
+
+    let request = WebRequest.Create(apiBase + endpoint) :?> HttpWebRequest
+    request.Method <- "PATCH"
+    request.ContentType <- "application/json"
+    request.Timeout <- 300000
+
+    let body = toJson (box data)
+
+    // Add HMAC authentication headers if secretKey is provided
+    if not (String.IsNullOrEmpty(secretKey)) then
+        let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        let message = sprintf "%d:%s:%s:%s" timestamp "PATCH" endpoint body
+
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
+        let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message))
+        let signature = BitConverter.ToString(hash).Replace("-", "").ToLower()
+
+        request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+        request.Headers.Add("X-Timestamp", timestamp.ToString())
+        request.Headers.Add("X-Signature", signature)
+    else
+        request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+
+    let bytes = Encoding.UTF8.GetBytes(body)
+    request.ContentLength <- int64 bytes.Length
+    use stream = request.GetRequestStream()
+    stream.Write(bytes, 0, bytes.Length)
 
     try
         use response = request.GetResponse() :?> HttpWebResponse
@@ -735,6 +794,14 @@ let cmdService (args: Args) =
     elif args.ServiceDestroy.IsSome then
         let result = apiRequest (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None publicKey secretKey
         printfn "%sService destroyed: %s%s" green args.ServiceDestroy.Value reset
+    elif args.ServiceResize.IsSome then
+        if args.Vcpu <= 0 then
+            eprintfn "%sError: --resize requires --vcpu N (1-8)%s" red reset
+            exit 1
+        let payload = [("vcpu", box args.Vcpu)]
+        let result = apiRequestPatch (sprintf "/services/%s" args.ServiceResize.Value) payload publicKey secretKey
+        let ram = args.Vcpu * 2
+        printfn "%sService resized to %d vCPU, %d GB RAM%s" green args.Vcpu ram reset
     elif args.ServiceExecute.IsSome then
         let payload = [("command", box args.ServiceCommand.Value)]
         let result = apiRequest (sprintf "/services/%s/execute" args.ServiceExecute.Value) "POST" (Some payload) publicKey secretKey
@@ -854,6 +921,7 @@ let parseArgs (argv: string[]) =
         ServiceCommand = None
         ServiceDumpBootstrap = None
         ServiceDumpFile = None
+        ServiceResize = None
         ServiceSnapshot = None
         ServiceRestore = None
         ServiceFrom = None
@@ -969,6 +1037,7 @@ let parseArgs (argv: string[]) =
         | "--freeze" -> i <- i + 1; args.ServiceSleep <- Some argv.[i]
         | "--unfreeze" -> i <- i + 1; args.ServiceWake <- Some argv.[i]
         | "--destroy" -> i <- i + 1; args.ServiceDestroy <- Some argv.[i]
+        | "--resize" -> i <- i + 1; args.ServiceResize <- Some argv.[i]
         | "--execute" -> i <- i + 1; args.ServiceExecute <- Some argv.[i]
         | "--command" -> i <- i + 1; args.ServiceCommand <- Some argv.[i]
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
@@ -1017,6 +1086,7 @@ let printHelp () =
     printfn "  --freeze ID       Freeze service"
     printfn "  --unfreeze ID     Unfreeze service"
     printfn "  --destroy ID      Destroy service"
+    printfn "  --resize ID       Resize service (requires --vcpu N)"
     printfn "  --execute ID      Execute command in service"
     printfn "  --command CMD     Command to execute (with --execute)"
     printfn "  --dump-bootstrap ID   Dump bootstrap script"
