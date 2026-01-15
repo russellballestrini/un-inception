@@ -561,9 +561,15 @@ func DetectLanguage(filename string) string {
 	}
 
 	parts := strings.Split(filename, ".")
-	ext := strings.ToLower(parts[len(parts)-1])
+	ext := parts[len(parts)-1]
 
+	// Try exact match first (for case-sensitive extensions like .R)
 	if lang, ok := LanguageMap[ext]; ok {
+		return lang
+	}
+
+	// Try lowercase match
+	if lang, ok := LanguageMap[strings.ToLower(ext)]; ok {
 		return lang
 	}
 

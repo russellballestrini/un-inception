@@ -1,0 +1,63 @@
+# PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+#
+# unsandbox.com Rust SDK (Synchronous)
+#
+# Crate: un-sync
+# Type: Library (blocking HTTP with reqwest)
+
+[package]
+name = "un-sync"
+version = "2.0.0"
+edition = "2021"
+authors = ["unsandbox.com"]
+description = "Synchronous Rust SDK for unsandbox.com secure code execution API"
+repository = "https://github.com/unsandbox/un-inception"
+license = "Unlicense"
+keywords = ["unsandbox", "code-execution", "sandbox", "api-client"]
+categories = ["api-bindings", "development-tools"]
+
+[lib]
+name = "un"
+path = "src/lib.rs"
+
+[dependencies]
+# HTTP client (blocking feature for sync)
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HMAC-SHA256 authentication
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# Home directory detection
+dirs = "5.0"
+
+# Error handling
+thiserror = "2.0"
+
+[dev-dependencies]
+# Testing
+mockito = "1.2"
+
+[features]
+default = []
+
+[[example]]
+name = "hello_world"
+path = "examples/hello_world.rs"
+
+[[example]]
+name = "fibonacci"
+path = "examples/fibonacci.rs"
+
+[[example]]
+name = "multi_language"
+path = "examples/multi_language.rs"
+
+[[example]]
+name = "async_polling"
+path = "examples/async_polling.rs"
