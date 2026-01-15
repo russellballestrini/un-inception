@@ -134,8 +134,26 @@ jobs = list_jobs(limit: int = 100) -> list[dict]
 # Get supported languages
 languages = languages(cache_ttl: int = 3600) -> list[str]
 
-# Get language info
-info = language_info(language: str) -> dict
+# Generate image from text prompt
+result = image(prompt: str, model: str = None, size: str = "1024x1024") -> dict
+```
+
+### Snapshot Functions
+```python
+# Create session snapshot
+snap = session_snapshot(session_id: str) -> dict
+
+# Create service snapshot
+snap = service_snapshot(service_id: str) -> dict
+
+# List all snapshots
+snaps = list_snapshots() -> dict
+
+# Restore from snapshot
+result = restore_snapshot(snapshot_id: str) -> dict
+
+# Delete snapshot
+delete_snapshot(snapshot_id: str) -> dict
 ```
 
 ### Credential Functions

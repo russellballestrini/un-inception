@@ -25,7 +25,14 @@ Every refactored SDK needs:
    listJobs()
    languages()
    detectLanguage(filename)
-   image(code, output_format)
+   image(prompt, opts)
+
+   # Snapshot functions (NEW!)
+   sessionSnapshot(session_id, opts)
+   serviceSnapshot(service_id, opts)
+   listSnapshots(opts)
+   restoreSnapshot(snapshot_id, opts)
+   deleteSnapshot(snapshot_id, opts)
    ```
 
 2. **Credential system** (4-tier with fallback)

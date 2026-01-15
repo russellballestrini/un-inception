@@ -24,6 +24,13 @@ Use this checklist when refactoring a UN SDK to ensure nothing is missed.
 - [ ] `cancelJob(job_id)` - Cancel running job
 - [ ] `listJobs(limit)` - List active jobs
 
+### Snapshots (NEW!)
+- [ ] `sessionSnapshot(session_id)` - Create session snapshot
+- [ ] `serviceSnapshot(service_id)` - Create service snapshot
+- [ ] `listSnapshots()` - List all snapshots
+- [ ] `restoreSnapshot(snapshot_id)` - Restore from snapshot
+- [ ] `deleteSnapshot(snapshot_id)` - Delete snapshot
+
 ### Utilities
 - [ ] `languages(cache_ttl)` - Get supported languages
 - [ ] `languageInfo(language)` - Get language details
