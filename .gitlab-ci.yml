@@ -1,0 +1,143 @@
+stages:
+  - pre
+  - build
+  - test
+  - science
+  - report
+
+variables:
+  UNSANDBOX_API_KEY: $UNSANDBOX_API_KEY
+  UNSANDBOX_PUBLIC_KEY: $UNSANDBOX_PUBLIC_KEY
+  UNSANDBOX_SECRET_KEY: $UNSANDBOX_SECRET_KEY
+
+# ============================================================================
+# STAGE 1: Detect Changes
+# ============================================================================
+detect-changes:
+  stage: pre
+  image: alpine:latest
+  script:
+    - apk add --no-cache git jq
+    - bash scripts/detect-changes.sh > changes.json
+    - cat changes.json
+  artifacts:
+    paths:
+      - changes.json
+    expire_in: 1 hour
+  only:
+    - main
+    - /^v\d+\.\d+\.\d+$/
+
+# ============================================================================
+# STAGE 2: Generate Dynamic Matrix
+# ============================================================================
+generate-matrix:
+  stage: pre
+  image: alpine:latest
+  needs:
+    - detect-changes
+  script:
+    - apk add --no-cache git jq python3
+    - bash scripts/generate-matrix.sh > test-matrix.yml
+    - cat test-matrix.yml
+  artifacts:
+    paths:
+      - test-matrix.yml
+    expire_in: 1 hour
+  only:
+    - main
+    - /^v\d+\.\d+\.\d+$/
+
+# ============================================================================
+# STAGE 3: Build SDKs (only changed ones)
+# ============================================================================
+build:
+  stage: build
+  image: alpine:latest
+  script:
+    - apk add --no-cache git bash
+    - bash scripts/build-clients.sh
+  artifacts:
+    paths:
+      - build/
+    expire_in: 1 hour
+  only:
+    - main
+    - /^v\d+\.\d+\.\d+$/
+
+# ============================================================================
+# STAGE 4: Test Matrix (dynamically included)
+# ============================================================================
+include:
+  - local: test-matrix.yml
+    optional: true
+
+# ============================================================================
+# STAGE 5: Science Jobs (Pool Burning)
+# ============================================================================
+science-validate-examples:
+  stage: science
+  image: alpine:latest
+  script:
+    - apk add --no-cache curl jq
+    - bash scripts/science/validate-examples.sh
+  artifacts:
+    reports:
+      junit: science-results.xml
+    paths:
+      - science-results/
+    expire_in: 30 days
+  allow_failure: true
+  only:
+    - main
+
+science-lint-sdks:
+  stage: science
+  image: alpine:latest
+  script:
+    - apk add --no-cache curl jq
+    - bash scripts/science/lint-all-sdks.sh
+  artifacts:
+    reports:
+      junit: lint-results.xml
+    paths:
+      - lint-results/
+    expire_in: 30 days
+  allow_failure: true
+  only:
+    - main
+
+science-benchmark-clients:
+  stage: science
+  image: alpine:latest
+  script:
+    - apk add --no-cache curl jq
+    - bash scripts/science/benchmark-clients.sh
+  artifacts:
+    reports:
+      junit: benchmark-results.xml
+    paths:
+      - benchmark-results/
+    expire_in: 30 days
+  allow_failure: true
+  only:
+    - main
+
+# ============================================================================
+# STAGE 6: Report
+# ============================================================================
+report:
+  stage: report
+  image: alpine:latest
+  script:
+    - apk add --no-cache jq
+    - bash scripts/filter-results.sh
+  artifacts:
+    reports:
+      junit: final-report.xml
+    paths:
+      - reports/
+    expire_in: 30 days
+  only:
+    - main
+    - /^v\d+\.\d+\.\d+$/
