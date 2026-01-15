@@ -878,3 +878,685 @@ func DeleteSnapshot(creds *Credentials, snapshotID string) <-chan DeleteResult {
 
 	return resultChan
 }
+
+// ============================================================================
+// Session Operations
+// ============================================================================
+
+// SessionOptions contains optional parameters for session creation.
+type SessionOptions struct {
+	NetworkMode string // "zerotrust" (default) or "semitrusted"
+	Shell       string // Shell to use (e.g., "bash", "python3")
+	TTL         int    // Time-to-live in seconds (default: 3600)
+	VCPU        int    // Number of virtual CPUs (default: 1)
+	Multiplexer string // Multiplexer to use (e.g., "tmux")
+}
+
+// SessionListResult contains the result of listing sessions.
+type SessionListResult struct {
+	Sessions []map[string]interface{}
+	Err      error
+}
+
+// SessionResult contains the result of a session operation.
+type SessionResult struct {
+	Data map[string]interface{}
+	Err  error
+}
+
+// ListSessions lists all active sessions for the authenticated account.
+// Returns a channel that receives exactly one SessionListResult then closes.
+func ListSessions(creds *Credentials) <-chan SessionListResult {
+	resultChan := make(chan SessionListResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("GET", "/sessions", creds, nil)
+		if err != nil {
+			resultChan <- SessionListResult{Err: err}
+			return
+		}
+
+		var sessions []map[string]interface{}
+		if sessionsInterface, ok := response["sessions"].([]interface{}); ok {
+			sessions = make([]map[string]interface{}, len(sessionsInterface))
+			for i, session := range sessionsInterface {
+				if m, ok := session.(map[string]interface{}); ok {
+					sessions[i] = m
+				}
+			}
+		}
+
+		resultChan <- SessionListResult{Sessions: sessions}
+	}()
+
+	return resultChan
+}
+
+// GetSession gets details of a specific session.
+// Returns a channel that receives exactly one SessionResult then closes.
+func GetSession(creds *Credentials, sessionID string) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("GET", fmt.Sprintf("/sessions/%s", sessionID), creds, nil)
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// CreateSession creates a new interactive session.
+// Returns a channel that receives exactly one SessionResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	opts: Optional session configuration (can be nil for defaults)
+func CreateSession(creds *Credentials, opts *SessionOptions) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := make(map[string]interface{})
+
+		if opts != nil {
+			if opts.NetworkMode != "" {
+				data["network_mode"] = opts.NetworkMode
+			}
+			if opts.Shell != "" {
+				data["shell"] = opts.Shell
+			}
+			if opts.TTL > 0 {
+				data["ttl"] = opts.TTL
+			}
+			if opts.VCPU > 0 {
+				data["vcpu"] = opts.VCPU
+			}
+			if opts.Multiplexer != "" {
+				data["multiplexer"] = opts.Multiplexer
+			}
+		}
+
+		response, err := makeRequest("POST", "/sessions", creds, data)
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// DeleteSession terminates a session.
+// Returns a channel that receives exactly one SessionResult then closes.
+func DeleteSession(creds *Credentials, sessionID string) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("DELETE", fmt.Sprintf("/sessions/%s", sessionID), creds, nil)
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// FreezeSession freezes a session (pauses execution, preserves state).
+// Returns a channel that receives exactly one SessionResult then closes.
+func FreezeSession(creds *Credentials, sessionID string) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/sessions/%s/freeze", sessionID), creds, map[string]interface{}{})
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// UnfreezeSession unfreezes a previously frozen session.
+// Returns a channel that receives exactly one SessionResult then closes.
+func UnfreezeSession(creds *Credentials, sessionID string) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/sessions/%s/unfreeze", sessionID), creds, map[string]interface{}{})
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// BoostSession increases the vCPU allocation for a session.
+// Returns a channel that receives exactly one SessionResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	sessionID: Session ID to boost
+//	vcpu: Number of vCPUs (2, 4, 8, etc.)
+func BoostSession(creds *Credentials, sessionID string, vcpu int) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := map[string]interface{}{
+			"vcpu": vcpu,
+		}
+		response, err := makeRequest("POST", fmt.Sprintf("/sessions/%s/boost", sessionID), creds, data)
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// UnboostSession resets the vCPU allocation for a session to default.
+// Returns a channel that receives exactly one SessionResult then closes.
+func UnboostSession(creds *Credentials, sessionID string) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/sessions/%s/unboost", sessionID), creds, map[string]interface{}{})
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// ShellSession executes a command in a session's shell.
+// Returns a channel that receives exactly one SessionResult then closes.
+//
+// Note: For interactive shell access, use the WebSocket-based shell endpoint.
+// This function is for executing single commands.
+func ShellSession(creds *Credentials, sessionID, command string) <-chan SessionResult {
+	resultChan := make(chan SessionResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := map[string]interface{}{
+			"command": command,
+		}
+		response, err := makeRequest("POST", fmt.Sprintf("/sessions/%s/shell", sessionID), creds, data)
+		resultChan <- SessionResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// ============================================================================
+// Service Operations
+// ============================================================================
+
+// ServiceOptions contains optional parameters for service creation.
+type ServiceOptions struct {
+	NetworkMode string // "zerotrust" (default) or "semitrusted"
+	Shell       string // Shell to use for bootstrap
+	VCPU        int    // Number of virtual CPUs
+}
+
+// ServiceUpdateOptions contains optional parameters for service updates.
+type ServiceUpdateOptions struct {
+	VCPU int // Number of virtual CPUs
+}
+
+// ServiceListResult contains the result of listing services.
+type ServiceListResult struct {
+	Services []map[string]interface{}
+	Err      error
+}
+
+// ServiceResult contains the result of a service operation.
+type ServiceResult struct {
+	Data map[string]interface{}
+	Err  error
+}
+
+// ListServices lists all services for the authenticated account.
+// Returns a channel that receives exactly one ServiceListResult then closes.
+func ListServices(creds *Credentials) <-chan ServiceListResult {
+	resultChan := make(chan ServiceListResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("GET", "/services", creds, nil)
+		if err != nil {
+			resultChan <- ServiceListResult{Err: err}
+			return
+		}
+
+		var services []map[string]interface{}
+		if servicesInterface, ok := response["services"].([]interface{}); ok {
+			services = make([]map[string]interface{}, len(servicesInterface))
+			for i, service := range servicesInterface {
+				if m, ok := service.(map[string]interface{}); ok {
+					services[i] = m
+				}
+			}
+		}
+
+		resultChan <- ServiceListResult{Services: services}
+	}()
+
+	return resultChan
+}
+
+// CreateService creates a new persistent service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	name: Service name
+//	ports: Array of port numbers to expose
+//	bootstrap: Bootstrap script to run on service start
+//	opts: Optional service configuration (can be nil for defaults)
+func CreateService(creds *Credentials, name string, ports []int, bootstrap string, opts *ServiceOptions) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := map[string]interface{}{
+			"name":      name,
+			"ports":     ports,
+			"bootstrap": bootstrap,
+		}
+
+		if opts != nil {
+			if opts.NetworkMode != "" {
+				data["network_mode"] = opts.NetworkMode
+			}
+			if opts.Shell != "" {
+				data["shell"] = opts.Shell
+			}
+			if opts.VCPU > 0 {
+				data["vcpu"] = opts.VCPU
+			}
+		}
+
+		response, err := makeRequest("POST", "/services", creds, data)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// GetService gets details of a specific service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func GetService(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("GET", fmt.Sprintf("/services/%s", serviceID), creds, nil)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// UpdateService updates a service's configuration.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func UpdateService(creds *Credentials, serviceID string, opts *ServiceUpdateOptions) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := make(map[string]interface{})
+		if opts != nil {
+			if opts.VCPU > 0 {
+				data["vcpu"] = opts.VCPU
+			}
+		}
+		response, err := makeRequest("PATCH", fmt.Sprintf("/services/%s", serviceID), creds, data)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// DeleteService destroys a service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func DeleteService(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("DELETE", fmt.Sprintf("/services/%s", serviceID), creds, nil)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// FreezeService freezes a service (pauses execution, preserves state).
+// Returns a channel that receives exactly one ServiceResult then closes.
+func FreezeService(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/freeze", serviceID), creds, map[string]interface{}{})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// UnfreezeService unfreezes a previously frozen service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func UnfreezeService(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/unfreeze", serviceID), creds, map[string]interface{}{})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// LockService locks a service to prevent modifications or deletion.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func LockService(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/lock", serviceID), creds, map[string]interface{}{})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// UnlockService unlocks a previously locked service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func UnlockService(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/unlock", serviceID), creds, map[string]interface{}{})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// GetServiceLogs retrieves logs from a service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	all: If true, returns all logs; if false, returns only recent logs
+func GetServiceLogs(creds *Credentials, serviceID string, all bool) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		path := fmt.Sprintf("/services/%s/logs", serviceID)
+		if all {
+			path = fmt.Sprintf("/services/%s/logs?all=true", serviceID)
+		}
+		response, err := makeRequest("GET", path, creds, nil)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// GetServiceEnv retrieves the environment variable names for a service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+// Note: Values are not returned for security; use ExportServiceEnv for full export.
+func GetServiceEnv(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("GET", fmt.Sprintf("/services/%s/env", serviceID), creds, nil)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// SetServiceEnv sets environment variables for a service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	env: Map of environment variable names to values
+func SetServiceEnv(creds *Credentials, serviceID string, env map[string]string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/env", serviceID), creds, env)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// DeleteServiceEnv deletes environment variables from a service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	keys: List of environment variable names to delete (nil deletes all)
+func DeleteServiceEnv(creds *Credentials, serviceID string, keys []string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		var data interface{}
+		if keys != nil {
+			data = map[string]interface{}{"keys": keys}
+		}
+		response, err := makeRequest("DELETE", fmt.Sprintf("/services/%s/env", serviceID), creds, data)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// ExportServiceEnv exports all environment variables for a service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+// Returns the full .env format content with values.
+func ExportServiceEnv(creds *Credentials, serviceID string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/env/export", serviceID), creds, map[string]interface{}{})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// RedeployService redeploys a service with optional new bootstrap script.
+// Returns a channel that receives exactly one ServiceResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	bootstrap: New bootstrap script (empty string to keep existing)
+func RedeployService(creds *Credentials, serviceID string, bootstrap string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := make(map[string]interface{})
+		if bootstrap != "" {
+			data["bootstrap"] = bootstrap
+		}
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/redeploy", serviceID), creds, data)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// ExecuteInService executes a command in a running service.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func ExecuteInService(creds *Credentials, serviceID, command string) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := map[string]interface{}{
+			"command": command,
+		}
+		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/execute", serviceID), creds, data)
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// ============================================================================
+// Additional Snapshot Operations
+// ============================================================================
+
+// LockSnapshot locks a snapshot to prevent deletion.
+// Returns a channel that receives exactly one DeleteResult then closes.
+func LockSnapshot(creds *Credentials, snapshotID string) <-chan DeleteResult {
+	resultChan := make(chan DeleteResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/snapshots/%s/lock", snapshotID), creds, map[string]interface{}{})
+		resultChan <- DeleteResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// UnlockSnapshot unlocks a previously locked snapshot.
+// Returns a channel that receives exactly one DeleteResult then closes.
+func UnlockSnapshot(creds *Credentials, snapshotID string) <-chan DeleteResult {
+	resultChan := make(chan DeleteResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", fmt.Sprintf("/snapshots/%s/unlock", snapshotID), creds, map[string]interface{}{})
+		resultChan <- DeleteResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// CloneSnapshotOptions contains optional parameters for snapshot cloning.
+type CloneSnapshotOptions struct {
+	Name  string // Name for the cloned resource
+	Shell string // Shell to use (for session clones)
+	Ports []int  // Ports to expose (for service clones)
+}
+
+// CloneSnapshotResult contains the result of cloning a snapshot.
+type CloneSnapshotResult struct {
+	Data map[string]interface{}
+	Err  error
+}
+
+// CloneSnapshot clones a snapshot into a new session or service.
+// Returns a channel that receives exactly one CloneSnapshotResult then closes.
+//
+// Args:
+//
+//	creds: API credentials
+//	snapshotID: Snapshot ID to clone
+//	cloneType: "session" or "service"
+//	opts: Optional clone configuration (can be nil)
+func CloneSnapshot(creds *Credentials, snapshotID, cloneType string, opts *CloneSnapshotOptions) <-chan CloneSnapshotResult {
+	resultChan := make(chan CloneSnapshotResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		data := map[string]interface{}{
+			"type": cloneType,
+		}
+
+		if opts != nil {
+			if opts.Name != "" {
+				data["name"] = opts.Name
+			}
+			if opts.Shell != "" {
+				data["shell"] = opts.Shell
+			}
+			if opts.Ports != nil {
+				data["ports"] = opts.Ports
+			}
+		}
+
+		response, err := makeRequest("POST", fmt.Sprintf("/snapshots/%s/clone", snapshotID), creds, data)
+		resultChan <- CloneSnapshotResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// ============================================================================
+// Key Validation
+// ============================================================================
+
+// ValidateKeysResult contains the result of validating API keys.
+type ValidateKeysResult struct {
+	Data map[string]interface{}
+	Err  error
+}
+
+// ValidateKeys validates the API credentials with the server.
+// Returns a channel that receives exactly one ValidateKeysResult then closes.
+// Returns account information if valid, error if invalid.
+func ValidateKeys(creds *Credentials) <-chan ValidateKeysResult {
+	resultChan := make(chan ValidateKeysResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("POST", "/keys/validate", creds, map[string]interface{}{})
+		resultChan <- ValidateKeysResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}

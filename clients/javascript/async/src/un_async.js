@@ -5,19 +5,22 @@
  *
  * Library Usage:
  *   import {
- *     executeCode,
- *     executeAsync,
- *     getJob,
- *     waitForJob,
- *     cancelJob,
- *     listJobs,
- *     getLanguages,
- *     detectLanguage,
- *     sessionSnapshot,
- *     serviceSnapshot,
- *     listSnapshots,
- *     restoreSnapshot,
- *     deleteSnapshot,
+ *     // Code execution
+ *     executeCode, executeAsync, getJob, waitForJob, cancelJob, listJobs,
+ *     getLanguages, detectLanguage,
+ *     // Session management
+ *     listSessions, getSession, createSession, deleteSession,
+ *     freezeSession, unfreezeSession, boostSession, unboostSession, shellSession,
+ *     // Service management
+ *     listServices, createService, getService, updateService, deleteService,
+ *     freezeService, unfreezeService, lockService, unlockService,
+ *     getServiceLogs, getServiceEnv, setServiceEnv, deleteServiceEnv,
+ *     exportServiceEnv, redeployService, executeInService,
+ *     // Snapshot management
+ *     sessionSnapshot, serviceSnapshot, listSnapshots, restoreSnapshot,
+ *     deleteSnapshot, lockSnapshot, unlockSnapshot, cloneSnapshot,
+ *     // Key validation
+ *     validateKeys,
  *   } from './un_async.js';
  *
  *   // Execute code (awaits until completion)
@@ -220,7 +223,8 @@ async function makeRequest(method, urlPath, publicKey, secretKey, data) {
     signal: AbortSignal.timeout(120000), // 120 seconds timeout
   };
 
-  if (method === 'POST' && body) {
+  // Add body for methods that support it
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
     options.body = body;
   }
 
@@ -581,8 +585,491 @@ async function deleteSnapshot(snapshotId, publicKey, secretKey) {
   return makeRequest('DELETE', `/snapshots/${snapshotId}`, publicKey, secretKey);
 }
 
+// ============================================================================
+// Session Management Functions
+// ============================================================================
+
+/**
+ * List all active sessions.
+ *
+ * Returns: Promise<Array> (list of session objects)
+ */
+async function listSessions(publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const response = await makeRequest('GET', '/sessions', publicKey, secretKey);
+  return response.sessions || [];
+}
+
+/**
+ * Get details of a specific session.
+ *
+ * Args:
+ *   sessionId: Session ID to retrieve
+ *
+ * Returns: Promise<Object> (session details)
+ */
+async function getSession(sessionId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('GET', `/sessions/${sessionId}`, publicKey, secretKey);
+}
+
+/**
+ * Create a new interactive session.
+ *
+ * Args:
+ *   language: Optional programming language/shell (default: "bash")
+ *   opts: Optional settings:
+ *     - networkMode: "zerotrust" (default) or "semitrusted"
+ *     - shell: Shell to use (e.g., "python3", "bash")
+ *     - multiplexer: "tmux", "screen", or null
+ *     - vcpu: Number of vCPUs (1-8)
+ *     - ttl: Time-to-live in seconds
+ *
+ * Returns: Promise<Object> (session info with session_id, container_name)
+ */
+async function createSession(language, opts = {}, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const data = {
+    network_mode: opts.networkMode || 'zerotrust',
+    ttl: opts.ttl || 3600,
+  };
+  if (language) data.shell = language;
+  if (opts.shell) data.shell = opts.shell;
+  if (opts.multiplexer) data.multiplexer = opts.multiplexer;
+  if (opts.vcpu && opts.vcpu > 1) data.vcpu = opts.vcpu;
+
+  return makeRequest('POST', '/sessions', publicKey, secretKey, data);
+}
+
+/**
+ * Delete/terminate a session.
+ *
+ * Args:
+ *   sessionId: Session ID to terminate
+ *
+ * Returns: Promise<Object> (deletion confirmation)
+ */
+async function deleteSession(sessionId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('DELETE', `/sessions/${sessionId}`, publicKey, secretKey);
+}
+
+/**
+ * Freeze a session (pause execution, preserve state).
+ *
+ * Args:
+ *   sessionId: Session ID to freeze
+ *
+ * Returns: Promise<Object> (freeze confirmation)
+ */
+async function freezeSession(sessionId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/sessions/${sessionId}/freeze`, publicKey, secretKey, {});
+}
+
+/**
+ * Unfreeze a session (resume execution).
+ *
+ * Args:
+ *   sessionId: Session ID to unfreeze
+ *
+ * Returns: Promise<Object> (unfreeze confirmation)
+ */
+async function unfreezeSession(sessionId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/sessions/${sessionId}/unfreeze`, publicKey, secretKey, {});
+}
+
+/**
+ * Boost a session's resources (increase vCPU, memory).
+ *
+ * Args:
+ *   sessionId: Session ID to boost
+ *   vcpu: Number of vCPUs (default: 2)
+ *
+ * Returns: Promise<Object> (boost confirmation)
+ */
+async function boostSession(sessionId, vcpu = 2, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/sessions/${sessionId}/boost`, publicKey, secretKey, { vcpu });
+}
+
+/**
+ * Unboost a session (return to base resources).
+ *
+ * Args:
+ *   sessionId: Session ID to unboost
+ *
+ * Returns: Promise<Object> (unboost confirmation)
+ */
+async function unboostSession(sessionId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/sessions/${sessionId}/unboost`, publicKey, secretKey, {});
+}
+
+/**
+ * Execute a shell command in a session.
+ *
+ * Note: This initiates a WebSocket connection for interactive shell.
+ * For simple command execution, this sends the command via the shell endpoint.
+ *
+ * Args:
+ *   sessionId: Session ID
+ *   command: Command to execute
+ *
+ * Returns: Promise<Object> (command result)
+ */
+async function shellSession(sessionId, command, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/sessions/${sessionId}/shell`, publicKey, secretKey, { command });
+}
+
+// ============================================================================
+// Service Management Functions
+// ============================================================================
+
+/**
+ * List all services.
+ *
+ * Returns: Promise<Array> (list of service objects)
+ */
+async function listServices(publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const response = await makeRequest('GET', '/services', publicKey, secretKey);
+  return response.services || [];
+}
+
+/**
+ * Create a new service (persistent container).
+ *
+ * Args:
+ *   name: Service name
+ *   ports: Array of port numbers to expose (e.g., [80, 443])
+ *   bootstrap: Bootstrap script content or URL
+ *   opts: Optional settings:
+ *     - networkMode: "zerotrust" or "semitrusted"
+ *     - vcpu: Number of vCPUs (1-8)
+ *     - domains: Array of custom domains
+ *     - serviceType: Service type for SRV records (minecraft, mumble, etc.)
+ *
+ * Returns: Promise<Object> (service info with service_id)
+ */
+async function createService(name, ports, bootstrap, opts = {}, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const data = {};
+  if (name) data.name = name;
+  if (ports && ports.length > 0) data.ports = ports;
+  if (bootstrap) {
+    // If bootstrap starts with http, treat as URL, otherwise as content
+    if (bootstrap.startsWith('http://') || bootstrap.startsWith('https://')) {
+      data.bootstrap = bootstrap;
+    } else {
+      data.bootstrap_content = bootstrap;
+    }
+  }
+  if (opts.networkMode) data.network_mode = opts.networkMode;
+  if (opts.vcpu && opts.vcpu > 1) data.vcpu = opts.vcpu;
+  if (opts.domains) data.custom_domains = opts.domains;
+  if (opts.serviceType) data.service_type = opts.serviceType;
+
+  return makeRequest('POST', '/services', publicKey, secretKey, data);
+}
+
+/**
+ * Get details of a specific service.
+ *
+ * Args:
+ *   serviceId: Service ID to retrieve
+ *
+ * Returns: Promise<Object> (service details)
+ */
+async function getService(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('GET', `/services/${serviceId}`, publicKey, secretKey);
+}
+
+/**
+ * Update a service (resize vCPU/memory).
+ *
+ * Args:
+ *   serviceId: Service ID to update
+ *   opts: Update options:
+ *     - vcpu: New vCPU count (1-8)
+ *
+ * Returns: Promise<Object> (update confirmation)
+ */
+async function updateService(serviceId, opts = {}, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const data = {};
+  if (opts.vcpu) data.vcpu = opts.vcpu;
+  return makeRequest('PATCH', `/services/${serviceId}`, publicKey, secretKey, data);
+}
+
+/**
+ * Delete/destroy a service.
+ *
+ * Args:
+ *   serviceId: Service ID to destroy
+ *
+ * Returns: Promise<Object> (deletion confirmation)
+ */
+async function deleteService(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('DELETE', `/services/${serviceId}`, publicKey, secretKey);
+}
+
+/**
+ * Freeze a service (stop container, preserve disk).
+ *
+ * Args:
+ *   serviceId: Service ID to freeze
+ *
+ * Returns: Promise<Object> (freeze confirmation)
+ */
+async function freezeService(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/services/${serviceId}/freeze`, publicKey, secretKey, {});
+}
+
+/**
+ * Unfreeze a service (restart container).
+ *
+ * Args:
+ *   serviceId: Service ID to unfreeze
+ *
+ * Returns: Promise<Object> (unfreeze confirmation)
+ */
+async function unfreezeService(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/services/${serviceId}/unfreeze`, publicKey, secretKey, {});
+}
+
+/**
+ * Lock a service to prevent deletion.
+ *
+ * Args:
+ *   serviceId: Service ID to lock
+ *
+ * Returns: Promise<Object> (lock confirmation)
+ */
+async function lockService(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/services/${serviceId}/lock`, publicKey, secretKey, {});
+}
+
+/**
+ * Unlock a service to allow deletion.
+ *
+ * Args:
+ *   serviceId: Service ID to unlock
+ *
+ * Returns: Promise<Object> (unlock confirmation)
+ */
+async function unlockService(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/services/${serviceId}/unlock`, publicKey, secretKey, {});
+}
+
+/**
+ * Get service logs.
+ *
+ * Args:
+ *   serviceId: Service ID
+ *   all: If true, get all logs; if false, get last ~9000 lines (default: false)
+ *
+ * Returns: Promise<Object> (log data)
+ */
+async function getServiceLogs(serviceId, all = false, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const path = all ? `/services/${serviceId}/logs?all=true` : `/services/${serviceId}/logs`;
+  return makeRequest('GET', path, publicKey, secretKey);
+}
+
+/**
+ * Get service environment vault status.
+ *
+ * Args:
+ *   serviceId: Service ID
+ *
+ * Returns: Promise<Object> (vault status with has_vault, count, updated_at)
+ */
+async function getServiceEnv(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('GET', `/services/${serviceId}/env`, publicKey, secretKey);
+}
+
+/**
+ * Set service environment vault.
+ *
+ * Args:
+ *   serviceId: Service ID
+ *   env: Environment content as string (KEY=VALUE format, newline separated)
+ *        or object { KEY: "value", KEY2: "value2" }
+ *
+ * Returns: Promise<Object> (set confirmation)
+ */
+async function setServiceEnv(serviceId, env, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  // Convert object to KEY=VALUE format if needed
+  let envContent = env;
+  if (typeof env === 'object' && !Array.isArray(env)) {
+    envContent = Object.entries(env)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+  }
+  // Note: This endpoint uses PUT with text/plain body
+  // The makeRequest function sends JSON, so we need to handle this specially
+  return makeRequest('PUT', `/services/${serviceId}/env`, publicKey, secretKey, { content: envContent });
+}
+
+/**
+ * Delete service environment vault.
+ *
+ * Args:
+ *   serviceId: Service ID
+ *   keys: Optional array of specific keys to delete (deletes all if not specified)
+ *
+ * Returns: Promise<Object> (deletion confirmation)
+ */
+async function deleteServiceEnv(serviceId, keys = null, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const data = keys ? { keys } : {};
+  return makeRequest('DELETE', `/services/${serviceId}/env`, publicKey, secretKey, data);
+}
+
+/**
+ * Export service environment vault.
+ *
+ * Args:
+ *   serviceId: Service ID
+ *
+ * Returns: Promise<Object> (exported environment data)
+ */
+async function exportServiceEnv(serviceId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/services/${serviceId}/env/export`, publicKey, secretKey, {});
+}
+
+/**
+ * Redeploy a service with new bootstrap script.
+ *
+ * Args:
+ *   serviceId: Service ID to redeploy
+ *   bootstrap: Optional new bootstrap script content or URL
+ *
+ * Returns: Promise<Object> (redeploy confirmation)
+ */
+async function redeployService(serviceId, bootstrap = null, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const data = {};
+  if (bootstrap) {
+    if (bootstrap.startsWith('http://') || bootstrap.startsWith('https://')) {
+      data.bootstrap = bootstrap;
+    } else {
+      data.bootstrap_content = bootstrap;
+    }
+  }
+  return makeRequest('POST', `/services/${serviceId}/redeploy`, publicKey, secretKey, data);
+}
+
+/**
+ * Execute a command in a running service container.
+ *
+ * Args:
+ *   serviceId: Service ID
+ *   command: Command to execute
+ *   timeout: Optional timeout in milliseconds (default: 30000)
+ *
+ * Returns: Promise<Object> (execution result with stdout, stderr, exit_code)
+ */
+async function executeInService(serviceId, command, timeout = 30000, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const response = await makeRequest('POST', `/services/${serviceId}/execute`, publicKey, secretKey, {
+    command,
+    timeout,
+  });
+
+  // If we got a job_id, poll until completion
+  const jobId = response.job_id;
+  if (jobId) {
+    return waitForJob(jobId, publicKey, secretKey);
+  }
+
+  return response;
+}
+
+// ============================================================================
+// Additional Snapshot Functions
+// ============================================================================
+
+/**
+ * Lock a snapshot to prevent deletion.
+ *
+ * Args:
+ *   snapshotId: Snapshot ID to lock
+ *
+ * Returns: Promise<Object> (lock confirmation)
+ */
+async function lockSnapshot(snapshotId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/snapshots/${snapshotId}/lock`, publicKey, secretKey, {});
+}
+
+/**
+ * Unlock a snapshot to allow deletion.
+ *
+ * Args:
+ *   snapshotId: Snapshot ID to unlock
+ *
+ * Returns: Promise<Object> (unlock confirmation)
+ */
+async function unlockSnapshot(snapshotId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('POST', `/snapshots/${snapshotId}/unlock`, publicKey, secretKey, {});
+}
+
+/**
+ * Clone a snapshot to create a new session or service.
+ *
+ * Args:
+ *   snapshotId: Snapshot ID to clone
+ *   name: Name for the new resource
+ *   opts: Optional settings:
+ *     - type: "session" or "service" (default: inferred from snapshot)
+ *     - shell: Shell for session clones
+ *     - ports: Ports array for service clones
+ *
+ * Returns: Promise<Object> (clone result with new session_id or service_id)
+ */
+async function cloneSnapshot(snapshotId, name, opts = {}, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  const data = {};
+  if (name) data.name = name;
+  if (opts.type) data.type = opts.type;
+  if (opts.shell) data.shell = opts.shell;
+  if (opts.ports) data.ports = opts.ports;
+  return makeRequest('POST', `/snapshots/${snapshotId}/clone`, publicKey, secretKey, data);
+}
+
+// ============================================================================
+// Key Validation
+// ============================================================================
+
+/**
+ * Validate API keys.
+ *
+ * Returns: Promise<Object> (validation result with valid, tier, expires_at, etc.)
+ */
+async function validateKeys(publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  // Note: This endpoint is on the portal (unsandbox.com), not the API
+  // For SDK purposes, we'll call the API endpoint if available
+  return makeRequest('POST', '/keys/validate', publicKey, secretKey, {});
+}
+
 // ES Module exports
 export {
+  // Code execution
   executeCode,
   executeAsync,
   getJob,
@@ -591,17 +1078,52 @@ export {
   listJobs,
   getLanguages,
   detectLanguage,
+  // Session management
+  listSessions,
+  getSession,
+  createSession,
+  deleteSession,
+  freezeSession,
+  unfreezeSession,
+  boostSession,
+  unboostSession,
+  shellSession,
+  // Service management
+  listServices,
+  createService,
+  getService,
+  updateService,
+  deleteService,
+  freezeService,
+  unfreezeService,
+  lockService,
+  unlockService,
+  getServiceLogs,
+  getServiceEnv,
+  setServiceEnv,
+  deleteServiceEnv,
+  exportServiceEnv,
+  redeployService,
+  executeInService,
+  // Snapshot management
   sessionSnapshot,
   serviceSnapshot,
   listSnapshots,
   restoreSnapshot,
   deleteSnapshot,
+  lockSnapshot,
+  unlockSnapshot,
+  cloneSnapshot,
+  // Key validation
+  validateKeys,
+  // Errors
   CredentialsError,
   TimeoutError,
 };
 
 // Default export for convenience
 export default {
+  // Code execution
   executeCode,
   executeAsync,
   getJob,
@@ -610,11 +1132,45 @@ export default {
   listJobs,
   getLanguages,
   detectLanguage,
+  // Session management
+  listSessions,
+  getSession,
+  createSession,
+  deleteSession,
+  freezeSession,
+  unfreezeSession,
+  boostSession,
+  unboostSession,
+  shellSession,
+  // Service management
+  listServices,
+  createService,
+  getService,
+  updateService,
+  deleteService,
+  freezeService,
+  unfreezeService,
+  lockService,
+  unlockService,
+  getServiceLogs,
+  getServiceEnv,
+  setServiceEnv,
+  deleteServiceEnv,
+  exportServiceEnv,
+  redeployService,
+  executeInService,
+  // Snapshot management
   sessionSnapshot,
   serviceSnapshot,
   listSnapshots,
   restoreSnapshot,
   deleteSnapshot,
+  lockSnapshot,
+  unlockSnapshot,
+  cloneSnapshot,
+  // Key validation
+  validateKeys,
+  // Errors
   CredentialsError,
   TimeoutError,
 };

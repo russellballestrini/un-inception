@@ -443,6 +443,602 @@ class Unsandbox {
     }
 
     /**
+     * Lock a snapshot to prevent deletion.
+     *
+     * @param string $snapshotId Snapshot ID to lock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with lock confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function lockSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/lock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unlock a snapshot to allow deletion.
+     *
+     * @param string $snapshotId Snapshot ID to unlock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with unlock confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function unlockSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/unlock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Clone a snapshot to create a new session or service.
+     *
+     * @param string $snapshotId Snapshot ID to clone
+     * @param string|null $name Optional name for the new resource
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'type' (session|service), 'shell', 'ports'
+     * @return array Response array with cloned resource info
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function cloneSnapshot(
+        string $snapshotId,
+        ?string $name = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        array $opts = []
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [];
+        if ($name !== null) {
+            $data['name'] = $name;
+        }
+        if (isset($opts['type'])) {
+            $data['type'] = $opts['type'];
+        }
+        if (isset($opts['shell'])) {
+            $data['shell'] = $opts['shell'];
+        }
+        if (isset($opts['ports'])) {
+            $data['ports'] = $opts['ports'];
+        }
+
+        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/clone", $publicKey, $secretKey, $data);
+    }
+
+    // =========================================================================
+    // Session Methods
+    // =========================================================================
+
+    /**
+     * List all active sessions for the authenticated account.
+     *
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array List of session arrays
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function listSessions(?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $response = $this->makeRequest('GET', '/sessions', $publicKey, $secretKey);
+        return $response['sessions'] ?? [];
+    }
+
+    /**
+     * Get details of a specific session.
+     *
+     * @param string $sessionId Session ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Session details
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function getSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/sessions/{$sessionId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Create a new interactive session.
+     *
+     * @param string $language Programming language or shell (e.g., "bash", "python3")
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'network_mode', 'ttl', 'shell', 'multiplexer', 'vcpu'
+     * @return array Session info including session_id and container_name
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function createSession(
+        string $language,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        array $opts = []
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [
+            'network_mode' => $opts['network_mode'] ?? 'zerotrust',
+            'ttl' => $opts['ttl'] ?? 3600,
+        ];
+        if (!empty($language)) {
+            $data['shell'] = $language;
+        }
+        if (isset($opts['shell'])) {
+            $data['shell'] = $opts['shell'];
+        }
+        if (isset($opts['multiplexer'])) {
+            $data['multiplexer'] = $opts['multiplexer'];
+        }
+        if (isset($opts['vcpu']) && $opts['vcpu'] > 1) {
+            $data['vcpu'] = $opts['vcpu'];
+        }
+        if (isset($opts['input_files'])) {
+            $data['input_files'] = $opts['input_files'];
+        }
+
+        return $this->makeRequest('POST', '/sessions', $publicKey, $secretKey, $data);
+    }
+
+    /**
+     * Delete (terminate) a session.
+     *
+     * @param string $sessionId Session ID to delete
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with deletion confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function deleteSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/sessions/{$sessionId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Freeze a session to pause execution and reduce resource usage.
+     *
+     * @param string $sessionId Session ID to freeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with freeze confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function freezeSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/freeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unfreeze a session to resume execution.
+     *
+     * @param string $sessionId Session ID to unfreeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with unfreeze confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function unfreezeSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/unfreeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Boost a session's resources (increase vCPU, memory is derived: vcpu * 2048MB).
+     *
+     * @param string $sessionId Session ID to boost
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param int $vcpu Number of vCPUs (default: 2)
+     * @return array Response array with boost confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function boostSession(
+        string $sessionId,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        int $vcpu = 2
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/boost", $publicKey, $secretKey, ['vcpu' => $vcpu]);
+    }
+
+    /**
+     * Remove boost from a session (return to base resources).
+     *
+     * @param string $sessionId Session ID to unboost
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with unboost confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function unboostSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/unboost", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Execute a shell command in an active session.
+     *
+     * Note: This is for one-shot commands. For interactive sessions, use WebSocket connection.
+     *
+     * @param string $sessionId Session ID
+     * @param string $command Command to execute
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with command output
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function shellSession(
+        string $sessionId,
+        string $command,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/shell", $publicKey, $secretKey, ['command' => $command]);
+    }
+
+    // =========================================================================
+    // Service Methods
+    // =========================================================================
+
+    /**
+     * List all services for the authenticated account.
+     *
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array List of service arrays
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function listServices(?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $response = $this->makeRequest('GET', '/services', $publicKey, $secretKey);
+        return $response['services'] ?? [];
+    }
+
+    /**
+     * Create a new persistent service.
+     *
+     * @param string $name Service name
+     * @param array|string $ports Port(s) to expose (array of ints or comma-separated string)
+     * @param string $bootstrap Bootstrap command or URL
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'network_mode', 'vcpu', 'service_type', 'custom_domains', 'bootstrap_content', 'input_files'
+     * @return array Service info including service_id
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function createService(
+        string $name,
+        $ports,
+        string $bootstrap,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        array $opts = []
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        // Convert ports to array if string
+        if (is_string($ports)) {
+            $ports = array_map('intval', explode(',', $ports));
+        }
+
+        $data = [
+            'name' => $name,
+            'ports' => $ports,
+            'bootstrap' => $bootstrap,
+        ];
+
+        if (isset($opts['network_mode'])) {
+            $data['network_mode'] = $opts['network_mode'];
+        }
+        if (isset($opts['vcpu']) && $opts['vcpu'] > 1) {
+            $data['vcpu'] = $opts['vcpu'];
+        }
+        if (isset($opts['service_type'])) {
+            $data['service_type'] = $opts['service_type'];
+        }
+        if (isset($opts['custom_domains'])) {
+            $data['custom_domains'] = $opts['custom_domains'];
+        }
+        if (isset($opts['bootstrap_content'])) {
+            $data['bootstrap_content'] = $opts['bootstrap_content'];
+        }
+        if (isset($opts['input_files'])) {
+            $data['input_files'] = $opts['input_files'];
+        }
+
+        return $this->makeRequest('POST', '/services', $publicKey, $secretKey, $data);
+    }
+
+    /**
+     * Get details of a specific service.
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Service details
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function getService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/services/{$serviceId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Update a service (e.g., resize vCPU).
+     *
+     * @param string $serviceId Service ID
+     * @param array $opts Update parameters: 'vcpu', 'name', etc.
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Updated service details
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function updateService(
+        string $serviceId,
+        array $opts,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('PATCH', "/services/{$serviceId}", $publicKey, $secretKey, $opts);
+    }
+
+    /**
+     * Delete (destroy) a service.
+     *
+     * @param string $serviceId Service ID to delete
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with deletion confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function deleteService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/services/{$serviceId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Freeze a service to pause execution and reduce resource usage.
+     *
+     * @param string $serviceId Service ID to freeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with freeze confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function freezeService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/freeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unfreeze a service to resume execution.
+     *
+     * @param string $serviceId Service ID to unfreeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with unfreeze confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function unfreezeService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/unfreeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Lock a service to prevent deletion.
+     *
+     * @param string $serviceId Service ID to lock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with lock confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function lockService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/lock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unlock a service to allow deletion.
+     *
+     * @param string $serviceId Service ID to unlock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with unlock confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function unlockService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/unlock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Get bootstrap logs for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param bool $all If true, get all logs; if false, get last 9000 lines
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with log content
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function getServiceLogs(
+        string $serviceId,
+        bool $all = false,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $path = "/services/{$serviceId}/logs" . ($all ? '?all=true' : '');
+        return $this->makeRequest('GET', $path, $publicKey, $secretKey);
+    }
+
+    /**
+     * Get environment vault status for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with vault status (has_vault, count, updated_at)
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function getServiceEnv(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/services/{$serviceId}/env", $publicKey, $secretKey);
+    }
+
+    /**
+     * Set environment vault for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param string $env Environment content in .env format (KEY=VALUE\nKEY2=VALUE2)
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with update confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function setServiceEnv(
+        string $serviceId,
+        string $env,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequestRaw('PUT', "/services/{$serviceId}/env", $publicKey, $secretKey, $env, 'text/plain');
+    }
+
+    /**
+     * Delete environment vault for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param array|null $keys Optional specific keys to delete; if null, deletes entire vault
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with deletion confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function deleteServiceEnv(
+        string $serviceId,
+        ?array $keys = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/services/{$serviceId}/env", $publicKey, $secretKey);
+    }
+
+    /**
+     * Export environment vault for a service (returns .env format).
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with env content
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function exportServiceEnv(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/env/export", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Redeploy a service (re-run bootstrap script).
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with redeploy confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function redeployService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/redeploy", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Execute a command in a running service container.
+     *
+     * @param string $serviceId Service ID
+     * @param string $command Command to execute
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param int $timeout Timeout in milliseconds (default: 30000)
+     * @return array Response array with command output (stdout, stderr, exit_code)
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function executeInService(
+        string $serviceId,
+        string $command,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        int $timeout = 30000
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $response = $this->makeRequest('POST', "/services/{$serviceId}/execute", $publicKey, $secretKey, [
+            'command' => $command,
+            'timeout' => $timeout,
+        ]);
+
+        // If we got a job_id, poll until completion
+        $jobId = $response['job_id'] ?? null;
+        if ($jobId) {
+            return $this->waitForJob($jobId, $publicKey, $secretKey);
+        }
+
+        return $response;
+    }
+
+    // =========================================================================
+    // Key Validation
+    // =========================================================================
+
+    /**
+     * Validate API keys.
+     *
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with validation result
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function validateKeys(?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', '/keys/validate', $publicKey, $secretKey, []);
+    }
+
+    /**
      * Get path to ~/.unsandbox directory, creating if necessary.
      *
      * @return string Path to unsandbox directory
@@ -616,6 +1212,14 @@ class Unsandbox {
                 curl_setopt($ch, CURLOPT_POST, true);
                 curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
                 break;
+            case 'PUT':
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                break;
+            case 'PATCH':
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PATCH');
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                break;
             case 'DELETE':
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
                 break;
@@ -624,6 +1228,61 @@ class Unsandbox {
                 // GET is the default
                 break;
         }
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($response === false) {
+            throw new ApiException("cURL error: {$error}");
+        }
+
+        $decoded = json_decode($response, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            throw new ApiException("Invalid JSON response: " . json_last_error_msg());
+        }
+
+        if ($httpCode >= 400) {
+            $errorMessage = $decoded['error'] ?? $decoded['message'] ?? "HTTP {$httpCode}";
+            throw new ApiException($errorMessage, $httpCode, $decoded);
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Make an authenticated HTTP request with raw body content (non-JSON).
+     *
+     * @param string $method HTTP method (PUT, POST, etc.)
+     * @param string $path API endpoint path
+     * @param string $publicKey API public key
+     * @param string $secretKey API secret key
+     * @param string $body Raw request body
+     * @param string $contentType Content type header (e.g., 'text/plain')
+     * @return array Decoded JSON response
+     * @throws ApiException On network errors or non-2xx response
+     */
+    private function makeRequestRaw(string $method, string $path, string $publicKey, string $secretKey, string $body, string $contentType = 'text/plain'): array {
+        $url = self::API_BASE . $path;
+        $timestamp = time();
+
+        $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $body);
+
+        $headers = [
+            'Authorization: Bearer ' . $publicKey,
+            'X-Timestamp: ' . $timestamp,
+            'X-Signature: ' . $signature,
+            'Content-Type: ' . $contentType,
+        ];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

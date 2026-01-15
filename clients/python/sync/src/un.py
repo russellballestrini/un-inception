@@ -5,6 +5,7 @@ unsandbox.com Python SDK (Synchronous)
 
 Library Usage:
     from un import (
+        # Execution
         execute_code,
         execute_async,
         get_job,
@@ -13,11 +14,44 @@ Library Usage:
         list_jobs,
         get_languages,
         detect_language,
+        # Sessions
+        list_sessions,
+        get_session,
+        create_session,
+        delete_session,
+        freeze_session,
+        unfreeze_session,
+        boost_session,
+        unboost_session,
+        shell_session,
+        # Services
+        list_services,
+        create_service,
+        get_service,
+        update_service,
+        delete_service,
+        freeze_service,
+        unfreeze_service,
+        lock_service,
+        unlock_service,
+        get_service_logs,
+        get_service_env,
+        set_service_env,
+        delete_service_env,
+        export_service_env,
+        redeploy_service,
+        execute_in_service,
+        # Snapshots
         session_snapshot,
         service_snapshot,
         list_snapshots,
         restore_snapshot,
         delete_snapshot,
+        lock_snapshot,
+        unlock_snapshot,
+        clone_snapshot,
+        # Key validation
+        validate_keys,
     )
 
     # Execute code synchronously
@@ -221,6 +255,8 @@ def _make_request(
         response = requests.get(url, headers=headers, timeout=120)
     elif method == "POST":
         response = requests.post(url, headers=headers, json=data, timeout=120)
+    elif method == "PATCH":
+        response = requests.patch(url, headers=headers, json=data, timeout=120)
     elif method == "DELETE":
         response = requests.delete(url, headers=headers, timeout=120)
     else:
@@ -718,3 +754,912 @@ def delete_snapshot(
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
     return _make_request("DELETE", f"/snapshots/{snapshot_id}", public_key, secret_key)
+
+
+# =============================================================================
+# Session Management Functions
+# =============================================================================
+
+
+def list_sessions(
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    List all sessions for the authenticated account.
+
+    Args:
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        List of session dicts containing id, container_name, status, etc.
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    response = _make_request("GET", "/sessions", public_key, secret_key)
+    return response.get("sessions", [])
+
+
+def get_session(
+    session_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get details of a specific session.
+
+    Args:
+        session_id: Session ID to get details for
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Session details dict
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("GET", f"/sessions/{session_id}", public_key, secret_key)
+
+
+def create_session(
+    language: Optional[str] = None,
+    network_mode: str = "zerotrust",
+    ttl: int = 3600,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    shell: Optional[str] = None,
+    multiplexer: Optional[str] = None,
+    vcpu: int = 1,
+) -> Dict[str, Any]:
+    """
+    Create a new interactive session.
+
+    Args:
+        language: Optional programming language for the session
+        network_mode: Network mode - "zerotrust" (default, no network) or "semitrusted" (with network)
+        ttl: Time to live in seconds (default 3600)
+        public_key: Optional API key
+        secret_key: Optional API secret
+        shell: Optional shell to use (e.g., "bash", "python3")
+        multiplexer: Optional terminal multiplexer ("tmux" or "screen")
+        vcpu: Number of vCPUs (1-8, default 1)
+
+    Returns:
+        Response dict containing session_id, container_name, etc.
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    data: Dict[str, Any] = {
+        "network_mode": network_mode,
+        "ttl": ttl,
+    }
+    if language:
+        data["language"] = language
+    if shell:
+        data["shell"] = shell
+    if multiplexer:
+        data["multiplexer"] = multiplexer
+    if vcpu > 1:
+        data["vcpu"] = vcpu
+
+    return _make_request("POST", "/sessions", public_key, secret_key, data)
+
+
+def delete_session(
+    session_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Delete/terminate a session.
+
+    Args:
+        session_id: Session ID to delete
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with deletion confirmation and optional artifacts
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("DELETE", f"/sessions/{session_id}", public_key, secret_key)
+
+
+def freeze_session(
+    session_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Freeze a session (pause execution, preserve state).
+
+    Args:
+        session_id: Session ID to freeze
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with freeze confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/sessions/{session_id}/freeze", public_key, secret_key, {})
+
+
+def unfreeze_session(
+    session_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Unfreeze a session (resume execution).
+
+    Args:
+        session_id: Session ID to unfreeze
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with unfreeze confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/sessions/{session_id}/unfreeze", public_key, secret_key, {})
+
+
+def boost_session(
+    session_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Boost a session (increase resources).
+
+    Args:
+        session_id: Session ID to boost
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with boost confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/sessions/{session_id}/boost", public_key, secret_key, {})
+
+
+def unboost_session(
+    session_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Unboost a session (return to normal resources).
+
+    Args:
+        session_id: Session ID to unboost
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with unboost confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/sessions/{session_id}/unboost", public_key, secret_key, {})
+
+
+def shell_session(
+    session_id: str,
+    command: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Execute a shell command in a session.
+
+    Note: This is for one-off commands. For interactive shell access,
+    use WebSocket connection to /sessions/{id}/shell.
+
+    Args:
+        session_id: Session ID to execute command in
+        command: Shell command to execute
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with command output
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request(
+        "POST",
+        f"/sessions/{session_id}/shell",
+        public_key,
+        secret_key,
+        {"command": command},
+    )
+
+
+# =============================================================================
+# Service Management Functions
+# =============================================================================
+
+
+def list_services(
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    List all services for the authenticated account.
+
+    Args:
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        List of service dicts containing id, name, status, ports, etc.
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    response = _make_request("GET", "/services", public_key, secret_key)
+    return response.get("services", [])
+
+
+def create_service(
+    name: str,
+    ports: List[int],
+    bootstrap: Optional[str] = None,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    network_mode: str = "semitrusted",
+    custom_domains: Optional[List[str]] = None,
+    vcpu: int = 1,
+    service_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a new persistent service.
+
+    Args:
+        name: Service name (used for subdomain: name.on.unsandbox.com)
+        ports: List of ports to expose (e.g., [80, 443])
+        bootstrap: Bootstrap script content, URL, or inline command
+        public_key: Optional API key
+        secret_key: Optional API secret
+        network_mode: Network mode (default "semitrusted" for services)
+        custom_domains: Optional list of custom domain names
+        vcpu: Number of vCPUs (1-8, default 1)
+        service_type: Optional service type for SRV records (e.g., "minecraft")
+
+    Returns:
+        Response dict containing service_id, etc.
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    data: Dict[str, Any] = {
+        "name": name,
+        "ports": ports,
+        "network_mode": network_mode,
+    }
+    if bootstrap:
+        # Check if it looks like a URL
+        if bootstrap.startswith("http://") or bootstrap.startswith("https://"):
+            data["bootstrap"] = bootstrap
+        else:
+            data["bootstrap_content"] = bootstrap
+    if custom_domains:
+        data["custom_domains"] = custom_domains
+    if vcpu > 1:
+        data["vcpu"] = vcpu
+    if service_type:
+        data["service_type"] = service_type
+
+    return _make_request("POST", "/services", public_key, secret_key, data)
+
+
+def get_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get details of a specific service.
+
+    Args:
+        service_id: Service ID to get details for
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Service details dict
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("GET", f"/services/{service_id}", public_key, secret_key)
+
+
+def update_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    vcpu: Optional[int] = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Update a service (e.g., resize vCPU/memory).
+
+    Args:
+        service_id: Service ID to update
+        public_key: Optional API key
+        secret_key: Optional API secret
+        vcpu: Optional new vCPU count (1-8)
+        **kwargs: Additional fields to update
+
+    Returns:
+        Response dict with update confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    data: Dict[str, Any] = {}
+    if vcpu is not None:
+        data["vcpu"] = vcpu
+    data.update(kwargs)
+
+    return _make_request("PATCH", f"/services/{service_id}", public_key, secret_key, data)
+
+
+def delete_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Delete/destroy a service.
+
+    Args:
+        service_id: Service ID to delete
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with deletion confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("DELETE", f"/services/{service_id}", public_key, secret_key)
+
+
+def freeze_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Freeze a service (pause execution, preserve state).
+
+    Args:
+        service_id: Service ID to freeze
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with freeze confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/services/{service_id}/freeze", public_key, secret_key, {})
+
+
+def unfreeze_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Unfreeze a service (resume execution).
+
+    Args:
+        service_id: Service ID to unfreeze
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with unfreeze confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/services/{service_id}/unfreeze", public_key, secret_key, {})
+
+
+def lock_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Lock a service to prevent accidental deletion.
+
+    Args:
+        service_id: Service ID to lock
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with lock confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/services/{service_id}/lock", public_key, secret_key, {})
+
+
+def unlock_service(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Unlock a service to allow deletion.
+
+    Args:
+        service_id: Service ID to unlock
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with unlock confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/services/{service_id}/unlock", public_key, secret_key, {})
+
+
+def get_service_logs(
+    service_id: str,
+    all_logs: bool = False,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get bootstrap/runtime logs for a service.
+
+    Args:
+        service_id: Service ID to get logs for
+        all_logs: If True, get all logs; if False, get last ~9000 lines (tail)
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict containing "log" field with log content
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    path = f"/services/{service_id}/logs"
+    if all_logs:
+        path += "?all=true"
+    return _make_request("GET", path, public_key, secret_key)
+
+
+def get_service_env(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get environment vault status for a service.
+
+    Returns metadata about the vault (has_vault, count, updated_at)
+    but NOT the actual secrets. Use export_service_env to retrieve secrets.
+
+    Args:
+        service_id: Service ID to get env status for
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with has_vault, count, updated_at fields
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("GET", f"/services/{service_id}/env", public_key, secret_key)
+
+
+def set_service_env(
+    service_id: str,
+    env_dict: Dict[str, str],
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Set environment variables for a service.
+
+    Replaces the entire environment vault with the provided variables.
+    Variables are encrypted at rest and injected into the container.
+
+    Args:
+        service_id: Service ID to set env for
+        env_dict: Dictionary of environment variables (KEY: VALUE)
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with count of variables set
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    # Convert dict to .env format for the API
+    env_content = "\n".join(f"{k}={v}" for k, v in env_dict.items())
+
+    # Note: This endpoint expects text/plain body, but we'll send as JSON
+    # and let the API handle conversion
+    return _make_request(
+        "POST",
+        f"/services/{service_id}/env",
+        public_key,
+        secret_key,
+        {"env": env_content},
+    )
+
+
+def delete_service_env(
+    service_id: str,
+    keys: Optional[List[str]] = None,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Delete environment vault or specific keys from a service.
+
+    Args:
+        service_id: Service ID to delete env from
+        keys: Optional list of specific keys to delete; if None, deletes entire vault
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with deletion confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    path = f"/services/{service_id}/env"
+    # If specific keys provided, could add as query params (API dependent)
+    return _make_request("DELETE", path, public_key, secret_key)
+
+
+def export_service_env(
+    service_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Export environment vault secrets for a service.
+
+    Requires HMAC authentication to prove ownership.
+    Returns the actual secret values in .env format.
+
+    Args:
+        service_id: Service ID to export env from
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict containing "env" field with KEY=VALUE content
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/services/{service_id}/env/export", public_key, secret_key, {})
+
+
+def redeploy_service(
+    service_id: str,
+    bootstrap: Optional[str] = None,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Redeploy a service (re-run bootstrap script).
+
+    Bootstrap scripts should be idempotent for proper upgrade behavior.
+
+    Args:
+        service_id: Service ID to redeploy
+        bootstrap: Optional new bootstrap script/URL (uses existing if not provided)
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with redeploy confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    data: Dict[str, Any] = {}
+    if bootstrap:
+        if bootstrap.startswith("http://") or bootstrap.startswith("https://"):
+            data["bootstrap"] = bootstrap
+        else:
+            data["bootstrap_content"] = bootstrap
+
+    return _make_request("POST", f"/services/{service_id}/redeploy", public_key, secret_key, data)
+
+
+def execute_in_service(
+    service_id: str,
+    command: str,
+    timeout: int = 30000,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Execute a command in a running service container.
+
+    Uses async job polling for long-running commands.
+
+    Args:
+        service_id: Service ID to execute command in
+        command: Shell command to execute
+        timeout: Command timeout in milliseconds (default 30000)
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with job_id for async polling, or direct result
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request(
+        "POST",
+        f"/services/{service_id}/execute",
+        public_key,
+        secret_key,
+        {"command": command, "timeout": timeout},
+    )
+
+
+# =============================================================================
+# Additional Snapshot Functions
+# =============================================================================
+
+
+def lock_snapshot(
+    snapshot_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Lock a snapshot to prevent accidental deletion.
+
+    Args:
+        snapshot_id: Snapshot ID to lock
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with lock confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/snapshots/{snapshot_id}/lock", public_key, secret_key, {})
+
+
+def unlock_snapshot(
+    snapshot_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Unlock a snapshot to allow deletion.
+
+    Args:
+        snapshot_id: Snapshot ID to unlock
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with unlock confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("POST", f"/snapshots/{snapshot_id}/unlock", public_key, secret_key, {})
+
+
+def clone_snapshot(
+    snapshot_id: str,
+    clone_type: str = "session",
+    name: Optional[str] = None,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+    shell: Optional[str] = None,
+    ports: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """
+    Clone a snapshot to create a new session or service.
+
+    Args:
+        snapshot_id: Snapshot ID to clone from
+        clone_type: Type of resource to create ("session" or "service")
+        name: Optional name for the new resource
+        public_key: Optional API key
+        secret_key: Optional API secret
+        shell: Optional shell for session clones
+        ports: Optional ports list for service clones
+
+    Returns:
+        Response dict containing session_id or service_id
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    data: Dict[str, Any] = {"type": clone_type}
+    if name:
+        data["name"] = name
+    if shell:
+        data["shell"] = shell
+    if ports:
+        data["ports"] = ports
+
+    return _make_request("POST", f"/snapshots/{snapshot_id}/clone", public_key, secret_key, data)
+
+
+# =============================================================================
+# Key Validation
+# =============================================================================
+
+
+PORTAL_BASE = "https://unsandbox.com"
+
+
+def validate_keys(
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Validate API keys against the portal.
+
+    Checks if the keys are valid, not expired, and not suspended.
+
+    Args:
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with validation result:
+        - valid: True if keys are valid
+        - tier: Account tier level
+        - expires_at: Expiration timestamp (if applicable)
+        - reason: Reason for invalid status (if applicable)
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+
+    url = f"{PORTAL_BASE}/keys/validate"
+    timestamp = int(time.time())
+    body = ""
+
+    signature = _sign_request(secret_key, timestamp, "POST", "/keys/validate", body)
+
+    headers = {
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": str(timestamp),
+        "X-Signature": signature,
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(url, headers=headers, data=body, timeout=30)
+    response.raise_for_status()
+    return response.json()

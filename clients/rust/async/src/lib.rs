@@ -250,6 +250,153 @@ pub struct RestoreResult {
     pub message: String,
 }
 
+/// Session information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    /// Session ID
+    pub session_id: String,
+    /// Container name (e.g., "unsb-vm-abc123")
+    #[serde(default)]
+    pub container_name: String,
+    /// Session status: "running", "frozen", "stopped"
+    #[serde(default)]
+    pub status: String,
+    /// Network mode: "zerotrust" or "semitrusted"
+    #[serde(default)]
+    pub network_mode: String,
+    /// Shell type (e.g., "bash", "python3")
+    #[serde(default)]
+    pub shell: String,
+    /// Number of vCPUs
+    #[serde(default)]
+    pub vcpu: u32,
+    /// Memory in MB
+    #[serde(default)]
+    pub memory_mb: u32,
+    /// Whether the session is boosted
+    #[serde(default)]
+    pub boosted: bool,
+    /// Created timestamp
+    #[serde(default)]
+    pub created_at: String,
+    /// Last activity timestamp
+    #[serde(default)]
+    pub last_activity: String,
+}
+
+/// Service information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Service {
+    /// Service ID
+    pub service_id: String,
+    /// Service name
+    #[serde(default)]
+    pub name: String,
+    /// Container name
+    #[serde(default)]
+    pub container_name: String,
+    /// Service status: "running", "frozen", "stopped", "locked"
+    #[serde(default)]
+    pub status: String,
+    /// Exposed ports
+    #[serde(default)]
+    pub ports: Vec<u16>,
+    /// Custom domains
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Network mode
+    #[serde(default)]
+    pub network_mode: String,
+    /// Number of vCPUs
+    #[serde(default)]
+    pub vcpu: u32,
+    /// Memory in MB
+    #[serde(default)]
+    pub memory_mb: u32,
+    /// Whether the service is locked (cannot be modified)
+    #[serde(default)]
+    pub locked: bool,
+    /// Public URL for the service
+    #[serde(default)]
+    pub url: String,
+    /// Created timestamp
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// Result of shell command execution in a session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellResult {
+    /// Command output (stdout + stderr)
+    #[serde(default)]
+    pub output: String,
+    /// Exit code
+    #[serde(default)]
+    pub exit_code: i32,
+}
+
+/// Result of validating API keys
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeysValid {
+    /// Whether the keys are valid
+    pub valid: bool,
+    /// Account ID associated with the keys
+    #[serde(default)]
+    pub account_id: String,
+    /// Account email (if available)
+    #[serde(default)]
+    pub email: String,
+    /// Account plan/tier
+    #[serde(default)]
+    pub plan: String,
+    /// Error message if invalid
+    #[serde(default)]
+    pub error: String,
+}
+
+/// Options for creating a session
+#[derive(Debug, Clone, Default)]
+pub struct SessionCreateOptions {
+    /// Network mode: "zerotrust" (default) or "semitrusted"
+    pub network_mode: Option<String>,
+    /// Shell to use (e.g., "bash", "python3")
+    pub shell: Option<String>,
+    /// Number of vCPUs (default: 1)
+    pub vcpu: Option<u32>,
+    /// Whether to use tmux multiplexer
+    pub tmux: Option<bool>,
+    /// Whether to use screen multiplexer
+    pub screen: Option<bool>,
+}
+
+/// Options for creating a service
+#[derive(Debug, Clone, Default)]
+pub struct ServiceCreateOptions {
+    /// Network mode: "zerotrust" (default) or "semitrusted"
+    pub network_mode: Option<String>,
+    /// Number of vCPUs (default: 1)
+    pub vcpu: Option<u32>,
+    /// Custom domains for the service
+    pub domains: Option<Vec<String>>,
+    /// Bootstrap script content
+    pub bootstrap: Option<String>,
+    /// Bootstrap script URL
+    pub bootstrap_url: Option<String>,
+}
+
+/// Options for updating a service
+#[derive(Debug, Clone, Default)]
+pub struct ServiceUpdateOptions {
+    /// New service name
+    pub name: Option<String>,
+    /// New ports
+    pub ports: Option<Vec<u16>>,
+    /// New domains
+    pub domains: Option<Vec<String>>,
+    /// New vCPU count
+    pub vcpu: Option<u32>,
+}
+
 // =============================================================================
 // Internal Response Types
 // =============================================================================
@@ -302,6 +449,26 @@ struct SnapshotCreateResponse {
 struct LanguagesCache {
     languages: Vec<String>,
     timestamp: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionsListResponse {
+    sessions: Vec<Session>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServicesListResponse {
+    services: Vec<Service>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnvResponse {
+    env: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnvExportResponse {
+    content: String,
 }
 
 // =============================================================================
@@ -632,6 +799,8 @@ async fn make_request<T: for<'de> Deserialize<'de>>(
     let mut request = match method {
         "GET" => client.get(&url),
         "POST" => client.post(&url),
+        "PATCH" => client.patch(&url),
+        "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
         _ => client.get(&url),
     };
@@ -987,6 +1156,672 @@ pub async fn delete_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<(
     let path = format!("/snapshots/{}", snapshot_id);
     let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>).await?;
     Ok(())
+}
+
+/// Lock a snapshot to prevent deletion.
+///
+/// # Arguments
+/// * `snapshot_id` - Snapshot ID to lock
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Snapshot information
+pub async fn lock_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Snapshot> {
+    let path = format!("/snapshots/{}/lock", snapshot_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Unlock a snapshot to allow deletion.
+///
+/// # Arguments
+/// * `snapshot_id` - Snapshot ID to unlock
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Snapshot information
+pub async fn unlock_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Snapshot> {
+    let path = format!("/snapshots/{}/unlock", snapshot_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Clone a snapshot to create a new snapshot with a different name.
+///
+/// # Arguments
+/// * `snapshot_id` - Snapshot ID to clone
+/// * `name` - Name for the new snapshot
+/// * `creds` - API credentials
+///
+/// # Returns
+/// New Snapshot information
+pub async fn clone_snapshot(snapshot_id: &str, name: &str, creds: &Credentials) -> Result<Snapshot> {
+    let path = format!("/snapshots/{}/clone", snapshot_id);
+    let body = serde_json::json!({
+        "name": name
+    });
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+// =============================================================================
+// Session API Functions
+// =============================================================================
+
+/// List all sessions for the authenticated account.
+///
+/// # Arguments
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Vector of Session information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let sessions = list_sessions(&creds).await?;
+/// for session in sessions {
+///     println!("{}: {} ({})", session.session_id, session.container_name, session.status);
+/// }
+/// ```
+pub async fn list_sessions(creds: &Credentials) -> Result<Vec<Session>> {
+    let response: SessionsListResponse = make_request("GET", "/sessions", creds, None::<&()>).await?;
+    Ok(response.sessions)
+}
+
+/// Get details of a specific session.
+///
+/// # Arguments
+/// * `session_id` - Session ID to retrieve
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Session information
+pub async fn get_session(session_id: &str, creds: &Credentials) -> Result<Session> {
+    let path = format!("/sessions/{}", session_id);
+    make_request("GET", &path, creds, None::<&()>).await
+}
+
+/// Create a new interactive session.
+///
+/// # Arguments
+/// * `language` - Programming language/shell (e.g., "bash", "python")
+/// * `creds` - API credentials
+/// * `opts` - Optional session creation options
+///
+/// # Returns
+/// Created Session information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// // Create a basic bash session
+/// let session = create_session("bash", &creds, None).await?;
+///
+/// // Create a session with options
+/// let opts = SessionCreateOptions {
+///     network_mode: Some("semitrusted".to_string()),
+///     tmux: Some(true),
+///     ..Default::default()
+/// };
+/// let session = create_session("bash", &creds, Some(opts)).await?;
+/// ```
+pub async fn create_session(
+    language: &str,
+    creds: &Credentials,
+    opts: Option<SessionCreateOptions>,
+) -> Result<Session> {
+    let mut body = serde_json::json!({
+        "language": language
+    });
+
+    if let Some(opts) = opts {
+        if let Some(network_mode) = opts.network_mode {
+            body["network_mode"] = serde_json::json!(network_mode);
+        }
+        if let Some(shell) = opts.shell {
+            body["shell"] = serde_json::json!(shell);
+        }
+        if let Some(vcpu) = opts.vcpu {
+            body["vcpu"] = serde_json::json!(vcpu);
+        }
+        if let Some(tmux) = opts.tmux {
+            body["tmux"] = serde_json::json!(tmux);
+        }
+        if let Some(screen) = opts.screen {
+            body["screen"] = serde_json::json!(screen);
+        }
+    }
+
+    make_request("POST", "/sessions", creds, Some(&body)).await
+}
+
+/// Delete (terminate) a session.
+///
+/// # Arguments
+/// * `session_id` - Session ID to delete
+/// * `creds` - API credentials
+pub async fn delete_session(session_id: &str, creds: &Credentials) -> Result<()> {
+    let path = format!("/sessions/{}", session_id);
+    let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>).await?;
+    Ok(())
+}
+
+/// Freeze a session to save resources while preserving state.
+///
+/// Frozen sessions can be unfrozen later to resume work.
+///
+/// # Arguments
+/// * `session_id` - Session ID to freeze
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Session information
+pub async fn freeze_session(session_id: &str, creds: &Credentials) -> Result<Session> {
+    let path = format!("/sessions/{}/freeze", session_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Unfreeze a frozen session to resume work.
+///
+/// # Arguments
+/// * `session_id` - Session ID to unfreeze
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Session information
+pub async fn unfreeze_session(session_id: &str, creds: &Credentials) -> Result<Session> {
+    let path = format!("/sessions/{}/unfreeze", session_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Boost a session's resources (increase vCPU and memory).
+///
+/// Memory is derived from vCPU: vcpu * 2048MB.
+///
+/// # Arguments
+/// * `session_id` - Session ID to boost
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Session information
+pub async fn boost_session(session_id: &str, creds: &Credentials) -> Result<Session> {
+    let path = format!("/sessions/{}/boost", session_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Remove boost from a session (return to base resources).
+///
+/// # Arguments
+/// * `session_id` - Session ID to unboost
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Session information
+pub async fn unboost_session(session_id: &str, creds: &Credentials) -> Result<Session> {
+    let path = format!("/sessions/{}/unboost", session_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Execute a shell command in a session.
+///
+/// # Arguments
+/// * `session_id` - Session ID to execute command in
+/// * `command` - Command to execute
+/// * `creds` - API credentials
+///
+/// # Returns
+/// ShellResult with output and exit code
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let result = shell_session("session-123", "ls -la", &creds).await?;
+/// println!("Output: {}", result.output);
+/// println!("Exit code: {}", result.exit_code);
+/// ```
+pub async fn shell_session(session_id: &str, command: &str, creds: &Credentials) -> Result<ShellResult> {
+    let path = format!("/sessions/{}/shell", session_id);
+    let body = serde_json::json!({
+        "command": command
+    });
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+// =============================================================================
+// Service API Functions
+// =============================================================================
+
+/// List all services for the authenticated account.
+///
+/// # Arguments
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Vector of Service information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let services = list_services(&creds).await?;
+/// for service in services {
+///     println!("{}: {} ({}) - {}", service.service_id, service.name, service.status, service.url);
+/// }
+/// ```
+pub async fn list_services(creds: &Credentials) -> Result<Vec<Service>> {
+    let response: ServicesListResponse = make_request("GET", "/services", creds, None::<&()>).await?;
+    Ok(response.services)
+}
+
+/// Create a new persistent service.
+///
+/// # Arguments
+/// * `name` - Service name (used in URL: name.on.unsandbox.com)
+/// * `ports` - Ports to expose
+/// * `bootstrap` - Bootstrap script content to run on startup
+/// * `creds` - API credentials
+/// * `opts` - Optional service creation options
+///
+/// # Returns
+/// Created Service information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// // Create a simple web service
+/// let service = create_service(
+///     "myapp",
+///     &[8080],
+///     "python3 -m http.server 8080",
+///     &creds,
+///     None
+/// ).await?;
+/// println!("Service URL: {}", service.url);
+///
+/// // Create with options
+/// let opts = ServiceCreateOptions {
+///     network_mode: Some("semitrusted".to_string()),
+///     vcpu: Some(2),
+///     domains: Some(vec!["example.com".to_string()]),
+///     ..Default::default()
+/// };
+/// let service = create_service("myapp", &[80, 443], bootstrap, &creds, Some(opts)).await?;
+/// ```
+pub async fn create_service(
+    name: &str,
+    ports: &[u16],
+    bootstrap: &str,
+    creds: &Credentials,
+    opts: Option<ServiceCreateOptions>,
+) -> Result<Service> {
+    let mut body = serde_json::json!({
+        "name": name,
+        "ports": ports,
+        "bootstrap": bootstrap
+    });
+
+    if let Some(opts) = opts {
+        if let Some(network_mode) = opts.network_mode {
+            body["network_mode"] = serde_json::json!(network_mode);
+        }
+        if let Some(vcpu) = opts.vcpu {
+            body["vcpu"] = serde_json::json!(vcpu);
+        }
+        if let Some(domains) = opts.domains {
+            body["domains"] = serde_json::json!(domains);
+        }
+        if let Some(bootstrap_url) = opts.bootstrap_url {
+            body["bootstrap_url"] = serde_json::json!(bootstrap_url);
+        }
+    }
+
+    make_request("POST", "/services", creds, Some(&body)).await
+}
+
+/// Get details of a specific service.
+///
+/// # Arguments
+/// * `service_id` - Service ID to retrieve
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Service information
+pub async fn get_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}", service_id);
+    make_request("GET", &path, creds, None::<&()>).await
+}
+
+/// Update a service's configuration.
+///
+/// # Arguments
+/// * `service_id` - Service ID to update
+/// * `creds` - API credentials
+/// * `opts` - Update options (name, ports, domains, vcpu)
+///
+/// # Returns
+/// Updated Service information
+pub async fn update_service(
+    service_id: &str,
+    creds: &Credentials,
+    opts: ServiceUpdateOptions,
+) -> Result<Service> {
+    let path = format!("/services/{}", service_id);
+    let mut body = serde_json::Map::new();
+
+    if let Some(name) = opts.name {
+        body.insert("name".to_string(), serde_json::json!(name));
+    }
+    if let Some(ports) = opts.ports {
+        body.insert("ports".to_string(), serde_json::json!(ports));
+    }
+    if let Some(domains) = opts.domains {
+        body.insert("domains".to_string(), serde_json::json!(domains));
+    }
+    if let Some(vcpu) = opts.vcpu {
+        body.insert("vcpu".to_string(), serde_json::json!(vcpu));
+    }
+
+    make_request("PATCH", &path, creds, Some(&serde_json::Value::Object(body))).await
+}
+
+/// Delete (destroy) a service.
+///
+/// # Arguments
+/// * `service_id` - Service ID to delete
+/// * `creds` - API credentials
+pub async fn delete_service(service_id: &str, creds: &Credentials) -> Result<()> {
+    let path = format!("/services/{}", service_id);
+    let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>).await?;
+    Ok(())
+}
+
+/// Freeze a service to save resources while preserving state.
+///
+/// # Arguments
+/// * `service_id` - Service ID to freeze
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+pub async fn freeze_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}/freeze", service_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Unfreeze a frozen service to resume operation.
+///
+/// # Arguments
+/// * `service_id` - Service ID to unfreeze
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+pub async fn unfreeze_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}/unfreeze", service_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Lock a service to prevent modifications.
+///
+/// # Arguments
+/// * `service_id` - Service ID to lock
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+pub async fn lock_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}/lock", service_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Unlock a service to allow modifications.
+///
+/// # Arguments
+/// * `service_id` - Service ID to unlock
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+pub async fn unlock_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}/unlock", service_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Get bootstrap logs for a service.
+///
+/// # Arguments
+/// * `service_id` - Service ID to get logs for
+/// * `all` - If true, get all logs; if false, get last 9000 lines
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Log content as string
+pub async fn get_service_logs(service_id: &str, all: bool, creds: &Credentials) -> Result<String> {
+    let path = if all {
+        format!("/services/{}/logs?all=true", service_id)
+    } else {
+        format!("/services/{}/logs", service_id)
+    };
+
+    #[derive(Deserialize)]
+    struct LogsResponse {
+        #[serde(default)]
+        logs: String,
+    }
+
+    let response: LogsResponse = make_request("GET", &path, creds, None::<&()>).await?;
+    Ok(response.logs)
+}
+
+/// Get environment variables for a service.
+///
+/// # Arguments
+/// * `service_id` - Service ID to get env for
+/// * `creds` - API credentials
+///
+/// # Returns
+/// HashMap of environment variable key-value pairs
+pub async fn get_service_env(service_id: &str, creds: &Credentials) -> Result<HashMap<String, String>> {
+    let path = format!("/services/{}/env", service_id);
+    let response: EnvResponse = make_request("GET", &path, creds, None::<&()>).await?;
+    Ok(response.env)
+}
+
+/// Set environment variables for a service.
+///
+/// # Arguments
+/// * `service_id` - Service ID to set env for
+/// * `env` - HashMap of environment variable key-value pairs
+/// * `creds` - API credentials
+pub async fn set_service_env(
+    service_id: &str,
+    env: &HashMap<String, String>,
+    creds: &Credentials,
+) -> Result<()> {
+    let path = format!("/services/{}/env", service_id);
+
+    // Convert to .env format
+    let content: String = env
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Use PUT with text/plain content type
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
+
+    let url = format!("{}{}", API_BASE, path);
+    let timestamp = get_timestamp();
+    let signature = sign_request(&creds.secret_key, timestamp, "PUT", &path, &content);
+
+    let response = client
+        .put(&url)
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("Content-Type", "text/plain")
+        .header("User-Agent", "un-rust-async/2.0")
+        .body(content)
+        .send()
+        .await?;
+
+    let status = response.status().as_u16();
+    if status < 200 || status >= 300 {
+        let response_text = response.text().await?;
+        return Err(UnsandboxError::ApiError {
+            status,
+            message: response_text,
+        });
+    }
+
+    Ok(())
+}
+
+/// Delete environment variables for a service.
+///
+/// # Arguments
+/// * `service_id` - Service ID to delete env for
+/// * `keys` - List of environment variable keys to delete
+/// * `creds` - API credentials
+pub async fn delete_service_env(
+    service_id: &str,
+    keys: &[&str],
+    creds: &Credentials,
+) -> Result<()> {
+    let path = format!("/services/{}/env", service_id);
+    let body = serde_json::json!({
+        "keys": keys
+    });
+    let _: serde_json::Value = make_request("DELETE", &path, creds, Some(&body)).await?;
+    Ok(())
+}
+
+/// Export environment variables for a service in .env format.
+///
+/// # Arguments
+/// * `service_id` - Service ID to export env for
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Environment variables in .env format string
+pub async fn export_service_env(service_id: &str, creds: &Credentials) -> Result<String> {
+    let path = format!("/services/{}/env/export", service_id);
+    let body = serde_json::json!({});
+    let response: EnvExportResponse = make_request("POST", &path, creds, Some(&body)).await?;
+    Ok(response.content)
+}
+
+/// Redeploy a service with a new bootstrap script.
+///
+/// # Arguments
+/// * `service_id` - Service ID to redeploy
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+pub async fn redeploy_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}/redeploy", service_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+/// Execute a command in a service container.
+///
+/// # Arguments
+/// * `service_id` - Service ID to execute command in
+/// * `command` - Command to execute
+/// * `creds` - API credentials
+///
+/// # Returns
+/// ExecuteResult with output and exit code
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let result = execute_in_service("service-123", "ls -la /app", &creds).await?;
+/// println!("Output: {}", result.output);
+/// ```
+pub async fn execute_in_service(
+    service_id: &str,
+    command: &str,
+    creds: &Credentials,
+) -> Result<ExecuteResult> {
+    let path = format!("/services/{}/execute", service_id);
+    let body = serde_json::json!({
+        "command": command,
+        "timeout": 30000
+    });
+    make_request("POST", &path, creds, Some(&body)).await
+}
+
+// =============================================================================
+// Key Validation API Functions
+// =============================================================================
+
+/// Validate API keys.
+///
+/// # Arguments
+/// * `creds` - API credentials to validate
+///
+/// # Returns
+/// KeysValid with validation result and account info
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let result = validate_keys(&creds).await?;
+/// if result.valid {
+///     println!("Keys valid for account: {}", result.account_id);
+/// } else {
+///     println!("Invalid keys: {}", result.error);
+/// }
+/// ```
+pub async fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
+    // Note: This endpoint is on the portal, not the API
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+
+    let url = "https://unsandbox.com/keys/validate";
+    let path = "/keys/validate";
+    let timestamp = get_timestamp();
+    let body_str = "";
+    let signature = sign_request(&creds.secret_key, timestamp, "POST", path, body_str);
+
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "un-rust-async/2.0")
+        .body("")
+        .send()
+        .await?;
+
+    let status = response.status().as_u16();
+    let response_text = response.text().await?;
+
+    if status < 200 || status >= 300 {
+        return Err(UnsandboxError::ApiError {
+            status,
+            message: response_text,
+        });
+    }
+
+    let result: KeysValid = serde_json::from_str(&response_text)?;
+    Ok(result)
 }
 
 // =============================================================================

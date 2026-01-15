@@ -649,3 +649,363 @@ func RestoreSnapshot(creds *Credentials, snapshotID string) (map[string]interfac
 func DeleteSnapshot(creds *Credentials, snapshotID string) (map[string]interface{}, error) {
 	return makeRequest("DELETE", fmt.Sprintf("/snapshots/%s", snapshotID), creds, nil)
 }
+
+// ============================================================================
+// Session Operations
+// ============================================================================
+
+// SessionOptions contains optional parameters for session creation.
+type SessionOptions struct {
+	NetworkMode string // "zerotrust" (default) or "semitrusted"
+	Shell       string // Shell to use (e.g., "bash", "python3")
+	TTL         int    // Time-to-live in seconds (default: 3600)
+	VCPU        int    // Number of virtual CPUs (default: 1)
+	Multiplexer string // Multiplexer to use (e.g., "tmux")
+}
+
+// ListSessions lists all active sessions for the authenticated account.
+func ListSessions(creds *Credentials) ([]map[string]interface{}, error) {
+	response, err := makeRequest("GET", "/sessions", creds, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if sessions, ok := response["sessions"].([]interface{}); ok {
+		result := make([]map[string]interface{}, len(sessions))
+		for i, session := range sessions {
+			if m, ok := session.(map[string]interface{}); ok {
+				result[i] = m
+			}
+		}
+		return result, nil
+	}
+
+	return []map[string]interface{}{}, nil
+}
+
+// GetSession gets details of a specific session.
+func GetSession(creds *Credentials, sessionID string) (map[string]interface{}, error) {
+	return makeRequest("GET", fmt.Sprintf("/sessions/%s", sessionID), creds, nil)
+}
+
+// CreateSession creates a new interactive session.
+//
+// Args:
+//
+//	creds: API credentials
+//	opts: Optional session configuration (can be nil for defaults)
+//
+// Returns:
+//
+//	Session info including session_id and container_name
+func CreateSession(creds *Credentials, opts *SessionOptions) (map[string]interface{}, error) {
+	data := make(map[string]interface{})
+
+	if opts != nil {
+		if opts.NetworkMode != "" {
+			data["network_mode"] = opts.NetworkMode
+		}
+		if opts.Shell != "" {
+			data["shell"] = opts.Shell
+		}
+		if opts.TTL > 0 {
+			data["ttl"] = opts.TTL
+		}
+		if opts.VCPU > 0 {
+			data["vcpu"] = opts.VCPU
+		}
+		if opts.Multiplexer != "" {
+			data["multiplexer"] = opts.Multiplexer
+		}
+	}
+
+	return makeRequest("POST", "/sessions", creds, data)
+}
+
+// DeleteSession terminates a session.
+func DeleteSession(creds *Credentials, sessionID string) (map[string]interface{}, error) {
+	return makeRequest("DELETE", fmt.Sprintf("/sessions/%s", sessionID), creds, nil)
+}
+
+// FreezeSession freezes a session (pauses execution, preserves state).
+func FreezeSession(creds *Credentials, sessionID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/sessions/%s/freeze", sessionID), creds, map[string]interface{}{})
+}
+
+// UnfreezeSession unfreezes a previously frozen session.
+func UnfreezeSession(creds *Credentials, sessionID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/sessions/%s/unfreeze", sessionID), creds, map[string]interface{}{})
+}
+
+// BoostSession increases the vCPU allocation for a session.
+//
+// Args:
+//
+//	creds: API credentials
+//	sessionID: Session ID to boost
+//	vcpu: Number of vCPUs (2, 4, 8, etc.)
+func BoostSession(creds *Credentials, sessionID string, vcpu int) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"vcpu": vcpu,
+	}
+	return makeRequest("POST", fmt.Sprintf("/sessions/%s/boost", sessionID), creds, data)
+}
+
+// UnboostSession resets the vCPU allocation for a session to default.
+func UnboostSession(creds *Credentials, sessionID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/sessions/%s/unboost", sessionID), creds, map[string]interface{}{})
+}
+
+// ShellSession executes a command in a session's shell.
+//
+// Note: For interactive shell access, use the WebSocket-based shell endpoint.
+// This function is for executing single commands.
+func ShellSession(creds *Credentials, sessionID, command string) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"command": command,
+	}
+	return makeRequest("POST", fmt.Sprintf("/sessions/%s/shell", sessionID), creds, data)
+}
+
+// ============================================================================
+// Service Operations
+// ============================================================================
+
+// ServiceOptions contains optional parameters for service creation.
+type ServiceOptions struct {
+	NetworkMode string // "zerotrust" (default) or "semitrusted"
+	Shell       string // Shell to use for bootstrap
+	VCPU        int    // Number of virtual CPUs
+}
+
+// ServiceUpdateOptions contains optional parameters for service updates.
+type ServiceUpdateOptions struct {
+	VCPU int // Number of virtual CPUs
+}
+
+// ListServices lists all services for the authenticated account.
+func ListServices(creds *Credentials) ([]map[string]interface{}, error) {
+	response, err := makeRequest("GET", "/services", creds, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if services, ok := response["services"].([]interface{}); ok {
+		result := make([]map[string]interface{}, len(services))
+		for i, service := range services {
+			if m, ok := service.(map[string]interface{}); ok {
+				result[i] = m
+			}
+		}
+		return result, nil
+	}
+
+	return []map[string]interface{}{}, nil
+}
+
+// CreateService creates a new persistent service.
+//
+// Args:
+//
+//	creds: API credentials
+//	name: Service name
+//	ports: Array of port numbers to expose
+//	bootstrap: Bootstrap script to run on service start
+//	opts: Optional service configuration (can be nil for defaults)
+func CreateService(creds *Credentials, name string, ports []int, bootstrap string, opts *ServiceOptions) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"name":      name,
+		"ports":     ports,
+		"bootstrap": bootstrap,
+	}
+
+	if opts != nil {
+		if opts.NetworkMode != "" {
+			data["network_mode"] = opts.NetworkMode
+		}
+		if opts.Shell != "" {
+			data["shell"] = opts.Shell
+		}
+		if opts.VCPU > 0 {
+			data["vcpu"] = opts.VCPU
+		}
+	}
+
+	return makeRequest("POST", "/services", creds, data)
+}
+
+// GetService gets details of a specific service.
+func GetService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("GET", fmt.Sprintf("/services/%s", serviceID), creds, nil)
+}
+
+// UpdateService updates a service's configuration.
+func UpdateService(creds *Credentials, serviceID string, opts *ServiceUpdateOptions) (map[string]interface{}, error) {
+	data := make(map[string]interface{})
+	if opts != nil {
+		if opts.VCPU > 0 {
+			data["vcpu"] = opts.VCPU
+		}
+	}
+	return makeRequest("PATCH", fmt.Sprintf("/services/%s", serviceID), creds, data)
+}
+
+// DeleteService destroys a service.
+func DeleteService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("DELETE", fmt.Sprintf("/services/%s", serviceID), creds, nil)
+}
+
+// FreezeService freezes a service (pauses execution, preserves state).
+func FreezeService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/services/%s/freeze", serviceID), creds, map[string]interface{}{})
+}
+
+// UnfreezeService unfreezes a previously frozen service.
+func UnfreezeService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/services/%s/unfreeze", serviceID), creds, map[string]interface{}{})
+}
+
+// LockService locks a service to prevent modifications or deletion.
+func LockService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/services/%s/lock", serviceID), creds, map[string]interface{}{})
+}
+
+// UnlockService unlocks a previously locked service.
+func UnlockService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/services/%s/unlock", serviceID), creds, map[string]interface{}{})
+}
+
+// GetServiceLogs retrieves logs from a service.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	all: If true, returns all logs; if false, returns only recent logs
+func GetServiceLogs(creds *Credentials, serviceID string, all bool) (map[string]interface{}, error) {
+	path := fmt.Sprintf("/services/%s/logs", serviceID)
+	if all {
+		path = fmt.Sprintf("/services/%s/logs?all=true", serviceID)
+	}
+	return makeRequest("GET", path, creds, nil)
+}
+
+// GetServiceEnv retrieves the environment variable names for a service.
+// Note: Values are not returned for security; use ExportServiceEnv for full export.
+func GetServiceEnv(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("GET", fmt.Sprintf("/services/%s/env", serviceID), creds, nil)
+}
+
+// SetServiceEnv sets environment variables for a service.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	env: Map of environment variable names to values
+func SetServiceEnv(creds *Credentials, serviceID string, env map[string]string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/services/%s/env", serviceID), creds, env)
+}
+
+// DeleteServiceEnv deletes environment variables from a service.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	keys: List of environment variable names to delete (nil deletes all)
+func DeleteServiceEnv(creds *Credentials, serviceID string, keys []string) (map[string]interface{}, error) {
+	var data interface{}
+	if keys != nil {
+		data = map[string]interface{}{"keys": keys}
+	}
+	return makeRequest("DELETE", fmt.Sprintf("/services/%s/env", serviceID), creds, data)
+}
+
+// ExportServiceEnv exports all environment variables for a service.
+// Returns the full .env format content with values.
+func ExportServiceEnv(creds *Credentials, serviceID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/services/%s/env/export", serviceID), creds, map[string]interface{}{})
+}
+
+// RedeployService redeploys a service with optional new bootstrap script.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	bootstrap: New bootstrap script (empty string to keep existing)
+func RedeployService(creds *Credentials, serviceID string, bootstrap string) (map[string]interface{}, error) {
+	data := make(map[string]interface{})
+	if bootstrap != "" {
+		data["bootstrap"] = bootstrap
+	}
+	return makeRequest("POST", fmt.Sprintf("/services/%s/redeploy", serviceID), creds, data)
+}
+
+// ExecuteInService executes a command in a running service.
+func ExecuteInService(creds *Credentials, serviceID, command string) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"command": command,
+	}
+	return makeRequest("POST", fmt.Sprintf("/services/%s/execute", serviceID), creds, data)
+}
+
+// ============================================================================
+// Additional Snapshot Operations
+// ============================================================================
+
+// LockSnapshot locks a snapshot to prevent deletion.
+func LockSnapshot(creds *Credentials, snapshotID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/snapshots/%s/lock", snapshotID), creds, map[string]interface{}{})
+}
+
+// UnlockSnapshot unlocks a previously locked snapshot.
+func UnlockSnapshot(creds *Credentials, snapshotID string) (map[string]interface{}, error) {
+	return makeRequest("POST", fmt.Sprintf("/snapshots/%s/unlock", snapshotID), creds, map[string]interface{}{})
+}
+
+// CloneSnapshotOptions contains optional parameters for snapshot cloning.
+type CloneSnapshotOptions struct {
+	Name   string   // Name for the cloned resource
+	Shell  string   // Shell to use (for session clones)
+	Ports  []int    // Ports to expose (for service clones)
+}
+
+// CloneSnapshot clones a snapshot into a new session or service.
+//
+// Args:
+//
+//	creds: API credentials
+//	snapshotID: Snapshot ID to clone
+//	cloneType: "session" or "service"
+//	opts: Optional clone configuration (can be nil)
+func CloneSnapshot(creds *Credentials, snapshotID, cloneType string, opts *CloneSnapshotOptions) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"type": cloneType,
+	}
+
+	if opts != nil {
+		if opts.Name != "" {
+			data["name"] = opts.Name
+		}
+		if opts.Shell != "" {
+			data["shell"] = opts.Shell
+		}
+		if opts.Ports != nil {
+			data["ports"] = opts.Ports
+		}
+	}
+
+	return makeRequest("POST", fmt.Sprintf("/snapshots/%s/clone", snapshotID), creds, data)
+}
+
+// ============================================================================
+// Key Validation
+// ============================================================================
+
+// ValidateKeys validates the API credentials with the server.
+// Returns account information if valid, error if invalid.
+func ValidateKeys(creds *Credentials) (map[string]interface{}, error) {
+	return makeRequest("POST", "/keys/validate", creds, map[string]interface{}{})
+}

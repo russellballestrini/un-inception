@@ -467,6 +467,545 @@ class UnsandboxAsync {
     }
 
     /**
+     * Lock a snapshot to prevent deletion.
+     *
+     * @param string $snapshotId Snapshot ID to lock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with lock confirmation
+     */
+    public function lockSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/lock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unlock a snapshot to allow deletion.
+     *
+     * @param string $snapshotId Snapshot ID to unlock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with unlock confirmation
+     */
+    public function unlockSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/unlock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Clone a snapshot to create a new session or service.
+     *
+     * @param string $snapshotId Snapshot ID to clone
+     * @param string|null $name Optional name for the new resource
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'type' (session|service), 'shell', 'ports'
+     * @return PromiseInterface Resolves to response array with cloned resource info
+     */
+    public function cloneSnapshot(
+        string $snapshotId,
+        ?string $name = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        array $opts = []
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [];
+        if ($name !== null) {
+            $data['name'] = $name;
+        }
+        if (isset($opts['type'])) {
+            $data['type'] = $opts['type'];
+        }
+        if (isset($opts['shell'])) {
+            $data['shell'] = $opts['shell'];
+        }
+        if (isset($opts['ports'])) {
+            $data['ports'] = $opts['ports'];
+        }
+
+        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/clone", $publicKey, $secretKey, $data);
+    }
+
+    // =========================================================================
+    // Session Methods
+    // =========================================================================
+
+    /**
+     * List all active sessions for the authenticated account.
+     *
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to list of session arrays
+     */
+    public function listSessions(?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', '/sessions', $publicKey, $secretKey)->then(function (array $response) {
+            return $response['sessions'] ?? [];
+        });
+    }
+
+    /**
+     * Get details of a specific session.
+     *
+     * @param string $sessionId Session ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to session details
+     */
+    public function getSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/sessions/{$sessionId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Create a new interactive session.
+     *
+     * @param string $language Programming language or shell (e.g., "bash", "python3")
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'network_mode', 'ttl', 'shell', 'multiplexer', 'vcpu'
+     * @return PromiseInterface Resolves to session info including session_id and container_name
+     */
+    public function createSession(
+        string $language,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        array $opts = []
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [
+            'network_mode' => $opts['network_mode'] ?? 'zerotrust',
+            'ttl' => $opts['ttl'] ?? 3600,
+        ];
+        if (!empty($language)) {
+            $data['shell'] = $language;
+        }
+        if (isset($opts['shell'])) {
+            $data['shell'] = $opts['shell'];
+        }
+        if (isset($opts['multiplexer'])) {
+            $data['multiplexer'] = $opts['multiplexer'];
+        }
+        if (isset($opts['vcpu']) && $opts['vcpu'] > 1) {
+            $data['vcpu'] = $opts['vcpu'];
+        }
+        if (isset($opts['input_files'])) {
+            $data['input_files'] = $opts['input_files'];
+        }
+
+        return $this->makeRequest('POST', '/sessions', $publicKey, $secretKey, $data);
+    }
+
+    /**
+     * Delete (terminate) a session.
+     *
+     * @param string $sessionId Session ID to delete
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with deletion confirmation
+     */
+    public function deleteSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/sessions/{$sessionId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Freeze a session to pause execution and reduce resource usage.
+     *
+     * @param string $sessionId Session ID to freeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with freeze confirmation
+     */
+    public function freezeSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/freeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unfreeze a session to resume execution.
+     *
+     * @param string $sessionId Session ID to unfreeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with unfreeze confirmation
+     */
+    public function unfreezeSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/unfreeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Boost a session's resources (increase vCPU, memory is derived: vcpu * 2048MB).
+     *
+     * @param string $sessionId Session ID to boost
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param int $vcpu Number of vCPUs (default: 2)
+     * @return PromiseInterface Resolves to response array with boost confirmation
+     */
+    public function boostSession(
+        string $sessionId,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        int $vcpu = 2
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/boost", $publicKey, $secretKey, ['vcpu' => $vcpu]);
+    }
+
+    /**
+     * Remove boost from a session (return to base resources).
+     *
+     * @param string $sessionId Session ID to unboost
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with unboost confirmation
+     */
+    public function unboostSession(string $sessionId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/unboost", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Execute a shell command in an active session.
+     *
+     * Note: This is for one-shot commands. For interactive sessions, use WebSocket connection.
+     *
+     * @param string $sessionId Session ID
+     * @param string $command Command to execute
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with command output
+     */
+    public function shellSession(
+        string $sessionId,
+        string $command,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/sessions/{$sessionId}/shell", $publicKey, $secretKey, ['command' => $command]);
+    }
+
+    // =========================================================================
+    // Service Methods
+    // =========================================================================
+
+    /**
+     * List all services for the authenticated account.
+     *
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to list of service arrays
+     */
+    public function listServices(?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', '/services', $publicKey, $secretKey)->then(function (array $response) {
+            return $response['services'] ?? [];
+        });
+    }
+
+    /**
+     * Create a new persistent service.
+     *
+     * @param string $name Service name
+     * @param array|string $ports Port(s) to expose (array of ints or comma-separated string)
+     * @param string $bootstrap Bootstrap command or URL
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'network_mode', 'vcpu', 'service_type', 'custom_domains', 'bootstrap_content', 'input_files'
+     * @return PromiseInterface Resolves to service info including service_id
+     */
+    public function createService(
+        string $name,
+        $ports,
+        string $bootstrap,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        array $opts = []
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        // Convert ports to array if string
+        if (is_string($ports)) {
+            $ports = array_map('intval', explode(',', $ports));
+        }
+
+        $data = [
+            'name' => $name,
+            'ports' => $ports,
+            'bootstrap' => $bootstrap,
+        ];
+
+        if (isset($opts['network_mode'])) {
+            $data['network_mode'] = $opts['network_mode'];
+        }
+        if (isset($opts['vcpu']) && $opts['vcpu'] > 1) {
+            $data['vcpu'] = $opts['vcpu'];
+        }
+        if (isset($opts['service_type'])) {
+            $data['service_type'] = $opts['service_type'];
+        }
+        if (isset($opts['custom_domains'])) {
+            $data['custom_domains'] = $opts['custom_domains'];
+        }
+        if (isset($opts['bootstrap_content'])) {
+            $data['bootstrap_content'] = $opts['bootstrap_content'];
+        }
+        if (isset($opts['input_files'])) {
+            $data['input_files'] = $opts['input_files'];
+        }
+
+        return $this->makeRequest('POST', '/services', $publicKey, $secretKey, $data);
+    }
+
+    /**
+     * Get details of a specific service.
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to service details
+     */
+    public function getService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/services/{$serviceId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Update a service (e.g., resize vCPU).
+     *
+     * @param string $serviceId Service ID
+     * @param array $opts Update parameters: 'vcpu', 'name', etc.
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to updated service details
+     */
+    public function updateService(
+        string $serviceId,
+        array $opts,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('PATCH', "/services/{$serviceId}", $publicKey, $secretKey, $opts);
+    }
+
+    /**
+     * Delete (destroy) a service.
+     *
+     * @param string $serviceId Service ID to delete
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with deletion confirmation
+     */
+    public function deleteService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/services/{$serviceId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Freeze a service to pause execution and reduce resource usage.
+     *
+     * @param string $serviceId Service ID to freeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with freeze confirmation
+     */
+    public function freezeService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/freeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unfreeze a service to resume execution.
+     *
+     * @param string $serviceId Service ID to unfreeze
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with unfreeze confirmation
+     */
+    public function unfreezeService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/unfreeze", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Lock a service to prevent deletion.
+     *
+     * @param string $serviceId Service ID to lock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with lock confirmation
+     */
+    public function lockService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/lock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unlock a service to allow deletion.
+     *
+     * @param string $serviceId Service ID to unlock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with unlock confirmation
+     */
+    public function unlockService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/unlock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Get bootstrap logs for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param bool $all If true, get all logs; if false, get last 9000 lines
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with log content
+     */
+    public function getServiceLogs(
+        string $serviceId,
+        bool $all = false,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $path = "/services/{$serviceId}/logs" . ($all ? '?all=true' : '');
+        return $this->makeRequest('GET', $path, $publicKey, $secretKey);
+    }
+
+    /**
+     * Get environment vault status for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with vault status (has_vault, count, updated_at)
+     */
+    public function getServiceEnv(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/services/{$serviceId}/env", $publicKey, $secretKey);
+    }
+
+    /**
+     * Set environment vault for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param string $env Environment content in .env format (KEY=VALUE\nKEY2=VALUE2)
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with update confirmation
+     */
+    public function setServiceEnv(
+        string $serviceId,
+        string $env,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequestRaw('PUT', "/services/{$serviceId}/env", $publicKey, $secretKey, $env, 'text/plain');
+    }
+
+    /**
+     * Delete environment vault for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param array|null $keys Optional specific keys to delete; if null, deletes entire vault
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with deletion confirmation
+     */
+    public function deleteServiceEnv(
+        string $serviceId,
+        ?array $keys = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/services/{$serviceId}/env", $publicKey, $secretKey);
+    }
+
+    /**
+     * Export environment vault for a service (returns .env format).
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with env content
+     */
+    public function exportServiceEnv(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/env/export", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Redeploy a service (re-run bootstrap script).
+     *
+     * @param string $serviceId Service ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with redeploy confirmation
+     */
+    public function redeployService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/services/{$serviceId}/redeploy", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Execute a command in a running service container.
+     *
+     * @param string $serviceId Service ID
+     * @param string $command Command to execute
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @param int $timeout Timeout in milliseconds (default: 30000)
+     * @return PromiseInterface Resolves to response array with command output (stdout, stderr, exit_code)
+     */
+    public function executeInService(
+        string $serviceId,
+        string $command,
+        ?string $publicKey = null,
+        ?string $secretKey = null,
+        int $timeout = 30000
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        return $this->makeRequest('POST', "/services/{$serviceId}/execute", $publicKey, $secretKey, [
+            'command' => $command,
+            'timeout' => $timeout,
+        ])->then(function (array $response) use ($publicKey, $secretKey) {
+            // If we got a job_id, poll until completion
+            $jobId = $response['job_id'] ?? null;
+            if ($jobId) {
+                return $this->waitForJob($jobId, $publicKey, $secretKey);
+            }
+            return $response;
+        });
+    }
+
+    // =========================================================================
+    // Key Validation
+    // =========================================================================
+
+    /**
+     * Validate API keys.
+     *
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with validation result
+     */
+    public function validateKeys(?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', '/keys/validate', $publicKey, $secretKey, []);
+    }
+
+    /**
      * Get path to ~/.unsandbox directory, creating if necessary.
      *
      * @return string Path to unsandbox directory
@@ -635,6 +1174,58 @@ class UnsandboxAsync {
         if ($data !== null) {
             $options['body'] = $body;
         }
+
+        return $this->httpClient->requestAsync($method, $path, $options)->then(
+            function ($response) {
+                $body = (string)$response->getBody();
+                $decoded = json_decode($body, true);
+                if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+                    throw new AsyncApiException("Invalid JSON response: " . json_last_error_msg());
+                }
+                return $decoded;
+            },
+            function ($exception) {
+                if ($exception instanceof RequestException) {
+                    $response = $exception->getResponse();
+                    if ($response !== null) {
+                        $body = (string)$response->getBody();
+                        $decoded = json_decode($body, true);
+                        $errorMessage = $decoded['error'] ?? $decoded['message'] ?? "HTTP " . $response->getStatusCode();
+                        throw new AsyncApiException($errorMessage, $response->getStatusCode(), $decoded, $exception);
+                    }
+                }
+                throw new AsyncApiException($exception->getMessage(), 0, null, $exception);
+            }
+        );
+    }
+
+    /**
+     * Make an authenticated HTTP request with raw body content (non-JSON) asynchronously.
+     *
+     * @param string $method HTTP method (PUT, POST, etc.)
+     * @param string $path API endpoint path
+     * @param string $publicKey API public key
+     * @param string $secretKey API secret key
+     * @param string $body Raw request body
+     * @param string $contentType Content type header (e.g., 'text/plain')
+     * @return PromiseInterface Resolves to decoded JSON response array
+     */
+    private function makeRequestRaw(string $method, string $path, string $publicKey, string $secretKey, string $body, string $contentType = 'text/plain'): PromiseInterface {
+        $timestamp = time();
+
+        $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $body);
+
+        $headers = [
+            'Authorization' => 'Bearer ' . $publicKey,
+            'X-Timestamp' => (string)$timestamp,
+            'X-Signature' => $signature,
+            'Content-Type' => $contentType,
+        ];
+
+        $options = [
+            'headers' => $headers,
+            'body' => $body,
+        ];
 
         return $this->httpClient->requestAsync($method, $path, $options)->then(
             function ($response) {

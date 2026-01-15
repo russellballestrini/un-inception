@@ -1088,6 +1088,694 @@ public class UnsandboxAsync {
         return makeRequest("DELETE", "/snapshots/" + snapshotId, creds[0], creds[1], null);
     }
 
+    // ========================================================================
+    // Session API Methods
+    // ========================================================================
+
+    /**
+     * List all active sessions for the authenticated account.
+     *
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing list of session maps
+     */
+    @SuppressWarnings("unchecked")
+    public static CompletableFuture<List<Map<String, Object>>> listSessions(
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/sessions", creds[0], creds[1], null)
+            .thenApply(response -> {
+                Object sessions = response.get("sessions");
+                if (sessions instanceof List) {
+                    List<Map<String, Object>> result = new ArrayList<>();
+                    for (Object item : (List<?>) sessions) {
+                        if (item instanceof Map) {
+                            result.add((Map<String, Object>) item);
+                        }
+                    }
+                    return result;
+                }
+                return new ArrayList<>();
+            });
+    }
+
+    /**
+     * Get details of a specific session.
+     *
+     * @param sessionId Session ID to retrieve
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing session details map
+     */
+    public static CompletableFuture<Map<String, Object>> getSession(
+        String sessionId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/sessions/" + sessionId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Create a new interactive session.
+     *
+     * @param language Programming language/shell for the session (e.g., "bash", "python3")
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @param opts Optional parameters: network_mode, ttl, shell, multiplexer, vcpu
+     * @return CompletableFuture containing response map with session_id, container_name
+     */
+    public static CompletableFuture<Map<String, Object>> createSession(
+        String language,
+        String publicKey,
+        String secretKey,
+        Map<String, Object> opts
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("network_mode", "zerotrust");
+        data.put("ttl", 3600);
+        if (language != null && !language.isEmpty()) {
+            data.put("shell", language);
+        }
+        if (opts != null) {
+            data.putAll(opts);
+        }
+
+        return makeRequest("POST", "/sessions", creds[0], creds[1], data);
+    }
+
+    /**
+     * Delete (terminate) a session.
+     *
+     * @param sessionId Session ID to terminate
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with termination confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> deleteSession(
+        String sessionId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("DELETE", "/sessions/" + sessionId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Freeze a session (pause execution, reduce resource consumption).
+     *
+     * @param sessionId Session ID to freeze
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with freeze confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> freezeSession(
+        String sessionId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/sessions/" + sessionId + "/freeze", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Unfreeze a session (resume execution).
+     *
+     * @param sessionId Session ID to unfreeze
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with unfreeze confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> unfreezeSession(
+        String sessionId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/sessions/" + sessionId + "/unfreeze", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Boost a session's resources (increase vCPU and memory).
+     *
+     * @param sessionId Session ID to boost
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with boost confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> boostSession(
+        String sessionId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("vcpu", 2);
+        return makeRequest("POST", "/sessions/" + sessionId + "/boost", creds[0], creds[1], data);
+    }
+
+    /**
+     * Remove boost from a session (return to base resources).
+     *
+     * @param sessionId Session ID to unboost
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with unboost confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> unboostSession(
+        String sessionId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/sessions/" + sessionId + "/unboost", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Execute a shell command in an existing session.
+     *
+     * @param sessionId Session ID to execute command in
+     * @param command Shell command to execute
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with command output
+     */
+    public static CompletableFuture<Map<String, Object>> shellSession(
+        String sessionId,
+        String command,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("command", command);
+        return makeRequest("POST", "/sessions/" + sessionId + "/shell", creds[0], creds[1], data);
+    }
+
+    // ========================================================================
+    // Service API Methods
+    // ========================================================================
+
+    /**
+     * List all services for the authenticated account.
+     *
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing list of service maps
+     */
+    @SuppressWarnings("unchecked")
+    public static CompletableFuture<List<Map<String, Object>>> listServices(
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/services", creds[0], creds[1], null)
+            .thenApply(response -> {
+                Object services = response.get("services");
+                if (services instanceof List) {
+                    List<Map<String, Object>> result = new ArrayList<>();
+                    for (Object item : (List<?>) services) {
+                        if (item instanceof Map) {
+                            result.add((Map<String, Object>) item);
+                        }
+                    }
+                    return result;
+                }
+                return new ArrayList<>();
+            });
+    }
+
+    /**
+     * Create a new persistent service.
+     *
+     * @param name Service name
+     * @param ports Comma-separated list of ports to expose (e.g., "80,443")
+     * @param bootstrap Bootstrap script or URL to run on service creation
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with service_id
+     */
+    public static CompletableFuture<Map<String, Object>> createService(
+        String name,
+        String ports,
+        String bootstrap,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("name", name);
+        if (ports != null && !ports.isEmpty()) {
+            List<Integer> portList = new ArrayList<>();
+            for (String p : ports.split(",")) {
+                try {
+                    portList.add(Integer.parseInt(p.trim()));
+                } catch (NumberFormatException e) {
+                    // Skip invalid port
+                }
+            }
+            data.put("ports", portList);
+        }
+        if (bootstrap != null && !bootstrap.isEmpty()) {
+            if (bootstrap.startsWith("http://") || bootstrap.startsWith("https://")) {
+                data.put("bootstrap_url", bootstrap);
+            } else {
+                data.put("bootstrap", bootstrap);
+            }
+        }
+
+        return makeRequest("POST", "/services", creds[0], creds[1], data);
+    }
+
+    /**
+     * Get details of a specific service.
+     *
+     * @param serviceId Service ID to retrieve
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing service details map
+     */
+    public static CompletableFuture<Map<String, Object>> getService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/services/" + serviceId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Update a service's configuration.
+     *
+     * @param serviceId Service ID to update
+     * @param opts Update options (e.g., vcpu for resizing)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with update confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> updateService(
+        String serviceId,
+        Map<String, Object> opts,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequestWithMethod("PATCH", "/services/" + serviceId, creds[0], creds[1], opts);
+    }
+
+    /**
+     * Delete (destroy) a service.
+     *
+     * @param serviceId Service ID to destroy
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with deletion confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> deleteService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("DELETE", "/services/" + serviceId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Freeze a service (pause execution, reduce resource consumption).
+     *
+     * @param serviceId Service ID to freeze
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with freeze confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> freezeService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/services/" + serviceId + "/freeze", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Unfreeze a service (resume execution).
+     *
+     * @param serviceId Service ID to unfreeze
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with unfreeze confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> unfreezeService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/services/" + serviceId + "/unfreeze", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Lock a service (prevent modifications and termination).
+     *
+     * @param serviceId Service ID to lock
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with lock confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> lockService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/services/" + serviceId + "/lock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Unlock a service (allow modifications and termination).
+     *
+     * @param serviceId Service ID to unlock
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with unlock confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> unlockService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/services/" + serviceId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Get bootstrap logs for a service.
+     *
+     * @param serviceId Service ID to get logs for
+     * @param all If true, return all logs; if false, return recent logs only
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with logs
+     */
+    public static CompletableFuture<Map<String, Object>> getServiceLogs(
+        String serviceId,
+        boolean all,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        String path = "/services/" + serviceId + "/logs";
+        if (all) {
+            path += "?all=true";
+        }
+        return makeRequest("GET", path, creds[0], creds[1], null);
+    }
+
+    /**
+     * Get environment vault status for a service.
+     *
+     * @param serviceId Service ID to get env status for
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with has_vault, count, updated_at
+     */
+    public static CompletableFuture<Map<String, Object>> getServiceEnv(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/services/" + serviceId + "/env", creds[0], creds[1], null);
+    }
+
+    /**
+     * Set environment vault for a service.
+     *
+     * @param serviceId Service ID to set env for
+     * @param env Environment variables map (KEY=VALUE pairs)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with set confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> setServiceEnv(
+        String serviceId,
+        Map<String, String> env,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("env", env);
+        return makeRequest("POST", "/services/" + serviceId + "/env", creds[0], creds[1], data);
+    }
+
+    /**
+     * Delete environment variables from a service's vault.
+     *
+     * @param serviceId Service ID to delete env from
+     * @param keys List of keys to delete (null to delete entire vault)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with deletion confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> deleteServiceEnv(
+        String serviceId,
+        List<String> keys,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        String path = "/services/" + serviceId + "/env";
+        if (keys != null && !keys.isEmpty()) {
+            path += "?keys=" + String.join(",", keys);
+        }
+        return makeRequest("DELETE", path, creds[0], creds[1], null);
+    }
+
+    /**
+     * Export environment vault for a service (returns decrypted values).
+     *
+     * @param serviceId Service ID to export env from
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with exported environment variables
+     */
+    public static CompletableFuture<Map<String, Object>> exportServiceEnv(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/services/" + serviceId + "/env/export", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Redeploy a service (re-run bootstrap script).
+     *
+     * @param serviceId Service ID to redeploy
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with redeploy confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> redeployService(
+        String serviceId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/services/" + serviceId + "/redeploy", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Execute a command in a service container.
+     *
+     * @param serviceId Service ID to execute command in
+     * @param command Command to execute
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with stdout, stderr, exit_code
+     */
+    public static CompletableFuture<Map<String, Object>> executeInService(
+        String serviceId,
+        String command,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("command", command);
+        return makeRequest("POST", "/services/" + serviceId + "/execute", creds[0], creds[1], data);
+    }
+
+    // ========================================================================
+    // Additional Snapshot API Methods
+    // ========================================================================
+
+    /**
+     * Lock a snapshot (prevent deletion).
+     *
+     * @param snapshotId Snapshot ID to lock
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with lock confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> lockSnapshot(
+        String snapshotId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/snapshots/" + snapshotId + "/lock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Unlock a snapshot (allow deletion).
+     *
+     * @param snapshotId Snapshot ID to unlock
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with unlock confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> unlockSnapshot(
+        String snapshotId,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/snapshots/" + snapshotId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Clone a snapshot to create a new snapshot with a different name.
+     *
+     * @param snapshotId Snapshot ID to clone
+     * @param name Name for the cloned snapshot
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with new snapshot_id
+     */
+    public static CompletableFuture<Map<String, Object>> cloneSnapshot(
+        String snapshotId,
+        String name,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (name != null && !name.isEmpty()) {
+            data.put("name", name);
+        }
+        return makeRequest("POST", "/snapshots/" + snapshotId + "/clone", creds[0], creds[1], data);
+    }
+
+    // ========================================================================
+    // Key Validation API
+    // ========================================================================
+
+    /**
+     * Validate API key credentials.
+     *
+     * @param publicKey API public key to validate
+     * @param secretKey API secret key to validate
+     * @return CompletableFuture containing response map with validation result (valid, tier, etc.)
+     */
+    public static CompletableFuture<Map<String, Object>> validateKeys(
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/keys/validate", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    // ========================================================================
+    // HTTP Request Helpers
+    // ========================================================================
+
+    /**
+     * Make an HTTP request with a specified method (supports PATCH).
+     */
+    private static CompletableFuture<Map<String, Object>> makeRequestWithMethod(
+        String method,
+        String path,
+        String publicKey,
+        String secretKey,
+        Map<String, Object> data
+    ) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return makeRequestSyncWithMethod(method, path, publicKey, secretKey, data);
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, executor);
+    }
+
+    private static Map<String, Object> makeRequestSyncWithMethod(
+        String method,
+        String path,
+        String publicKey,
+        String secretKey,
+        Map<String, Object> data
+    ) throws IOException {
+        String url = API_BASE + path;
+        long timestamp = System.currentTimeMillis() / 1000;
+        String body = (data != null) ? mapToJson(data) : "";
+
+        String signature = signRequest(secretKey, timestamp, method, path, data != null ? body : null);
+
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(DEFAULT_TIMEOUT_MS);
+        conn.setReadTimeout(DEFAULT_TIMEOUT_MS);
+
+        conn.setRequestProperty("Authorization", "Bearer " + publicKey);
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signature);
+        conn.setRequestProperty("Content-Type", "application/json");
+
+        if (data != null) {
+            conn.setDoOutput(true);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
+        int responseCode = conn.getResponseCode();
+        String responseBody;
+
+        InputStream inputStream = (responseCode >= 200 && responseCode < 300)
+            ? conn.getInputStream()
+            : conn.getErrorStream();
+
+        if (inputStream == null) {
+            responseBody = "";
+        } else {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                responseBody = sb.toString();
+            }
+        }
+
+        if (responseCode < 200 || responseCode >= 300) {
+            throw new ApiException(
+                "API request failed with status " + responseCode,
+                responseCode,
+                responseBody
+            );
+        }
+
+        return parseJson(responseBody);
+    }
+
     /**
      * Shutdown the executor services used by this class.
      * Call this when your application is shutting down.

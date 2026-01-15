@@ -366,6 +366,569 @@ module Un
       make_request('DELETE', "/snapshots/#{snapshot_id}", pk, sk)
     end
 
+    # Lock a snapshot to prevent deletion
+    #
+    # @param snapshot_id [String] Snapshot ID to lock
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with lock confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.lock_snapshot(snapshot_id)
+    def lock_snapshot(snapshot_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/snapshots/#{snapshot_id}/lock", pk, sk, {})
+    end
+
+    # Unlock a snapshot to allow deletion
+    #
+    # @param snapshot_id [String] Snapshot ID to unlock
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with unlock confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.unlock_snapshot(snapshot_id)
+    def unlock_snapshot(snapshot_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/snapshots/#{snapshot_id}/unlock", pk, sk, {})
+    end
+
+    # Clone a snapshot to create a new session or service
+    #
+    # @param snapshot_id [String] Snapshot ID to clone
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @param name [String, nil] Optional name for the cloned resource
+    # @param type [String] Type of resource to create ("session" or "service")
+    # @param shell [String, nil] Optional shell for session clones
+    # @param ports [Array<Integer>, nil] Optional ports for service clones
+    # @return [Hash] Response hash with cloned resource info (session_id or service_id)
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example Clone to session
+    #     result = Un.clone_snapshot(snapshot_id, type: "session")
+    #     puts result["session_id"]
+    #
+    # @example Clone to service
+    #     result = Un.clone_snapshot(snapshot_id, type: "service", ports: [80, 443])
+    #     puts result["service_id"]
+    def clone_snapshot(snapshot_id, public_key: nil, secret_key: nil, name: nil, type: 'session', shell: nil, ports: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = { type: type }
+      data[:name] = name if name
+      data[:shell] = shell if shell
+      data[:ports] = ports if ports
+      make_request('POST', "/snapshots/#{snapshot_id}/clone", pk, sk, data)
+    end
+
+    # ============================================================================
+    # Session Functions
+    # ============================================================================
+
+    # List all sessions for the authenticated account
+    #
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Array<Hash>] List of session hashes
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     sessions = Un.list_sessions
+    #     sessions.each { |s| puts "#{s['id']}: #{s['status']}" }
+    def list_sessions(public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      response = make_request('GET', '/sessions', pk, sk)
+      response['sessions'] || []
+    end
+
+    # Get session details by ID
+    #
+    # @param session_id [String] Session ID to retrieve
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Session details hash
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     session = Un.get_session(session_id)
+    #     puts session["status"]
+    def get_session(session_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('GET', "/sessions/#{session_id}", pk, sk)
+    end
+
+    # Create a new interactive session
+    #
+    # @param language [String] Shell or language for the session (e.g., "bash", "python3")
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @param network_mode [String] Network mode ("zerotrust" or "semitrusted")
+    # @param ttl [Integer] Time-to-live in seconds (default: 3600)
+    # @param multiplexer [String, nil] Terminal multiplexer ("tmux" or "screen")
+    # @param vcpu [Integer] Number of vCPUs (1-8)
+    # @return [Hash] Response hash with session_id and container_name
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.create_session("bash", network_mode: "semitrusted")
+    #     puts result["session_id"]
+    def create_session(language, public_key: nil, secret_key: nil, network_mode: 'zerotrust', ttl: 3600, multiplexer: nil, vcpu: 1)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = {
+        network_mode: network_mode,
+        ttl: ttl
+      }
+      data[:shell] = language if language
+      data[:multiplexer] = multiplexer if multiplexer
+      data[:vcpu] = vcpu if vcpu > 1
+      make_request('POST', '/sessions', pk, sk, data)
+    end
+
+    # Delete (terminate) a session
+    #
+    # @param session_id [String] Session ID to delete
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with deletion confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.delete_session(session_id)
+    def delete_session(session_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('DELETE', "/sessions/#{session_id}", pk, sk)
+    end
+
+    # Freeze a session (pause execution, reduce resource usage)
+    #
+    # @param session_id [String] Session ID to freeze
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with freeze confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.freeze_session(session_id)
+    def freeze_session(session_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/sessions/#{session_id}/freeze", pk, sk, {})
+    end
+
+    # Unfreeze a session (resume execution)
+    #
+    # @param session_id [String] Session ID to unfreeze
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with unfreeze confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.unfreeze_session(session_id)
+    def unfreeze_session(session_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/sessions/#{session_id}/unfreeze", pk, sk, {})
+    end
+
+    # Boost a session (increase vCPU allocation)
+    #
+    # @param session_id [String] Session ID to boost
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with boost confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.boost_session(session_id)
+    def boost_session(session_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/sessions/#{session_id}/boost", pk, sk, {})
+    end
+
+    # Unboost a session (reduce vCPU allocation)
+    #
+    # @param session_id [String] Session ID to unboost
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with unboost confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.unboost_session(session_id)
+    def unboost_session(session_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/sessions/#{session_id}/unboost", pk, sk, {})
+    end
+
+    # Execute a shell command in an existing session
+    # Note: This is for non-interactive command execution, not for WebSocket shell access
+    #
+    # @param session_id [String] Session ID to execute command in
+    # @param command [String] Command to execute
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with command output
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.shell_session(session_id, "ls -la")
+    #     puts result["stdout"]
+    def shell_session(session_id, command, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/sessions/#{session_id}/shell", pk, sk, { command: command })
+    end
+
+    # ============================================================================
+    # Service Functions
+    # ============================================================================
+
+    # List all services for the authenticated account
+    #
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Array<Hash>] List of service hashes
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     services = Un.list_services
+    #     services.each { |s| puts "#{s['id']}: #{s['name']} (#{s['state']})" }
+    def list_services(public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      response = make_request('GET', '/services', pk, sk)
+      response['services'] || []
+    end
+
+    # Create a new persistent service
+    #
+    # @param name [String] Service name
+    # @param ports [Array<Integer>] Ports to expose
+    # @param bootstrap [String] Bootstrap script content or URL
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @param network_mode [String] Network mode ("zerotrust" or "semitrusted")
+    # @param vcpu [Integer] Number of vCPUs (1-8)
+    # @param custom_domains [Array<String>, nil] Custom domains for the service
+    # @param service_type [String, nil] Service type for SRV records (e.g., "minecraft")
+    # @return [Hash] Response hash with service_id
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.create_service("web", [80, 443], "apt install -y nginx && nginx")
+    #     puts result["service_id"]
+    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = {
+        name: name,
+        ports: ports,
+        bootstrap: bootstrap,
+        network_mode: network_mode
+      }
+      data[:vcpu] = vcpu if vcpu > 1
+      data[:custom_domains] = custom_domains if custom_domains
+      data[:service_type] = service_type if service_type
+      make_request('POST', '/services', pk, sk, data)
+    end
+
+    # Get service details by ID
+    #
+    # @param service_id [String] Service ID to retrieve
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Service details hash
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     service = Un.get_service(service_id)
+    #     puts service["status"]
+    def get_service(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('GET', "/services/#{service_id}", pk, sk)
+    end
+
+    # Update a service (e.g., resize vCPU)
+    #
+    # @param service_id [String] Service ID to update
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @param vcpu [Integer, nil] New vCPU count (1-8)
+    # @param name [String, nil] New service name
+    # @return [Hash] Response hash with update confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.update_service(service_id, vcpu: 4)
+    def update_service(service_id, public_key: nil, secret_key: nil, vcpu: nil, name: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = {}
+      data[:vcpu] = vcpu if vcpu
+      data[:name] = name if name
+      make_request('PATCH', "/services/#{service_id}", pk, sk, data)
+    end
+
+    # Delete (destroy) a service
+    #
+    # @param service_id [String] Service ID to delete
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with deletion confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.delete_service(service_id)
+    def delete_service(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('DELETE', "/services/#{service_id}", pk, sk)
+    end
+
+    # Freeze a service (stop container, reduce resource usage)
+    #
+    # @param service_id [String] Service ID to freeze
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with freeze confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.freeze_service(service_id)
+    def freeze_service(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/services/#{service_id}/freeze", pk, sk, {})
+    end
+
+    # Unfreeze a service (start container)
+    #
+    # @param service_id [String] Service ID to unfreeze
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with unfreeze confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.unfreeze_service(service_id)
+    def unfreeze_service(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/services/#{service_id}/unfreeze", pk, sk, {})
+    end
+
+    # Lock a service to prevent deletion
+    #
+    # @param service_id [String] Service ID to lock
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with lock confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.lock_service(service_id)
+    def lock_service(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/services/#{service_id}/lock", pk, sk, {})
+    end
+
+    # Unlock a service to allow deletion
+    #
+    # @param service_id [String] Service ID to unlock
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with unlock confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.unlock_service(service_id)
+    def unlock_service(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/services/#{service_id}/unlock", pk, sk, {})
+    end
+
+    # Get service logs (bootstrap output)
+    #
+    # @param service_id [String] Service ID to get logs for
+    # @param all [Boolean] If true, get all logs; if false, get last 9000 lines (default: false)
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with log content
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     logs = Un.get_service_logs(service_id)
+    #     puts logs["log"]
+    def get_service_logs(service_id, all: false, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      path = "/services/#{service_id}/logs"
+      path += '?all=true' if all
+      make_request('GET', path, pk, sk)
+    end
+
+    # Get service environment vault status
+    #
+    # @param service_id [String] Service ID to get env status for
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with vault status (has_vault, count, updated_at)
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     status = Un.get_service_env(service_id)
+    #     puts "Variables: #{status['count']}"
+    def get_service_env(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('GET', "/services/#{service_id}/env", pk, sk)
+    end
+
+    # Set service environment variables (replaces existing vault)
+    #
+    # @param service_id [String] Service ID to set env for
+    # @param env [String] Environment content in .env format (KEY=VALUE per line)
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.set_service_env(service_id, "API_KEY=secret\nDEBUG=true")
+    def set_service_env(service_id, env, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      # This endpoint uses text/plain content type and PUT method
+      make_request_text('PUT', "/services/#{service_id}/env", pk, sk, env)
+    end
+
+    # Delete service environment vault
+    #
+    # @param service_id [String] Service ID to delete env for
+    # @param keys [Array<String>, nil] Specific keys to delete (nil = delete entire vault)
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with deletion confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example Delete entire vault
+    #     Un.delete_service_env(service_id)
+    #
+    # @example Delete specific keys (if API supports it)
+    #     Un.delete_service_env(service_id, keys: ["API_KEY", "DEBUG"])
+    def delete_service_env(service_id, keys: nil, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      if keys
+        make_request('DELETE', "/services/#{service_id}/env", pk, sk, { keys: keys })
+      else
+        make_request('DELETE', "/services/#{service_id}/env", pk, sk)
+      end
+    end
+
+    # Export service environment vault (returns .env format)
+    #
+    # @param service_id [String] Service ID to export env from
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with env content
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.export_service_env(service_id)
+    #     puts result["env"]  # API_KEY=secret\nDEBUG=true
+    def export_service_env(service_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/services/#{service_id}/env/export", pk, sk, {})
+    end
+
+    # Redeploy a service (re-run bootstrap script)
+    #
+    # @param service_id [String] Service ID to redeploy
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @param bootstrap [String, nil] New bootstrap script (optional)
+    # @return [Hash] Response hash with redeploy confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.redeploy_service(service_id)
+    def redeploy_service(service_id, public_key: nil, secret_key: nil, bootstrap: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = {}
+      data[:bootstrap] = bootstrap if bootstrap
+      make_request('POST', "/services/#{service_id}/redeploy", pk, sk, data)
+    end
+
+    # Execute a command in a running service
+    #
+    # @param service_id [String] Service ID to execute command in
+    # @param command [String] Command to execute
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @param timeout [Integer] Command timeout in milliseconds (default: 30000)
+    # @return [Hash] Response hash with command output (stdout, stderr, exit_code)
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.execute_in_service(service_id, "ls -la")
+    #     puts result["stdout"]
+    def execute_in_service(service_id, command, public_key: nil, secret_key: nil, timeout: 30_000)
+      pk, sk = resolve_credentials(public_key, secret_key)
+
+      # Start async execution
+      response = make_request('POST', "/services/#{service_id}/execute", pk, sk, {
+                                command: command,
+                                timeout: timeout
+                              })
+
+      job_id = response['job_id']
+      return response unless job_id
+
+      # Poll for completion
+      wait_for_job(job_id, public_key: pk, secret_key: sk, timeout: (timeout / 1000) + 10)
+    end
+
+    # ============================================================================
+    # Key Validation
+    # ============================================================================
+
+    # Validate API keys
+    #
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with validation result and account info
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails or keys invalid
+    #
+    # @example
+    #     result = Un.validate_keys
+    #     puts result["valid"]  # true or false
+    def validate_keys(public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      # Note: This endpoint is on the portal, not API, but we use same auth
+      make_request('POST', '/keys/validate', pk, sk, {})
+    end
+
     private
 
     # Language detection mapping (file extension -> language)
@@ -545,10 +1108,69 @@ module Un
                    http.get(uri.request_uri, headers)
                  when 'POST'
                    http.post(uri.request_uri, body, headers)
+                 when 'PATCH'
+                   http.patch(uri.request_uri, body, headers)
+                 when 'PUT'
+                   http.put(uri.request_uri, body, headers)
                  when 'DELETE'
-                   http.delete(uri.request_uri, headers)
+                   req = Net::HTTP::Delete.new(uri.request_uri, headers)
+                   req.body = body if data
+                   http.request(req)
                  else
                    raise APIError, "Unsupported HTTP method: #{method}"
+                 end
+
+      unless response.is_a?(Net::HTTPSuccess)
+        raise APIError.new(
+          "API request failed: #{response.code} #{response.message}",
+          status_code: response.code.to_i,
+          response_body: response.body
+        )
+      end
+
+      JSON.parse(response.body)
+    rescue JSON::ParserError => e
+      raise APIError, "Invalid JSON response: #{e.message}"
+    rescue Net::OpenTimeout, Net::ReadTimeout => e
+      raise APIError, "Request timeout: #{e.message}"
+    rescue StandardError => e
+      raise APIError, "Request failed: #{e.message}" unless e.is_a?(APIError)
+
+      raise
+    end
+
+    # Make an authenticated HTTP request with text/plain content type
+    #
+    # @param method [String] HTTP method (PUT)
+    # @param path [String] API path
+    # @param public_key [String] API public key
+    # @param secret_key [String] API secret key
+    # @param body [String] Plain text request body
+    # @return [Hash] Parsed JSON response
+    # @raise [APIError] If request fails
+    def make_request_text(method, path, public_key, secret_key, body)
+      uri = URI.parse("#{API_BASE}#{path}")
+      timestamp = Time.now.to_i
+
+      signature = sign_request(secret_key, timestamp, method, path, body)
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.open_timeout = REQUEST_TIMEOUT
+      http.read_timeout = REQUEST_TIMEOUT
+
+      headers = {
+        'Authorization' => "Bearer #{public_key}",
+        'X-Timestamp' => timestamp.to_s,
+        'X-Signature' => signature,
+        'Content-Type' => 'text/plain'
+      }
+
+      response = case method
+                 when 'PUT'
+                   http.put(uri.request_uri, body, headers)
+                 else
+                   raise APIError, "Unsupported HTTP method for text: #{method}"
                  end
 
       unless response.is_a?(Net::HTTPSuccess)
