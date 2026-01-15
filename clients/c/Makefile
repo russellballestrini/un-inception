@@ -17,8 +17,8 @@
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
 SRC_DIR := src
-SRC := $(SRC_DIR)/unsandbox.c
-HEADER := $(SRC_DIR)/unsandbox.h
+SRC := $(SRC_DIR)/un.c
+HEADER := $(SRC_DIR)/un.h
 BIN := un
 TEST_DIR := tests
 EXAMPLES_DIR := examples
@@ -60,8 +60,8 @@ build: lib examples
 
 lib: $(SRC) $(HEADER)
 	@echo "$(GREEN)✓$(NC) Library files ready:"
-	@echo "  - $(SRC_DIR)/unsandbox.c (implementation)"
-	@echo "  - $(SRC_DIR)/unsandbox.h (header)"
+	@echo "  - $(SRC_DIR)/un.c (implementation)"
+	@echo "  - $(SRC_DIR)/un.h (header)"
 
 examples: $(EXAMPLES_DIR)/hello_world $(EXAMPLES_DIR)/fibonacci
 	@echo "$(GREEN)✓$(NC) Examples built"
@@ -89,7 +89,7 @@ deps:
 test: build $(TEST_DIR)/test_library
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "LIBRARY MODE: Testing unsandbox.c functions"
+	@echo "LIBRARY MODE: Testing un.c functions"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@./$(TEST_DIR)/test_library

@@ -38,8 +38,9 @@ Library Usage:
     # Detect language from filename
     lang = detect_language("script.py")  # Returns "python"
 
-    # Snapshot operations (NEW)
-    snapshot_id = session_snapshot(session_id, public_key, secret_key)
+    # Snapshot operations
+    snapshot_id = session_snapshot(session_id, public_key, secret_key, name="my-snapshot")
+    snapshot_id = service_snapshot(service_id, public_key, secret_key, name="svc-snapshot")
     snapshots = list_snapshots(public_key, secret_key)
     result = restore_snapshot(snapshot_id, public_key, secret_key)
     delete_snapshot(snapshot_id, public_key, secret_key)
@@ -370,6 +371,7 @@ def wait_for_job(
     job_id: str,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Wait for job completion with exponential backoff polling.
@@ -381,6 +383,7 @@ def wait_for_job(
         job_id: Job ID from execute_async()
         public_key: Optional API key
         secret_key: Optional API secret
+        timeout: Optional maximum wait time in seconds (None = wait indefinitely)
 
     Returns:
         Final job result when status is terminal (completed, failed, timeout, cancelled)
@@ -389,11 +392,19 @@ def wait_for_job(
         requests.RequestException: Network errors
         ValueError: Invalid response format
         CredentialsError: Missing credentials
+        TimeoutError: If timeout is exceeded before job completes
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
     poll_count = 0
+    start_time = time.time()
 
     while True:
+        # Check timeout
+        if timeout is not None:
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                raise TimeoutError(f"Job {job_id} did not complete within {timeout} seconds")
+
         # Sleep before polling
         delay_idx = min(poll_count, len(POLL_DELAYS_MS) - 1)
         time.sleep(POLL_DELAYS_MS[delay_idx] / 1000.0)
@@ -574,17 +585,17 @@ def session_snapshot(
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     name: Optional[str] = None,
-    hot: bool = False,
+    ephemeral: bool = False,
 ) -> str:
     """
-    Create a snapshot of a session (NEW).
+    Create a snapshot of a session.
 
     Args:
         session_id: Session ID to snapshot
         public_key: Optional API key
         secret_key: Optional API secret
         name: Optional snapshot name
-        hot: If True, snapshot running session (hot snapshot)
+        ephemeral: If True, snapshot is temporary and may be auto-deleted
 
     Returns:
         Snapshot ID
@@ -595,7 +606,7 @@ def session_snapshot(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    data = {"session_id": session_id, "hot": hot}
+    data = {"session_id": session_id, "ephemeral": ephemeral}
     if name:
         data["name"] = name
 
@@ -608,17 +619,15 @@ def service_snapshot(
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     name: Optional[str] = None,
-    hot: bool = False,
 ) -> str:
     """
-    Create a snapshot of a service (NEW).
+    Create a snapshot of a service.
 
     Args:
         service_id: Service ID to snapshot
         public_key: Optional API key
         secret_key: Optional API secret
         name: Optional snapshot name
-        hot: If True, snapshot running service (hot snapshot)
 
     Returns:
         Snapshot ID
@@ -629,7 +638,7 @@ def service_snapshot(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    data = {"service_id": service_id, "hot": hot}
+    data = {"service_id": service_id}
     if name:
         data["name"] = name
 

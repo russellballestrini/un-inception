@@ -4,7 +4,7 @@
  * unsandbox.com C SDK Implementation
  */
 
-#include "unsandbox.h"
+#include "un.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

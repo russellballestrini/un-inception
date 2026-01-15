@@ -4,7 +4,7 @@
  * unsandbox.com C SDK (Synchronous)
  *
  * Library Usage:
- *     #include "unsandbox.h"
+ *     #include "un.h"
  *
  *     // Execute code synchronously
  *     unsandbox_result_t *result = unsandbox_execute("python", "print(42)", NULL, NULL);

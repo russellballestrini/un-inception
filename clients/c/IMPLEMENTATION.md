@@ -2,7 +2,7 @@
 
 ## Overview
 
-Complete, production-ready C SDK for unsandbox.com API with full support for code execution, async jobs, language detection, and credential management.
+Complete, production-ready C SDK for un.com API with full support for code execution, async jobs, language detection, and credential management.
 
 ## Files Created/Modified
 
@@ -15,7 +15,7 @@ Complete, production-ready C SDK for unsandbox.com API with full support for cod
 - Proper extern "C" guards for C++ compatibility
 - Memory-safe with dedicated free functions
 
-#### `/clients/c/src/unsandbox.c` (823 lines)
+#### `/clients/c/src/un.c` (823 lines)
 - Full implementation with production-quality error handling
 - Core execution functions (sync, async, wait, get, cancel, list)
 - Language detection with 48 file extensions
@@ -170,7 +170,7 @@ $ cd clients/c && make clean && make test
 [✓] Test binary ready
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LIBRARY MODE: Testing unsandbox.c functions
+LIBRARY MODE: Testing un.c functions
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Testing SHA-256...
@@ -316,7 +316,7 @@ make test
 make clean
 
 # Manual compilation
-gcc -O2 -Wall -Wextra -o myapp myapp.c src/unsandbox.c -Isrc -lcurl -lssl -lcrypto
+gcc -O2 -Wall -Wextra -o myapp myapp.c src/un.c -Isrc -lcurl -lssl -lcrypto
 ```
 
 ## Performance Characteristics
@@ -348,7 +348,7 @@ All 22 tests passing with 0 failures.
 
 ## Code Statistics
 
-- **src/unsandbox.c**: 823 lines (implementation)
+- **src/un.c**: 823 lines (implementation)
 - **src/unsandbox.h**: 311 lines (header)
 - **examples/hello_world.c**: 121 lines
 - **examples/fibonacci.c**: 217 lines
@@ -398,7 +398,7 @@ Use freely for any purpose without restriction.
 
 ## References
 
-- API Base: https://api.unsandbox.com
+- API Base: https://api.un.com
 - Python SDK: `../python/sync/src/un.py`
 - Go SDK: `../go/sync/src/un.go`
 - Ruby SDK: `../ruby/sync/src/un.rb`

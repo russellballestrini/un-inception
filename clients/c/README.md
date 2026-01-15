@@ -1,6 +1,6 @@
-# unsandbox.com C SDK
+# un.com C SDK
 
-A complete, production-ready C SDK for the unsandbox.com code execution API.
+A complete, production-ready C SDK for the un.com code execution API.
 
 ## Features
 
@@ -30,7 +30,7 @@ sudo apt install build-essential libcurl4-openssl-dev libssl-dev
 cd clients/c
 make
 
-# Just build the library (src/unsandbox.c and src/unsandbox.h)
+# Just build the library (src/un.c and src/unsandbox.h)
 make lib
 
 # Build examples (hello_world, fibonacci)
@@ -76,7 +76,7 @@ int main(void) {
 Compile:
 
 ```bash
-gcc -o myapp myapp.c src/unsandbox.c -Isrc -lcurl -lssl -lcrypto
+gcc -o myapp myapp.c src/un.c -Isrc -lcurl -lssl -lcrypto
 ```
 
 ### Examples
@@ -106,7 +106,7 @@ Run the example:
 
 ```bash
 cd examples
-gcc -o hello_world hello_world.c ../src/unsandbox.c -I../src -lcurl -lssl -lcrypto
+gcc -o hello_world hello_world.c ../src/un.c -I../src -lcurl -lssl -lcrypto
 ./hello_world
 ```
 
@@ -466,7 +466,7 @@ export UNSANDBOX_SECRET_KEY="your-secret"
 
 Check your credentials are valid:
 ```bash
-curl -H "Authorization: Bearer $UNSANDBOX_PUBLIC_KEY" https://api.unsandbox.com/health
+curl -H "Authorization: Bearer $UNSANDBOX_PUBLIC_KEY" https://api.un.com/health
 ```
 
 ### Compilation errors
@@ -478,7 +478,7 @@ sudo apt install libcurl4-openssl-dev libssl-dev
 
 Check include paths:
 ```bash
-gcc -I/usr/include -c src/unsandbox.c
+gcc -I/usr/include -c src/un.c
 ```
 
 ## License
@@ -496,7 +496,7 @@ Compile examples:
 ```bash
 cd examples
 make -C .. examples  # Or:
-gcc -o hello_world hello_world.c ../src/unsandbox.c -I../src -lcurl -lssl -lcrypto
+gcc -o hello_world hello_world.c ../src/un.c -I../src -lcurl -lssl -lcrypto
 ./hello_world
 ```
 
@@ -504,4 +504,4 @@ gcc -o hello_world hello_world.c ../src/unsandbox.c -I../src -lcurl -lssl -lcryp
 
 - Python SDK: `../python/sync/src/un.py`
 - Go SDK: `../go/sync/src/un.go`
-- API Documentation: `https://api.unsandbox.com/`
+- API Documentation: `https://api.un.com/`
