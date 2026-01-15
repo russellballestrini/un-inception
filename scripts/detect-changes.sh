@@ -19,10 +19,20 @@ fi
 # Get all changed files in this commit
 CHANGED_FILES=$(git diff --name-only "$BASE...HEAD" 2>/dev/null || echo "")
 
-# Extract unique languages from changed SDK files
-CHANGED_LANGS=$(echo "$CHANGED_FILES" | grep -E '^un\.' | sed 's/un\.\([^.]*\).*/\1/' | sort -u || echo "")
+# Extract unique languages from TWO sources:
+# 1. Root-level files (un.py, un.go, etc.)
+# 2. Client directory files (clients/python/*, clients/go/*, etc.)
 
-# Map file extensions to language names
+CHANGED_LANGS=$(
+  {
+    # Root-level implementations
+    echo "$CHANGED_FILES" | grep -E '^un\.' | sed 's/un\.\([^.]*\).*/\1/'
+    # Client directory implementations
+    echo "$CHANGED_FILES" | grep -E '^clients/([^/]+)/' | sed 's|^clients/\([^/]*\)/.*|\1|'
+  } | sort -u || echo ""
+)
+
+# Map file extensions to language names (for root-level un.* files)
 declare -A LANG_MAP=(
     [py]="python"
     [js]="javascript"
@@ -67,18 +77,69 @@ declare -A LANG_MAP=(
     [raku]="raku"
 )
 
+# Map directory names from clients/ to language names (clients/ already has language names)
+declare -A DIR_MAP=(
+    [python]="python"
+    [javascript]="javascript"
+    [typescript]="typescript"
+    [go]="go"
+    [ruby]="ruby"
+    [php]="php"
+    [perl]="perl"
+    [lua]="lua"
+    [bash]="bash"
+    [rust]="rust"
+    [java]="java"
+    [csharp]="csharp"
+    [cpp]="cpp"
+    [c]="c"
+    [haskell]="haskell"
+    [kotlin]="kotlin"
+    [elixir]="elixir"
+    [erlang]="erlang"
+    [crystal]="crystal"
+    [dart]="dart"
+    [nim]="nim"
+    [julia]="julia"
+    [r]="r"
+    [groovy]="groovy"
+    [clojure]="clojure"
+    [fsharp]="fsharp"
+    [ocaml]="ocaml"
+    [objc]="objc"
+    [d]="d"
+    [vlang]="vlang"
+    [zig]="zig"
+    [fortran]="fortran"
+    [cobol]="cobol"
+    [scheme]="scheme"
+    [lisp]="lisp"
+    [tcl]="tcl"
+    [awk]="awk"
+    [prolog]="prolog"
+    [forth]="forth"
+    [powershell]="powershell"
+    [raku]="raku"
+)
+
 # Also check for changes in test files, scripts, or core infra
-if echo "$CHANGED_FILES" | grep -qE '^(tests/|scripts/|\.gitlab-ci\.yml)'; then
-    # If tests or scripts changed, test ALL SDKs
+if echo "$CHANGED_FILES" | grep -qE '^(tests/|scripts/|\.gitlab-ci\.yml|clients/\{.*\}/)'; then
+    # If tests, scripts, or multi-language client templates changed, test ALL SDKs
     echo '{"changed_langs": ["all"], "reason": "Core infrastructure changed", "test_all": true}'
     exit 0
 fi
 
-# Convert file extensions to language names
+# Convert file extensions and directory names to language names
 LANGS_JSON="["
 FIRST=true
-for EXT in $CHANGED_LANGS; do
-    LANG="${LANG_MAP[$EXT]:-$EXT}"
+for ITEM in $CHANGED_LANGS; do
+    # Try directory map first (for clients/python/, etc.)
+    LANG="${DIR_MAP[$ITEM]}"
+    # Fallback to extension map (for un.py, etc.)
+    LANG="${LANG:-${LANG_MAP[$ITEM]}}"
+    # Fallback to item as-is if not in any map
+    LANG="${LANG:-$ITEM}"
+
     if [ "$FIRST" = true ]; then
         LANGS_JSON="$LANGS_JSON\"$LANG\""
         FIRST=false

@@ -22,7 +22,41 @@ On 2026-01-11, raw `lxc delete` destroyed 8 production services causing complete
 
 ## Project Overview
 
-UN CLI Inception - The UN CLI written in every language it can execute. 42 implementations, one unified interface.
+UN CLI Inception - The UN CLI written in every language it can execute. 42+ implementations, one unified interface.
+
+### SDK Architecture (In Growth)
+
+**Current State**: Root-level implementations (un.py, un.c, un.go, etc.) serving as both CLI + embeddable libraries.
+
+**Target State**: Migrate to `clients/` directory structure:
+```
+clients/
+├── python/        # clients/python/un.py - sync/async client + CLI
+├── javascript/    # clients/javascript/un.js - SDK + CLI
+├── go/            # clients/go/un.go - SDK + CLI
+├── java/          # clients/java/Un.java - SDK + CLI
+├── ruby/          # clients/ruby/un.rb - SDK + CLI
+├── php/           # clients/php/un.php - SDK + CLI
+├── rust/          # clients/rust/un.rs - SDK + CLI
+├── {42+ more}/
+```
+
+**Each client implementation serves THREE purposes**:
+1. **Standalone CLI program** - Argparse/getopt with full command support (execute, session, service)
+2. **Importable client library** - Can import and use as an SDK in other code
+3. **Embeddable library** - Can be bundled into other language projects
+
+**Example (Python)**:
+```python
+# As CLI: python clients/python/un.py test/fib.py
+# As library: from clients.python.un import UnsandboxClient
+# As embedded: copy un.py into your project, import locally
+```
+
+**Migration Path**:
+- Phase 1 (Current): Grow clients/ directory in parallel with root un.* files
+- Phase 2: Root files eventually deprecated in favor of clients/
+- Phase 3: Root files maintained for backwards compatibility only
 
 ## Authentication
 
@@ -110,6 +144,8 @@ The test suite in `tests/run_all_tests.sh` currently skips languages without loc
 
 ## Running Tests
 
+### Local Testing
+
 ```bash
 # Set auth
 export UNSANDBOX_PUBLIC_KEY="unsb-pk-zhi3-b6cv-jvqc-uven"
@@ -122,7 +158,31 @@ export UNSANDBOX_SECRET_KEY="unsb-sk-z4a93-a33xy-7u7eh-pngpg"
 python3 tests/test_un_py.py
 lua tests/test_un_lua.lua
 bash tests/test_un_sh.sh
+
+# Run client-specific tests (after migration to clients/)
+make test-python
+make test-go
+make test-javascript
 ```
+
+### CI Testing Strategy (Smart Detection)
+
+When changes are pushed:
+1. **Change Detection** - `detect-changes.sh` identifies which files changed
+2. **Per-Language Tests** - Only language tests for CHANGED clients run (e.g., modify clients/python/ → pytest runs)
+3. **Cross-Language Tests** - All affected clients validated against API
+4. **Science Jobs** - Pool burning with real workloads
+
+**Example**: Modify `clients/python/un.py`:
+```
+✓ Python pytest runs
+✓ Python type checking (if applicable)
+✓ Python integration tests with API
+✓ Python embedding tests (can import in other code)
+⚠ Go, Ruby, JavaScript tests SKIP (unchanged)
+```
+
+See **TESTING-STRATEGY.md** for complete testing matrix.
 
 ## Common Test Fixes
 
