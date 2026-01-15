@@ -26,7 +26,8 @@ EXAMPLES_DIR := examples
 # Compiler settings
 CC := gcc
 CFLAGS := -O2 -Wall -Wextra -I$(SRC_DIR)
-LDFLAGS := -lcurl -lssl -lcrypto
+CFLAGS_LIB := $(CFLAGS) -DUNSANDBOX_LIBRARY
+LDFLAGS := -lcurl -lwebsockets -lssl -lcrypto
 
 # Colors
 GREEN := \033[32m
@@ -69,13 +70,13 @@ examples: $(EXAMPLES_DIR)/hello_world $(EXAMPLES_DIR)/fibonacci
 $(EXAMPLES_DIR)/hello_world: $(EXAMPLES_DIR)/hello_world.c $(SRC) $(HEADER)
 	@mkdir -p $(EXAMPLES_DIR)
 	@echo "Building hello_world example..."
-	$(CC) $(CFLAGS) -o $@ $< $(SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS_LIB) -o $@ $< $(SRC) $(LDFLAGS)
 	@echo "$(GREEN)✓$(NC) Built: $@"
 
 $(EXAMPLES_DIR)/fibonacci: $(EXAMPLES_DIR)/fibonacci.c $(SRC) $(HEADER)
 	@mkdir -p $(EXAMPLES_DIR)
 	@echo "Building fibonacci example..."
-	$(CC) $(CFLAGS) -o $@ $< $(SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS_LIB) -o $@ $< $(SRC) $(LDFLAGS)
 	@echo "$(GREEN)✓$(NC) Built: $@"
 
 deps:
@@ -99,7 +100,7 @@ test-library: test
 $(TEST_DIR)/test_library: $(TEST_DIR)/test_library.c $(SRC) $(HEADER)
 	@mkdir -p $(TEST_DIR)
 	@echo "Building test suite..."
-	$(CC) $(CFLAGS) -o $@ $< $(SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS_LIB) -o $@ $< $(SRC) $(LDFLAGS)
 	@echo "$(GREEN)✓$(NC) Test binary ready"
 
 # ============================================================================

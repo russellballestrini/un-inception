@@ -5028,6 +5028,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "     Or set UNSANDBOX_ACCOUNT=N env var\n");
 }
 
+#ifndef UNSANDBOX_LIBRARY
 int main(int argc, char *argv[]) {
     // Disable stdout buffering for real-time output
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -6334,3 +6335,4 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+#endif /* UNSANDBOX_LIBRARY */
