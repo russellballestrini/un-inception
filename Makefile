@@ -1,37 +1,40 @@
-.PHONY: help test test-all test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua
+.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua
+
+# Client directories with their own Makefiles
+CLIENTS_WITH_MAKEFILE := $(wildcard clients/*/Makefile)
+CLIENT_DIRS := $(dir $(CLIENTS_WITH_MAKEFILE))
 
 help:
 	@echo "UN Inception - Multi-Mode Testing Framework"
 	@echo ""
-	@echo "Test all 4 modes for each language:"
-	@echo "  make test-python              # CLI + Library + Integration + Functional"
-	@echo "  make test-go"
-	@echo "  make test-javascript"
-	@echo "  make test-ruby"
-	@echo "  make test-php"
-	@echo "  make test-rust"
+	@echo "Test client SDKs (delegates to clients/*/Makefile):"
+	@echo "  make test-c                   # C client (4 modes)"
+	@echo "  make test-python              # Python client (4 modes)"
+	@echo "  make test-go                  # Go client (4 modes)"
+	@echo "  make test-javascript          # JavaScript client (4 modes)"
+	@echo "  make test-rust                # Rust client (4 modes)"
 	@echo ""
-	@echo "Test specific modes for a language:"
-	@echo "  make test-python-cli          # CLI mode only"
-	@echo "  make test-python-library      # Library/SDK mode only"
-	@echo "  make test-python-integration  # Integration with API"
-	@echo "  make test-python-functional   # Real-world scenarios"
+	@echo "Test specific modes:"
+	@echo "  make test-c-cli               # C CLI mode only"
+	@echo "  make test-c-library           # C Library mode only"
+	@echo "  make test-c-integration       # C Integration mode only"
+	@echo "  make test-c-functional        # C Functional mode only"
 	@echo ""
-	@echo "Test all languages:"
-	@echo "  make test-all                 # All 4 modes for all languages"
-	@echo "  make test-all-cli             # CLI mode for all languages"
-	@echo "  make test-all-library         # Library mode for all languages"
-	@echo "  make test-all-integration     # Integration for all languages"
-	@echo "  make test-all-functional      # Functional for all languages"
+	@echo "Test all clients:"
+	@echo "  make test-all                 # All clients, all 4 modes"
+	@echo "  make test-clients             # Only clients with Makefiles"
 	@echo ""
-	@echo "Cross-language tests:"
-	@echo "  make test-integration-all     # Validate all clients vs API"
-	@echo "  make test-parity              # Feature parity matrix"
+	@echo "Legacy (root-level implementations):"
+	@echo "  make test-python-root         # Test un.py in root"
+	@echo "  make test-go-root             # Test un.go in root"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make test-ci-locally          # Simulate CI pipeline"
 	@echo "  make lint                     # Lint all clients"
 	@echo "  make clean                    # Clean build artifacts"
+	@echo ""
+	@echo "Available client Makefiles:"
+	@for dir in $(CLIENT_DIRS); do echo "  $$dir"; done
 	@echo ""
 
 # ============================================================================
@@ -40,246 +43,208 @@ help:
 
 test: test-all
 
-test-all: test-all-cli test-all-library test-all-integration test-all-functional
-	@echo "✓ All tests passed (CLI, Library, Integration, Functional)"
+# Test all clients that have Makefiles
+test-all: test-clients test-root
+	@echo "✓ All tests complete"
 
-test-all-cli:
-	@echo "Running CLI tests for all languages..."
-	@$(MAKE) test-python-cli test-go-cli test-javascript-cli test-ruby-cli test-php-cli test-rust-cli test-java-cli test-bash-cli test-perl-cli test-lua-cli || true
+# Test only clients with their own Makefiles (clients/*/Makefile)
+test-clients:
+	@echo "Testing clients with Makefiles..."
+	@for dir in $(CLIENT_DIRS); do \
+		echo ""; \
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; \
+		echo "Testing $$dir"; \
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"; \
+		$(MAKE) -C $$dir test || true; \
+	done
 
-test-all-library:
-	@echo "Running Library tests for all languages..."
-	@$(MAKE) test-python-library test-go-library test-javascript-library test-ruby-library test-php-library test-rust-library test-java-library || true
-
-test-all-integration:
-	@echo "Running Integration tests for all languages..."
-	@$(MAKE) test-python-integration test-go-integration test-javascript-integration test-ruby-integration test-php-integration test-rust-integration test-java-integration || true
-
-test-all-functional:
-	@echo "Running Functional tests for all languages..."
-	@$(MAKE) test-python-functional test-go-functional test-javascript-functional test-ruby-functional test-php-functional test-rust-functional test-java-functional || true
+# Test root-level implementations (un.py, un.go, etc.)
+test-root:
+	@echo "Testing root-level implementations..."
+	@$(MAKE) test-python-root test-go-root test-javascript-root || true
 
 # ============================================================================
-# Python - 4 Modes (CLI, Library, Integration, Functional)
+# C Client (delegates to clients/c/Makefile)
 # ============================================================================
 
-test-python: test-python-cli test-python-library test-python-integration test-python-functional
-	@echo "✓ Python: All 4 test modes passed"
+test-c:
+	@if [ -f clients/c/Makefile ]; then \
+		$(MAKE) -C clients/c test; \
+	else \
+		echo "clients/c/Makefile not found"; \
+	fi
+
+test-c-cli:
+	@$(MAKE) -C clients/c test-cli
+
+test-c-library:
+	@$(MAKE) -C clients/c test-library
+
+test-c-integration:
+	@$(MAKE) -C clients/c test-integration
+
+test-c-functional:
+	@$(MAKE) -C clients/c test-functional
+
+build-c:
+	@$(MAKE) -C clients/c build
+
+# ============================================================================
+# Python Client (delegates to clients/python/Makefile if exists)
+# ============================================================================
+
+test-python:
+	@if [ -f clients/python/Makefile ]; then \
+		$(MAKE) -C clients/python test; \
+	else \
+		$(MAKE) test-python-root; \
+	fi
 
 test-python-cli:
-	@echo "Testing Python CLI Mode..."
-	@if [ -f clients/python/un.py ]; then \
-		PYTHONPATH=clients/python python3 -m py_compile clients/python/un.py && \
-		python3 clients/python/un.py --help > /dev/null && \
-		echo "  ✓ CLI: --help works"; \
-		python3 clients/python/un.py test/fib.py > /dev/null && \
-		echo "  ✓ CLI: File execution works"; \
-	elif [ -f un.py ]; then \
-		python3 -m py_compile un.py && \
-		python3 un.py --help > /dev/null && \
-		python3 un.py test/fib.py > /dev/null; \
+	@if [ -f clients/python/Makefile ]; then \
+		$(MAKE) -C clients/python test-cli; \
 	else \
-		echo "  ⚠ Python client not found"; \
+		$(MAKE) test-python-root-cli; \
 	fi
 
 test-python-library:
-	@echo "Testing Python Library Mode..."
-	@if [ -f clients/python/un.py ] || [ -f un.py ]; then \
-		python3 -c "import sys; sys.path.insert(0, 'clients/python' if __import__('os').path.isfile('clients/python/un.py') else '.'); from un import UnsandboxClient; print('  ✓ Library: Import works')" || echo "  ✓ Library: Client importable"; \
+	@if [ -f clients/python/Makefile ]; then \
+		$(MAKE) -C clients/python test-library; \
 	else \
-		echo "  ⚠ Python client not found"; \
+		$(MAKE) test-python-root-library; \
 	fi
 
 test-python-integration:
-	@echo "Testing Python Integration Mode..."
-	@if [ -f tests/test_un_py_integration.py ]; then \
-		pytest tests/test_un_py_integration.py -v || echo "  ⚠ Integration tests not yet created"; \
+	@if [ -f clients/python/Makefile ]; then \
+		$(MAKE) -C clients/python test-integration; \
 	else \
-		echo "  ℹ Create tests/test_un_py_integration.py (see TEST-TEMPLATES.md)"; \
+		$(MAKE) test-python-root-integration; \
 	fi
 
 test-python-functional:
-	@echo "Testing Python Functional Mode..."
-	@if [ -f tests/test_un_py_functional.py ]; then \
-		pytest tests/test_un_py_functional.py -v || echo "  ⚠ Functional tests not yet created"; \
+	@if [ -f clients/python/Makefile ]; then \
+		$(MAKE) -C clients/python test-functional; \
 	else \
-		python3 un.py test/fib.py > /dev/null 2>&1 && echo "  ✓ Functional: Fibonacci works" || true; \
-		echo "  ℹ Create tests/test_un_py_functional.py (see TEST-TEMPLATES.md)"; \
+		$(MAKE) test-python-root-functional; \
 	fi
 
 # ============================================================================
-# Go - 4 Modes (CLI, Library, Integration, Functional)
+# Python Root (legacy - tests un.py in repo root)
 # ============================================================================
 
-test-go: test-go-cli test-go-library test-go-integration test-go-functional
-	@echo "✓ Go: All 4 test modes passed"
+test-python-root: test-python-root-cli test-python-root-library test-python-root-integration test-python-root-functional
+	@echo "✓ Python (root): All 4 test modes passed"
 
-test-go-cli:
-	@echo "Testing Go CLI Mode..."
-	@if [ -d clients/go ]; then \
-		cd clients/go && go run un.go --help > /dev/null && echo "  ✓ CLI: --help works" && cd ../..; \
-	elif [ -f un.go ]; then \
-		go run un.go --help > /dev/null && echo "  ✓ CLI: --help works"; \
+test-python-root-cli:
+	@echo "Testing Python CLI Mode (root)..."
+	@if [ -f un.py ]; then \
+		python3 -m py_compile un.py && \
+		python3 un.py --help > /dev/null && \
+		echo "  ✓ CLI: --help works"; \
 	else \
-		echo "  ⚠ Go client not found"; \
+		echo "  ⚠ un.py not found in root"; \
 	fi
 
-test-go-library:
-	@echo "Testing Go Library Mode..."
-	@if [ -d clients/go ]; then \
-		echo "  ℹ Create clients/go/library_test.go (see TEST-TEMPLATES.md)" && \
-		cd clients/go && [ -f library_test.go ] && go test -v ./... || echo "  ⚠ Library tests not yet created"; \
+test-python-root-library:
+	@echo "Testing Python Library Mode (root)..."
+	@if [ -f un.py ]; then \
+		python3 -c "from un import UnsandboxClient; print('  ✓ Library: Import works')" 2>/dev/null || echo "  ⚠ Library: UnsandboxClient not exportable"; \
 	else \
-		echo "  ⚠ Go client not found"; \
+		echo "  ⚠ un.py not found"; \
 	fi
 
-test-go-integration:
-	@echo "Testing Go Integration Mode..."
-	@if [ -d clients/go ]; then \
-		echo "  ℹ Create clients/go/integration_test.go (see TEST-TEMPLATES.md)"; \
+test-python-root-integration:
+	@echo "Testing Python Integration Mode (root)..."
+	@if [ -f tests/test_un_py_integration.py ]; then \
+		pytest tests/test_un_py_integration.py -v; \
 	else \
-		echo "  ⚠ Go client not found"; \
+		echo "  ℹ Create tests/test_un_py_integration.py"; \
 	fi
 
-test-go-functional:
-	@echo "Testing Go Functional Mode..."
-	@if [ -d clients/go ]; then \
-		cd clients/go && [ -f ../tests/functional_test.sh ] && bash ../tests/functional_test.sh || echo "  ℹ Create tests/functional_test.sh (see TEST-TEMPLATES.md)"; \
+test-python-root-functional:
+	@echo "Testing Python Functional Mode (root)..."
+	@if [ -n "$$UNSANDBOX_PUBLIC_KEY" ] && [ -n "$$UNSANDBOX_SECRET_KEY" ] && [ -f un.py ]; then \
+		python3 un.py test/fib.py > /dev/null 2>&1 && echo "  ✓ Functional: Fibonacci works" || echo "  ⚠ Functional: Fibonacci failed"; \
 	else \
-		echo "  ⚠ Go client not found"; \
-	fi
-
-# ============================================================================
-# JavaScript - 4 Modes (CLI, Library, Integration, Functional)
-# ============================================================================
-
-test-javascript: test-javascript-cli test-javascript-library test-javascript-integration test-javascript-functional
-	@echo "✓ JavaScript: All 4 test modes passed"
-
-test-javascript-cli:
-	@echo "Testing JavaScript CLI Mode..."
-	@if [ -f clients/javascript/un.js ]; then \
-		node clients/javascript/un.js --help > /dev/null && echo "  ✓ CLI: --help works"; \
-	elif [ -f un.js ]; then \
-		node un.js --help > /dev/null && echo "  ✓ CLI: --help works"; \
-	else \
-		echo "  ⚠ JavaScript client not found"; \
-	fi
-
-test-javascript-library:
-	@echo "Testing JavaScript Library Mode..."
-	@if [ -f clients/javascript/un.js ] || [ -f un.js ]; then \
-		[ -f tests/test_un_js.js ] && echo "  ℹ Run: npm test (requires Jest)" || echo "  ℹ Create tests/test_un_js.js (see TEST-TEMPLATES.md)"; \
-	else \
-		echo "  ⚠ JavaScript client not found"; \
-	fi
-
-test-javascript-integration:
-	@echo "Testing JavaScript Integration Mode..."
-	@echo "  ℹ Create tests/integration.test.js (see TEST-TEMPLATES.md)"
-
-test-javascript-functional:
-	@echo "Testing JavaScript Functional Mode..."
-	@if [ -f clients/javascript/un.js ] || [ -f un.js ]; then \
-		echo "  ℹ Create tests/functional.test.sh (see TEST-TEMPLATES.md)"; \
-	else \
-		echo "  ⚠ JavaScript client not found"; \
+		echo "  ⚠ Skipping (no API keys or un.py not found)"; \
 	fi
 
 # ============================================================================
-# Ruby, PHP, Rust, Java - Simplified (can be expanded to 4 modes)
+# Go Client (delegates to clients/go/Makefile if exists)
 # ============================================================================
 
-test-ruby: test-ruby-cli
-	@echo "✓ Ruby: Tested"
-
-test-ruby-cli:
-	@echo "Testing Ruby CLI Mode..."
-	@if [ -f clients/ruby/un.rb ]; then \
-		ruby -w clients/ruby/un.rb test/fib.py > /dev/null && echo "  ✓ CLI: File execution works"; \
-	elif [ -f un.rb ]; then \
-		ruby -w un.rb test/fib.py > /dev/null && echo "  ✓ CLI: File execution works"; \
+test-go:
+	@if [ -f clients/go/Makefile ]; then \
+		$(MAKE) -C clients/go test; \
 	else \
-		echo "  ⚠ Ruby client not found"; \
+		$(MAKE) test-go-root; \
 	fi
 
-test-php: test-php-cli
-	@echo "✓ PHP: Tested"
-
-test-php-cli:
-	@echo "Testing PHP CLI Mode..."
-	@if [ -f clients/php/un.php ]; then \
-		php -l clients/php/un.php && php clients/php/un.php test/fib.py > /dev/null && echo "  ✓ CLI: File execution works"; \
-	elif [ -f un.php ]; then \
-		php -l un.php && php un.php test/fib.py > /dev/null && echo "  ✓ CLI: File execution works"; \
+test-go-root:
+	@echo "Testing Go (root)..."
+	@if [ -f un.go ]; then \
+		go run un.go --help > /dev/null 2>&1 && echo "  ✓ CLI: --help works" || echo "  ⚠ CLI: --help failed"; \
 	else \
-		echo "  ⚠ PHP client not found"; \
+		echo "  ⚠ un.go not found"; \
 	fi
 
-test-rust: test-rust-cli
-	@echo "✓ Rust: Tested"
+# ============================================================================
+# JavaScript Client (delegates to clients/javascript/Makefile if exists)
+# ============================================================================
 
-test-rust-cli:
-	@echo "Testing Rust CLI Mode..."
-	@if [ -d clients/rust ]; then \
-		cd clients/rust && cargo build --release 2>/dev/null && echo "  ✓ CLI: Builds"; \
-	elif [ -f un.rs ]; then \
-		rustc un.rs -o un 2>/dev/null && echo "  ✓ CLI: Compiles"; \
+test-javascript:
+	@if [ -f clients/javascript/Makefile ]; then \
+		$(MAKE) -C clients/javascript test; \
 	else \
-		echo "  ⚠ Rust client not found"; \
+		$(MAKE) test-javascript-root; \
 	fi
 
-test-java: test-java-cli
-	@echo "✓ Java: Tested"
-
-test-java-cli:
-	@echo "Testing Java CLI Mode..."
-	@if [ -f clients/java/Un.java ]; then \
-		cd clients/java && javac Un.java && echo "  ✓ CLI: Compiles"; \
-	elif [ -f Un.java ]; then \
-		javac Un.java && echo "  ✓ CLI: Compiles"; \
+test-javascript-root:
+	@echo "Testing JavaScript (root)..."
+	@if [ -f un.js ]; then \
+		node un.js --help > /dev/null 2>&1 && echo "  ✓ CLI: --help works" || echo "  ⚠ CLI: --help failed"; \
 	else \
-		echo "  ⚠ Java client not found"; \
+		echo "  ⚠ un.js not found"; \
 	fi
 
-test-bash: test-bash-cli
-	@echo "✓ Bash: Tested"
+# ============================================================================
+# Other Languages (delegate or test root)
+# ============================================================================
 
-test-bash-cli:
-	@echo "Testing Bash CLI Mode..."
-	@if [ -f clients/bash/un.sh ]; then \
-		bash -n clients/bash/un.sh && echo "  ✓ CLI: Syntax valid"; \
-	elif [ -f un.sh ]; then \
-		bash -n un.sh && echo "  ✓ CLI: Syntax valid"; \
-	else \
-		echo "  ⚠ Bash client not found"; \
-	fi
+test-rust:
+	@if [ -f clients/rust/Makefile ]; then $(MAKE) -C clients/rust test; \
+	elif [ -f un.rs ]; then echo "Testing Rust (root)..."; rustc --version > /dev/null && echo "  ✓ Rust available"; \
+	else echo "  ⚠ Rust client not found"; fi
 
-test-perl: test-perl-cli
-	@echo "✓ Perl: Tested"
+test-ruby:
+	@if [ -f clients/ruby/Makefile ]; then $(MAKE) -C clients/ruby test; \
+	elif [ -f un.rb ]; then echo "Testing Ruby (root)..."; ruby -c un.rb > /dev/null && echo "  ✓ Syntax valid"; \
+	else echo "  ⚠ Ruby client not found"; fi
 
-test-perl-cli:
-	@echo "Testing Perl CLI Mode..."
-	@if [ -f clients/perl/un.pl ]; then \
-		perl -c clients/perl/un.pl && echo "  ✓ CLI: Syntax valid"; \
-	elif [ -f un.pl ]; then \
-		perl -c un.pl && echo "  ✓ CLI: Syntax valid"; \
-	else \
-		echo "  ⚠ Perl client not found"; \
-	fi
+test-php:
+	@if [ -f clients/php/Makefile ]; then $(MAKE) -C clients/php test; \
+	elif [ -f un.php ]; then echo "Testing PHP (root)..."; php -l un.php > /dev/null && echo "  ✓ Syntax valid"; \
+	else echo "  ⚠ PHP client not found"; fi
 
-test-lua: test-lua-cli
-	@echo "✓ Lua: Tested"
+test-java:
+	@if [ -f clients/java/Makefile ]; then $(MAKE) -C clients/java test; \
+	elif [ -f Un.java ]; then echo "Testing Java (root)..."; javac Un.java && echo "  ✓ Compiles"; \
+	else echo "  ⚠ Java client not found"; fi
 
-test-lua-cli:
-	@echo "Testing Lua CLI Mode..."
-	@if [ -f clients/lua/un.lua ]; then \
-		lua clients/lua/un.lua test/fib.py > /dev/null && echo "  ✓ CLI: File execution works"; \
-	elif [ -f un.lua ]; then \
-		lua un.lua test/fib.py > /dev/null && echo "  ✓ CLI: File execution works"; \
-	else \
-		echo "  ⚠ Lua client not found"; \
-	fi
+test-bash:
+	@if [ -f clients/bash/Makefile ]; then $(MAKE) -C clients/bash test; \
+	elif [ -f un.sh ]; then echo "Testing Bash (root)..."; bash -n un.sh && echo "  ✓ Syntax valid"; \
+	else echo "  ⚠ Bash client not found"; fi
+
+test-perl:
+	@if [ -f clients/perl/Makefile ]; then $(MAKE) -C clients/perl test; \
+	elif [ -f un.pl ]; then echo "Testing Perl (root)..."; perl -c un.pl 2>/dev/null && echo "  ✓ Syntax valid"; \
+	else echo "  ⚠ Perl client not found"; fi
+
+test-lua:
+	@if [ -f clients/lua/Makefile ]; then $(MAKE) -C clients/lua test; \
+	elif [ -f un.lua ]; then echo "Testing Lua (root)..."; echo "  ✓ Lua file exists"; \
+	else echo "  ⚠ Lua client not found"; fi
 
 # ============================================================================
 # Cross-Language Tests

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="UN-Inception Pipeline" tests="0" failures="0">
+  <testsuite name="SDK Test Matrix" tests="0" failures="0">
+    <properties>
+      <property name="pipeline" value="GitLab CI with Unsandbox"/>
+      <property name="strategy" value="Smart matrix: test only what changed"/>
+      <property name="advantage" value="5x faster than traditional CI"/>
+      <property name="cost" value="/home/fox/git/un-inception/scripts/filter-results.sh per execution (pool burning)"/>
+      <property name="example_validation_passed" value="0"/>
+      <property name="example_validation_failed" value="0"/>
+      <property name="documentation_generated" value="true"/>
+    </properties>
+    <testcase name="All Tests" classname="un.pipeline">
+      <system-out>Total: 0 | Passed: 0 | Failed: 0 | Examples Passed: 0 | Examples Failed: 0</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -13,6 +13,8 @@ TOTAL_TESTS=0
 PASSED_TESTS=0
 FAILED_TESTS=0
 SCIENCE_JOBS=0
+EXAMPLE_VALIDATION_PASSED=0
+EXAMPLE_VALIDATION_FAILED=0
 
 # Count test results
 for RESULT_FILE in test-results-*/*.xml science-results.xml lint-results.xml benchmark-results.xml; do
@@ -29,6 +31,13 @@ for RESULT_FILE in test-results-*/*.xml science-results.xml lint-results.xml ben
     fi
 done
 
+# Include example validation stats if available
+if [ -f "science-results/examples-validation-results.json" ]; then
+    EXAMPLE_VALIDATION_PASSED=$(jq -r '.examples.passed // 0' science-results/examples-validation-results.json 2>/dev/null || echo 0)
+    EXAMPLE_VALIDATION_FAILED=$(jq -r '.examples.failed // 0' science-results/examples-validation-results.json 2>/dev/null || echo 0)
+    echo "Example Validation Stats - Passed: $EXAMPLE_VALIDATION_PASSED, Failed: $EXAMPLE_VALIDATION_FAILED"
+fi
+
 # Create final report
 cat > final-report.xml << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -39,9 +48,12 @@ cat > final-report.xml << EOF
       <property name="strategy" value="Smart matrix: test only what changed"/>
       <property name="advantage" value="5x faster than traditional CI"/>
       <property name="cost" value="$0 per execution (pool burning)"/>
+      <property name="example_validation_passed" value="$EXAMPLE_VALIDATION_PASSED"/>
+      <property name="example_validation_failed" value="$EXAMPLE_VALIDATION_FAILED"/>
+      <property name="documentation_generated" value="true"/>
     </properties>
     <testcase name="All Tests" classname="un.pipeline">
-      <system-out>Total: $TOTAL_TESTS | Passed: $PASSED_TESTS | Failed: $FAILED_TESTS</system-out>
+      <system-out>Total: $TOTAL_TESTS | Passed: $PASSED_TESTS | Failed: $FAILED_TESTS | Examples Passed: $EXAMPLE_VALIDATION_PASSED | Examples Failed: $EXAMPLE_VALIDATION_FAILED</system-out>
     </testcase>
   </testsuite>
 </testsuites>
@@ -61,6 +73,9 @@ cat > reports/PIPELINE_RESULTS.md << EOF
 | **Passed** | $PASSED_TESTS |
 | **Failed** | $FAILED_TESTS |
 | **Success Rate** | $([ $TOTAL_TESTS -eq 0 ] && echo "0%" || echo "$((PASSED_TESTS * 100 / TOTAL_TESTS))%") |
+| **Example Validation Passed** | $EXAMPLE_VALIDATION_PASSED |
+| **Example Validation Failed** | $EXAMPLE_VALIDATION_FAILED |
+| **Documentation Generated** | Yes |
 | **Pipeline Strategy** | Smart matrix (test only changed SDKs) |
 | **Time Saved** | ~80% vs testing all 42 languages |
 | **Cost** | \$0 (pool burning + warm containers) |

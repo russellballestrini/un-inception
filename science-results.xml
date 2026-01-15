@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Example Validation" tests="5" failures="5">
+    <testcase name="SDK Examples" classname="science.examples">
+      <system-out>Passed: 0, Failed: 5</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

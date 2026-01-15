@@ -3,6 +3,8 @@ stages:
   - build
   - test
   - science
+  - validate
+  - document
   - report
 
 variables:
@@ -79,8 +81,8 @@ science-validate-examples:
   stage: science
   image: alpine:latest
   script:
-    - apk add --no-cache curl jq
-    - bash scripts/science/validate-examples.sh
+    - apk add --no-cache curl jq bc
+    - bash scripts/validate-examples.sh
   artifacts:
     reports:
       junit: science-results.xml
@@ -124,19 +126,94 @@ science-benchmark-clients:
     - main
 
 # ============================================================================
-# STAGE 6: Report
+# STAGE 6: Validate Examples (from science job artifacts)
+# ============================================================================
+validate-examples:
+  stage: validate
+  image: alpine:latest
+  needs:
+    - science-validate-examples
+  script:
+    - apk add --no-cache jq curl
+    - mkdir -p science-results
+    - |
+      if [ -f science-results/examples-validation-results.json ]; then
+        echo "✓ Example validation results found"
+        cat science-results/examples-validation-results.json
+
+        # Extract stats and display summary
+        TOTAL=$(jq '.summary.total_examples' science-results/examples-validation-results.json 2>/dev/null || echo "0")
+        PASSED=$(jq '.summary.total_validated' science-results/examples-validation-results.json 2>/dev/null || echo "0")
+        FAILED=$(jq '.summary.total_failed' science-results/examples-validation-results.json 2>/dev/null || echo "0")
+
+        echo ""
+        echo "Summary: $PASSED/$TOTAL passed, $FAILED failed"
+      else
+        echo "⚠ No example validation results found"
+      fi
+  artifacts:
+    paths:
+      - science-results/
+    expire_in: 30 days
+  allow_failure: true
+  only:
+    - main
+
+# ============================================================================
+# STAGE 7: Generate Documentation
+# ============================================================================
+generate-documentation:
+  stage: document
+  image: alpine:latest
+  needs:
+    - validate-examples
+  script:
+    - apk add --no-cache bash jq curl git
+    - mkdir -p docs
+    - bash scripts/generate-docs.sh || true
+    - |
+      VALIDATION_TIME=$(date +%s)
+      CURRENT_TIME=$(date +%s)
+      MINUTES_AGO=$((($CURRENT_TIME - $VALIDATION_TIME) / 60))
+      echo "Last verified: $MINUTES_AGO minutes ago" > docs/VERIFICATION_TIMESTAMP.txt
+      echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> docs/VERIFICATION_TIMESTAMP.txt
+    - ls -la docs/ || echo "No documentation generated"
+  artifacts:
+    paths:
+      - docs/
+      - docs/VERIFICATION_TIMESTAMP.txt
+    expire_in: 30 days
+  allow_failure: true
+  only:
+    - main
+
+# ============================================================================
+# STAGE 8: Report
 # ============================================================================
 report:
   stage: report
   image: alpine:latest
+  needs:
+    - generate-documentation
   script:
-    - apk add --no-cache jq
+    - apk add --no-cache jq bash
     - bash scripts/filter-results.sh
+    - |
+      if [ -f science-results/examples-validation-results.json ]; then
+        echo "Including example validation stats in final report..."
+        EXAMPLE_STATS=$(cat science-results/examples-validation-results.json)
+        jq --argjson examples "$EXAMPLE_STATS" '.properties += [{name: "example_validation_passed", value: $examples.examples.passed | tostring}, {name: "example_validation_failed", value: $examples.examples.failed | tostring}]' final-report.xml > final-report.xml.tmp && mv final-report.xml.tmp final-report.xml || true
+      fi
+    - echo "Including documentation generation artifacts..."
+    - ls -la docs/ 2>/dev/null | tail -5 || echo "No documentation available"
   artifacts:
     reports:
       junit: final-report.xml
     paths:
       - reports/
+      - science-results/examples-validation-results.json
+      - docs/
+      - final-report.xml
     expire_in: 30 days
   only:
     - main

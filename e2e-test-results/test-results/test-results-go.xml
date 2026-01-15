@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Go Examples" tests="1" failures="0">
+    <testcase name="hello.go" classname="go.examples">
+      <system-out>Test passed</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
