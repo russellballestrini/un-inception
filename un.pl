@@ -1,3 +1,4 @@
+#!/usr/bin/env perl
 # PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 #
 # This is free public domain software for the public good of a permacomputer hosted
@@ -33,6 +34,202 @@
 # https://www.timehexon.com
 # https://www.foxhop.net
 # https://www.unturf.com/software
+#
+# unsandbox SDK for Perl - Execute code in secure sandboxes
+# https://unsandbox.com | https://api.unsandbox.com/openapi
+
+use strict;
+use warnings;
+use JSON;
+use LWP::UserAgent;
+use HTTP::Request;
+use Digest::HMAC_SHA256 qw(hmac_sha256_hex);
+use File::HomeDir;
+use Time::HiRes qw(time sleep);
+
+our $VERSION = "2.0.0";
+our $API_BASE = 'https://api.unsandbox.com';
+
+# Credential system
+sub load_accounts_csv {
+    my ($path) = @_;
+    $path ||= File::HomeDir->my_home . "/.unsandbox/accounts.csv";
+    return [] unless -e $path;
+
+    my @accounts;
+    open my $fh, '<', $path or return [];
+    while (my $line = <$fh>) {
+        chomp $line;
+        next if !$line;
+        my ($pk, $sk) = split /,/, $line, 2;
+        push @accounts, [$pk, $sk] if $pk && $sk;
+    }
+    close $fh;
+    return \@accounts;
+}
+
+sub get_credentials {
+    my (%opts) = @_;
+
+    # Tier 1: Arguments
+    return ($opts{public_key}, $opts{secret_key}) if $opts{public_key} && $opts{secret_key};
+
+    # Tier 2: Environment
+    if ($ENV{UNSANDBOX_PUBLIC_KEY} && $ENV{UNSANDBOX_SECRET_KEY}) {
+        return ($ENV{UNSANDBOX_PUBLIC_KEY}, $ENV{UNSANDBOX_SECRET_KEY});
+    }
+
+    # Tier 3: Home directory
+    my $home_accounts = load_accounts_csv();
+    return @{$home_accounts->[0]} if @$home_accounts;
+
+    # Tier 4: Local directory
+    my $local_accounts = load_accounts_csv("./accounts.csv");
+    return @{$local_accounts->[0]} if @$local_accounts;
+
+    die "No credentials found\n";
+}
+
+# HMAC signature
+sub sign_request {
+    my ($secret, $timestamp, $method, $endpoint, $body) = @_;
+    my $message = "$timestamp:$method:$endpoint:$body";
+    return hmac_sha256_hex($message, $secret);
+}
+
+# API communication
+sub api_request {
+    my ($method, $endpoint, $body, %opts) = @_;
+    my ($pk, $sk) = get_credentials(%opts);
+
+    my $timestamp = int(time);
+    my $body_str = $body ? JSON::to_json($body) : '{}';
+    my $signature = sign_request($sk, $timestamp, $method, $endpoint, $body_str);
+
+    my $ua = LWP::UserAgent->new;
+    my $url = "$API_BASE$endpoint";
+    my $req = HTTP::Request->new($method, $url);
+
+    $req->header('Authorization' => "Bearer $pk");
+    $req->header('X-Timestamp' => $timestamp);
+    $req->header('X-Signature' => $signature);
+    $req->header('Content-Type' => 'application/json');
+    $req->content($body_str) if $body;
+
+    my $res = $ua->request($req);
+    die "API error (" . $res->code . ")\n" unless $res->is_success;
+
+    return JSON::from_json($res->content);
+}
+
+# Languages with cache
+sub languages {
+    my (%opts) = @_;
+    my $cache_ttl = $opts{cache_ttl} || 3600;
+    my $cache_path = File::HomeDir->my_home . "/.unsandbox/languages.json";
+
+    if (-e $cache_path) {
+        my $age = time - (stat $cache_path)[9];
+        if ($age < $cache_ttl) {
+            open my $fh, '<', $cache_path;
+            my $content = do { local $/; <$fh> };
+            close $fh;
+            return JSON::from_json($content);
+        }
+    }
+
+    my $result = api_request('GET', '/languages', undef, %opts);
+    my $langs = $result->{languages} || [];
+
+    my $cache_dir = File::HomeDir->my_home . "/.unsandbox";
+    mkdir $cache_dir unless -d $cache_dir;
+    open my $fh, '>', $cache_path;
+    print $fh JSON::to_json($langs);
+    close $fh;
+
+    return $langs;
+}
+
+# Execution functions
+sub execute {
+    my ($language, $code, %opts) = @_;
+    my $body = {
+        language => $language,
+        code => $code,
+        network_mode => $opts{network_mode} || 'zerotrust',
+        ttl => $opts{ttl} || 60
+    };
+    return api_request('POST', '/execute', $body, %opts);
+}
+
+sub execute_async {
+    my ($language, $code, %opts) = @_;
+    my $body = {
+        language => $language,
+        code => $code,
+        network_mode => $opts{network_mode} || 'zerotrust',
+        ttl => $opts{ttl} || 300
+    };
+    return api_request('POST', '/execute/async', $body, %opts);
+}
+
+sub run {
+    my ($file, %opts) = @_;
+    open my $fh, '<', $file or die "Can't read $file\n";
+    my $code = do { local $/; <$fh> };
+    close $fh;
+    return execute(detect_language($file), $code, %opts);
+}
+
+# Job management
+sub get_job {
+    my ($job_id, %opts) = @_;
+    return api_request('GET', "/jobs/$job_id", undef, %opts);
+}
+
+sub wait_job {
+    my ($job_id, %opts) = @_;
+    my @delays = (300, 450, 700, 900, 650, 1600, 2000);
+
+    for my $i (0..119) {
+        my $job = get_job($job_id, %opts);
+        return $job if $job->{status} eq 'completed';
+        die "Job failed\n" if $job->{status} eq 'failed';
+
+        my $delay = $delays[$i] || 2000;
+        sleep($delay / 1000);
+    }
+
+    die "Max polls exceeded\n";
+}
+
+sub cancel_job {
+    my ($job_id, %opts) = @_;
+    return api_request('DELETE', "/jobs/$job_id", undef, %opts);
+}
+
+# Utilities
+my %ext_map = (
+    py => 'python', rb => 'ruby', js => 'javascript', pl => 'perl',
+    php => 'php', lua => 'lua', sh => 'bash', go => 'go'
+);
+
+sub detect_language {
+    my ($filename) = @_;
+    my ($ext) = $filename =~ /\.([^.]+)$/;
+    return $ext_map{$ext} || die "Unknown file type\n";
+}
+
+# CLI
+sub cli_main {
+    my @args = @ARGV;
+    die "Usage: perl un.pl <file>\n" unless @args;
+
+    my $result = run($args[0]);
+    print $result->{stdout} if $result->{stdout};
+    print STDERR $result->{stderr} if $result->{stderr};
+    exit($result->{exit_code} || 0);
+}
 
 #!/usr/bin/env perl
 # un.pl - Unsandbox CLI Client (Perl Implementation)
