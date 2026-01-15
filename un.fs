@@ -786,11 +786,11 @@ let cmdService (args: Args) =
         | Some logs -> printfn "%s" (logs.ToString())
         | None -> ()
     elif args.ServiceSleep.IsSome then
-        let result = apiRequest (sprintf "/services/%s/sleep" args.ServiceSleep.Value) "POST" None publicKey secretKey
-        printfn "%sService sleeping: %s%s" green args.ServiceSleep.Value reset
+        let result = apiRequest (sprintf "/services/%s/freeze" args.ServiceSleep.Value) "POST" None publicKey secretKey
+        printfn "%sService frozen: %s%s" green args.ServiceSleep.Value reset
     elif args.ServiceWake.IsSome then
-        let result = apiRequest (sprintf "/services/%s/wake" args.ServiceWake.Value) "POST" None publicKey secretKey
-        printfn "%sService waking: %s%s" green args.ServiceWake.Value reset
+        let result = apiRequest (sprintf "/services/%s/unfreeze" args.ServiceWake.Value) "POST" None publicKey secretKey
+        printfn "%sService unfreezing: %s%s" green args.ServiceWake.Value reset
     elif args.ServiceDestroy.IsSome then
         let result = apiRequest (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None publicKey secretKey
         printfn "%sService destroyed: %s%s" green args.ServiceDestroy.Value reset

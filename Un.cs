@@ -395,15 +395,15 @@ class Un
 
         if (args.ServiceSleep != null)
         {
-            ApiRequest($"/services/{args.ServiceSleep}/sleep", "POST", null, publicKey, secretKey);
-            Console.WriteLine($"{GREEN}Service sleeping: {args.ServiceSleep}{RESET}");
+            ApiRequest($"/services/{args.ServiceSleep}/freeze", "POST", null, publicKey, secretKey);
+            Console.WriteLine($"{GREEN}Service frozen: {args.ServiceSleep}{RESET}");
             return;
         }
 
         if (args.ServiceWake != null)
         {
-            ApiRequest($"/services/{args.ServiceWake}/wake", "POST", null, publicKey, secretKey);
-            Console.WriteLine($"{GREEN}Service waking: {args.ServiceWake}{RESET}");
+            ApiRequest($"/services/{args.ServiceWake}/unfreeze", "POST", null, publicKey, secretKey);
+            Console.WriteLine($"{GREEN}Service unfreezing: {args.ServiceWake}{RESET}");
             return;
         }
 

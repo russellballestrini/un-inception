@@ -556,14 +556,14 @@ Future<void> cmdService(Args args) async {
   }
 
   if (args.serviceSleep != null) {
-    await apiRequestCurl('/services/${args.serviceSleep}/sleep', 'POST', null, publicKey, secretKey);
-    print('${green}Service sleeping: ${args.serviceSleep}$reset');
+    await apiRequestCurl('/services/${args.serviceSleep}/freeze', 'POST', null, publicKey, secretKey);
+    print('${green}Service frozen: ${args.serviceSleep}$reset');
     return;
   }
 
   if (args.serviceWake != null) {
-    await apiRequestCurl('/services/${args.serviceWake}/wake', 'POST', null, publicKey, secretKey);
-    print('${green}Service waking: ${args.serviceWake}$reset');
+    await apiRequestCurl('/services/${args.serviceWake}/unfreeze', 'POST', null, publicKey, secretKey);
+    print('${green}Service unfreezing: ${args.serviceWake}$reset');
     return;
   }
 

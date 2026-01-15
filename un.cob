@@ -496,10 +496,10 @@
        SERVICE-SLEEP.
            STRING "curl -s -X POST "
                "https://api.unsandbox.com/services/"
-               FUNCTION TRIM(WS-ID) "/sleep "
+               FUNCTION TRIM(WS-ID) "/freeze "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
-               "echo -e '\x1b[32mService sleeping: "
+               "echo -e '\x1b[32mService frozen: "
                FUNCTION TRIM(WS-ID) "\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -509,10 +509,10 @@
        SERVICE-WAKE.
            STRING "curl -s -X POST "
                "https://api.unsandbox.com/services/"
-               FUNCTION TRIM(WS-ID) "/wake "
+               FUNCTION TRIM(WS-ID) "/unfreeze "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
-               "echo -e '\x1b[32mService waking: "
+               "echo -e '\x1b[32mService unfreezing: "
                FUNCTION TRIM(WS-ID) "\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.

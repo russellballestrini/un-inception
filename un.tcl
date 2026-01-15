@@ -830,14 +830,14 @@ proc cmd_service {args} {
     }
 
     if {$sleep_id ne ""} {
-        api_request "/services/$sleep_id/sleep" "POST" {} $public_key $secret_key
-        puts "${::GREEN}Service sleeping: $sleep_id${::RESET}"
+        api_request "/services/$sleep_id/freeze" "POST" {} $public_key $secret_key
+        puts "${::GREEN}Service frozen: $sleep_id${::RESET}"
         return
     }
 
     if {$wake_id ne ""} {
-        api_request "/services/$wake_id/wake" "POST" {} $public_key $secret_key
-        puts "${::GREEN}Service waking: $wake_id${::RESET}"
+        api_request "/services/$wake_id/unfreeze" "POST" {} $public_key $secret_key
+        puts "${::GREEN}Service unfreezing: $wake_id${::RESET}"
         return
     }
 

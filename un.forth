@@ -299,9 +299,9 @@
     get-secret-key r@ write-file throw
     s" '" r@ write-line throw
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
-    s" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/sleep:\"" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/freeze:\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X POST https://api.unsandbox.com/services/$SERVICE_ID/sleep -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService sleeping: " r@ write-file throw
+    s" curl -s -X POST https://api.unsandbox.com/services/$SERVICE_ID/freeze -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService frozen: " r@ write-file throw
     r@ write-file throw
     s" \\x1b[0m'" r@ write-line throw
     r> close-file throw
@@ -323,9 +323,9 @@
     get-secret-key r@ write-file throw
     s" '" r@ write-line throw
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
-    s" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/wake:\"" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/unfreeze:\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X POST https://api.unsandbox.com/services/$SERVICE_ID/wake -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService waking: " r@ write-file throw
+    s" curl -s -X POST https://api.unsandbox.com/services/$SERVICE_ID/unfreeze -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService unfreezing: " r@ write-file throw
     r@ write-file throw
     s" \\x1b[0m'" r@ write-line throw
     r> close-file throw

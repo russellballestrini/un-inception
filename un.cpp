@@ -475,18 +475,18 @@ void cmd_service(const string& name, const string& ports, const string& type, co
     }
 
     if (!sleep.empty()) {
-        string auth_headers = build_auth_headers("POST", "/services/" + sleep + "/sleep", "", public_key, secret_key);
-        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + sleep + "/sleep' " + auth_headers;
+        string auth_headers = build_auth_headers("POST", "/services/" + sleep + "/freeze", "", public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + sleep + "/freeze' " + auth_headers;
         exec_curl(cmd);
-        cout << GREEN << "Service sleeping: " << sleep << RESET << endl;
+        cout << GREEN << "Service frozen: " << sleep << RESET << endl;
         return;
     }
 
     if (!wake.empty()) {
-        string auth_headers = build_auth_headers("POST", "/services/" + wake + "/wake", "", public_key, secret_key);
-        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + wake + "/wake' " + auth_headers;
+        string auth_headers = build_auth_headers("POST", "/services/" + wake + "/unfreeze", "", public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + "/services/" + wake + "/unfreeze' " + auth_headers;
         exec_curl(cmd);
-        cout << GREEN << "Service waking: " << wake << RESET << endl;
+        cout << GREEN << "Service unfreezing: " << wake << RESET << endl;
         return;
     }
 

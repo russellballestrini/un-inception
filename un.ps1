@@ -518,16 +518,16 @@ function Invoke-Service {
     if ($Args -contains "--freeze") {
         $idx = [array]::IndexOf($Args, "--freeze")
         $serviceId = $Args[$idx + 1]
-        Invoke-Api -Endpoint "/services/$serviceId/sleep" -Method "POST" -Body "{}"
-        Write-Host "`e[32mService sleeping: $serviceId`e[0m"
+        Invoke-Api -Endpoint "/services/$serviceId/freeze" -Method "POST" -Body "{}"
+        Write-Host "`e[32mService frozen: $serviceId`e[0m"
         return
     }
 
     if ($Args -contains "--unfreeze") {
         $idx = [array]::IndexOf($Args, "--unfreeze")
         $serviceId = $Args[$idx + 1]
-        Invoke-Api -Endpoint "/services/$serviceId/wake" -Method "POST" -Body "{}"
-        Write-Host "`e[32mService waking: $serviceId`e[0m"
+        Invoke-Api -Endpoint "/services/$serviceId/unfreeze" -Method "POST" -Body "{}"
+        Write-Host "`e[32mService unfreezing: $serviceId`e[0m"
         return
     }
 

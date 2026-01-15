@@ -818,16 +818,16 @@ void cmdService(NSArray* args) {
     }
 
     if (sleepId) {
-        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/sleep", sleepId];
+        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/freeze", sleepId];
         apiRequest(endpoint, @"POST", nil, publicKey, secretKey);
-        printf("%sService sleeping: %s%s\n", [GREEN UTF8String], [sleepId UTF8String], [RESET UTF8String]);
+        printf("%sService frozen: %s%s\n", [GREEN UTF8String], [sleepId UTF8String], [RESET UTF8String]);
         return;
     }
 
     if (wakeId) {
-        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/wake", wakeId];
+        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/unfreeze", wakeId];
         apiRequest(endpoint, @"POST", nil, publicKey, secretKey);
-        printf("%sService waking: %s%s\n", [GREEN UTF8String], [wakeId UTF8String], [RESET UTF8String]);
+        printf("%sService unfreezing: %s%s\n", [GREEN UTF8String], [wakeId UTF8String], [RESET UTF8String]);
         return;
     }
 

@@ -1,5 +1,21 @@
 # Claude AI Instructions for un-inception
 
+## ⚠️ CRITICAL: NEVER USE RAW LXC COMMANDS
+
+**ALWAYS use `un` CLI commands. NEVER use raw `lxc` commands on production.**
+
+```bash
+# ✅ CORRECT - use un commands
+un2 service --list
+un2 service --destroy <id>
+un2 service --execute <id> 'command'
+
+# ❌ FORBIDDEN - raw lxc commands bypass auth and state sync
+lxc list / lxc delete / lxc stop / lxc exec
+```
+
+On 2026-01-11, raw `lxc delete` destroyed 8 production services causing complete data loss.
+
 ## Commit Messages
 
 **NEVER add Claude attribution to commit messages.** No robot emoji, no "Generated with Claude Code", no "Co-Authored-By: Claude". Just write the commit message like a human wrote it.

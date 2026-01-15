@@ -218,14 +218,14 @@ defmodule Un do
 
   defp service_command(["--freeze", service_id | _]) do
     api_key = get_api_key()
-    curl_post(api_key, "/services/#{service_id}/sleep", "{}")
-    IO.puts("#{@green}Service sleeping: #{service_id}#{@reset}")
+    curl_post(api_key, "/services/#{service_id}/freeze", "{}")
+    IO.puts("#{@green}Service frozen: #{service_id}#{@reset}")
   end
 
   defp service_command(["--unfreeze", service_id | _]) do
     api_key = get_api_key()
-    curl_post(api_key, "/services/#{service_id}/wake", "{}")
-    IO.puts("#{@green}Service waking: #{service_id}#{@reset}")
+    curl_post(api_key, "/services/#{service_id}/unfreeze", "{}")
+    IO.puts("#{@green}Service unfreezing: #{service_id}#{@reset}")
   end
 
   defp service_command(["--destroy", service_id | _]) do

@@ -208,7 +208,7 @@ service_sleep(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/sleep:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services/~w/sleep -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService sleeping: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/freeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services/~w/freeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService frozen: ~w\\x1b[0m"',
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 
@@ -217,7 +217,7 @@ service_wake(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/wake:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services/~w/wake -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService waking: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/unfreeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services/~w/unfreeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService unfreezing: ~w\\x1b[0m"',
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 

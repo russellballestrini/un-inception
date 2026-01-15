@@ -552,14 +552,14 @@ def cmd_service(args)
   end
 
   if sleep_id = args[:sleep]?.as?(String)
-    api_request("/services/#{sleep_id}/sleep", public_key, secret_key, method: "POST")
-    puts "#{GREEN}Service sleeping: #{sleep_id}#{RESET}"
+    api_request("/services/#{sleep_id}/freeze", public_key, secret_key, method: "POST")
+    puts "#{GREEN}Service frozen: #{sleep_id}#{RESET}"
     return
   end
 
   if wake_id = args[:wake]?.as?(String)
-    api_request("/services/#{wake_id}/wake", public_key, secret_key, method: "POST")
-    puts "#{GREEN}Service waking: #{wake_id}#{RESET}"
+    api_request("/services/#{wake_id}/unfreeze", public_key, secret_key, method: "POST")
+    puts "#{GREEN}Service unfreezing: #{wake_id}#{RESET}"
     return
   end
 

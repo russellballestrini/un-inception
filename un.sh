@@ -970,14 +970,14 @@ cmd_service() {
     fi
 
     if [[ -n "$sleep" ]]; then
-        api_request "/services/$sleep/sleep" "POST" "" "$api_key" > /dev/null
-        echo -e "${GREEN}Service sleeping: $sleep${RESET}"
+        api_request "/services/$sleep/freeze" "POST" "" "$api_key" > /dev/null
+        echo -e "${GREEN}Service frozen: $sleep${RESET}"
         return
     fi
 
     if [[ -n "$wake" ]]; then
-        api_request "/services/$wake/wake" "POST" "" "$api_key" > /dev/null
-        echo -e "${GREEN}Service waking: $wake${RESET}"
+        api_request "/services/$wake/unfreeze" "POST" "" "$api_key" > /dev/null
+        echo -e "${GREEN}Service unfreezing: $wake${RESET}"
         return
     fi
 

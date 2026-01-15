@@ -662,14 +662,14 @@ def cmd_service(options)
   end
 
   if options[:sleep]
-    api_request("/services/#{options[:sleep]}/sleep", method: 'POST', keys: keys)
-    puts "#{GREEN}Service sleeping: #{options[:sleep]}#{RESET}"
+    api_request("/services/#{options[:sleep]}/freeze", method: 'POST', keys: keys)
+    puts "#{GREEN}Service frozen: #{options[:sleep]}#{RESET}"
     return
   end
 
   if options[:wake]
-    api_request("/services/#{options[:wake]}/wake", method: 'POST', keys: keys)
-    puts "#{GREEN}Service waking: #{options[:wake]}#{RESET}"
+    api_request("/services/#{options[:wake]}/unfreeze", method: 'POST', keys: keys)
+    puts "#{GREEN}Service unfreezing: #{options[:wake]}#{RESET}"
     return
   end
 

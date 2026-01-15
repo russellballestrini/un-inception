@@ -643,14 +643,14 @@ function cmd_service($options) {
     }
 
     if ($options['sleep']) {
-        api_request("/services/{$options['sleep']}/sleep", 'POST', null, $keys);
-        echo GREEN . "Service sleeping: {$options['sleep']}" . RESET . "\n";
+        api_request("/services/{$options['sleep']}/freeze", 'POST', null, $keys);
+        echo GREEN . "Service frozen: {$options['sleep']}" . RESET . "\n";
         return;
     }
 
     if ($options['wake']) {
-        api_request("/services/{$options['wake']}/wake", 'POST', null, $keys);
-        echo GREEN . "Service waking: {$options['wake']}" . RESET . "\n";
+        api_request("/services/{$options['wake']}/unfreeze", 'POST', null, $keys);
+        echo GREEN . "Service unfreezing: {$options['wake']}" . RESET . "\n";
         return;
     }
 

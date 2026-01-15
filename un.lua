@@ -719,14 +719,14 @@ local function cmd_service(options)
     end
 
     if options.sleep then
-        api_request("/services/" .. options.sleep .. "/sleep", "POST", nil, keys)
-        print(GREEN .. "Service sleeping: " .. options.sleep .. RESET)
+        api_request("/services/" .. options.sleep .. "/freeze", "POST", nil, keys)
+        print(GREEN .. "Service frozen: " .. options.sleep .. RESET)
         return
     end
 
     if options.wake then
-        api_request("/services/" .. options.wake .. "/wake", "POST", nil, keys)
-        print(GREEN .. "Service waking: " .. options.wake .. RESET)
+        api_request("/services/" .. options.wake .. "/unfreeze", "POST", nil, keys)
+        print(GREEN .. "Service unfreezing: " .. options.wake .. RESET)
         return
     end
 

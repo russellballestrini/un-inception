@@ -507,14 +507,14 @@ sub cmd_service {
     }
 
     if ($options->{sleep}) {
-        api_request("/services/$options->{sleep}/sleep", 'POST', undef, $public_key, $secret_key);
-        print "${GREEN}Service sleeping: $options->{sleep}${RESET}\n";
+        api_request("/services/$options->{sleep}/freeze", 'POST', undef, $public_key, $secret_key);
+        print "${GREEN}Service frozen: $options->{sleep}${RESET}\n";
         return;
     }
 
     if ($options->{wake}) {
-        api_request("/services/$options->{wake}/wake", 'POST', undef, $public_key, $secret_key);
-        print "${GREEN}Service waking: $options->{wake}${RESET}\n";
+        api_request("/services/$options->{wake}/unfreeze", 'POST', undef, $public_key, $secret_key);
+        print "${GREEN}Service unfreezing: $options->{wake}${RESET}\n";
         return;
     }
 

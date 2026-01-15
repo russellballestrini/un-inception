@@ -695,14 +695,14 @@ cmd_service <- function(args) {
     }
 
     if (!is.null(args$sleep)) {
-        result <- api_request(paste0("/services/", args$sleep, "/sleep"), public_key, secret_key, method = "POST")
-        cat(sprintf("%sService sleeping: %s%s\n", GREEN, args$sleep, RESET))
+        result <- api_request(paste0("/services/", args$sleep, "/freeze"), public_key, secret_key, method = "POST")
+        cat(sprintf("%sService frozen: %s%s\n", GREEN, args$sleep, RESET))
         return()
     }
 
     if (!is.null(args$wake)) {
-        result <- api_request(paste0("/services/", args$wake, "/wake"), public_key, secret_key, method = "POST")
-        cat(sprintf("%sService waking: %s%s\n", GREEN, args$wake, RESET))
+        result <- api_request(paste0("/services/", args$wake, "/unfreeze"), public_key, secret_key, method = "POST")
+        cat(sprintf("%sService unfreezing: %s%s\n", GREEN, args$wake, RESET))
         return()
     }
 

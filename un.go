@@ -673,14 +673,14 @@ func cmdService(serviceName, servicePorts, serviceDomains, serviceType, serviceB
 	}
 
 	if serviceSleep != "" {
-		apiRequest("/services/"+serviceSleep+"/sleep", "POST", nil, publicKey, secretKey)
-		fmt.Printf("%sService sleeping: %s%s\n", Green, serviceSleep, Reset)
+		apiRequest("/services/"+serviceSleep+"/freeze", "POST", nil, publicKey, secretKey)
+		fmt.Printf("%sService frozen: %s%s\n", Green, serviceSleep, Reset)
 		return
 	}
 
 	if serviceWake != "" {
-		apiRequest("/services/"+serviceWake+"/wake", "POST", nil, publicKey, secretKey)
-		fmt.Printf("%sService waking: %s%s\n", Green, serviceWake, Reset)
+		apiRequest("/services/"+serviceWake+"/unfreeze", "POST", nil, publicKey, secretKey)
+		fmt.Printf("%sService unfreezing: %s%s\n", Green, serviceWake, Reset)
 		return
 	}
 

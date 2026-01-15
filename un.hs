@@ -464,11 +464,11 @@ serviceCommand opts = do
       (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/logs")
       putStrLn stdout
     ServiceSleep sid -> do
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/sleep") "{}"
-      putStrLn $ green ++ "Service sleeping: " ++ sid ++ reset
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/freeze") "{}"
+      putStrLn $ green ++ "Service frozen: " ++ sid ++ reset
     ServiceWake sid -> do
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/wake") "{}"
-      putStrLn $ green ++ "Service waking: " ++ sid ++ reset
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/unfreeze") "{}"
+      putStrLn $ green ++ "Service unfreezing: " ++ sid ++ reset
     ServiceDestroy sid -> do
       (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/services/" ++ sid)
       putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset

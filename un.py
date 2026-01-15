@@ -730,13 +730,13 @@ def cmd_service(args):
         return
 
     if args.sleep:
-        result = api_request(f"/services/{args.sleep}/sleep", method="POST", public_key=public_key, secret_key=secret_key)
-        print(f"{GREEN}Service sleeping: {args.sleep}{RESET}")
+        result = api_request(f"/services/{args.sleep}/freeze", method="POST", public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Service frozen: {args.sleep}{RESET}")
         return
 
     if args.wake:
-        result = api_request(f"/services/{args.wake}/wake", method="POST", public_key=public_key, secret_key=secret_key)
-        print(f"{GREEN}Service waking: {args.wake}{RESET}")
+        result = api_request(f"/services/{args.wake}/unfreeze", method="POST", public_key=public_key, secret_key=secret_key)
+        print(f"{GREEN}Service unfreezing: {args.wake}{RESET}")
         return
 
     if args.destroy:
@@ -934,8 +934,8 @@ Examples:
     service_parser.add_argument("--info", metavar="ID", help="Get service details")
     service_parser.add_argument("--tail", metavar="ID", help="Get last 9000 lines of logs")
     service_parser.add_argument("--logs", metavar="ID", help="Get all logs")
-    service_parser.add_argument("--freeze", "--sleep", dest="sleep", metavar="ID", help="Freeze service")
-    service_parser.add_argument("--unfreeze", "--wake", dest="wake", metavar="ID", help="Unfreeze service")
+    service_parser.add_argument("--freeze", "--freeze", dest="sleep", metavar="ID", help="Freeze service")
+    service_parser.add_argument("--unfreeze", "--unfreeze", dest="wake", metavar="ID", help="Unfreeze service")
     service_parser.add_argument("--destroy", metavar="ID", help="Destroy service")
     service_parser.add_argument("--resize", metavar="ID", help="Resize service vCPU/memory")
     service_parser.add_argument("--snapshot", metavar="SERVICE_ID", help="Create snapshot of service")

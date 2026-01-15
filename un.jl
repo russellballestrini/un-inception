@@ -531,14 +531,14 @@ function cmd_service(args)
     end
 
     if args["sleep"] !== nothing
-        api_request("/services/$(args["sleep"])/sleep", public_key, secret_key, method="POST")
-        println("$(GREEN)Service sleeping: $(args["sleep"])$(RESET)")
+        api_request("/services/$(args["sleep"])/freeze", public_key, secret_key, method="POST")
+        println("$(GREEN)Service frozen: $(args["sleep"])$(RESET)")
         return
     end
 
     if args["wake"] !== nothing
-        api_request("/services/$(args["wake"])/wake", public_key, secret_key, method="POST")
-        println("$(GREEN)Service waking: $(args["wake"])$(RESET)")
+        api_request("/services/$(args["wake"])/unfreeze", public_key, secret_key, method="POST")
+        println("$(GREEN)Service unfreezing: $(args["wake"])$(RESET)")
         return
     end
 

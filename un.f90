@@ -571,24 +571,24 @@ contains
         else if (trim(operation) == 'sleep' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/sleep:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/freeze:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X POST https://api.unsandbox.com/services/', &
-                trim(service_id), '/sleep ', &
+                trim(service_id), '/freeze ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" >/dev/null && ', &
-                'echo -e "\x1b[32mService sleeping: ', trim(service_id), '\x1b[0m"'
+                'echo -e "\x1b[32mService frozen: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'wake' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/wake:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/unfreeze:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X POST https://api.unsandbox.com/services/', &
-                trim(service_id), '/wake ', &
+                trim(service_id), '/unfreeze ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" >/dev/null && ', &
-                'echo -e "\x1b[32mService waking: ', trim(service_id), '\x1b[0m"'
+                'echo -e "\x1b[32mService unfreezing: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'destroy' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &

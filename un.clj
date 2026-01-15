@@ -403,11 +403,11 @@
       :info (println (curl-get api-key (str "/services/" sid)))
       :logs (println (curl-get api-key (str "/services/" sid "/logs")))
       :sleep (do
-               (curl-post api-key (str "/services/" sid "/sleep") "{}")
-               (println (str green "Service sleeping: " sid reset)))
+               (curl-post api-key (str "/services/" sid "/freeze") "{}")
+               (println (str green "Service frozen: " sid reset)))
       :wake (do
-              (curl-post api-key (str "/services/" sid "/wake") "{}")
-              (println (str green "Service waking: " sid reset)))
+              (curl-post api-key (str "/services/" sid "/unfreeze") "{}")
+              (println (str green "Service unfreezing: " sid reset)))
       :destroy (do
                  (curl-delete api-key (str "/services/" sid))
                  (println (str green "Service destroyed: " sid reset)))

@@ -414,20 +414,20 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
     }
 
     if (!sleep.empty) {
-        string path = format("/services/%s/sleep", sleep);
+        string path = format("/services/%s/freeze", sleep);
         string authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/services/%s/sleep' %s`, API_BASE, sleep, authHeaders);
+        string cmd = format(`curl -s -X POST '%s/services/%s/freeze' %s`, API_BASE, sleep, authHeaders);
         execCurl(cmd);
-        writefln("%sService sleeping: %s%s", GREEN, sleep, RESET);
+        writefln("%sService frozen: %s%s", GREEN, sleep, RESET);
         return;
     }
 
     if (!wake.empty) {
-        string path = format("/services/%s/wake", wake);
+        string path = format("/services/%s/unfreeze", wake);
         string authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/services/%s/wake' %s`, API_BASE, wake, authHeaders);
+        string cmd = format(`curl -s -X POST '%s/services/%s/unfreeze' %s`, API_BASE, wake, authHeaders);
         execCurl(cmd);
-        writefln("%sService waking: %s%s", GREEN, wake, RESET);
+        writefln("%sService unfreezing: %s%s", GREEN, wake, RESET);
         return;
     }
 

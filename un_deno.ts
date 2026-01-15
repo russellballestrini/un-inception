@@ -549,13 +549,13 @@ async function cmdService(args: string[]) {
   }
 
   if (sleepId) {
-    await apiRequest(`/services/${sleepId}/sleep`, "POST", undefined, keys);
+    await apiRequest(`/services/${sleepId}/freeze`, "POST", undefined, keys);
     console.log(`${GREEN}Service sleeping: ${sleepId}${RESET}`);
     return;
   }
 
   if (wakeId) {
-    await apiRequest(`/services/${wakeId}/wake`, "POST", undefined, keys);
+    await apiRequest(`/services/${wakeId}/unfreeze`, "POST", undefined, keys);
     console.log(`${GREEN}Service waking: ${wakeId}${RESET}`);
     return;
   }

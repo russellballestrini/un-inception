@@ -197,16 +197,16 @@ service_command(["--logs", ServiceId | _]) ->
 service_command(["--freeze", ServiceId | _]) ->
     ApiKey = get_api_key(),
     TmpFile = write_temp_file("{}"),
-    _ = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/sleep", TmpFile),
+    _ = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/freeze", TmpFile),
     file:delete(TmpFile),
-    io:format("\033[32mService sleeping: ~s\033[0m~n", [ServiceId]);
+    io:format("\033[32mService frozen: ~s\033[0m~n", [ServiceId]);
 
 service_command(["--unfreeze", ServiceId | _]) ->
     ApiKey = get_api_key(),
     TmpFile = write_temp_file("{}"),
-    _ = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/wake", TmpFile),
+    _ = curl_post(ApiKey, "/services/" ++ ServiceId ++ "/unfreeze", TmpFile),
     file:delete(TmpFile),
-    io:format("\033[32mService waking: ~s\033[0m~n", [ServiceId]);
+    io:format("\033[32mService unfreezing: ~s\033[0m~n", [ServiceId]);
 
 service_command(["--destroy", ServiceId | _]) ->
     ApiKey = get_api_key(),

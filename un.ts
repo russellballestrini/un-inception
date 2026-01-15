@@ -610,14 +610,14 @@ async function cmdService(args: Args): Promise<void> {
   }
 
   if (args.sleep) {
-    await apiRequest(`/services/${args.sleep}/sleep`, "POST", null, keys);
-    console.log(`${GREEN}Service sleeping: ${args.sleep}${RESET}`);
+    await apiRequest(`/services/${args.sleep}/freeze`, "POST", null, keys);
+    console.log(`${GREEN}Service frozen: ${args.sleep}${RESET}`);
     return;
   }
 
   if (args.wake) {
-    await apiRequest(`/services/${args.wake}/wake`, "POST", null, keys);
-    console.log(`${GREEN}Service waking: ${args.wake}${RESET}`);
+    await apiRequest(`/services/${args.wake}/unfreeze`, "POST", null, keys);
+    console.log(`${GREEN}Service unfreezing: ${args.wake}${RESET}`);
     return;
   }
 

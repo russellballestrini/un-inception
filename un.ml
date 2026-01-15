@@ -647,11 +647,11 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let oc = open_out tmp_file in
        output_string oc "{}";
        close_out oc;
-       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/sleep -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
+       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/freeze -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
          sid api_key tmp_file in
        let _ = Sys.command cmd in
        Sys.remove tmp_file;
-       Printf.printf "%sService sleeping: %s%s\n" green sid reset
+       Printf.printf "%sService frozen: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --freeze requires service ID\n";
        exit 1)
@@ -662,11 +662,11 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let oc = open_out tmp_file in
        output_string oc "{}";
        close_out oc;
-       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/wake -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
+       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/unfreeze -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
          sid api_key tmp_file in
        let _ = Sys.command cmd in
        Sys.remove tmp_file;
-       Printf.printf "%sService waking: %s%s\n" green sid reset
+       Printf.printf "%sService unfreezing: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --unfreeze requires service ID\n";
        exit 1)

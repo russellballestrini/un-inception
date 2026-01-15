@@ -756,14 +756,14 @@ def cmdService(args) {
     }
 
     if (args.serviceSleep) {
-        apiRequest("/services/${args.serviceSleep}/sleep", 'POST', null, publicKey, secretKey)
-        println("${GREEN}Service sleeping: ${args.serviceSleep}${RESET}")
+        apiRequest("/services/${args.serviceSleep}/freeze", 'POST', null, publicKey, secretKey)
+        println("${GREEN}Service frozen: ${args.serviceSleep}${RESET}")
         return
     }
 
     if (args.serviceWake) {
-        apiRequest("/services/${args.serviceWake}/wake", 'POST', null, publicKey, secretKey)
-        println("${GREEN}Service waking: ${args.serviceWake}${RESET}")
+        apiRequest("/services/${args.serviceWake}/unfreeze", 'POST', null, publicKey, secretKey)
+        println("${GREEN}Service unfreezing: ${args.serviceWake}${RESET}")
         return
     }
 

@@ -336,19 +336,19 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     return
 
   if sleep != "":
-    let path = fmt"/services/{sleep}/sleep"
+    let path = fmt"/services/{sleep}/freeze"
     let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{sleep}/sleep' {authHeaders}"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{sleep}/freeze' {authHeaders}"""
     discard execCurl(cmd)
-    echo GREEN & "Service sleeping: " & sleep & RESET
+    echo GREEN & "Service frozen: " & sleep & RESET
     return
 
   if wake != "":
-    let path = fmt"/services/{wake}/wake"
+    let path = fmt"/services/{wake}/unfreeze"
     let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{wake}/wake' {authHeaders}"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{wake}/unfreeze' {authHeaders}"""
     discard execCurl(cmd)
-    echo GREEN & "Service waking: " & wake & RESET
+    echo GREEN & "Service unfreezing: " & wake & RESET
     return
 
   if destroy != "":

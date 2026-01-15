@@ -616,14 +616,14 @@ fn cmd_service(
     }
 
     if let Some(id) = sleep {
-        api_request(&format!("/services/{}/sleep", id), "POST", None, public_key, secret_key);
-        println!("{}Service sleeping: {}{}", GREEN, id, RESET);
+        api_request(&format!("/services/{}/freeze", id), "POST", None, public_key, secret_key);
+        println!("{}Service frozen: {}{}", GREEN, id, RESET);
         return;
     }
 
     if let Some(id) = wake {
-        api_request(&format!("/services/{}/wake", id), "POST", None, public_key, secret_key);
-        println!("{}Service waking: {}{}", GREEN, id, RESET);
+        api_request(&format!("/services/{}/unfreeze", id), "POST", None, public_key, secret_key);
+        println!("{}Service unfreezing: {}{}", GREEN, id, RESET);
         return;
     }
 

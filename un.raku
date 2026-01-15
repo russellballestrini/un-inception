@@ -625,14 +625,14 @@ sub cmd-service(@args) {
     }
 
     if $sleep-id {
-        api-request("/services/$sleep-id/sleep", 'POST', :$public-key, :$secret-key);
-        say "{$GREEN}Service sleeping: $sleep-id{$RESET}";
+        api-request("/services/$sleep-id/freeze", 'POST', :$public-key, :$secret-key);
+        say "{$GREEN}Service frozen: $sleep-id{$RESET}";
         return;
     }
 
     if $wake-id {
-        api-request("/services/$wake-id/wake", 'POST', :$public-key, :$secret-key);
-        say "{$GREEN}Service waking: $wake-id{$RESET}";
+        api-request("/services/$wake-id/unfreeze", 'POST', :$public-key, :$secret-key);
+        say "{$GREEN}Service unfreezing: $wake-id{$RESET}";
         return;
     }
 
