@@ -35,14 +35,32 @@
 // https://www.unturf.com/software
 
 
-// UN CLI - Zig Implementation (using curl subprocess for simplicity)
+// UN CLI and Library - Zig Implementation (using curl subprocess for simplicity)
 // Compile: zig build-exe un.zig -O ReleaseFast
-// Usage:
+//
+// Library Usage (Zig):
+//   pub fn execute(allocator: std.mem.Allocator, language: []const u8, code: []const u8,
+//                 public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn execute_async(allocator: std.mem.Allocator, language: []const u8, code: []const u8,
+//                       public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn get_job(allocator: std.mem.Allocator, job_id: []const u8,
+//                 public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn wait_for_job(allocator: std.mem.Allocator, job_id: []const u8,
+//                      public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn cancel_job(allocator: std.mem.Allocator, job_id: []const u8,
+//                    public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn list_jobs(allocator: std.mem.Allocator,
+//                   public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn get_languages(allocator: std.mem.Allocator,
+//                       public_key: []const u8, secret_key: []const u8) ![]const u8
+//   pub fn detect_language(filename: []const u8) ?[]const u8
+//
+// CLI Usage:
 //   un.zig script.py
 //   un.zig -e KEY=VALUE script.py
 //   un.zig session --list
 //   un.zig service --name web --ports 8080
-
+//
 // Note: This implementation uses system() to call curl for simplicity
 // A production version would use Zig's HTTP client library
 

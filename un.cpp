@@ -35,9 +35,25 @@
 // https://www.unturf.com/software
 
 
-// UN CLI - C++ Implementation (using curl subprocess for simplicity)
+// UN CLI and Library - C++ Implementation (using curl subprocess for simplicity)
 // Compile: g++ -o un_cpp un.cpp -std=c++17
-// Usage:
+//
+// Library Usage (C++):
+//   std::string execute(const std::string& language, const std::string& code,
+//                      const std::string& public_key, const std::string& secret_key)
+//   std::string execute_async(const std::string& language, const std::string& code,
+//                            const std::string& public_key, const std::string& secret_key)
+//   std::string get_job(const std::string& job_id,
+//                      const std::string& public_key, const std::string& secret_key)
+//   std::string wait_for_job(const std::string& job_id,
+//                           const std::string& public_key, const std::string& secret_key)
+//   std::string cancel_job(const std::string& job_id,
+//                         const std::string& public_key, const std::string& secret_key)
+//   std::string list_jobs(const std::string& public_key, const std::string& secret_key)
+//   std::string get_languages(const std::string& public_key, const std::string& secret_key)
+//   std::string detect_language(const std::string& filename)
+//
+// CLI Usage:
 //   un_cpp script.py
 //   un_cpp -e KEY=VALUE -f data.txt script.py
 //   un_cpp session --list

@@ -36,6 +36,27 @@
 
 #!/usr/bin/env Rscript
 
+#' @title Unsandbox R SDK
+#' @description R client library and CLI for the Unsandbox code execution platform.
+#' Provides both a programmatic API for library usage and a command-line interface.
+#' @details
+#' The Unsandbox SDK enables secure code execution across 42+ programming languages
+#' through a unified interface. It supports synchronous and asynchronous execution,
+#' job management, session handling, and persistent services.
+#'
+#' Authentication uses HMAC-SHA256 signatures with the format:
+#' \code{HMAC(secret_key, "timestamp:METHOD:path:body")}
+#'
+#' Credentials are loaded in priority order:
+#' \enumerate{
+#'   \item Function arguments (public_key, secret_key)
+#'   \item Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+#'   \item Accounts file (~/.unsandbox/accounts.csv)
+#' }
+#' @name unsandbox
+#' @docType package
+NULL
+
 library(httr)
 library(jsonlite)
 library(digest)
@@ -64,9 +85,73 @@ GREEN <- "\033[32m"
 YELLOW <- "\033[33m"
 RESET <- "\033[0m"
 
+#' @title API Base URL
+#' @description Base URL for the Unsandbox API
+#' @export
 API_BASE <- "https://api.unsandbox.com"
+
+#' @title Portal Base URL
+#' @description Base URL for the Unsandbox web portal
+#' @export
 PORTAL_BASE <- "https://unsandbox.com"
+
 MAX_ENV_CONTENT_SIZE <- 65536
+
+# =============================================================================
+# Credential Management
+# =============================================================================
+
+#' Get Credentials
+#'
+#' Retrieves API credentials from multiple sources in priority order:
+#' arguments, environment variables, or accounts file.
+#'
+#' @param public_key Optional public key override
+#' @param secret_key Optional secret key override
+#' @return A list with public_key and secret_key
+#' @export
+#' @examples
+#' \dontrun{
+#' creds <- get_credentials()
+#' creds <- get_credentials(public_key = "unsb-pk-xxxx", secret_key = "unsb-sk-xxxx")
+#' }
+get_credentials <- function(public_key = NULL, secret_key = NULL) {
+    # Priority 1: Function arguments
+    if (!is.null(public_key) && !is.null(secret_key)) {
+        return(list(public_key = public_key, secret_key = secret_key))
+    }
+
+    # Priority 2: Environment variables
+    env_public <- Sys.getenv("UNSANDBOX_PUBLIC_KEY")
+    env_secret <- Sys.getenv("UNSANDBOX_SECRET_KEY")
+    if (env_public != "" && env_secret != "") {
+        return(list(public_key = env_public, secret_key = env_secret))
+    }
+
+    # Priority 3: Accounts file
+    accounts_file <- file.path(Sys.getenv("HOME"), ".unsandbox", "accounts.csv")
+    if (file.exists(accounts_file)) {
+        lines <- readLines(accounts_file, warn = FALSE)
+        for (line in lines) {
+            parts <- strsplit(trimws(line), ",")[[1]]
+            if (length(parts) >= 2) {
+                return(list(public_key = parts[1], secret_key = parts[2]))
+            }
+        }
+    }
+
+    # Fallback to legacy UNSANDBOX_API_KEY
+    legacy_key <- Sys.getenv("UNSANDBOX_API_KEY")
+    if (legacy_key != "") {
+        return(list(public_key = legacy_key, secret_key = ""))
+    }
+
+    stop("No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY environment variables or provide as arguments.")
+}
+
+# =============================================================================
+# Internal API Functions
+# =============================================================================
 
 detect_language <- function(filename) {
     ext <- tolower(sub(".*(\\..*)$", "\\1", filename))
@@ -113,30 +198,57 @@ check_clock_drift <- function(response_text) {
     }
 }
 
+#' Compute HMAC-SHA256 Signature
+#'
+#' Computes the HMAC-SHA256 signature for API authentication.
+#'
+#' @param secret_key The secret key
+#' @param message The message to sign (timestamp:METHOD:path:body)
+#' @return Hexadecimal signature string
+#' @keywords internal
+compute_signature <- function(secret_key, message) {
+    return(hmac(message, secret_key, algo = "sha256"))
+}
+
+#' Build Authentication Headers
+#'
+#' Constructs HTTP headers with HMAC authentication.
+#'
+#' @param method HTTP method (GET, POST, etc.)
+#' @param endpoint API endpoint path
+#' @param body Request body (empty string if none)
+#' @param public_key Public API key
+#' @param secret_key Secret API key
+#' @return httr headers object
+#' @keywords internal
+build_auth_headers <- function(method, endpoint, body, public_key, secret_key) {
+    if (secret_key != "") {
+        timestamp <- as.integer(Sys.time())
+        sig_input <- paste0(timestamp, ":", method, ":", endpoint, ":", body)
+        signature <- compute_signature(secret_key, sig_input)
+        return(add_headers(
+            `Content-Type` = "application/json",
+            `Authorization` = paste("Bearer", public_key),
+            `X-Timestamp` = as.character(timestamp),
+            `X-Signature` = signature
+        ))
+    } else {
+        return(add_headers(
+            `Content-Type` = "application/json",
+            `Authorization` = paste("Bearer", public_key)
+        ))
+    }
+}
+
 api_request <- function(endpoint, public_key, secret_key, method = "GET", data = NULL) {
     url <- paste0(API_BASE, endpoint)
-    headers <- add_headers(
-        `Content-Type` = "application/json",
-        `Authorization` = paste("Bearer", public_key)
-    )
 
     body_content <- ""
     if (!is.null(data)) {
         body_content <- toJSON(data, auto_unbox = TRUE)
     }
 
-    # Add HMAC signature if secret_key is present
-    if (secret_key != "") {
-        timestamp <- as.integer(Sys.time())
-        sig_input <- paste0(timestamp, ":", method, ":", endpoint, ":", body_content)
-        signature <- hmac(sig_input, secret_key, algo = "sha256")
-        headers <- add_headers(
-            `Content-Type` = "application/json",
-            `Authorization` = paste("Bearer", public_key),
-            `X-Timestamp` = as.character(timestamp),
-            `X-Signature` = signature
-        )
-    }
+    headers <- build_auth_headers(method, endpoint, body_content, public_key, secret_key)
 
     tryCatch({
         if (method == "GET") {
@@ -189,6 +301,424 @@ api_request_text <- function(endpoint, public_key, secret_key, body) {
         return(FALSE)
     })
 }
+
+# =============================================================================
+# Library API Functions
+# =============================================================================
+
+#' Execute Code Synchronously
+#'
+#' Executes code in a specified language and waits for completion.
+#'
+#' @param code The source code to execute
+#' @param language The programming language (e.g., "python", "javascript")
+#' @param env Named list of environment variables (optional)
+#' @param input_files List of input files with filename and content_base64 (optional)
+#' @param network Network mode: "zerotrust" (default) or "semitrusted"
+#' @param timeout Maximum execution time in seconds (optional)
+#' @param public_key API public key (optional, uses credentials chain)
+#' @param secret_key API secret key (optional, uses credentials chain)
+#' @return A list containing stdout, stderr, exit_code, and optionally artifacts
+#' @export
+#' @examples
+#' \dontrun{
+#' result <- execute("print('Hello, World!')", "python")
+#' cat(result$stdout)
+#'
+#' result <- execute("console.log(process.env.NAME)", "javascript",
+#'                   env = list(NAME = "Alice"))
+#' }
+execute <- function(code, language, env = NULL, input_files = NULL,
+                    network = "zerotrust", timeout = NULL,
+                    public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+
+    payload <- list(language = language, code = code)
+    if (!is.null(env)) payload$env <- env
+    if (!is.null(input_files)) payload$input_files <- input_files
+    if (network != "zerotrust") payload$network <- network
+    if (!is.null(timeout)) payload$timeout <- timeout
+
+    result <- api_request("/execute", creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result)
+}
+
+#' Execute Code Asynchronously
+#'
+#' Submits code for execution and returns immediately with a job ID.
+#' Use \code{get_job} or \code{wait} to retrieve results.
+#'
+#' @param code The source code to execute
+#' @param language The programming language
+#' @param env Named list of environment variables (optional)
+#' @param input_files List of input files (optional)
+#' @param network Network mode: "zerotrust" or "semitrusted"
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing job_id for tracking the execution
+#' @export
+#' @examples
+#' \dontrun{
+#' job <- execute_async("import time; time.sleep(10); print('Done')", "python")
+#' result <- wait(job$job_id)
+#' }
+execute_async <- function(code, language, env = NULL, input_files = NULL,
+                          network = "zerotrust",
+                          public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+
+    payload <- list(language = language, code = code, async = TRUE)
+    if (!is.null(env)) payload$env <- env
+    if (!is.null(input_files)) payload$input_files <- input_files
+    if (network != "zerotrust") payload$network <- network
+
+    result <- api_request("/execute", creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result)
+}
+
+#' Get Job Status
+#'
+#' Retrieves the current status and results of an asynchronous job.
+#'
+#' @param job_id The job ID returned by execute_async
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing status, and if completed: stdout, stderr, exit_code
+#' @export
+#' @examples
+#' \dontrun{
+#' job <- execute_async("print('Hello')", "python")
+#' status <- get_job(job$job_id)
+#' if (status$status == "completed") {
+#'     cat(status$stdout)
+#' }
+#' }
+get_job <- function(job_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request(paste0("/jobs/", job_id), creds$public_key, creds$secret_key)
+    return(result)
+}
+
+#' Wait for Job Completion
+#'
+#' Polls a job until it completes or times out.
+#'
+#' @param job_id The job ID to wait for
+#' @param poll_interval Seconds between status checks (default: 1)
+#' @param max_wait Maximum seconds to wait (default: 300)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return The completed job result
+#' @export
+#' @examples
+#' \dontrun{
+#' job <- execute_async("import time; time.sleep(5); print('Done')", "python")
+#' result <- wait(job$job_id, poll_interval = 2)
+#' }
+wait <- function(job_id, poll_interval = 1, max_wait = 300,
+                 public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    start_time <- Sys.time()
+
+    repeat {
+        result <- get_job(job_id, creds$public_key, creds$secret_key)
+
+        if (!is.null(result$status) && result$status %in% c("completed", "failed", "timeout")) {
+            return(result)
+        }
+
+        elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+        if (elapsed >= max_wait) {
+            stop(paste("Job", job_id, "did not complete within", max_wait, "seconds"))
+        }
+
+        Sys.sleep(poll_interval)
+    }
+}
+
+#' Cancel a Job
+#'
+#' Cancels a running asynchronous job.
+#'
+#' @param job_id The job ID to cancel
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list with cancellation status
+#' @export
+#' @examples
+#' \dontrun{
+#' job <- execute_async("import time; time.sleep(60)", "python")
+#' cancel_job(job$job_id)
+#' }
+cancel_job <- function(job_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request(paste0("/jobs/", job_id), creds$public_key, creds$secret_key,
+                          method = "DELETE")
+    return(result)
+}
+
+#' List Jobs
+#'
+#' Lists recent jobs for the authenticated account.
+#'
+#' @param status Filter by status (optional): "pending", "running", "completed", "failed"
+#' @param limit Maximum number of jobs to return (default: 50)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing jobs array
+#' @export
+#' @examples
+#' \dontrun{
+#' jobs <- list_jobs()
+#' running <- list_jobs(status = "running")
+#' }
+list_jobs <- function(status = NULL, limit = 50, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    endpoint <- paste0("/jobs?limit=", limit)
+    if (!is.null(status)) endpoint <- paste0(endpoint, "&status=", status)
+    result <- api_request(endpoint, creds$public_key, creds$secret_key)
+    return(result)
+}
+
+#' Run Code from File
+#'
+#' Convenience function to execute code from a file with auto-detected language.
+#'
+#' @param filepath Path to the source file
+#' @param env Named list of environment variables (optional)
+#' @param network Network mode (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Execution result
+#' @export
+#' @examples
+#' \dontrun{
+#' result <- run("script.py")
+#' result <- run("app.js", env = list(NODE_ENV = "production"))
+#' }
+run <- function(filepath, env = NULL, network = "zerotrust",
+                public_key = NULL, secret_key = NULL) {
+    if (!file.exists(filepath)) {
+        stop(paste("File not found:", filepath))
+    }
+
+    language <- detect_language(filepath)
+    if (language == "unknown") {
+        stop(paste("Cannot detect language for:", filepath))
+    }
+
+    code <- paste(readLines(filepath, warn = FALSE), collapse = "\n")
+    return(execute(code, language, env = env, network = network,
+                   public_key = public_key, secret_key = secret_key))
+}
+
+#' Run Code from File Asynchronously
+#'
+#' Convenience function to execute code from a file asynchronously.
+#'
+#' @param filepath Path to the source file
+#' @param env Named list of environment variables (optional)
+#' @param network Network mode (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing job_id
+#' @export
+#' @examples
+#' \dontrun{
+#' job <- run_async("long_script.py")
+#' result <- wait(job$job_id)
+#' }
+run_async <- function(filepath, env = NULL, network = "zerotrust",
+                      public_key = NULL, secret_key = NULL) {
+    if (!file.exists(filepath)) {
+        stop(paste("File not found:", filepath))
+    }
+
+    language <- detect_language(filepath)
+    if (language == "unknown") {
+        stop(paste("Cannot detect language for:", filepath))
+    }
+
+    code <- paste(readLines(filepath, warn = FALSE), collapse = "\n")
+    return(execute_async(code, language, env = env, network = network,
+                         public_key = public_key, secret_key = secret_key))
+}
+
+#' Get Container Image Information
+#'
+#' Retrieves information about the execution environment image.
+#'
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing image version and installed packages
+#' @export
+#' @examples
+#' \dontrun{
+#' info <- image()
+#' cat("Image version:", info$version)
+#' }
+image <- function(public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request("/image", creds$public_key, creds$secret_key)
+    return(result)
+}
+
+#' List Supported Languages
+#'
+#' Retrieves the list of supported programming languages.
+#'
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing supported languages with their details
+#' @export
+#' @examples
+#' \dontrun{
+#' langs <- languages()
+#' print(names(langs$languages))
+#' }
+languages <- function(public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request("/languages", creds$public_key, creds$secret_key)
+    return(result)
+}
+
+# =============================================================================
+# Client Class (R6)
+# =============================================================================
+
+#' Unsandbox Client Class
+#'
+#' An R6 class providing an object-oriented interface to the Unsandbox API.
+#' Stores credentials for reuse across multiple API calls.
+#'
+#' @description
+#' The Client class provides a convenient way to interact with the Unsandbox API
+#' when making multiple calls. It stores credentials and provides methods for
+#' all API operations.
+#'
+#' @export
+#' @examples
+#' \dontrun{
+#' # Create client with environment credentials
+#' client <- Client$new()
+#'
+#' # Create client with explicit credentials
+#' client <- Client$new(public_key = "unsb-pk-xxxx", secret_key = "unsb-sk-xxxx")
+#'
+#' # Execute code
+#' result <- client$execute("print('Hello')", "python")
+#'
+#' # Async execution
+#' job <- client$execute_async("import time; time.sleep(10)", "python")
+#' result <- client$wait(job$job_id)
+#' }
+Client <- NULL
+
+# Only create if R6 is available
+if (requireNamespace("R6", quietly = TRUE)) {
+    Client <- R6::R6Class("Client",
+        public = list(
+            #' @field public_key The API public key
+            public_key = NULL,
+            #' @field secret_key The API secret key
+            secret_key = NULL,
+
+            #' @description
+            #' Create a new Unsandbox client
+            #' @param public_key Optional public key (uses credential chain if not provided)
+            #' @param secret_key Optional secret key (uses credential chain if not provided)
+            initialize = function(public_key = NULL, secret_key = NULL) {
+                creds <- get_credentials(public_key, secret_key)
+                self$public_key <- creds$public_key
+                self$secret_key <- creds$secret_key
+            },
+
+            #' @description Execute code synchronously
+            #' @param code Source code to execute
+            #' @param language Programming language
+            #' @param env Environment variables
+            #' @param input_files Input files
+            #' @param network Network mode
+            #' @param timeout Execution timeout
+            execute = function(code, language, env = NULL, input_files = NULL,
+                               network = "zerotrust", timeout = NULL) {
+                execute(code, language, env, input_files, network, timeout,
+                        self$public_key, self$secret_key)
+            },
+
+            #' @description Execute code asynchronously
+            #' @param code Source code to execute
+            #' @param language Programming language
+            #' @param env Environment variables
+            #' @param input_files Input files
+            #' @param network Network mode
+            execute_async = function(code, language, env = NULL, input_files = NULL,
+                                     network = "zerotrust") {
+                execute_async(code, language, env, input_files, network,
+                              self$public_key, self$secret_key)
+            },
+
+            #' @description Get job status
+            #' @param job_id Job ID
+            get_job = function(job_id) {
+                get_job(job_id, self$public_key, self$secret_key)
+            },
+
+            #' @description Wait for job completion
+            #' @param job_id Job ID
+            #' @param poll_interval Poll interval in seconds
+            #' @param max_wait Maximum wait time
+            wait = function(job_id, poll_interval = 1, max_wait = 300) {
+                wait(job_id, poll_interval, max_wait, self$public_key, self$secret_key)
+            },
+
+            #' @description Cancel a job
+            #' @param job_id Job ID
+            cancel_job = function(job_id) {
+                cancel_job(job_id, self$public_key, self$secret_key)
+            },
+
+            #' @description List jobs
+            #' @param status Filter by status
+            #' @param limit Maximum number of jobs
+            list_jobs = function(status = NULL, limit = 50) {
+                list_jobs(status, limit, self$public_key, self$secret_key)
+            },
+
+            #' @description Run code from file
+            #' @param filepath Path to source file
+            #' @param env Environment variables
+            #' @param network Network mode
+            run = function(filepath, env = NULL, network = "zerotrust") {
+                run(filepath, env, network, self$public_key, self$secret_key)
+            },
+
+            #' @description Run code from file asynchronously
+            #' @param filepath Path to source file
+            #' @param env Environment variables
+            #' @param network Network mode
+            run_async = function(filepath, env = NULL, network = "zerotrust") {
+                run_async(filepath, env, network, self$public_key, self$secret_key)
+            },
+
+            #' @description Get image information
+            image = function() {
+                image(self$public_key, self$secret_key)
+            },
+
+            #' @description List supported languages
+            languages = function() {
+                languages(self$public_key, self$secret_key)
+            }
+        )
+    )
+}
+
+# =============================================================================
+# CLI Helper Functions
+# =============================================================================
 
 read_env_file <- function(path) {
     if (!file.exists(path)) {
@@ -1126,4 +1656,7 @@ main <- function() {
     }
 }
 
-main()
+# Only run main if executed as a script (not when sourced as a library)
+if (!interactive() && identical(environment(), globalenv())) {
+    main()
+}

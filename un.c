@@ -1,5 +1,23 @@
-/*
- * un - unsandbox.com CLI
+/* PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+ *
+ * un - unsandbox.com CLI and Library
+ *
+ * Library Usage (C):
+ *   - char *execute_code(const char *language, const char *code, const char *public_key, const char *secret_key)
+ *   - char *execute_async(const char *language, const char *code, const char *public_key, const char *secret_key)
+ *   - char *get_job(const char *job_id, const char *public_key, const char *secret_key)
+ *   - char *wait_for_job(const char *job_id, const char *public_key, const char *secret_key)
+ *   - char *cancel_job(const char *job_id, const char *public_key, const char *secret_key)
+ *   - char *list_jobs(const char *public_key, const char *secret_key)
+ *   - char *get_languages(const char *public_key, const char *secret_key)
+ *   - const char *detect_language(const char *filename)
+ *   - Note: All returned strings are malloc'd and must be freed by caller
+ *
+ * CLI Usage:
+ *   un script.py
+ *   un -s python 'print("Hello")'
+ *   un session --list
+ *   un service --name web --ports 8080
  *
  * Authentication priority (highest to lowest, per POSIX convention):
  *   1. CLI flags: -p (public key) + -k (secret key)

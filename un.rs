@@ -33,33 +33,585 @@
 // https://www.timehexon.com
 // https://www.foxhop.net
 // https://www.unturf.com/software
-
-
-// UN CLI - Rust Implementation
-// Note: This uses curl subprocess to avoid requiring external crates
-// Compile: rustc un.rs -o un_rust
-// Usage:
-//   un.rs script.py
-//   un.rs -e KEY=VALUE -f data.txt script.py
-//   un.rs session --list
-//   un.rs service --name web --ports 8080
+//
+// unsandbox SDK for Rust - Execute code in secure sandboxes
+// https://unsandbox.com | https://api.unsandbox.com/openapi
+//
+// Library Usage:
+//   use un::{execute, execute_async, wait, get_job, cancel_job, list_jobs};
+//   let result = execute("rust", "println!(\"Hello\")", Default::default()).unwrap();
+//   let job = execute_async("rust", code, Default::default()).unwrap();
+//   let result = wait(&job.job_id, Default::default()).unwrap();
+//
+// CLI Usage:
+//   un script.rs
+//   un -s rust 'println!("Hello")'
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::Write;
 
-const API_BASE: &str = "https://api.unsandbox.com";
-const PORTAL_BASE: &str = "https://unsandbox.com";
+pub const API_BASE: &str = "https://api.unsandbox.com";
+pub const PORTAL_BASE: &str = "https://unsandbox.com";
+pub const DEFAULT_TIMEOUT: u64 = 300;
+pub const DEFAULT_TTL: u64 = 60;
+pub const POLL_DELAYS: &[u64] = &[300, 450, 700, 900, 650, 1600, 2000];
+
 const BLUE: &str = "\x1b[34m";
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const RESET: &str = "\x1b[0m";
 
-fn detect_language(filename: &str) -> Option<&'static str> {
+// ============================================================================
+// Exceptions / Error Types
+// ============================================================================
+
+#[derive(Debug)]
+pub enum UnError {
+    AuthenticationError(String),
+    ExecutionError { message: String, exit_code: Option<i32>, stderr: Option<String> },
+    APIError { message: String, status_code: Option<i32>, response: Option<String> },
+    TimeoutError(String),
+}
+
+impl std::fmt::Display for UnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            UnError::AuthenticationError(msg) => write!(f, "AuthenticationError: {}", msg),
+            UnError::ExecutionError { message, .. } => write!(f, "ExecutionError: {}", message),
+            UnError::APIError { message, .. } => write!(f, "APIError: {}", message),
+            UnError::TimeoutError(msg) => write!(f, "TimeoutError: {}", msg),
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, UnError>;
+
+// ============================================================================
+// Credential System (4-tier)
+// ============================================================================
+
+fn load_accounts_csv(path: &Path) -> Option<Vec<(String, String)>> {
+    if !path.exists() {
+        return None;
+    }
+
+    let content = fs::read_to_string(path).ok()?;
+    let mut accounts = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((pk, sk)) = line.split_once(',') {
+            let pk = pk.trim().to_string();
+            let sk = sk.trim().to_string();
+            if pk.starts_with("unsb-pk-") && sk.starts_with("unsb-sk-") {
+                accounts.push((pk, sk));
+            }
+        }
+    }
+
+    if accounts.is_empty() { None } else { Some(accounts) }
+}
+
+pub fn get_credentials(
+    public_key: Option<&str>,
+    secret_key: Option<&str>,
+    account_index: usize,
+) -> Result<(String, String)> {
+    // Tier 1: Function arguments
+    if let (Some(pk), Some(sk)) = (public_key, secret_key) {
+        return Ok((pk.to_string(), sk.to_string()));
+    }
+
+    // Tier 2: Environment variables
+    if let (Ok(pk), Ok(sk)) = (env::var("UNSANDBOX_PUBLIC_KEY"), env::var("UNSANDBOX_SECRET_KEY")) {
+        return Ok((pk, sk));
+    }
+
+    // Tier 3: ~/.unsandbox/accounts.csv
+    if let Some(home) = dirs::home_dir() {
+        let accounts_path = home.join(".unsandbox").join("accounts.csv");
+        if let Some(accounts) = load_accounts_csv(&accounts_path) {
+            if account_index < accounts.len() {
+                return Ok(accounts[account_index].clone());
+            }
+        }
+    }
+
+    // Tier 4: ./accounts.csv (local directory)
+    let local_accounts_path = PathBuf::from("accounts.csv");
+    if let Some(accounts) = load_accounts_csv(&local_accounts_path) {
+        if account_index < accounts.len() {
+            return Ok(accounts[account_index].clone());
+        }
+    }
+
+    Err(UnError::AuthenticationError(
+        "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY, \
+         or create ~/.unsandbox/accounts.csv or ./accounts.csv, or pass credentials to function."
+            .to_string(),
+    ))
+}
+
+// ============================================================================
+// HMAC-SHA256 Signature
+// ============================================================================
+
+fn sign_request(
+    secret_key: &str,
+    timestamp: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> Result<String> {
+    let message = format!("{}:{}:{}:{}", timestamp, method, path, body);
+
+    // Use openssl for HMAC-SHA256
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "printf '%s' '{}' | openssl dgst -sha256 -hmac '{}' | cut -d' ' -f2",
+            message, secret_key
+        ))
+        .output()
+        .map_err(|e| UnError::APIError {
+            message: format!("Failed to compute HMAC: {}", e),
+            status_code: None,
+            response: None,
+        })?;
+
+    let sig = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(sig)
+}
+
+// ============================================================================
+// JSON Helper Functions
+// ============================================================================
+
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn extract_json_string(json: &str, key: &str) -> String {
+    let search = format!("\"{}\":\"", key);
+    if let Some(start) = json.find(&search) {
+        let start = start + search.len();
+        let chars: Vec<char> = json.chars().collect();
+        let mut end = start;
+        while end < chars.len() {
+            if chars[end] == '"' && (end == 0 || chars[end - 1] != '\\') {
+                break;
+            }
+            end += 1;
+        }
+        return json[start..end].to_string();
+    }
+    String::new()
+}
+
+fn extract_json_int(json: &str, key: &str) -> i32 {
+    let search = format!("\"{}\":", key);
+    if let Some(pos) = json.find(&search) {
+        let start = pos + search.len();
+        let rest = &json[start..];
+        let num_str: String = rest.chars().take_while(|c| c.is_numeric()).collect();
+        return num_str.parse().unwrap_or(0);
+    }
+    0
+}
+
+// ============================================================================
+// HTTP Client
+// ============================================================================
+
+fn api_request(
+    endpoint: &str,
+    method: &str,
+    body: Option<&str>,
+    public_key: &str,
+    secret_key: &str,
+) -> Result<String> {
+    let url = format!("{}{}", API_BASE, endpoint);
+    let body_str = body.unwrap_or("");
+
+    // Compute HMAC signature
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .to_string();
+    let signature = sign_request(secret_key, &timestamp, method, endpoint, body_str)?;
+
+    let mut cmd = Command::new("curl");
+    cmd.arg("-s")
+        .arg("-X")
+        .arg(method)
+        .arg(&url)
+        .arg("-H")
+        .arg("Content-Type: application/json")
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {}", public_key))
+        .arg("-H")
+        .arg(format!("X-Timestamp: {}", timestamp))
+        .arg("-H")
+        .arg(format!("X-Signature: {}", signature));
+
+    if let Some(b) = body {
+        cmd.arg("-d").arg(b);
+    }
+
+    let output = cmd.output().map_err(|e| UnError::APIError {
+        message: format!("Failed to run curl: {}", e),
+        status_code: None,
+        response: None,
+    })?;
+
+    let result = String::from_utf8_lossy(&output.stdout).to_string();
+
+    if result.contains("timestamp")
+        && (result.contains("401") || result.contains("expired") || result.contains("invalid"))
+    {
+        return Err(UnError::AuthenticationError(
+            "Request timestamp expired. Your system clock may be out of sync.".to_string(),
+        ));
+    }
+
+    Ok(result)
+}
+
+// ============================================================================
+// Core Library Functions (public API)
+// ============================================================================
+
+#[derive(Debug, Clone, Default)]
+pub struct ExecuteOptions {
+    pub env: Option<HashMap<String, String>>,
+    pub input_files: Option<Vec<InputFile>>,
+    pub network_mode: Option<String>,
+    pub ttl: Option<u64>,
+    pub vcpu: Option<i32>,
+    pub return_artifact: Option<bool>,
+    pub return_wasm_artifact: Option<bool>,
+    pub public_key: Option<String>,
+    pub secret_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InputFile {
+    pub filename: String,
+    pub content_base64: String,
+}
+
+#[derive(Debug)]
+pub struct ExecutionResult {
+    pub success: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+    pub job_id: String,
+}
+
+#[derive(Debug)]
+pub struct JobResult {
+    pub job_id: String,
+    pub status: String,
+}
+
+pub fn execute(
+    language: &str,
+    code: &str,
+    opts: ExecuteOptions,
+) -> Result<ExecutionResult> {
+    let (pk, sk) = get_credentials(opts.public_key.as_deref(), opts.secret_key.as_deref(), 0)?;
+
+    let network_mode = opts.network_mode.unwrap_or_else(|| "zerotrust".to_string());
+    let ttl = opts.ttl.unwrap_or(DEFAULT_TTL);
+    let vcpu = opts.vcpu.unwrap_or(1);
+
+    let mut json = format!(
+        r#"{{"language":"{}","code":"{}","network_mode":"{}","ttl":{},"vcpu":{}"#,
+        language,
+        escape_json(code),
+        network_mode,
+        ttl,
+        vcpu
+    );
+
+    if let Some(env) = &opts.env {
+        json.push_str(r#","env":{"#);
+        let mut first = true;
+        for (k, v) in env {
+            if !first {
+                json.push(',');
+            }
+            json.push_str(&format!(r#""{}":"{}""#, k, escape_json(v)));
+            first = false;
+        }
+        json.push('}');
+    }
+
+    if let Some(files) = &opts.input_files {
+        json.push_str(r#","input_files":["#);
+        for (i, f) in files.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(
+                r#"{{"filename":"{}","content_base64":"{}"}}"#,
+                f.filename, f.content_base64
+            ));
+        }
+        json.push(']');
+    }
+
+    if opts.return_artifact.unwrap_or(false) {
+        json.push_str(r#","return_artifact":true"#);
+    }
+    if opts.return_wasm_artifact.unwrap_or(false) {
+        json.push_str(r#","return_wasm_artifact":true"#);
+    }
+
+    json.push('}');
+
+    let result = api_request("/execute", "POST", Some(&json), &pk, &sk)?;
+
+    let stdout = extract_json_string(&result, "stdout");
+    let stderr = extract_json_string(&result, "stderr");
+    let exit_code = extract_json_int(&result, "exit_code");
+    let job_id = extract_json_string(&result, "job_id");
+
+    Ok(ExecutionResult {
+        success: exit_code == 0,
+        stdout,
+        stderr,
+        exit_code,
+        job_id,
+    })
+}
+
+pub fn execute_async(
+    language: &str,
+    code: &str,
+    opts: ExecuteOptions,
+) -> Result<JobResult> {
+    let (pk, sk) = get_credentials(opts.public_key.as_deref(), opts.secret_key.as_deref(), 0)?;
+
+    let network_mode = opts.network_mode.unwrap_or_else(|| "zerotrust".to_string());
+    let ttl = opts.ttl.unwrap_or(DEFAULT_TTL);
+    let vcpu = opts.vcpu.unwrap_or(1);
+
+    let mut json = format!(
+        r#"{{"language":"{}","code":"{}","network_mode":"{}","ttl":{},"vcpu":{}"#,
+        language,
+        escape_json(code),
+        network_mode,
+        ttl,
+        vcpu
+    );
+
+    if let Some(env) = &opts.env {
+        json.push_str(r#","env":{"#);
+        let mut first = true;
+        for (k, v) in env {
+            if !first {
+                json.push(',');
+            }
+            json.push_str(&format!(r#""{}":"{}""#, k, escape_json(v)));
+            first = false;
+        }
+        json.push('}');
+    }
+
+    if let Some(files) = &opts.input_files {
+        json.push_str(r#","input_files":["#);
+        for (i, f) in files.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&format!(
+                r#"{{"filename":"{}","content_base64":"{}"}}"#,
+                f.filename, f.content_base64
+            ));
+        }
+        json.push(']');
+    }
+
+    json.push('}');
+
+    let result = api_request("/execute/async", "POST", Some(&json), &pk, &sk)?;
+    let job_id = extract_json_string(&result, "job_id");
+    let status = extract_json_string(&result, "status");
+
+    Ok(JobResult { job_id, status })
+}
+
+#[derive(Debug)]
+pub struct JobStatus {
+    pub job_id: String,
+    pub status: String,
+    pub result: Option<ExecutionResult>,
+}
+
+pub fn get_job(job_id: &str, public_key: Option<&str>, secret_key: Option<&str>) -> Result<JobStatus> {
+    let (pk, sk) = get_credentials(public_key, secret_key, 0)?;
+    let result = api_request(&format!("/jobs/{}", job_id), "GET", None, &pk, &sk)?;
+
+    let status = extract_json_string(&result, "status");
+    let job_id_ret = extract_json_string(&result, "job_id");
+    let stdout = extract_json_string(&result, "stdout");
+    let stderr = extract_json_string(&result, "stderr");
+    let exit_code = extract_json_int(&result, "exit_code");
+
+    let result_opt = if status == "completed" || status == "failed" {
+        Some(ExecutionResult {
+            success: exit_code == 0,
+            stdout,
+            stderr,
+            exit_code,
+            job_id: job_id_ret.clone(),
+        })
+    } else {
+        None
+    };
+
+    Ok(JobStatus {
+        job_id: job_id_ret,
+        status,
+        result: result_opt,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WaitOptions {
+    pub max_polls: Option<usize>,
+    pub public_key: Option<String>,
+    pub secret_key: Option<String>,
+}
+
+pub fn wait(job_id: &str, opts: WaitOptions) -> Result<ExecutionResult> {
+    let max_polls = opts.max_polls.unwrap_or(100);
+    let terminal_states = ["completed", "failed", "timeout", "cancelled"];
+
+    for i in 0..max_polls {
+        let delay_idx = std::cmp::min(i, POLL_DELAYS.len() - 1);
+        std::thread::sleep(std::time::Duration::from_millis(POLL_DELAYS[delay_idx]));
+
+        let job_status = get_job(job_id, opts.public_key.as_deref(), opts.secret_key.as_deref())?;
+
+        if terminal_states.contains(&job_status.status.as_str()) {
+            if job_status.status == "failed" {
+                return Err(UnError::ExecutionError {
+                    message: "Job failed".to_string(),
+                    exit_code: None,
+                    stderr: job_status.result.as_ref().map(|r| r.stderr.clone()),
+                });
+            }
+            if job_status.status == "timeout" {
+                return Err(UnError::TimeoutError(format!("Job timed out: {}", job_id)));
+            }
+            if let Some(result) = job_status.result {
+                return Ok(result);
+            }
+        }
+    }
+
+    Err(UnError::TimeoutError(format!(
+        "Max polls ({}) exceeded for job {}",
+        max_polls, job_id
+    )))
+}
+
+pub fn cancel_job(job_id: &str, public_key: Option<&str>, secret_key: Option<&str>) -> Result<()> {
+    let (pk, sk) = get_credentials(public_key, secret_key, 0)?;
+    api_request(&format!("/jobs/{}", job_id), "DELETE", None, &pk, &sk)?;
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct JobSummary {
+    pub job_id: String,
+    pub language: String,
+    pub status: String,
+}
+
+pub fn list_jobs(public_key: Option<&str>, secret_key: Option<&str>) -> Result<Vec<JobSummary>> {
+    let (pk, sk) = get_credentials(public_key, secret_key, 0)?;
+    let result = api_request("/jobs", "GET", None, &pk, &sk)?;
+
+    // Simple parsing of jobs array - would need proper JSON parser for production
+    let mut jobs = Vec::new();
+    if result.contains("\"job_id\"") {
+        jobs.push(JobSummary {
+            job_id: extract_json_string(&result, "job_id"),
+            language: extract_json_string(&result, "language"),
+            status: extract_json_string(&result, "status"),
+        });
+    }
+
+    Ok(jobs)
+}
+
+// ============================================================================
+// Languages Cache (1-hour TTL)
+// ============================================================================
+
+pub fn languages(
+    public_key: Option<&str>,
+    secret_key: Option<&str>,
+    cache_ttl: Option<u64>,
+) -> Result<String> {
+    let (pk, sk) = get_credentials(public_key, secret_key, 0)?;
+    let cache_ttl = cache_ttl.unwrap_or(3600);
+
+    // Check cache
+    if let Some(home) = dirs::home_dir() {
+        let cache_path = home.join(".unsandbox").join("languages.json");
+        if cache_path.exists() {
+            if let Ok(metadata) = fs::metadata(&cache_path) {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(elapsed) = modified.elapsed() {
+                        if elapsed.as_secs() < cache_ttl {
+                            if let Ok(content) = fs::read_to_string(&cache_path) {
+                                return Ok(content);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fetch from API
+    let result = api_request("/languages", "GET", None, &pk, &sk)?;
+
+    // Save to cache
+    if let Some(home) = dirs::home_dir() {
+        let cache_dir = home.join(".unsandbox");
+        let cache_path = cache_dir.join("languages.json");
+        let _ = fs::create_dir_all(&cache_dir);
+        let _ = fs::write(&cache_path, &result);
+    }
+
+    Ok(result)
+}
+
+// ============================================================================
+// Language Detection
+// ============================================================================
+
+pub fn detect_language(filename: &str) -> Option<&'static str> {
     let ext = Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
@@ -106,764 +658,141 @@ fn detect_language(filename: &str) -> Option<&'static str> {
         "tcl" => Some("tcl"),
         "raku" => Some("raku"),
         "m" => Some("objc"),
+        "awk" => Some("awk"),
         _ => None,
     }
 }
 
-fn get_api_keys(key_arg: Option<&str>) -> (String, String) {
-    let public_key = env::var("UNSANDBOX_PUBLIC_KEY").ok();
-    let secret_key = env::var("UNSANDBOX_SECRET_KEY").ok();
-
-    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-    if public_key.is_none() || secret_key.is_none() {
-        let fallback_key = if let Some(k) = key_arg {
-            k.to_string()
-        } else {
-            env::var("UNSANDBOX_API_KEY").unwrap_or_else(|_| {
-                eprintln!("{}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat){}", RED, RESET);
-                process::exit(1);
-            })
-        };
-        return (fallback_key.clone(), fallback_key);
-    }
-
-    (public_key.unwrap(), secret_key.unwrap())
-}
-
-fn compute_hmac(secret_key: &str, timestamp: &str, method: &str, path: &str, body: &str) -> String {
-    use std::process::Command;
-    let message = format!("{}:{}:{}:{}", timestamp, method, path, body);
-
-    // Use openssl for HMAC-SHA256
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(format!("printf '%s' '{}' | openssl dgst -sha256 -hmac '{}' | cut -d' ' -f2", message, secret_key))
-        .output()
-        .expect("Failed to compute HMAC");
-
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
-
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-}
-
-fn unescape_json(s: &str) -> String {
-    s.replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
-}
-
-fn extract_json_string(json: &str, key: &str) -> String {
-    let search = format!("\"{}\":\"", key);
-    if let Some(start) = json.find(&search) {
-        let start = start + search.len();
-        let mut end = start;
-        let chars: Vec<char> = json.chars().collect();
-        while end < chars.len() {
-            if chars[end] == '"' && (end == 0 || chars[end - 1] != '\\') {
-                break;
-            }
-            end += 1;
-        }
-        return unescape_json(&json[start..end]);
-    }
-    String::new()
-}
-
-fn extract_json_int(json: &str, key: &str) -> i32 {
-    let search = format!("\"{}\":", key);
-    if let Some(pos) = json.find(&search) {
-        let start = pos + search.len();
-        let rest = &json[start..];
-        let num_str: String = rest.chars().take_while(|c| c.is_numeric()).collect();
-        return num_str.parse().unwrap_or(1);
-    }
-    1
-}
-
-fn api_request(endpoint: &str, method: &str, body: Option<&str>, public_key: &str, secret_key: &str) -> String {
-    let url = format!("{}{}", API_BASE, endpoint);
-    let body_str = body.unwrap_or("");
-
-    // Compute HMAC signature
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .to_string();
-    let signature = compute_hmac(secret_key, &timestamp, method, endpoint, body_str);
-
-    let mut cmd = Command::new("curl");
-    cmd.arg("-s")
-        .arg("-X")
-        .arg(method)
-        .arg(&url)
-        .arg("-H")
-        .arg("Content-Type: application/json")
-        .arg("-H")
-        .arg(format!("Authorization: Bearer {}", public_key))
-        .arg("-H")
-        .arg(format!("X-Timestamp: {}", timestamp))
-        .arg("-H")
-        .arg(format!("X-Signature: {}", signature));
-
-    if let Some(b) = body {
-        cmd.arg("-d").arg(b);
-    }
-
-    let output = cmd.output().unwrap_or_else(|e| {
-        eprintln!("{}Error running curl: {}{}", RED, e, RESET);
-        process::exit(1);
-    });
-
-    if !output.status.success() {
-        eprintln!("{}Error: HTTP request failed{}", RED, RESET);
-        process::exit(1);
-    }
-
-    let result = String::from_utf8_lossy(&output.stdout).to_string();
-
-    // Check for timestamp authentication errors
-    if result.contains("timestamp") && (result.contains("401") || result.contains("expired") || result.contains("invalid")) {
-        eprintln!("{}Error: Request timestamp expired (must be within 5 minutes of server time){}", RED, RESET);
-        eprintln!("{}Your computer's clock may have drifted.{}", YELLOW, RESET);
-        eprintln!("Check your system time and sync with NTP if needed:");
-        eprintln!("  Linux:   sudo ntpdate -s time.nist.gov");
-        eprintln!("  macOS:   sudo sntp -sS time.apple.com");
-        eprintln!("  Windows: w32tm /resync");
-        process::exit(1);
-    }
-
-    result
-}
-
-fn api_request_text(endpoint: &str, method: &str, body: &str, public_key: &str, secret_key: &str) -> String {
-    let url = format!("{}{}", API_BASE, endpoint);
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .to_string();
-    let signature = compute_hmac(secret_key, &timestamp, method, endpoint, body);
-
-    let mut cmd = Command::new("curl");
-    cmd.arg("-s")
-        .arg("-X")
-        .arg(method)
-        .arg(&url)
-        .arg("-H")
-        .arg("Content-Type: text/plain")
-        .arg("-H")
-        .arg(format!("Authorization: Bearer {}", public_key))
-        .arg("-H")
-        .arg(format!("X-Timestamp: {}", timestamp))
-        .arg("-H")
-        .arg(format!("X-Signature: {}", signature));
-
-    if !body.is_empty() {
-        cmd.arg("-d").arg(body);
-    }
-
-    let output = cmd.output().unwrap_or_else(|e| {
-        eprintln!("{}Error running curl: {}{}", RED, e, RESET);
-        process::exit(1);
-    });
-
-    String::from_utf8_lossy(&output.stdout).to_string()
-}
-
-fn read_env_file(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| {
-        eprintln!("{}Error reading env file: {}{}", RED, e, RESET);
-        process::exit(1);
-    })
-}
-
-fn build_env_content(envs: &[String], env_file: Option<&str>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(path) = env_file {
-        parts.push(read_env_file(path).trim().to_string());
-    }
-    for e in envs {
-        if e.contains('=') {
-            parts.push(e.clone());
-        }
-    }
-    parts.join("\n")
-}
-
-fn service_env_status(service_id: &str, public_key: &str, secret_key: &str) -> String {
-    api_request(&format!("/services/{}/env", service_id), "GET", None, public_key, secret_key)
-}
-
-fn service_env_set(service_id: &str, env_content: &str, public_key: &str, secret_key: &str) -> bool {
-    api_request_text(&format!("/services/{}/env", service_id), "PUT", env_content, public_key, secret_key);
-    true
-}
-
-fn service_env_export(service_id: &str, public_key: &str, secret_key: &str) -> String {
-    api_request(&format!("/services/{}/env/export", service_id), "POST", None, public_key, secret_key)
-}
-
-fn service_env_delete(service_id: &str, public_key: &str, secret_key: &str) -> bool {
-    api_request(&format!("/services/{}/env", service_id), "DELETE", None, public_key, secret_key);
-    true
-}
-
-fn cmd_service_env(
-    action: &str,
-    target: Option<&str>,
-    envs: &[String],
-    env_file: Option<&str>,
-    public_key: &str,
-    secret_key: &str,
-) {
-    match action {
-        "status" => {
-            let id = target.unwrap_or_else(|| {
-                eprintln!("{}Error: Usage: service env status <service_id>{}", RED, RESET);
-                process::exit(1);
-            });
-            let result = service_env_status(id, public_key, secret_key);
-            let has_env = result.contains("\"has_env\":true");
-            let size = extract_json_int(&result, "size");
-            let updated_at = extract_json_string(&result, "updated_at");
-            println!("Service: {}", id);
-            println!("Has Vault: {}", if has_env { "Yes" } else { "No" });
-            if has_env {
-                println!("Size: {} bytes", size);
-                println!("Updated: {}", updated_at);
-            }
-        }
-        "set" => {
-            let id = target.unwrap_or_else(|| {
-                eprintln!("{}Error: Usage: service env set <service_id> [-e KEY=VAL] [--env-file FILE]{}", RED, RESET);
-                process::exit(1);
-            });
-            let env_content = build_env_content(envs, env_file);
-            if env_content.is_empty() {
-                eprintln!("{}Error: No environment variables specified. Use -e KEY=VAL or --env-file FILE{}", RED, RESET);
-                process::exit(1);
-            }
-            if env_content.len() > 65536 {
-                eprintln!("{}Error: Environment content exceeds 64KB limit{}", RED, RESET);
-                process::exit(1);
-            }
-            service_env_set(id, &env_content, public_key, secret_key);
-            println!("{}Vault updated for service: {}{}", GREEN, id, RESET);
-        }
-        "export" => {
-            let id = target.unwrap_or_else(|| {
-                eprintln!("{}Error: Usage: service env export <service_id>{}", RED, RESET);
-                process::exit(1);
-            });
-            let result = service_env_export(id, public_key, secret_key);
-            let content = extract_json_string(&result, "content");
-            if !content.is_empty() {
-                print!("{}", content);
-                if !content.ends_with('\n') {
-                    println!();
-                }
-            } else {
-                eprintln!("{}Vault is empty{}", YELLOW, RESET);
-            }
-        }
-        "delete" => {
-            let id = target.unwrap_or_else(|| {
-                eprintln!("{}Error: Usage: service env delete <service_id>{}", RED, RESET);
-                process::exit(1);
-            });
-            service_env_delete(id, public_key, secret_key);
-            println!("{}Vault deleted for service: {}{}", GREEN, id, RESET);
-        }
-        _ => {
-            eprintln!("{}Error: Unknown env action: {}. Use status, set, export, or delete{}", RED, action, RESET);
-            process::exit(1);
-        }
-    }
-}
+// ============================================================================
+// CLI Interface
+// ============================================================================
 
 fn cmd_execute(
     source_file: &str,
     envs: Vec<String>,
     files: Vec<String>,
     artifacts: bool,
-    output_dir: Option<&str>,
+    _output_dir: Option<&str>,
     network: Option<&str>,
     vcpu: Option<i32>,
-    public_key: &str,
-    secret_key: &str,
+    public_key: Option<String>,
+    secret_key: Option<String>,
 ) {
-    let code = fs::read_to_string(source_file).unwrap_or_else(|e| {
-        eprintln!("{}Error reading file: {}{}", RED, e, RESET);
-        process::exit(1);
-    });
+    let code = match fs::read_to_string(source_file) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}Error reading file: {}{}", RED, e, RESET);
+            process::exit(1);
+        }
+    };
 
-    let language = detect_language(source_file).unwrap_or_else(|| {
-        eprintln!("{}Error: Cannot detect language{}", RED, RESET);
-        process::exit(1);
-    });
+    let language = match detect_language(source_file) {
+        Some(l) => l,
+        None => {
+            eprintln!("{}Error: Cannot detect language{}", RED, RESET);
+            process::exit(1);
+        }
+    };
 
-    let mut json = format!(
-        r#"{{"language":"{}","code":"{}""#,
-        language,
-        escape_json(&code)
-    );
+    let mut opts = ExecuteOptions {
+        network_mode: network.map(|s| s.to_string()),
+        ttl: Some(60),
+        vcpu,
+        return_artifact: if artifacts { Some(true) } else { None },
+        public_key,
+        secret_key,
+        ..Default::default()
+    };
 
-    // Environment variables
+    // Parse environment variables
     if !envs.is_empty() {
-        json.push_str(r#","env":{"#);
-        for (i, e) in envs.iter().enumerate() {
+        let mut env_map = HashMap::new();
+        for e in envs {
             if let Some((k, v)) = e.split_once('=') {
-                if i > 0 {
-                    json.push(',');
-                }
-                json.push_str(&format!(r#""{}":"{}""#, k, escape_json(v)));
+                env_map.insert(k.to_string(), v.to_string());
             }
         }
-        json.push('}');
+        opts.env = Some(env_map);
     }
 
-    // Input files
+    // Load input files
     if !files.is_empty() {
-        json.push_str(r#","input_files":["#);
-        for (i, f) in files.iter().enumerate() {
-            let content = fs::read(f).unwrap_or_else(|e| {
-                eprintln!("{}Error reading input file: {}{}", RED, e, RESET);
-                process::exit(1);
-            });
-            let b64 = base64::encode(&content);
-            if i > 0 {
-                json.push(',');
-            }
-            json.push_str(&format!(
-                r#"{{"filename":"{}","content_base64":"{}"}}"#,
-                Path::new(f).file_name().unwrap().to_str().unwrap(),
-                b64
-            ));
-        }
-        json.push(']');
-    }
-
-    if artifacts {
-        json.push_str(r#","return_artifacts":true"#);
-    }
-    if let Some(n) = network {
-        json.push_str(&format!(r#","network":"{}""#, n));
-    }
-    if let Some(v) = vcpu {
-        json.push_str(&format!(r#","vcpu":{}"#, v));
-    }
-
-    json.push('}');
-
-    let result = api_request("/execute", "POST", Some(&json), public_key, secret_key);
-
-    // Print output
-    let stdout_str = extract_json_string(&result, "stdout");
-    let stderr_str = extract_json_string(&result, "stderr");
-    let exit_code = extract_json_int(&result, "exit_code");
-
-    if !stdout_str.is_empty() {
-        print!("{}{}{}", BLUE, stdout_str, RESET);
-    }
-    if !stderr_str.is_empty() {
-        eprint!("{}{}{}", RED, stderr_str, RESET);
-    }
-
-    // Artifacts (simplified - would need full JSON parsing)
-    if artifacts && result.contains("artifacts") {
-        eprintln!("{}Note: Artifact saving not fully implemented in Rust version{}", YELLOW, RESET);
-    }
-
-    process::exit(exit_code);
-}
-
-fn cmd_session(
-    list: bool,
-    kill: Option<&str>,
-    shell: Option<&str>,
-    network: Option<&str>,
-    vcpu: Option<i32>,
-    tmux: bool,
-    screen: bool,
-    files: &[String],
-    public_key: &str,
-    secret_key: &str,
-) {
-    if list {
-        let result = api_request("/sessions", "GET", None, public_key, secret_key);
-        println!("{}", result);
-        return;
-    }
-
-    if let Some(id) = kill {
-        api_request(&format!("/sessions/{}", id), "DELETE", None, public_key, secret_key);
-        println!("{}Session terminated: {}{}", GREEN, id, RESET);
-        return;
-    }
-
-    // Create session
-    let mut json = format!(
-        r#"{{"shell":"{}""#,
-        shell.unwrap_or("bash")
-    );
-
-    if let Some(n) = network {
-        json.push_str(&format!(r#","network":"{}""#, n));
-    }
-    if let Some(v) = vcpu {
-        json.push_str(&format!(r#","vcpu":{}"#, v));
-    }
-    if tmux {
-        json.push_str(r#","persistence":"tmux""#);
-    }
-    if screen {
-        json.push_str(r#","persistence":"screen""#);
-    }
-
-    // Input files
-    if !files.is_empty() {
-        json.push_str(r#","input_files":["#);
-        for (i, f) in files.iter().enumerate() {
-            if i > 0 {
-                json.push(',');
-            }
-            let content = fs::read(f).unwrap_or_else(|e| {
-                eprintln!("{}Error reading input file {}: {}{}", RED, f, e, RESET);
-                process::exit(1);
-            });
-            let b64 = base64::encode(&content);
-            let filename = Path::new(f).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-            json.push_str(&format!(r#"{{"filename":"{}","content_base64":"{}"}}"#, filename, b64));
-        }
-        json.push(']');
-    }
-
-    json.push('}');
-
-    println!("{}Creating session...{}", YELLOW, RESET);
-    let result = api_request("/sessions", "POST", Some(&json), public_key, secret_key);
-    let id = extract_json_string(&result, "id");
-    println!("{}Session created: {}{}", GREEN, id, RESET);
-}
-
-fn cmd_service(
-    name: Option<&str>,
-    ports: Option<&str>,
-    domains: Option<&str>,
-    service_type: Option<&str>,
-    bootstrap: Option<&str>,
-    bootstrap_file: Option<&str>,
-    files: &[String],
-    list: bool,
-    info: Option<&str>,
-    logs: Option<&str>,
-    tail: Option<&str>,
-    sleep: Option<&str>,
-    wake: Option<&str>,
-    destroy: Option<&str>,
-    resize: Option<&str>,
-    execute: Option<&str>,
-    command: Option<&str>,
-    dump_bootstrap: Option<&str>,
-    dump_file: Option<&str>,
-    network: Option<&str>,
-    vcpu: Option<i32>,
-    envs: &[String],
-    env_file: Option<&str>,
-    env_action: Option<&str>,
-    env_target: Option<&str>,
-    public_key: &str,
-    secret_key: &str,
-) {
-    // Handle service env subcommand
-    if let Some(action) = env_action {
-        cmd_service_env(action, env_target, envs, env_file, public_key, secret_key);
-        return;
-    }
-
-    if list {
-        let result = api_request("/services", "GET", None, public_key, secret_key);
-        println!("{}", result);
-        return;
-    }
-
-    if let Some(id) = info {
-        let result = api_request(&format!("/services/{}", id), "GET", None, public_key, secret_key);
-        println!("{}", result);
-        return;
-    }
-
-    if let Some(id) = logs {
-        let result = api_request(&format!("/services/{}/logs", id), "GET", None, public_key, secret_key);
-        println!("{}", extract_json_string(&result, "logs"));
-        return;
-    }
-
-    if let Some(id) = tail {
-        let result = api_request(&format!("/services/{}/logs?lines=9000", id), "GET", None, public_key, secret_key);
-        println!("{}", extract_json_string(&result, "logs"));
-        return;
-    }
-
-    if let Some(id) = sleep {
-        api_request(&format!("/services/{}/freeze", id), "POST", None, public_key, secret_key);
-        println!("{}Service frozen: {}{}", GREEN, id, RESET);
-        return;
-    }
-
-    if let Some(id) = wake {
-        api_request(&format!("/services/{}/unfreeze", id), "POST", None, public_key, secret_key);
-        println!("{}Service unfreezing: {}{}", GREEN, id, RESET);
-        return;
-    }
-
-    if let Some(id) = destroy {
-        api_request(&format!("/services/{}", id), "DELETE", None, public_key, secret_key);
-        println!("{}Service destroyed: {}{}", GREEN, id, RESET);
-        return;
-    }
-
-    if let Some(id) = resize {
-        let v = vcpu.unwrap_or_else(|| {
-            eprintln!("{}Error: --resize requires -v <vcpu>{}", RED, RESET);
-            process::exit(1);
-        });
-        let json = format!(r#"{{"vcpu":{}}}"#, v);
-        api_request(&format!("/services/{}", id), "PATCH", Some(&json), public_key, secret_key);
-        println!("{}Service resized to {} vCPU, {} GB RAM{}", GREEN, v, v * 2, RESET);
-        return;
-    }
-
-    if let Some(id) = execute {
-        let cmd = command.unwrap_or("");
-        let json = format!(r#"{{"command":"{}"}}"#, escape_json(cmd));
-        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(&json), public_key, secret_key);
-        let stdout_str = extract_json_string(&result, "stdout");
-        let stderr_str = extract_json_string(&result, "stderr");
-        if !stdout_str.is_empty() {
-            print!("{}{}{}", BLUE, stdout_str, RESET);
-        }
-        if !stderr_str.is_empty() {
-            eprint!("{}{}{}", RED, stderr_str, RESET);
-        }
-        return;
-    }
-
-    if let Some(id) = dump_bootstrap {
-        eprintln!("Fetching bootstrap script from {}...", id);
-        let json = r#"{"command":"cat /tmp/bootstrap.sh"}"#;
-        let result = api_request(&format!("/services/{}/execute", id), "POST", Some(json), public_key, secret_key);
-        let bootstrap = extract_json_string(&result, "stdout");
-
-        if !bootstrap.is_empty() {
-            if let Some(file) = dump_file {
-                match fs::write(file, &bootstrap) {
-                    Ok(_) => {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = fs::set_permissions(file, fs::Permissions::from_mode(0o755));
-                        }
-                        println!("Bootstrap saved to {}", file);
-                    }
-                    Err(e) => {
-                        eprintln!("{}Error: Could not write to {}: {}{}", RED, file, e, RESET);
-                        process::exit(1);
-                    }
+        let mut input_files = Vec::new();
+        for f in files {
+            let content = match fs::read(&f) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}Error reading input file: {}{}", RED, e, RESET);
+                    process::exit(1);
                 }
-            } else {
-                print!("{}", bootstrap);
+            };
+            let b64 = base64_encode(&content);
+            let filename = Path::new(&f)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            input_files.push(InputFile {
+                filename,
+                content_base64: b64,
+            });
+        }
+        opts.input_files = Some(input_files);
+    }
+
+    match execute(language, &code, opts) {
+        Ok(result) => {
+            if !result.stdout.is_empty() {
+                print!("{}", result.stdout);
             }
-        } else {
-            eprintln!("{}Error: Failed to fetch bootstrap (service not running or no bootstrap file){}", RED, RESET);
+            if !result.stderr.is_empty() {
+                eprint!("{}{}{}", RED, result.stderr, RESET);
+            }
+            process::exit(result.exit_code);
+        }
+        Err(e) => {
+            eprintln!("{}Error: {}{}", RED, e, RESET);
             process::exit(1);
         }
-        return;
-    }
-
-    // Create service
-    if let Some(n) = name {
-        let mut json = format!(r#"{{"name":"{}""#, n);
-
-        if let Some(p) = ports {
-            json.push_str(r#","ports":["#);
-            let ports_vec: Vec<&str> = p.split(',').collect();
-            for (i, port) in ports_vec.iter().enumerate() {
-                if i > 0 {
-                    json.push(',');
-                }
-                json.push_str(port.trim());
-            }
-            json.push(']');
-        }
-
-        if let Some(d) = domains {
-            json.push_str(r#","domains":["#);
-            let domains_vec: Vec<&str> = d.split(',').collect();
-            for (i, domain) in domains_vec.iter().enumerate() {
-                if i > 0 {
-                    json.push(',');
-                }
-                json.push_str(&format!(r#""{}""#, domain.trim()));
-            }
-            json.push(']');
-        }
-
-        if let Some(t) = service_type {
-            json.push_str(&format!(r#","service_type":"{}""#, t));
-        }
-
-        if let Some(b) = bootstrap {
-            json.push_str(&format!(r#","bootstrap":"{}""#, escape_json(b)));
-        }
-
-        if let Some(bf) = bootstrap_file {
-            if Path::new(bf).exists() {
-                let content = fs::read_to_string(bf).unwrap_or_else(|e| {
-                    eprintln!("{}Error reading bootstrap file: {}{}", RED, e, RESET);
-                    process::exit(1);
-                });
-                json.push_str(&format!(r#","bootstrap_content":"{}""#, escape_json(&content)));
-            } else {
-                eprintln!("{}Error: Bootstrap file not found: {}{}", RED, bf, RESET);
-                process::exit(1);
-            }
-        }
-
-        // Input files
-        if !files.is_empty() {
-            json.push_str(r#","input_files":["#);
-            for (i, f) in files.iter().enumerate() {
-                if i > 0 {
-                    json.push(',');
-                }
-                let content = fs::read(f).unwrap_or_else(|e| {
-                    eprintln!("{}Error reading input file {}: {}{}", RED, f, e, RESET);
-                    process::exit(1);
-                });
-                let b64 = base64::encode(&content);
-                let filename = Path::new(f).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                json.push_str(&format!(r#"{{"filename":"{}","content_base64":"{}"}}"#, filename, b64));
-            }
-            json.push(']');
-        }
-
-        if let Some(net) = network {
-            json.push_str(&format!(r#","network":"{}""#, net));
-        }
-        if let Some(v) = vcpu {
-            json.push_str(&format!(r#","vcpu":{}"#, v));
-        }
-
-        json.push('}');
-
-        let result = api_request("/services", "POST", Some(&json), public_key, secret_key);
-        let id = extract_json_string(&result, "id");
-        println!("{}Service created: {}{}", GREEN, id, RESET);
-
-        // Auto-set vault if env vars provided
-        if !id.is_empty() && (!envs.is_empty() || env_file.is_some()) {
-            let env_content = build_env_content(envs, env_file);
-            if !env_content.is_empty() && env_content.len() <= 65536 {
-                if service_env_set(&id, &env_content, public_key, secret_key) {
-                    println!("{}Vault configured with environment variables{}", GREEN, RESET);
-                }
-            }
-        }
-        return;
-    }
-
-    eprintln!("{}Error: Specify --name to create a service{}", RED, RESET);
-    process::exit(1);
-}
-
-fn cmd_key(extend: bool, public_key: &str, secret_key: &str) {
-    let result = api_request("/keys/validate", "POST", Some("{}"), public_key, secret_key);
-
-    let status = extract_json_string(&result, "status");
-    let public_key = extract_json_string(&result, "public_key");
-    let tier = extract_json_string(&result, "tier");
-    let expired_at = extract_json_string(&result, "expired_at");
-
-    if extend && !public_key.is_empty() {
-        let url = format!("{}/keys/extend?pk={}", PORTAL_BASE, public_key);
-        println!("{}Opening browser: {}{}", YELLOW, url, RESET);
-
-        // Try xdg-open (Linux), open (macOS), or start (Windows)
-        let _ = Command::new("xdg-open")
-            .arg(&url)
-            .spawn()
-            .or_else(|_| Command::new("open").arg(&url).spawn())
-            .or_else(|_| Command::new("cmd").args(&["/c", "start", &url]).spawn());
-
-        return;
-    }
-
-    match status.as_str() {
-        "valid" => {
-            println!("{}Valid{}", GREEN, RESET);
-            println!("Public Key: {}", public_key);
-            println!("Tier: {}", tier);
-            if !expired_at.is_empty() {
-                println!("Expires: {}", expired_at);
-            }
-        }
-        "expired" => {
-            println!("{}Expired{}", RED, RESET);
-            println!("Public Key: {}", public_key);
-            println!("Tier: {}", tier);
-            if !expired_at.is_empty() {
-                println!("Expired: {}", expired_at);
-            }
-            println!("{}To renew: Visit {}/keys/extend{}", YELLOW, PORTAL_BASE, RESET);
-        }
-        "invalid" => {
-            println!("{}Invalid{}", RED, RESET);
-        }
-        _ => {
-            println!("{}Unknown status: {}{}", YELLOW, status, RESET);
-        }
     }
 }
 
-// Minimal base64 encoding
-mod base64 {
+fn base64_encode(input: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    let mut i = 0;
 
-    pub fn encode(input: &[u8]) -> String {
-        let mut result = String::new();
-        let mut i = 0;
-        while i < input.len() {
-            let b1 = input[i];
-            let b2 = if i + 1 < input.len() { input[i + 1] } else { 0 };
-            let b3 = if i + 2 < input.len() { input[i + 2] } else { 0 };
+    while i < input.len() {
+        let b1 = input[i];
+        let b2 = if i + 1 < input.len() { input[i + 1] } else { 0 };
+        let b3 = if i + 2 < input.len() { input[i + 2] } else { 0 };
 
-            result.push(CHARS[(b1 >> 2) as usize] as char);
-            result.push(CHARS[(((b1 & 0x03) << 4) | (b2 >> 4)) as usize] as char);
-            result.push(if i + 1 < input.len() {
-                CHARS[(((b2 & 0x0f) << 2) | (b3 >> 6)) as usize] as char
-            } else {
-                '='
-            });
-            result.push(if i + 2 < input.len() {
-                CHARS[(b3 & 0x3f) as usize] as char
-            } else {
-                '='
-            });
+        result.push(CHARS[(b1 >> 2) as usize] as char);
+        result.push(CHARS[(((b1 & 0x03) << 4) | (b2 >> 4)) as usize] as char);
+        result.push(if i + 1 < input.len() {
+            CHARS[(((b2 & 0x0f) << 2) | (b3 >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        result.push(if i + 2 < input.len() {
+            CHARS[(b3 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
 
-            i += 3;
-        }
-        result
+        i += 3;
+    }
+
+    result
+}
+
+// Stub for dirs crate
+mod dirs {
+    use std::path::PathBuf;
+
+    pub fn home_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME")
+            .and_then(|h| if h.is_empty() { None } else { Some(h) })
+            .map(PathBuf::from)
     }
 }
 
@@ -875,11 +804,13 @@ fn main() {
         eprintln!("       {} session [options]", args[0]);
         eprintln!("       {} service [options]", args[0]);
         eprintln!("       {} key [--extend]", args[0]);
+        eprintln!("\nLibrary usage: un.rs exports execute(), execute_async(), wait(), etc.");
         process::exit(1);
     }
 
-    // Parse arguments (simplified)
-    let mut api_key: Option<String> = None;
+    // Parse arguments
+    let mut public_key: Option<String> = None;
+    let mut secret_key: Option<String> = None;
     let mut network: Option<String> = None;
     let mut vcpu: Option<i32> = None;
     let mut envs: Vec<String> = Vec::new();
@@ -891,151 +822,94 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "-k" => {
+            "-p" | "--public-key" => {
                 i += 1;
                 if i < args.len() {
-                    api_key = Some(args[i].clone());
+                    public_key = Some(args[i].clone());
                 }
             }
-            "-n" => {
+            "-k" | "--secret-key" => {
+                i += 1;
+                if i < args.len() {
+                    secret_key = Some(args[i].clone());
+                }
+            }
+            "-n" | "--network" => {
                 i += 1;
                 if i < args.len() {
                     network = Some(args[i].clone());
                 }
             }
-            "-v" => {
+            "-v" | "--vcpu" => {
                 i += 1;
                 if i < args.len() {
                     vcpu = args[i].parse().ok();
                 }
             }
-            "-e" => {
+            "-e" | "--env" => {
                 i += 1;
                 if i < args.len() {
                     envs.push(args[i].clone());
                 }
             }
-            "-f" => {
+            "-f" | "--file" => {
                 i += 1;
                 if i < args.len() {
                     files.push(args[i].clone());
                 }
             }
-            "-a" => artifacts = true,
-            "-o" => {
+            "-a" | "--artifacts" => artifacts = true,
+            "-o" | "--output" => {
                 i += 1;
                 if i < args.len() {
                     output_dir = Some(args[i].clone());
                 }
             }
-            "session" => {
-                let (public_key, secret_key) = get_api_keys(api_key.as_deref());
-                // Collect -f files for session
-                let mut session_files: Vec<String> = Vec::new();
-                let mut j = i + 1;
-                while j < args.len() {
-                    if args[j] == "-f" && j + 1 < args.len() {
-                        session_files.push(args[j + 1].clone());
-                        j += 2;
-                    } else {
-                        j += 1;
-                    }
-                }
-                cmd_session(
-                    args.contains(&"--list".to_string()),
-                    args.iter().position(|x| x == "--kill").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--shell").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    network.as_deref(),
-                    vcpu,
-                    args.contains(&"--tmux".to_string()),
-                    args.contains(&"--screen".to_string()),
-                    &session_files,
-                    &public_key,
-                    &secret_key,
-                );
-                return;
-            }
-            "service" => {
-                let (public_key, secret_key) = get_api_keys(api_key.as_deref());
-                // Collect -f files and -e envs for service
-                let mut service_files: Vec<String> = Vec::new();
-                let mut service_envs: Vec<String> = Vec::new();
-                let mut env_file_opt: Option<String> = None;
-                let mut env_action: Option<String> = None;
-                let mut env_target: Option<String> = None;
-                let mut j = i + 1;
-                while j < args.len() {
-                    if args[j] == "-f" && j + 1 < args.len() {
-                        service_files.push(args[j + 1].clone());
-                        j += 2;
-                    } else if args[j] == "-e" && j + 1 < args.len() {
-                        service_envs.push(args[j + 1].clone());
-                        j += 2;
-                    } else if args[j] == "--env-file" && j + 1 < args.len() {
-                        env_file_opt = Some(args[j + 1].clone());
-                        j += 2;
-                    } else if args[j] == "env" && env_action.is_none() {
-                        // service env <action> <target>
-                        if j + 1 < args.len() && !args[j + 1].starts_with('-') {
-                            env_action = Some(args[j + 1].clone());
-                            if j + 2 < args.len() && !args[j + 2].starts_with('-') {
-                                env_target = Some(args[j + 2].clone());
-                                j += 3;
-                            } else {
-                                j += 2;
+            "-s" | "--shell" => {
+                i += 1;
+                if i < args.len() {
+                    let lang = args[i].clone();
+                    i += 1;
+                    let code = if i < args.len() { args[i].clone() } else { String::new() };
+
+                    let mut opts = ExecuteOptions {
+                        public_key: public_key.clone(),
+                        secret_key: secret_key.clone(),
+                        network_mode: network,
+                        ttl: Some(60),
+                        vcpu,
+                        ..Default::default()
+                    };
+
+                    if !envs.is_empty() {
+                        let mut env_map = HashMap::new();
+                        for e in &envs {
+                            if let Some((k, v)) = e.split_once('=') {
+                                env_map.insert(k.to_string(), v.to_string());
                             }
-                        } else {
-                            j += 1;
                         }
-                    } else {
-                        j += 1;
+                        opts.env = Some(env_map);
+                    }
+
+                    match execute(&lang, &code, opts) {
+                        Ok(result) => {
+                            if !result.stdout.is_empty() {
+                                print!("{}", result.stdout);
+                            }
+                            if !result.stderr.is_empty() {
+                                eprint!("{}{}{}", RED, result.stderr, RESET);
+                            }
+                            process::exit(result.exit_code);
+                        }
+                        Err(e) => {
+                            eprintln!("{}Error: {}{}", RED, e, RESET);
+                            process::exit(1);
+                        }
                     }
                 }
-                cmd_service(
-                    args.iter().position(|x| x == "--name").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--ports").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--domains").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--type").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--bootstrap").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--bootstrap-file").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    &service_files,
-                    args.contains(&"--list".to_string()),
-                    args.iter().position(|x| x == "--info").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--logs").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--tail").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--freeze").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--unfreeze").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--destroy").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--resize").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--execute").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--command").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--dump-bootstrap").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    args.iter().position(|x| x == "--dump-file").and_then(|p| args.get(p + 1)).map(|s| s.as_str()),
-                    network.as_deref(),
-                    vcpu,
-                    &service_envs,
-                    env_file_opt.as_deref(),
-                    env_action.as_deref(),
-                    env_target.as_deref(),
-                    &public_key,
-                    &secret_key,
-                );
-                return;
-            }
-            "key" => {
-                let (public_key, secret_key) = get_api_keys(api_key.as_deref());
-                cmd_key(
-                    args.contains(&"--extend".to_string()),
-                    &public_key,
-                    &secret_key,
-                );
-                return;
             }
             _ => {
-                if args[i].starts_with('-') {
-                    eprintln!("{}Unknown option: {}{}", RED, args[i], RESET);
-                    std::process::exit(1);
-                } else {
+                if !args[i].starts_with('-') {
                     source_file = Some(args[i].clone());
                 }
             }
@@ -1043,20 +917,8 @@ fn main() {
         i += 1;
     }
 
-    // Execute mode
     if let Some(file) = source_file {
-        let (public_key, secret_key) = get_api_keys(api_key.as_deref());
-        cmd_execute(
-            &file,
-            envs,
-            files,
-            artifacts,
-            output_dir.as_deref(),
-            network.as_deref(),
-            vcpu,
-            &public_key,
-            &secret_key,
-        );
+        cmd_execute(&file, envs, files, artifacts, output_dir.as_deref(), network.as_deref(), vcpu, public_key, secret_key);
     } else {
         eprintln!("{}Error: No source file specified{}", RED, RESET);
         process::exit(1);

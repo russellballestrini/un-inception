@@ -34,1015 +34,1049 @@
 // https://www.timehexon.com
 // https://www.foxhop.net
 // https://www.unturf.com/software
+//
+// unsandbox SDK for JavaScript/Node.js - Execute code in secure sandboxes
+// https://unsandbox.com | https://api.unsandbox.com/openapi
+//
+// Library Usage:
+//   const un = require('./un.js');
+//   const result = await un.execute("javascript", 'console.log("Hello")');
+//   const job = await un.executeAsync("javascript", code);
+//   const result = await un.wait(job.job_id);
+//
+// CLI Usage:
+//   node un.js script.js
+//   node un.js -s javascript 'console.log("Hello")'
+//   node un.js session --shell node
+//
+// Authentication (in priority order):
+//   1. Function arguments: execute(..., { publicKey, secretKey })
+//   2. Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY
+//   3. Config file: ~/.unsandbox/accounts.csv (public_key,secret_key per line)
 
 /**
- * un.js - Unsandbox CLI Client (JavaScript/Node.js Implementation)
+ * unsandbox - Secure Code Execution SDK for JavaScript
  *
- * Full-featured CLI matching un.c capabilities:
- * - Execute code with env vars, input files, artifacts
- * - Interactive sessions with shell/REPL support
- * - Persistent services with domains and ports
+ * @example Simple execution
+ * const un = require('./un.js');
+ * const result = await un.execute("javascript", 'console.log("Hello World")');
+ * console.log(result.stdout);
  *
- * Usage:
- *   un.js [options] <source_file>
- *   un.js session [options]
- *   un.js service [options]
+ * @example Async execution
+ * const job = await un.executeAsync("javascript", longRunningCode);
+ * const result = await un.wait(job.job_id);
  *
- * Requires: UNSANDBOX_API_KEY environment variable
+ * @example Client class
+ * const client = new un.Client({ publicKey: "unsb-pk-...", secretKey: "unsb-sk-..." });
+ * const result = await client.execute("javascript", code);
  */
 
-const fs = require('fs');
-const https = require('https');
-const path = require('path');
-const { exec } = require('child_process');
 const crypto = require('crypto');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// ============================================================================
+// Configuration
+// ============================================================================
 
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
+const DEFAULT_TIMEOUT = 300000; // 5 minutes in ms
+const DEFAULT_TTL = 60; // 1 minute execution limit
+
+// Polling delays (ms) - exponential backoff matching un.c
+const POLL_DELAYS = [300, 450, 700, 900, 650, 1600, 2000];
+
+// Extension to language mapping
+const EXT_MAP = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".rb": "ruby", ".php": "php", ".pl": "perl", ".lua": "lua",
+    ".sh": "bash", ".go": "go", ".rs": "rust", ".c": "c",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
+    ".java": "java", ".kt": "kotlin", ".cs": "csharp", ".fs": "fsharp",
+    ".hs": "haskell", ".ml": "ocaml", ".clj": "clojure", ".scm": "scheme",
+    ".lisp": "commonlisp", ".erl": "erlang", ".ex": "elixir", ".exs": "elixir",
+    ".jl": "julia", ".r": "r", ".R": "r", ".cr": "crystal",
+    ".d": "d", ".nim": "nim", ".zig": "zig", ".v": "v",
+    ".dart": "dart", ".groovy": "groovy", ".scala": "scala",
+    ".f90": "fortran", ".f95": "fortran", ".cob": "cobol",
+    ".pro": "prolog", ".forth": "forth", ".4th": "forth",
+    ".tcl": "tcl", ".raku": "raku", ".m": "objc", ".awk": "awk",
+};
+
+// ANSI colors
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
 const RESET = "\x1b[0m";
 
-const EXT_MAP = {
-  ".py": "python", ".js": "javascript", ".ts": "typescript",
-  ".rb": "ruby", ".php": "php", ".pl": "perl", ".lua": "lua",
-  ".sh": "bash", ".go": "go", ".rs": "rust", ".c": "c",
-  ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
-  ".java": "java", ".kt": "kotlin", ".cs": "csharp", ".fs": "fsharp",
-  ".hs": "haskell", ".ml": "ocaml", ".clj": "clojure", ".scm": "scheme",
-  ".lisp": "commonlisp", ".erl": "erlang", ".ex": "elixir", ".exs": "elixir",
-  ".jl": "julia", ".r": "r", ".R": "r", ".cr": "crystal",
-  ".d": "d", ".nim": "nim", ".zig": "zig", ".v": "v",
-  ".dart": "dart", ".groovy": "groovy", ".scala": "scala",
-  ".f90": "fortran", ".f95": "fortran", ".cob": "cobol",
-  ".pro": "prolog", ".forth": "forth", ".4th": "forth",
-  ".tcl": "tcl", ".raku": "raku", ".m": "objc",
-};
+// ============================================================================
+// Exceptions
+// ============================================================================
 
-function getApiKeys(argsKey) {
-  // Try new split key format first
-  let publicKey = process.env.UNSANDBOX_PUBLIC_KEY;
-  let secretKey = process.env.UNSANDBOX_SECRET_KEY;
-
-  // Fall back to old single key format for backwards compatibility
-  if (!publicKey || !secretKey) {
-    const oldKey = argsKey || process.env.UNSANDBOX_API_KEY;
-    if (oldKey) {
-      publicKey = oldKey;
-      secretKey = oldKey;
-    } else {
-      console.error(`${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}`);
-      console.error(`${RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility)${RESET}`);
-      process.exit(1);
+class UnsandboxError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'UnsandboxError';
     }
-  }
-
-  return { publicKey, secretKey };
 }
 
-function detectLanguage(filename) {
-  const ext = path.extname(filename).toLowerCase();
-  const lang = EXT_MAP[ext];
-  if (!lang) {
-    try {
-      const firstLine = fs.readFileSync(filename, 'utf-8').split('\n')[0];
-      if (firstLine.startsWith('#!')) {
-        if (firstLine.includes('python')) return 'python';
-        if (firstLine.includes('node')) return 'javascript';
-        if (firstLine.includes('ruby')) return 'ruby';
-        if (firstLine.includes('perl')) return 'perl';
-        if (firstLine.includes('bash') || firstLine.includes('/sh')) return 'bash';
-        if (firstLine.includes('lua')) return 'lua';
-        if (firstLine.includes('php')) return 'php';
-      }
-    } catch (e) {}
-    console.error(`${RED}Error: Cannot detect language for ${filename}${RESET}`);
-    process.exit(1);
-  }
-  return lang;
+class AuthenticationError extends UnsandboxError {
+    constructor(message) {
+        super(message);
+        this.name = 'AuthenticationError';
+    }
 }
 
-function apiRequest(endpoint, method = "GET", data = null, publicKey = null, secretKey = null) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(API_BASE + endpoint);
-
-    // Prepare body
-    const body = data ? JSON.stringify(data) : "";
-
-    // Generate HMAC signature
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const signatureInput = `${timestamp}:${method}:${endpoint}:${body}`;
-    const signature = crypto.createHmac('sha256', secretKey)
-      .update(signatureInput)
-      .digest('hex');
-
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname + url.search,
-      method: method,
-      headers: {
-        'Authorization': `Bearer ${publicKey}`,
-        'X-Timestamp': timestamp,
-        'X-Signature': signature,
-        'Content-Type': 'application/json'
-      },
-      timeout: 300000
-    };
-
-    const req = https.request(options, (res) => {
-      let responseBody = '';
-      res.on('data', chunk => responseBody += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try {
-            resolve(JSON.parse(responseBody));
-          } catch (e) {
-            resolve(responseBody);
-          }
-        } else {
-          if (res.statusCode === 401 && responseBody.toLowerCase().includes('timestamp')) {
-            console.error(`${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}`);
-            console.error(`${YELLOW}Your computer's clock may have drifted.${RESET}`);
-            console.error(`${YELLOW}Check your system time and sync with NTP if needed:${RESET}`);
-            console.error(`  Linux:   sudo ntpdate -s time.nist.gov`);
-            console.error(`  macOS:   sudo sntp -sS time.apple.com`);
-            console.error(`  Windows: w32tm /resync`);
-          } else {
-            console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
-          }
-          process.exit(1);
-        }
-      });
-    });
-
-    req.on('error', (e) => {
-      console.error(`${RED}Error: ${e.message}${RESET}`);
-      process.exit(1);
-    });
-
-    if (data) {
-      req.write(body);
+class ExecutionError extends UnsandboxError {
+    constructor(message, exitCode = null, stderr = null) {
+        super(message);
+        this.name = 'ExecutionError';
+        this.exitCode = exitCode;
+        this.stderr = stderr;
     }
-    req.end();
-  });
 }
 
-function apiRequestText(endpoint, method = "PUT", body = "", publicKey = null, secretKey = null) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(API_BASE + endpoint);
-
-    // Generate HMAC signature
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const signatureInput = `${timestamp}:${method}:${endpoint}:${body}`;
-    const signature = crypto.createHmac('sha256', secretKey)
-      .update(signatureInput)
-      .digest('hex');
-
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname + url.search,
-      method: method,
-      headers: {
-        'Authorization': `Bearer ${publicKey}`,
-        'X-Timestamp': timestamp,
-        'X-Signature': signature,
-        'Content-Type': 'text/plain'
-      },
-      timeout: 300000
-    };
-
-    const req = https.request(options, (res) => {
-      let responseBody = '';
-      res.on('data', chunk => responseBody += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try {
-            resolve(JSON.parse(responseBody));
-          } catch (e) {
-            resolve(responseBody);
-          }
-        } else {
-          console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
-          resolve(null);
-        }
-      });
-    });
-
-    req.on('error', (e) => {
-      console.error(`${RED}Error: ${e.message}${RESET}`);
-      resolve(null);
-    });
-
-    if (body) {
-      req.write(body);
+class APIError extends UnsandboxError {
+    constructor(message, statusCode = null, response = null) {
+        super(message);
+        this.name = 'APIError';
+        this.statusCode = statusCode;
+        this.response = response;
     }
-    req.end();
-  });
+}
+
+class TimeoutError extends UnsandboxError {
+    constructor(message) {
+        super(message);
+        this.name = 'TimeoutError';
+    }
 }
 
 // ============================================================================
-// Environment Secrets Vault Functions
+// HMAC Authentication
 // ============================================================================
 
-const MAX_ENV_CONTENT_SIZE = 64 * 1024; // 64KB max env vault size
-
-async function serviceEnvStatus(publicKey, secretKey, serviceId) {
-  const result = await apiRequest(`/services/${serviceId}/env`, "GET", null, publicKey, secretKey);
-  const hasVault = result.has_vault || false;
-
-  if (!hasVault) {
-    console.log("Vault exists: no");
-    console.log("Variable count: 0");
-  } else {
-    console.log("Vault exists: yes");
-    console.log(`Variable count: ${result.count || 0}`);
-    if (result.updated_at) {
-      const dt = new Date(result.updated_at * 1000);
-      console.log(`Last updated: ${dt.toISOString().replace('T', ' ').substring(0, 19)}`);
-    }
-  }
+/**
+ * Generate HMAC-SHA256 signature for API request.
+ * Signature = HMAC-SHA256(secretKey, "timestamp:METHOD:path:body")
+ */
+function signRequest(secretKey, timestamp, method, path, body = "") {
+    const message = `${timestamp}:${method}:${path}:${body}`;
+    return crypto.createHmac('sha256', secretKey)
+        .update(message)
+        .digest('hex');
 }
 
-async function serviceEnvSet(publicKey, secretKey, serviceId, envContent) {
-  if (!envContent || envContent.length === 0) {
-    console.error(`${RED}Error: No environment content provided${RESET}`);
-    return false;
-  }
-
-  if (envContent.length > MAX_ENV_CONTENT_SIZE) {
-    console.error(`${RED}Error: Environment content too large (max ${MAX_ENV_CONTENT_SIZE} bytes)${RESET}`);
-    return false;
-  }
-
-  const result = await apiRequestText(`/services/${serviceId}/env`, "PUT", envContent, publicKey, secretKey);
-  if (result === null) {
-    return false;
-  }
-
-  const count = result.count !== undefined ? result.count : -1;
-  if (count >= 0) {
-    console.log(`${GREEN}Environment vault updated: ${count} variable${count !== 1 ? 's' : ''}${RESET}`);
-  } else {
-    console.log(`${GREEN}Environment vault updated${RESET}`);
-  }
-
-  if (result.message) {
-    console.log(result.message);
-  }
-
-  return true;
-}
-
-async function serviceEnvExport(publicKey, secretKey, serviceId) {
-  const result = await apiRequest(`/services/${serviceId}/env/export`, "POST", {}, publicKey, secretKey);
-  const envContent = result.env || "";
-  if (envContent) {
-    process.stdout.write(envContent);
-    if (!envContent.endsWith('\n')) {
-      console.log();
-    }
-  }
-}
-
-async function serviceEnvDelete(publicKey, secretKey, serviceId) {
-  await apiRequest(`/services/${serviceId}/env`, "DELETE", null, publicKey, secretKey);
-  console.log(`${GREEN}Environment vault deleted${RESET}`);
-}
-
-function readEnvFile(filepath) {
-  try {
-    return fs.readFileSync(filepath, 'utf-8');
-  } catch (e) {
-    console.error(`${RED}Error: Env file not found: ${filepath}${RESET}`);
-    process.exit(1);
-  }
-}
-
-function buildEnvContent(envVars, envFile) {
-  const parts = [];
-
-  // Read from env file first
-  if (envFile) {
-    parts.push(readEnvFile(envFile));
-  }
-
-  // Add -e flags (these override/append to file)
-  if (envVars && envVars.length > 0) {
-    envVars.forEach(e => {
-      if (e.includes('=')) {
-        parts.push(e);
-      }
-    });
-  }
-
-  return parts.length > 0 ? parts.join('\n') : null;
-}
-
-function portalRequest(endpoint, method = "GET", data = null, publicKey = null, secretKey = null) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(PORTAL_BASE + endpoint);
-
-    // Prepare body
-    const body = data ? JSON.stringify(data) : "";
-
-    // Generate HMAC signature
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    const signatureInput = `${timestamp}:${method}:${endpoint}:${body}`;
-    const signature = crypto.createHmac('sha256', secretKey)
-      .update(signatureInput)
-      .digest('hex');
-
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname + url.search,
-      method: method,
-      headers: {
-        'Authorization': `Bearer ${publicKey}`,
-        'X-Timestamp': timestamp,
-        'X-Signature': signature,
-        'Content-Type': 'application/json'
-      },
-      timeout: 30000
-    };
-
-    const req = https.request(options, (res) => {
-      let responseBody = '';
-      res.on('data', chunk => responseBody += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try {
-            resolve(JSON.parse(responseBody));
-          } catch (e) {
-            resolve(responseBody);
-          }
-        } else {
-          try {
-            const errorBody = JSON.parse(responseBody);
-            resolve({ error: errorBody.error || responseBody, status: res.statusCode });
-          } catch (e) {
-            resolve({ error: responseBody, status: res.statusCode });
-          }
-        }
-      });
-    });
-
-    req.on('error', (e) => {
-      reject(e);
-    });
-
-    if (data) {
-      req.write(body);
-    }
-    req.end();
-  });
-}
-
-function openBrowser(url) {
-  const platform = process.platform;
-  let command;
-
-  if (platform === 'darwin') {
-    command = `open "${url}"`;
-  } else if (platform === 'win32') {
-    command = `start "${url}"`;
-  } else {
-    command = `xdg-open "${url}"`;
-  }
-
-  exec(command, (error) => {
-    if (error) {
-      console.error(`${RED}Error opening browser: ${error.message}${RESET}`);
-      console.log(`Please visit: ${url}`);
-    }
-  });
-}
-
-async function validateKey(publicKey, secretKey, shouldExtend = false) {
-  try {
-    const result = await portalRequest("/keys/validate", "POST", {}, publicKey, secretKey);
-
-    // Handle --extend flag first
-    if (shouldExtend) {
-      const public_key = result.public_key;
-      if (public_key) {
-        const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(public_key)}`;
-        console.log(`${BLUE}Opening browser to extend key...${RESET}`);
-        openBrowser(extendUrl);
-        return;
-      } else {
-        console.error(`${RED}Error: Could not retrieve public key${RESET}`);
-        process.exit(1);
-      }
-    }
-
-    // Check if key is expired
-    if (result.expired) {
-      console.log(`${RED}Expired${RESET}`);
-      console.log(`Public Key: ${result.public_key || 'N/A'}`);
-      console.log(`Tier: ${result.tier || 'N/A'}`);
-      console.log(`Expired: ${result.expires_at || 'N/A'}`);
-      console.log(`${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}`);
-      process.exit(1);
-    }
-
-    // Valid key
-    console.log(`${GREEN}Valid${RESET}`);
-    console.log(`Public Key: ${result.public_key || 'N/A'}`);
-    console.log(`Tier: ${result.tier || 'N/A'}`);
-    console.log(`Status: ${result.status || 'N/A'}`);
-    console.log(`Expires: ${result.expires_at || 'N/A'}`);
-    console.log(`Time Remaining: ${result.time_remaining || 'N/A'}`);
-    console.log(`Rate Limit: ${result.rate_limit || 'N/A'}`);
-    console.log(`Burst: ${result.burst || 'N/A'}`);
-    console.log(`Concurrency: ${result.concurrency || 'N/A'}`);
-  } catch (error) {
-    console.error(`${RED}Error validating key: ${error.message}${RESET}`);
-    process.exit(1);
-  }
-}
-
-async function cmdKey(args) {
-  const { publicKey, secretKey } = getApiKeys(args.apiKey);
-  await validateKey(publicKey, secretKey, args.extend);
-}
-
-async function cmdExecute(args) {
-  const { publicKey, secretKey } = getApiKeys(args.apiKey);
-
-  let code;
-  let language;
-
-  // Check for inline mode: -s/--shell specified, or sourceFile doesn't exist
-  if (args.execShell) {
-    // Inline mode with specified language
-    code = args.sourceFile;
-    language = args.execShell;
-  } else if (!fs.existsSync(args.sourceFile)) {
-    // File doesn't exist - treat as inline bash code
-    code = args.sourceFile;
-    language = "bash";
-  } else {
-    // Normal file execution
+/**
+ * Load credentials from accounts.csv file.
+ * @param {string} filepath - Path to accounts.csv
+ * @param {number} accountIndex - Account index (0-based)
+ * @returns {Object|null} { publicKey, secretKey } or null
+ */
+function loadAccountsCsv(filepath, accountIndex = 0) {
+    if (!fs.existsSync(filepath)) return null;
     try {
-      code = fs.readFileSync(args.sourceFile, 'utf-8');
+        const lines = fs.readFileSync(filepath, 'utf-8').trim().split('\n');
+        const validAccounts = [];
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            if (trimmed.includes(',')) {
+                const [pk, sk] = trimmed.split(',', 2);
+                if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
+                    validAccounts.push({ publicKey: pk, secretKey: sk });
+                }
+            }
+        }
+        if (validAccounts.length > accountIndex) {
+            return validAccounts[accountIndex];
+        }
     } catch (e) {
-      console.error(`${RED}Error: File not found: ${args.sourceFile}${RESET}`);
-      process.exit(1);
+        // Ignore file read errors
     }
-    language = detectLanguage(args.sourceFile);
-  }
+    return null;
+}
 
-  const payload = { language, code };
+/**
+ * Get API credentials in priority order:
+ * 1. Function arguments
+ * 2. Environment variables
+ * 3. ~/.unsandbox/accounts.csv
+ * 4. ./accounts.csv (same directory as this SDK)
+ */
+function getCredentials(publicKey = null, secretKey = null, accountIndex = 0) {
+    // Priority 1: Function arguments
+    if (publicKey && secretKey) {
+        return { publicKey, secretKey };
+    }
 
-  if (args.env && args.env.length > 0) {
-    payload.env = {};
-    args.env.forEach(e => {
-      const idx = e.indexOf('=');
-      if (idx > 0) {
-        payload.env[e.substring(0, idx)] = e.substring(idx + 1);
-      }
-    });
-  }
+    // Priority 2: Environment variables
+    const envPk = process.env.UNSANDBOX_PUBLIC_KEY;
+    const envSk = process.env.UNSANDBOX_SECRET_KEY;
+    if (envPk && envSk) {
+        return { publicKey: envPk, secretKey: envSk };
+    }
 
-  if (args.files && args.files.length > 0) {
-    payload.input_files = args.files.map(filepath => {
-      try {
-        const content = fs.readFileSync(filepath);
-        return {
-          filename: path.basename(filepath),
-          content_base64: content.toString('base64')
+    // Priority 3: ~/.unsandbox/accounts.csv
+    const homeAccounts = path.join(os.homedir(), '.unsandbox', 'accounts.csv');
+    let result = loadAccountsCsv(homeAccounts, accountIndex);
+    if (result) return result;
+
+    // Priority 4: ./accounts.csv (same directory as SDK)
+    const localAccounts = path.join(__dirname, 'accounts.csv');
+    result = loadAccountsCsv(localAccounts, accountIndex);
+    if (result) return result;
+
+    throw new AuthenticationError(
+        "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY, " +
+        "or create ~/.unsandbox/accounts.csv or ./accounts.csv, or pass credentials to function."
+    );
+}
+
+// ============================================================================
+// HTTP Client
+// ============================================================================
+
+/**
+ * Make authenticated API request with HMAC signature.
+ */
+function apiRequest(endpoint, options = {}) {
+    return new Promise((resolve, reject) => {
+        const {
+            method = "GET",
+            data = null,
+            bodyText = null,
+            contentType = "application/json",
+            publicKey = null,
+            secretKey = null,
+            timeout = DEFAULT_TIMEOUT,
+        } = options;
+
+        const creds = getCredentials(publicKey, secretKey);
+        const url = new URL(API_BASE + endpoint);
+
+        // Prepare body
+        let body = "";
+        if (bodyText !== null) {
+            body = bodyText;
+        } else if (data !== null) {
+            body = JSON.stringify(data);
+        }
+
+        // Generate signature
+        const timestamp = Math.floor(Date.now() / 1000);
+        const signature = signRequest(creds.secretKey, timestamp, method, endpoint, body);
+
+        const reqOptions = {
+            hostname: url.hostname,
+            port: 443,
+            path: url.pathname + url.search,
+            method: method,
+            headers: {
+                'Authorization': `Bearer ${creds.publicKey}`,
+                'X-Timestamp': timestamp.toString(),
+                'X-Signature': signature,
+                'Content-Type': contentType,
+            },
+            timeout: timeout,
         };
-      } catch (e) {
-        console.error(`${RED}Error: Input file not found: ${filepath}${RESET}`);
-        process.exit(1);
-      }
+
+        const req = https.request(reqOptions, (res) => {
+            let responseBody = '';
+            res.on('data', chunk => responseBody += chunk);
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    try {
+                        resolve(responseBody ? JSON.parse(responseBody) : {});
+                    } catch (e) {
+                        resolve(responseBody);
+                    }
+                } else if (res.statusCode === 401) {
+                    if (responseBody.toLowerCase().includes('timestamp')) {
+                        reject(new AuthenticationError(
+                            "Request timestamp expired. Your system clock may be out of sync. " +
+                            "Run: sudo ntpdate -s time.nist.gov"
+                        ));
+                    } else {
+                        reject(new AuthenticationError(`Authentication failed: ${responseBody}`));
+                    }
+                } else if (res.statusCode === 429) {
+                    reject(new APIError(`Rate limit exceeded: ${responseBody}`, res.statusCode, responseBody));
+                } else {
+                    reject(new APIError(`HTTP ${res.statusCode}: ${responseBody}`, res.statusCode, responseBody));
+                }
+            });
+        });
+
+        req.on('error', (e) => {
+            reject(new APIError(`Connection failed: ${e.message}`));
+        });
+
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new TimeoutError('Request timeout'));
+        });
+
+        if (body) {
+            req.write(body);
+        }
+        req.end();
     });
-  }
-
-  if (args.artifacts) payload.return_artifacts = true;
-  if (args.network) payload.network = args.network;
-  if (args.vcpu) payload.vcpu = args.vcpu;
-
-  const result = await apiRequest("/execute", "POST", payload, publicKey, secretKey);
-
-  if (result.stdout) process.stdout.write(`${BLUE}${result.stdout}${RESET}`);
-  if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
-
-  if (args.artifacts && result.artifacts) {
-    const outDir = args.outputDir || '.';
-    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-    result.artifacts.forEach(artifact => {
-      const filename = artifact.filename || 'artifact';
-      const content = Buffer.from(artifact.content_base64, 'base64');
-      const filepath = path.join(outDir, filename);
-      fs.writeFileSync(filepath, content);
-      fs.chmodSync(filepath, 0o755);
-      console.error(`${GREEN}Saved: ${filepath}${RESET}`);
-    });
-  }
-
-  process.exit(result.exit_code || 0);
 }
 
-async function cmdSession(args) {
-  const { publicKey, secretKey } = getApiKeys(args.apiKey);
+// ============================================================================
+// Core Execution Functions
+// ============================================================================
 
-  if (args.list) {
-    const result = await apiRequest("/sessions", "GET", null, publicKey, secretKey);
-    const sessions = result.sessions || [];
-    if (sessions.length === 0) {
-      console.log("No active sessions");
-    } else {
-      console.log(`${'ID'.padEnd(40)} ${'Shell'.padEnd(10)} ${'Status'.padEnd(10)} Created`);
-      sessions.forEach(s => {
-        console.log(`${(s.id || 'N/A').padEnd(40)} ${(s.shell || 'N/A').padEnd(10)} ${(s.status || 'N/A').padEnd(10)} ${s.created_at || 'N/A'}`);
-      });
+/**
+ * Execute code synchronously and return results.
+ *
+ * @param {string} language - Programming language (python, javascript, go, rust, etc.)
+ * @param {string} code - Source code to execute
+ * @param {Object} options - Optional parameters
+ * @param {Object} options.env - Environment variables dict
+ * @param {Array} options.inputFiles - List of {filename, content} or {filename, contentBase64}
+ * @param {string} options.networkMode - "zerotrust" (no network) or "semitrusted" (internet access)
+ * @param {number} options.ttl - Execution timeout in seconds (1-900, default 60)
+ * @param {number} options.vcpu - Virtual CPUs (1-8, default 1)
+ * @param {boolean} options.returnArtifact - Return compiled binary
+ * @param {boolean} options.returnWasmArtifact - Compile to WebAssembly
+ * @param {string} options.publicKey - API public key
+ * @param {string} options.secretKey - API secret key
+ * @param {number} options.timeout - HTTP request timeout in ms
+ * @returns {Promise<Object>} Result with stdout, stderr, exit_code, etc.
+ *
+ * @example
+ * const result = await un.execute("javascript", 'console.log("Hello World")');
+ * console.log(result.stdout);
+ */
+async function execute(language, code, options = {}) {
+    const {
+        env = null,
+        inputFiles = null,
+        networkMode = "zerotrust",
+        ttl = DEFAULT_TTL,
+        vcpu = 1,
+        returnArtifact = false,
+        returnWasmArtifact = false,
+        publicKey = null,
+        secretKey = null,
+        timeout = DEFAULT_TIMEOUT,
+    } = options;
+
+    const payload = {
+        language,
+        code,
+        network_mode: networkMode,
+        ttl,
+        vcpu,
+    };
+
+    if (env) payload.env = env;
+
+    if (inputFiles) {
+        payload.input_files = inputFiles.map(f => {
+            if (f.contentBase64 || f.content_base64) {
+                return { filename: f.filename, content_base64: f.contentBase64 || f.content_base64 };
+            } else if (f.content) {
+                return {
+                    filename: f.filename,
+                    content_base64: Buffer.from(f.content).toString('base64')
+                };
+            }
+            return f;
+        });
     }
-    return;
-  }
 
-  if (args.kill) {
-    await apiRequest(`/sessions/${args.kill}`, "DELETE", null, publicKey, secretKey);
-    console.log(`${GREEN}Session terminated: ${args.kill}${RESET}`);
-    return;
-  }
+    if (returnArtifact) payload.return_artifact = true;
+    if (returnWasmArtifact) payload.return_wasm_artifact = true;
 
-  if (args.attach) {
-    console.log(`${YELLOW}Attaching to session ${args.attach}...${RESET}`);
-    console.log(`${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}`);
-    return;
-  }
-
-  const payload = { shell: args.shell || "bash" };
-  if (args.network) payload.network = args.network;
-  if (args.vcpu) payload.vcpu = args.vcpu;
-  if (args.tmux) payload.persistence = "tmux";
-  if (args.screen) payload.persistence = "screen";
-  if (args.audit) payload.audit = true;
-
-  // Add input files
-  if (args.files && args.files.length > 0) {
-    payload.input_files = args.files.map(filepath => {
-      try {
-        const content = fs.readFileSync(filepath);
-        return {
-          filename: path.basename(filepath),
-          content_base64: content.toString('base64')
-        };
-      } catch (e) {
-        console.error(`${RED}Error: Input file not found: ${filepath}${RESET}`);
-        process.exit(1);
-      }
+    return apiRequest("/execute", {
+        method: "POST",
+        data: payload,
+        publicKey,
+        secretKey,
+        timeout,
     });
-  }
-
-  console.log(`${YELLOW}Creating session...${RESET}`);
-  const result = await apiRequest("/sessions", "POST", payload, publicKey, secretKey);
-  console.log(`${GREEN}Session created: ${result.id || 'N/A'}${RESET}`);
-  console.log(`${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}`);
 }
 
-async function cmdService(args) {
-  const { publicKey, secretKey } = getApiKeys(args.apiKey);
+/**
+ * Execute code asynchronously. Returns immediately with job_id for polling.
+ *
+ * @param {string} language - Programming language
+ * @param {string} code - Source code to execute
+ * @param {Object} options - Same options as execute()
+ * @returns {Promise<Object>} Result with job_id, status ("pending")
+ *
+ * @example
+ * const job = await un.executeAsync("javascript", longRunningCode);
+ * console.log(`Job submitted: ${job.job_id}`);
+ * const result = await un.wait(job.job_id);
+ */
+async function executeAsync(language, code, options = {}) {
+    const {
+        env = null,
+        inputFiles = null,
+        networkMode = "zerotrust",
+        ttl = DEFAULT_TTL,
+        vcpu = 1,
+        returnArtifact = false,
+        returnWasmArtifact = false,
+        publicKey = null,
+        secretKey = null,
+    } = options;
 
-  // Handle env subcommand: un.js service env <action> <id>
-  if (args.envSubcommand === 'env') {
-    const action = args.envAction;
-    const target = args.envTarget;
+    const payload = {
+        language,
+        code,
+        network_mode: networkMode,
+        ttl,
+        vcpu,
+    };
 
-    if (!action) {
-      console.error(`${RED}Error: env action required (status, set, export, delete)${RESET}`);
-      process.exit(1);
+    if (env) payload.env = env;
+
+    if (inputFiles) {
+        payload.input_files = inputFiles.map(f => {
+            if (f.contentBase64 || f.content_base64) {
+                return { filename: f.filename, content_base64: f.contentBase64 || f.content_base64 };
+            } else if (f.content) {
+                return {
+                    filename: f.filename,
+                    content_base64: Buffer.from(f.content).toString('base64')
+                };
+            }
+            return f;
+        });
     }
-    if (!target) {
-      console.error(`${RED}Error: Service ID required for env command${RESET}`);
-      process.exit(1);
+
+    if (returnArtifact) payload.return_artifact = true;
+    if (returnWasmArtifact) payload.return_wasm_artifact = true;
+
+    return apiRequest("/execute/async", {
+        method: "POST",
+        data: payload,
+        publicKey,
+        secretKey,
+    });
+}
+
+/**
+ * Execute code with automatic language detection from shebang.
+ *
+ * @param {string} code - Source code with shebang (e.g., #!/usr/bin/env node)
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with detected_language, stdout, stderr, etc.
+ *
+ * @example
+ * const code = '#!/usr/bin/env node\nconsole.log("Auto-detected!")';
+ * const result = await un.run(code);
+ * console.log(result.detected_language); // "javascript"
+ */
+async function run(code, options = {}) {
+    const {
+        env = null,
+        networkMode = "zerotrust",
+        ttl = DEFAULT_TTL,
+        publicKey = null,
+        secretKey = null,
+        timeout = DEFAULT_TIMEOUT,
+    } = options;
+
+    let endpoint = `/run?ttl=${ttl}&network_mode=${networkMode}`;
+    if (env) {
+        endpoint += `&env=${encodeURIComponent(JSON.stringify(env))}`;
     }
 
-    if (action === 'status') {
-      await serviceEnvStatus(publicKey, secretKey, target);
-      return;
-    } else if (action === 'set') {
-      let envContent = buildEnvContent(args.env, args.envFile);
-      if (!envContent) {
-        console.error(`${RED}Error: No env content provided. Use -e KEY=VAL, --env-file, or pipe to stdin${RESET}`);
-        process.exit(1);
-      }
-      await serviceEnvSet(publicKey, secretKey, target, envContent);
-      return;
-    } else if (action === 'export') {
-      await serviceEnvExport(publicKey, secretKey, target);
-      return;
-    } else if (action === 'delete') {
-      await serviceEnvDelete(publicKey, secretKey, target);
-      return;
-    } else {
-      console.error(`${RED}Error: Unknown env action '${action}'. Use: status, set, export, delete${RESET}`);
-      process.exit(1);
+    return apiRequest(endpoint, {
+        method: "POST",
+        bodyText: code,
+        contentType: "text/plain",
+        publicKey,
+        secretKey,
+        timeout,
+    });
+}
+
+/**
+ * Execute code asynchronously with automatic language detection.
+ *
+ * @param {string} code - Source code with shebang
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with job_id, detected_language, status ("pending")
+ */
+async function runAsync(code, options = {}) {
+    const {
+        env = null,
+        networkMode = "zerotrust",
+        ttl = DEFAULT_TTL,
+        publicKey = null,
+        secretKey = null,
+    } = options;
+
+    let endpoint = `/run/async?ttl=${ttl}&network_mode=${networkMode}`;
+    if (env) {
+        endpoint += `&env=${encodeURIComponent(JSON.stringify(env))}`;
     }
-  }
 
-  if (args.list) {
-    const result = await apiRequest("/services", "GET", null, publicKey, secretKey);
-    const services = result.services || [];
-    if (services.length === 0) {
-      console.log("No services");
-    } else {
-      console.log(`${'ID'.padEnd(20)} ${'Name'.padEnd(15)} ${'Status'.padEnd(10)} ${'Ports'.padEnd(15)} Domains`);
-      services.forEach(s => {
-        const ports = (s.ports || []).join(',');
-        const domains = (s.domains || []).join(',');
-        console.log(`${(s.id || 'N/A').padEnd(20)} ${(s.name || 'N/A').padEnd(15)} ${(s.status || 'N/A').padEnd(10)} ${ports.padEnd(15)} ${domains}`);
-      });
+    return apiRequest(endpoint, {
+        method: "POST",
+        bodyText: code,
+        contentType: "text/plain",
+        publicKey,
+        secretKey,
+    });
+}
+
+// ============================================================================
+// Job Management
+// ============================================================================
+
+/**
+ * Get job status and results.
+ *
+ * @param {string} jobId - Job ID from executeAsync or runAsync
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Job status with keys: job_id, status, result (if completed)
+ */
+async function getJob(jobId, options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest(`/jobs/${jobId}`, {
+        method: "GET",
+        publicKey,
+        secretKey,
+    });
+}
+
+/**
+ * Wait for job completion with exponential backoff polling.
+ *
+ * @param {string} jobId - Job ID from executeAsync or runAsync
+ * @param {Object} options - Optional parameters
+ * @param {number} options.maxPolls - Maximum number of poll attempts (default 100)
+ * @returns {Promise<Object>} Final job result
+ *
+ * @example
+ * const job = await un.executeAsync("javascript", code);
+ * const result = await un.wait(job.job_id);
+ * console.log(result.stdout);
+ */
+async function wait(jobId, options = {}) {
+    const {
+        maxPolls = 100,
+        publicKey = null,
+        secretKey = null,
+    } = options;
+
+    const terminalStates = new Set(['completed', 'failed', 'timeout', 'cancelled']);
+
+    for (let i = 0; i < maxPolls; i++) {
+        // Exponential backoff delay
+        const delayIdx = Math.min(i, POLL_DELAYS.length - 1);
+        await new Promise(resolve => setTimeout(resolve, POLL_DELAYS[delayIdx]));
+
+        const result = await getJob(jobId, { publicKey, secretKey });
+        const status = result.status || "";
+
+        if (terminalStates.has(status)) {
+            if (status === 'failed') {
+                throw new ExecutionError(
+                    `Job failed: ${result.error || 'Unknown error'}`,
+                    result.exit_code,
+                    result.stderr
+                );
+            }
+            if (status === 'timeout') {
+                throw new TimeoutError(`Job timed out: ${jobId}`);
+            }
+            return result;
+        }
     }
-    return;
-  }
 
-  if (args.info) {
-    const result = await apiRequest(`/services/${args.info}`, "GET", null, publicKey, secretKey);
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
+    throw new TimeoutError(`Max polls (${maxPolls}) exceeded for job ${jobId}`);
+}
 
-  if (args.logs) {
-    const result = await apiRequest(`/services/${args.logs}/logs`, "GET", null, publicKey, secretKey);
-    console.log(result.logs || "");
-    return;
-  }
+/**
+ * Cancel a running job.
+ *
+ * @param {string} jobId - Job ID to cancel
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Partial output and artifacts collected before cancellation
+ */
+async function cancelJob(jobId, options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest(`/jobs/${jobId}`, {
+        method: "DELETE",
+        publicKey,
+        secretKey,
+    });
+}
 
-  if (args.tail) {
-    const result = await apiRequest(`/services/${args.tail}/logs?lines=9000`, "GET", null, publicKey, secretKey);
-    console.log(result.logs || "");
-    return;
-  }
+/**
+ * List all active jobs for this API key.
+ *
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Array>} List of job summaries
+ */
+async function listJobs(options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    const result = await apiRequest("/jobs", {
+        method: "GET",
+        publicKey,
+        secretKey,
+    });
+    return result.jobs || [];
+}
 
-  if (args.sleep) {
-    await apiRequest(`/services/${args.sleep}/freeze`, "POST", null, publicKey, secretKey);
-    console.log(`${GREEN}Service frozen: ${args.sleep}${RESET}`);
-    return;
-  }
+// ============================================================================
+// Image Generation
+// ============================================================================
 
-  if (args.wake) {
-    await apiRequest(`/services/${args.wake}/unfreeze`, "POST", null, publicKey, secretKey);
-    console.log(`${GREEN}Service unfreezing: ${args.wake}${RESET}`);
-    return;
-  }
+/**
+ * Generate images from text prompt.
+ *
+ * @param {string} prompt - Text description of the image to generate
+ * @param {Object} options - Optional parameters
+ * @param {string} options.model - Model to use (optional)
+ * @param {string} options.size - Image size (e.g., "1024x1024")
+ * @param {string} options.quality - "standard" or "hd"
+ * @param {number} options.n - Number of images to generate
+ * @returns {Promise<Object>} Result with images array
+ *
+ * @example
+ * const result = await un.image("A sunset over mountains");
+ * console.log(result.images[0]);
+ */
+async function image(prompt, options = {}) {
+    const {
+        model = null,
+        size = "1024x1024",
+        quality = "standard",
+        n = 1,
+        publicKey = null,
+        secretKey = null,
+    } = options;
 
-  if (args.destroy) {
-    await apiRequest(`/services/${args.destroy}`, "DELETE", null, publicKey, secretKey);
-    console.log(`${GREEN}Service destroyed: ${args.destroy}${RESET}`);
-    return;
-  }
+    const payload = { prompt, size, quality, n };
+    if (model) payload.model = model;
 
-  if (args.resize) {
-    if (!args.vcpu) {
-      console.error(`${RED}Error: --vcpu required with --resize${RESET}`);
-      process.exit(1);
-    }
-    const payload = { vcpu: args.vcpu };
-    await apiRequest(`/services/${args.resize}`, "PATCH", payload, publicKey, secretKey);
-    console.log(`${GREEN}Service resized to ${args.vcpu} vCPU, ${args.vcpu * 2}GB RAM${RESET}`);
-    return;
-  }
+    return apiRequest("/image", {
+        method: "POST",
+        data: payload,
+        publicKey,
+        secretKey,
+    });
+}
 
-  if (args.execute) {
-    const payload = { command: args.command };
-    const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, publicKey, secretKey);
-    if (result.stdout) process.stdout.write(`${BLUE}${result.stdout}${RESET}`);
-    if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
-    return;
-  }
+// ============================================================================
+// Utility Functions
+// ============================================================================
 
-  if (args.dumpBootstrap) {
-    console.error(`Fetching bootstrap script from ${args.dumpBootstrap}...`);
-    const payload = { command: "cat /tmp/bootstrap.sh" };
-    const result = await apiRequest(`/services/${args.dumpBootstrap}/execute`, "POST", payload, publicKey, secretKey);
+/**
+ * Get list of supported programming languages.
+ *
+ * Results are cached in ~/.unsandbox/languages.json for 1 hour.
+ *
+ * @param {Object} options - Optional parameters
+ * @param {boolean} options.forceRefresh - Bypass cache and fetch fresh data
+ * @returns {Promise<Object>} Result with languages array, count, aliases
+ */
+async function languages(options = {}) {
+    const { publicKey = null, secretKey = null, forceRefresh = false } = options;
+    const cachePath = path.join(os.homedir(), '.unsandbox', 'languages.json');
+    const cacheMaxAge = 3600 * 1000; // 1 hour in ms
 
-    if (result.stdout) {
-      const bootstrap = result.stdout;
-      if (args.dumpFile) {
-        // Write to file
+    // Check cache unless force refresh
+    if (!forceRefresh && fs.existsSync(cachePath)) {
         try {
-          fs.writeFileSync(args.dumpFile, bootstrap);
-          fs.chmodSync(args.dumpFile, 0o755);
-          console.log(`Bootstrap saved to ${args.dumpFile}`);
+            const stat = fs.statSync(cachePath);
+            if (Date.now() - stat.mtimeMs < cacheMaxAge) {
+                return JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+            }
         } catch (e) {
-          console.error(`${RED}Error: Could not write to ${args.dumpFile}: ${e.message}${RESET}`);
-          process.exit(1);
+            // Cache read failed, fetch from API
         }
-      } else {
-        // Print to stdout
-        process.stdout.write(bootstrap);
-      }
-    } else {
-      console.error(`${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}`);
-      process.exit(1);
     }
-    return;
-  }
 
-  if (args.name) {
-    const payload = { name: args.name };
-    if (args.ports) payload.ports = args.ports.split(',').map(p => parseInt(p.trim()));
-    if (args.domains) payload.domains = args.domains.split(',');
-    if (args.serviceType) payload.service_type = args.serviceType;
-    if (args.bootstrap) {
-      payload.bootstrap = args.bootstrap;
-    }
-    if (args.bootstrapFile) {
-      if (!fs.existsSync(args.bootstrapFile)) {
-        console.error(`${RED}Error: Bootstrap file not found: ${args.bootstrapFile}${RESET}`);
-        process.exit(1);
-      }
-      payload.bootstrap_content = fs.readFileSync(args.bootstrapFile, 'utf-8');
-    }
-    // Add input files
-    if (args.files && args.files.length > 0) {
-      payload.input_files = args.files.map(filepath => {
-        try {
-          const content = fs.readFileSync(filepath);
-          return {
-            filename: path.basename(filepath),
-            content_base64: content.toString('base64')
-          };
-        } catch (e) {
-          console.error(`${RED}Error: Input file not found: ${filepath}${RESET}`);
-          process.exit(1);
+    // Fetch from API
+    const result = await apiRequest("/languages", {
+        method: "GET",
+        publicKey,
+        secretKey,
+    });
+
+    // Save to cache
+    try {
+        const cacheDir = path.dirname(cachePath);
+        if (!fs.existsSync(cacheDir)) {
+            fs.mkdirSync(cacheDir, { recursive: true });
         }
-      });
+        fs.writeFileSync(cachePath, JSON.stringify(result));
+    } catch (e) {
+        // Cache write failed, continue anyway
     }
-    if (args.network) payload.network = args.network;
-    if (args.vcpu) payload.vcpu = args.vcpu;
 
-    const result = await apiRequest("/services", "POST", payload, publicKey, secretKey);
-    const createdId = result.id;
-    console.log(`${GREEN}Service created: ${createdId || 'N/A'}${RESET}`);
-    console.log(`Name: ${result.name || 'N/A'}`);
-    if (result.url) console.log(`URL: ${result.url}`);
-
-    // Set environment vault if -e or --env-file provided
-    if (createdId) {
-      const envContent = buildEnvContent(args.env, args.envFile);
-      if (envContent) {
-        console.error(`${YELLOW}Setting environment vault...${RESET}`);
-        if (!await serviceEnvSet(publicKey, secretKey, createdId, envContent)) {
-          console.error(`${YELLOW}Warning: Failed to set environment vault${RESET}`);
-        }
-      }
-    }
-    return;
-  }
-
-  console.error(`${RED}Error: Specify --name to create a service, or use --list, --info, etc.${RESET}`);
-  process.exit(1);
+    return result;
 }
 
-function parseArgs(argv) {
-  const args = {
-    command: null,
-    sourceFile: null,
-    env: [],
-    files: [],
-    artifacts: false,
-    outputDir: null,
-    network: null,
-    vcpu: null,
-    apiKey: null,
-    shell: null,
-    list: false,
-    attach: null,
-    kill: null,
-    audit: false,
-    tmux: false,
-    screen: false,
-    name: null,
-    ports: null,
-    domains: null,
-    bootstrap: null,
-    info: null,
-    logs: null,
-    tail: null,
-    sleep: null,
-    wake: null,
-    destroy: null,
-    resize: null,
-    execute: null,
-    command_arg: null,
-    dumpBootstrap: null,
-    dumpFile: null,
-    extend: false,
-    execShell: null,
-    envFile: null,
-    envSubcommand: null,
-    envAction: null,
-    envTarget: null,
-  };
+/**
+ * Detect programming language from file extension or shebang.
+ *
+ * @param {string} filename - File path
+ * @returns {string|null} Language name or null if undetected
+ */
+function detectLanguage(filename) {
+    const ext = path.extname(filename).toLowerCase();
+    if (EXT_MAP[ext]) return EXT_MAP[ext];
 
-  let i = 2;
-  while (i < argv.length) {
-    const arg = argv[i];
-
-    if (arg === 'session' || arg === 'service' || arg === 'key') {
-      args.command = arg;
-      i++;
-      // Check for env subcommand: service env <action> <target>
-      if (arg === 'service' && i < argv.length && argv[i] === 'env') {
-        args.envSubcommand = 'env';
-        i++;
-        if (i < argv.length && !argv[i].startsWith('-')) {
-          args.envAction = argv[i];
-          i++;
+    // Try shebang
+    try {
+        const content = fs.readFileSync(filename, 'utf-8');
+        const firstLine = content.split('\n')[0];
+        if (firstLine.startsWith('#!')) {
+            if (firstLine.includes('python')) return 'python';
+            if (firstLine.includes('node')) return 'javascript';
+            if (firstLine.includes('ruby')) return 'ruby';
+            if (firstLine.includes('perl')) return 'perl';
+            if (firstLine.includes('bash') || firstLine.includes('/sh')) return 'bash';
+            if (firstLine.includes('lua')) return 'lua';
+            if (firstLine.includes('php')) return 'php';
         }
-        if (i < argv.length && !argv[i].startsWith('-')) {
-          args.envTarget = argv[i];
-          i++;
-        }
-      }
-    } else if (arg === '-e' && i + 1 < argv.length) {
-      args.env.push(argv[++i]);
-      i++;
-    } else if (arg === '-f' && i + 1 < argv.length) {
-      args.files.push(argv[++i]);
-      i++;
-    } else if (arg === '-a') {
-      args.artifacts = true;
-      i++;
-    } else if (arg === '-o' && i + 1 < argv.length) {
-      args.outputDir = argv[++i];
-      i++;
-    } else if (arg === '-n' && i + 1 < argv.length) {
-      args.network = argv[++i];
-      i++;
-    } else if (arg === '-v' && i + 1 < argv.length) {
-      args.vcpu = parseInt(argv[++i]);
-      i++;
-    } else if (arg === '-k' && i + 1 < argv.length) {
-      args.apiKey = argv[++i];
-      i++;
-    } else if (arg === '-s' || arg === '--shell') {
-      // For session command, this is shell type. For execute, it's inline exec language.
-      if (args.command === 'session') {
-        args.shell = argv[++i];
-      } else {
-        args.execShell = argv[++i];
-      }
-      i++;
-    } else if (arg === '-l' || arg === '--list') {
-      args.list = true;
-      i++;
-    } else if (arg === '--attach' && i + 1 < argv.length) {
-      args.attach = argv[++i];
-      i++;
-    } else if (arg === '--kill' && i + 1 < argv.length) {
-      args.kill = argv[++i];
-      i++;
-    } else if (arg === '--audit') {
-      args.audit = true;
-      i++;
-    } else if (arg === '--tmux') {
-      args.tmux = true;
-      i++;
-    } else if (arg === '--screen') {
-      args.screen = true;
-      i++;
-    } else if (arg === '--name' && i + 1 < argv.length) {
-      args.name = argv[++i];
-      i++;
-    } else if (arg === '--ports' && i + 1 < argv.length) {
-      args.ports = argv[++i];
-      i++;
-    } else if (arg === '--domains' && i + 1 < argv.length) {
-      args.domains = argv[++i];
-      i++;
-    } else if (arg === '--type' && i + 1 < argv.length) {
-      args.serviceType = argv[++i];
-      i++;
-    } else if (arg === '--bootstrap' && i + 1 < argv.length) {
-      args.bootstrap = argv[++i];
-      i++;
-    } else if (arg === '--bootstrap-file' && i + 1 < argv.length) {
-      args.bootstrapFile = argv[++i];
-      i++;
-    } else if (arg === '--info' && i + 1 < argv.length) {
-      args.info = argv[++i];
-      i++;
-    } else if (arg === '--logs' && i + 1 < argv.length) {
-      args.logs = argv[++i];
-      i++;
-    } else if (arg === '--tail' && i + 1 < argv.length) {
-      args.tail = argv[++i];
-      i++;
-    } else if (arg === '--freeze' && i + 1 < argv.length) {
-      args.sleep = argv[++i];
-      i++;
-    } else if (arg === '--unfreeze' && i + 1 < argv.length) {
-      args.wake = argv[++i];
-      i++;
-    } else if (arg === '--destroy' && i + 1 < argv.length) {
-      args.destroy = argv[++i];
-      i++;
-    } else if (arg === '--resize' && i + 1 < argv.length) {
-      args.resize = argv[++i];
-      i++;
-    } else if (arg === '--execute' && i + 1 < argv.length) {
-      args.execute = argv[++i];
-      i++;
-    } else if (arg === '--command' && i + 1 < argv.length) {
-      args.command_arg = argv[++i];
-      i++;
-    } else if (arg === '--dump-bootstrap' && i + 1 < argv.length) {
-      args.dumpBootstrap = argv[++i];
-      i++;
-    } else if (arg === '--dump-file' && i + 1 < argv.length) {
-      args.dumpFile = argv[++i];
-      i++;
-    } else if (arg === '--env-file' && i + 1 < argv.length) {
-      args.envFile = argv[++i];
-      i++;
-    } else if (arg === '--extend') {
-      args.extend = true;
-      i++;
-    } else if (!arg.startsWith('-')) {
-      args.sourceFile = arg;
-      i++;
-    } else {
-      console.error(`${RED}Unknown option: ${arg}${RESET}`);
-      process.exit(1);
+    } catch (e) {
+        // File read failed
     }
-  }
 
-  return args;
+    return null;
 }
 
-async function main() {
-  const args = parseArgs(process.argv);
+// ============================================================================
+// Client Class
+// ============================================================================
 
-  if (args.command === 'session') {
-    await cmdSession(args);
-  } else if (args.command === 'service') {
-    await cmdService(args);
-  } else if (args.command === 'key') {
-    await cmdKey(args);
-  } else if (args.sourceFile) {
-    await cmdExecute(args);
-  } else {
-    console.log(`Unsandbox CLI - Execute code in secure sandboxes
+/**
+ * Unsandbox API client with stored credentials.
+ *
+ * @example
+ * const client = new un.Client({ publicKey: "unsb-pk-...", secretKey: "unsb-sk-..." });
+ * const result = await client.execute("javascript", 'console.log("Hello")');
+ *
+ * // Or load from environment/config automatically:
+ * const client = new un.Client();
+ * const result = await client.execute("javascript", code);
+ */
+class Client {
+    /**
+     * Initialize client with credentials.
+     *
+     * @param {Object} options - Optional parameters
+     * @param {string} options.publicKey - API public key (unsb-pk-...)
+     * @param {string} options.secretKey - API secret key (unsb-sk-...)
+     * @param {number} options.accountIndex - Account index in ~/.unsandbox/accounts.csv
+     */
+    constructor(options = {}) {
+        const { publicKey = null, secretKey = null, accountIndex = 0 } = options;
+        const creds = getCredentials(publicKey, secretKey, accountIndex);
+        this.publicKey = creds.publicKey;
+        this.secretKey = creds.secretKey;
+    }
+
+    async execute(language, code, options = {}) {
+        return execute(language, code, {
+            ...options,
+            publicKey: this.publicKey,
+            secretKey: this.secretKey,
+        });
+    }
+
+    async executeAsync(language, code, options = {}) {
+        return executeAsync(language, code, {
+            ...options,
+            publicKey: this.publicKey,
+            secretKey: this.secretKey,
+        });
+    }
+
+    async run(code, options = {}) {
+        return run(code, {
+            ...options,
+            publicKey: this.publicKey,
+            secretKey: this.secretKey,
+        });
+    }
+
+    async runAsync(code, options = {}) {
+        return runAsync(code, {
+            ...options,
+            publicKey: this.publicKey,
+            secretKey: this.secretKey,
+        });
+    }
+
+    async getJob(jobId) {
+        return getJob(jobId, { publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async wait(jobId, options = {}) {
+        return wait(jobId, {
+            ...options,
+            publicKey: this.publicKey,
+            secretKey: this.secretKey,
+        });
+    }
+
+    async cancelJob(jobId) {
+        return cancelJob(jobId, { publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async listJobs() {
+        return listJobs({ publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async image(prompt, options = {}) {
+        return image(prompt, {
+            ...options,
+            publicKey: this.publicKey,
+            secretKey: this.secretKey,
+        });
+    }
+
+    async languages(options = {}) {
+        return languages({ ...options, publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+}
+
+// ============================================================================
+// CLI Interface
+// ============================================================================
+
+async function cliMain() {
+    const args = process.argv.slice(2);
+
+    if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
+        console.log(`unsandbox - Execute code in secure sandboxes
 
 Usage:
-  ${process.argv[1]} [options] <source_file>
-  ${process.argv[1]} session [options]
-  ${process.argv[1]} service [options]
-  ${process.argv[1]} key [options]
+  node un.js [options] <source_file>
+  node un.js -s <language> '<code>'
 
-Execute options:
-  -e KEY=VALUE      Environment variable (multiple allowed)
-  -f FILE          Input file (multiple allowed)
-  -a               Return artifacts
-  -o DIR           Output directory for artifacts
-  -n MODE          Network mode (zerotrust|semitrusted)
-  -v N             vCPU count (1-8)
-  -k KEY           API key
+Options:
+  -s, --shell LANG    Execute inline code with specified language
+  -e KEY=VALUE        Set environment variable (multiple allowed)
+  -f FILE             Add input file (multiple allowed)
+  -n MODE             Network mode: zerotrust (default) or semitrusted
+  -v N                vCPU count (1-8, default 1)
+  --ttl N             Execution timeout in seconds (default 60)
+  -a, --artifacts     Return artifacts
+  -o DIR              Output directory for artifacts
+  -p KEY              API public key
+  -k KEY              API secret key
+  --async             Execute asynchronously
 
-Session options:
-  -s, --shell NAME  Shell/REPL (default: bash)
-  -l, --list       List sessions
-  --attach ID      Attach to session
-  --kill ID        Terminate session
-  --audit          Record session
-  --tmux           Enable tmux persistence
-  --screen         Enable screen persistence
-
-Service options:
-  --name NAME      Service name
-  --ports PORTS    Comma-separated ports
-  --domains DOMAINS Custom domains
-  --type TYPE      Service type for SRV records (minecraft, mumble, teamspeak, source, tcp, udp)
-  --bootstrap CMD  Bootstrap command or URI
-  --bootstrap-file FILE  Upload local file as bootstrap script
-  -l, --list       List services
-  --info ID        Get service details
-  --logs ID        Get all logs
-  --tail ID        Get last 9000 lines
-  --freeze ID       Freeze service
-  --unfreeze ID        Unfreeze service
-  --destroy ID     Destroy service
-  --resize ID      Resize service (requires -v)
-  --execute ID     Execute command in service
-  --command CMD    Command to execute (with --execute)
-  --dump-bootstrap ID  Dump bootstrap script
-  --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
-
-Key options:
-  --extend         Open browser to extend key expiration
-  -k KEY           API key to validate
+Examples:
+  node un.js script.js                    Execute JavaScript file
+  node un.js -s python 'print("Hello")'   Execute inline Python
+  node un.js -e DEBUG=1 script.js         With environment variable
+  node un.js -n semitrusted script.js     With network access
 `);
-    process.exit(1);
-  }
+        process.exit(args.length === 0 ? 1 : 0);
+    }
+
+    // Parse arguments
+    let source = null;
+    let inlineLang = null;
+    const env = {};
+    const files = [];
+    let networkMode = "zerotrust";
+    let vcpu = 1;
+    let ttl = 60;
+    let artifacts = false;
+    let outputDir = null;
+    let publicKey = null;
+    let secretKey = null;
+    let asyncMode = false;
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '-s' || arg === '--shell') {
+            inlineLang = args[++i];
+        } else if (arg === '-e') {
+            const [k, v] = args[++i].split('=', 2);
+            env[k] = v || '';
+        } else if (arg === '-f') {
+            files.push(args[++i]);
+        } else if (arg === '-n' || arg === '--network') {
+            networkMode = args[++i];
+        } else if (arg === '-v' || arg === '--vcpu') {
+            vcpu = parseInt(args[++i]);
+        } else if (arg === '--ttl') {
+            ttl = parseInt(args[++i]);
+        } else if (arg === '-a' || arg === '--artifacts') {
+            artifacts = true;
+        } else if (arg === '-o' || arg === '--output') {
+            outputDir = args[++i];
+        } else if (arg === '-p' || arg === '--public-key') {
+            publicKey = args[++i];
+        } else if (arg === '-k' || arg === '--secret-key') {
+            secretKey = args[++i];
+        } else if (arg === '--async') {
+            asyncMode = true;
+        } else if (!arg.startsWith('-')) {
+            source = arg;
+        }
+    }
+
+    try {
+        // Determine language and code
+        let language, code;
+        if (inlineLang) {
+            language = inlineLang;
+            code = source || "";
+        } else if (!source) {
+            console.error(`${RED}Error: No source file or code provided${RESET}`);
+            process.exit(1);
+        } else if (!fs.existsSync(source)) {
+            // Treat as inline bash
+            language = "bash";
+            code = source;
+        } else {
+            language = detectLanguage(source);
+            if (!language) {
+                console.error(`${RED}Error: Cannot detect language for ${source}${RESET}`);
+                process.exit(1);
+            }
+            code = fs.readFileSync(source, 'utf-8');
+        }
+
+        // Load input files
+        const inputFiles = files.map(filepath => {
+            if (!fs.existsSync(filepath)) {
+                console.error(`${RED}Error: File not found: ${filepath}${RESET}`);
+                process.exit(1);
+            }
+            return {
+                filename: path.basename(filepath),
+                contentBase64: fs.readFileSync(filepath).toString('base64')
+            };
+        });
+
+        // Execute
+        if (asyncMode) {
+            const result = await executeAsync(language, code, {
+                env: Object.keys(env).length ? env : null,
+                inputFiles: inputFiles.length ? inputFiles : null,
+                networkMode,
+                ttl,
+                vcpu,
+                returnArtifact: artifacts,
+                publicKey,
+                secretKey,
+            });
+            console.log(`${GREEN}Job submitted: ${result.job_id}${RESET}`);
+            console.log(`Status: ${result.status}`);
+            console.log(`\nPoll with: node un.js job ${result.job_id}`);
+        } else {
+            const result = await execute(language, code, {
+                env: Object.keys(env).length ? env : null,
+                inputFiles: inputFiles.length ? inputFiles : null,
+                networkMode,
+                ttl,
+                vcpu,
+                returnArtifact: artifacts,
+                publicKey,
+                secretKey,
+            });
+
+            // Print output
+            if (result.stdout) process.stdout.write(result.stdout);
+            if (result.stderr) process.stderr.write(`${RED}${result.stderr}${RESET}`);
+
+            // Save artifacts
+            if (artifacts && result.artifacts) {
+                const outDir = outputDir || '.';
+                if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+                for (const artifact of result.artifacts) {
+                    const filename = artifact.filename || 'artifact';
+                    const content = Buffer.from(artifact.content_base64, 'base64');
+                    const filepath = path.join(outDir, filename);
+                    fs.writeFileSync(filepath, content);
+                    fs.chmodSync(filepath, 0o755);
+                    console.error(`${GREEN}Saved: ${filepath}${RESET}`);
+                }
+            }
+
+            process.exit(result.exit_code || 0);
+        }
+    } catch (e) {
+        if (e instanceof AuthenticationError) {
+            console.error(`${RED}Authentication error: ${e.message}${RESET}`);
+        } else if (e instanceof ExecutionError) {
+            console.error(`${RED}Execution error: ${e.message}${RESET}`);
+            if (e.stderr) console.error(`${RED}${e.stderr}${RESET}`);
+        } else if (e instanceof APIError) {
+            console.error(`${RED}API error: ${e.message}${RESET}`);
+        } else if (e instanceof TimeoutError) {
+            console.error(`${RED}Timeout: ${e.message}${RESET}`);
+            process.exit(124);
+        } else {
+            console.error(`${RED}Error: ${e.message}${RESET}`);
+        }
+        process.exit(1);
+    }
 }
 
-main().catch(err => {
-  console.error(`${RED}${err}${RESET}`);
-  process.exit(1);
-});
+// ============================================================================
+// Module Exports
+// ============================================================================
+
+module.exports = {
+    // Core execution
+    execute,
+    executeAsync,
+    run,
+    runAsync,
+
+    // Job management
+    getJob,
+    wait,
+    cancelJob,
+    listJobs,
+
+    // Image generation
+    image,
+
+    // Utilities
+    languages,
+    detectLanguage,
+
+    // Client class
+    Client,
+
+    // Exceptions
+    UnsandboxError,
+    AuthenticationError,
+    ExecutionError,
+    APIError,
+    TimeoutError,
+
+    // Constants
+    API_BASE,
+    PORTAL_BASE,
+    EXT_MAP,
+
+    // Internal functions (for testing/library usage)
+    _signRequest: signRequest,
+    _getCredentials: getCredentials,
+    _apiRequest: apiRequest,
+};
+
+// Run CLI if called directly
+if (require.main === module) {
+    cliMain().catch(e => {
+        console.error(`${RED}${e.message}${RESET}`);
+        process.exit(1);
+    });
+}

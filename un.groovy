@@ -36,10 +36,80 @@
 
 
 #!/usr/bin/env groovy
-// un.groovy - Unsandbox CLI Client (Groovy Implementation)
-// Run: groovy un.groovy [options] <source_file>
-// Requires: UNSANDBOX_API_KEY environment variable
+/**
+ * unsandbox SDK for Groovy - Execute code in secure sandboxes
+ * https://unsandbox.com | https://api.unsandbox.com/openapi
+ *
+ * <h2>Library Usage:</h2>
+ * <pre>{@code
+ * import un
+ *
+ * // Simple execution
+ * def result = un.execute("python", 'print("Hello")')
+ * println result.stdout
+ *
+ * // Async execution
+ * def job = un.executeAsync("python", longCode)
+ * def result = un.wait(job.job_id)
+ *
+ * // Using Client class
+ * def client = new un.Client(publicKey: "unsb-pk-...", secretKey: "unsb-sk-...")
+ * def result = client.execute("python", code)
+ * }</pre>
+ *
+ * <h2>CLI Usage:</h2>
+ * <pre>
+ * groovy un.groovy script.py
+ * groovy un.groovy -s python 'print("Hello")'
+ * groovy un.groovy session --shell python3
+ * </pre>
+ *
+ * <h2>Authentication (in priority order):</h2>
+ * <ol>
+ *   <li>Function arguments: execute(..., publicKey: "...", secretKey: "...")</li>
+ *   <li>Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY</li>
+ *   <li>Config file: ~/.unsandbox/accounts.csv (public_key,secret_key per line)</li>
+ * </ol>
+ *
+ * @author Permacomputer Project
+ * @version 2.0.0
+ */
 
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/** API base URL for unsandbox */
+def API_BASE = 'https://api.unsandbox.com'
+
+/** Portal base URL for unsandbox */
+def PORTAL_BASE = 'https://unsandbox.com'
+
+/** Default execution timeout in seconds */
+def DEFAULT_TIMEOUT = 300
+
+/** Default TTL for code execution */
+def DEFAULT_TTL = 60
+
+/** Maximum vault content size (64KB) */
+def MAX_ENV_CONTENT_SIZE = 65536
+
+/** Polling delays (ms) - exponential backoff */
+def POLL_DELAYS = [300, 450, 700, 900, 650, 1600, 2000]
+
+// ANSI colors
+def BLUE = '\033[34m'
+def RED = '\033[31m'
+def GREEN = '\033[32m'
+def YELLOW = '\033[33m'
+def RESET = '\033[0m'
+
+/** Extension to language mapping */
 def EXT_MAP = [
     '.java': 'java', '.kt': 'kotlin', '.cs': 'csharp', '.fs': 'fsharp',
     '.groovy': 'groovy', '.dart': 'dart', '.scala': 'scala',
@@ -50,21 +120,860 @@ def EXT_MAP = [
     '.lisp': 'commonlisp', '.erl': 'erlang', '.ex': 'elixir',
     '.jl': 'julia', '.r': 'r', '.cr': 'crystal', '.f90': 'fortran',
     '.cob': 'cobol', '.pro': 'prolog', '.forth': 'forth', '.tcl': 'tcl',
-    '.raku': 'raku', '.d': 'd', '.nim': 'nim', '.zig': 'zig', '.v': 'v'
+    '.raku': 'raku', '.d': 'd', '.nim': 'nim', '.zig': 'zig', '.v': 'v',
+    '.awk': 'awk', '.m': 'objc'
 ]
 
-def API_BASE = 'https://api.unsandbox.com'
-def PORTAL_BASE = 'https://unsandbox.com'
-def MAX_ENV_CONTENT_SIZE = 65536
-def BLUE = '\033[34m'
-def RED = '\033[31m'
-def GREEN = '\033[32m'
-def YELLOW = '\033[33m'
-def RESET = '\033[0m'
+// ============================================================================
+// Exceptions
+// ============================================================================
+
+/**
+ * Base exception for unsandbox errors.
+ */
+class UnsandboxError extends Exception {
+    UnsandboxError(String message) {
+        super(message)
+    }
+}
+
+/**
+ * Authentication failed - invalid or missing credentials.
+ */
+class AuthenticationError extends UnsandboxError {
+    AuthenticationError(String message) {
+        super(message)
+    }
+}
+
+/**
+ * Code execution failed.
+ */
+class ExecutionError extends UnsandboxError {
+    Integer exitCode
+    String stderr
+
+    ExecutionError(String message, Integer exitCode = null, String stderr = null) {
+        super(message)
+        this.exitCode = exitCode
+        this.stderr = stderr
+    }
+}
+
+/**
+ * API request failed.
+ */
+class APIError extends UnsandboxError {
+    Integer statusCode
+    String response
+
+    APIError(String message, Integer statusCode = null, String response = null) {
+        super(message)
+        this.statusCode = statusCode
+        this.response = response
+    }
+}
+
+/**
+ * Execution timed out.
+ */
+class TimeoutError extends UnsandboxError {
+    TimeoutError(String message) {
+        super(message)
+    }
+}
+
+// ============================================================================
+// HMAC Authentication
+// ============================================================================
+
+/**
+ * Generate HMAC-SHA256 signature for API request.
+ *
+ * <p>Signature format: HMAC-SHA256(secretKey, "timestamp:METHOD:path:body")</p>
+ *
+ * @param secretKey The secret key for HMAC
+ * @param timestamp Unix timestamp
+ * @param method HTTP method (GET, POST, etc.)
+ * @param path API endpoint path
+ * @param body Request body (empty string if none)
+ * @return Hex-encoded signature
+ */
+def signRequest(String secretKey, long timestamp, String method, String path, String body = "") {
+    def message = "${timestamp}:${method}:${path}:${body}"
+    def mac = Mac.getInstance("HmacSHA256")
+    mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+    return mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+}
+
+/**
+ * Get API credentials in priority order.
+ *
+ * <ol>
+ *   <li>Function arguments</li>
+ *   <li>Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)</li>
+ *   <li>Config file (~/.unsandbox/accounts.csv)</li>
+ * </ol>
+ *
+ * @param publicKey Optional public key argument
+ * @param secretKey Optional secret key argument
+ * @param accountIndex Account index in config file (default 0)
+ * @return Tuple of [publicKey, secretKey]
+ * @throws AuthenticationError if no credentials found
+ */
+def getCredentials(String publicKey = null, String secretKey = null, int accountIndex = 0) {
+    // Priority 1: Function arguments
+    if (publicKey && secretKey) {
+        return [publicKey, secretKey]
+    }
+
+    // Priority 2: Environment variables
+    def envPk = System.getenv('UNSANDBOX_PUBLIC_KEY')
+    def envSk = System.getenv('UNSANDBOX_SECRET_KEY')
+    if (envPk && envSk) {
+        return [envPk, envSk]
+    }
+
+    // Priority 3: Config file
+    def accountsPath = new File(System.getProperty('user.home'), '.unsandbox/accounts.csv')
+    if (accountsPath.exists()) {
+        try {
+            def lines = accountsPath.text.trim().split('\n')
+            def validAccounts = []
+            lines.each { line ->
+                def trimmed = line.trim()
+                if (!trimmed || trimmed.startsWith('#')) return
+                if (trimmed.contains(',')) {
+                    def parts = trimmed.split(',', 2)
+                    def pk = parts[0]
+                    def sk = parts[1]
+                    if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
+                        validAccounts << [pk, sk]
+                    }
+                }
+            }
+            if (validAccounts && accountIndex < validAccounts.size()) {
+                return validAccounts[accountIndex]
+            }
+        } catch (Exception e) {
+            // Ignore file read errors
+        }
+    }
+
+    throw new AuthenticationError(
+        "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY, " +
+        "or create ~/.unsandbox/accounts.csv, or pass credentials to function."
+    )
+}
+
+// Legacy compatibility
+def getApiKeys(argsKey) {
+    def publicKey = System.getenv('UNSANDBOX_PUBLIC_KEY')
+    def secretKey = System.getenv('UNSANDBOX_SECRET_KEY')
+
+    if (!publicKey || !secretKey) {
+        def legacyKey = argsKey ?: System.getenv('UNSANDBOX_API_KEY')
+        if (!legacyKey) {
+            System.err.println("${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}")
+            System.exit(1)
+        }
+        return [legacyKey, null]
+    }
+
+    return [publicKey, secretKey]
+}
+
+// ============================================================================
+// HTTP Client
+// ============================================================================
+
+/**
+ * Make authenticated API request with HMAC signature.
+ *
+ * @param endpoint API endpoint path
+ * @param method HTTP method
+ * @param data Request body data (will be JSON-encoded if Map)
+ * @param publicKey API public key
+ * @param secretKey API secret key
+ * @param timeout Request timeout in seconds
+ * @param contentType Content-Type header
+ * @return Parsed JSON response as Map
+ * @throws APIError on request failure
+ */
+def apiRequest(String endpoint, String method, data, String publicKey, String secretKey,
+               int timeout = DEFAULT_TIMEOUT, String contentType = 'application/json') {
+    def tempFile = File.createTempFile('un_request_', '.json')
+    try {
+        def body = ""
+        if (data) {
+            body = data instanceof Map ? JsonOutput.toJson(data) : data.toString()
+            tempFile.text = body
+        }
+
+        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
+                       '-H', "Content-Type: ${contentType}"]
+
+        // Add HMAC authentication headers if secretKey is provided
+        if (secretKey) {
+            def timestamp = (System.currentTimeMillis() / 1000) as long
+            def signature = signRequest(secretKey, timestamp, method, endpoint, body)
+
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
+            curlCmd += ['-H', "X-Signature: ${signature}"]
+        } else {
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+        }
+
+        if (data) {
+            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+        }
+
+        def proc = curlCmd.execute()
+        def output = proc.text
+        proc.waitFor()
+
+        if (proc.exitValue() != 0) {
+            throw new APIError("curl failed with exit code ${proc.exitValue()}")
+        }
+
+        // Check for timestamp authentication errors
+        if (output.toLowerCase().contains('timestamp') &&
+            (output.contains('401') || output.toLowerCase().contains('expired') || output.toLowerCase().contains('invalid'))) {
+            throw new AuthenticationError(
+                "Request timestamp expired. Your system clock may be out of sync. " +
+                "Run: sudo ntpdate -s time.nist.gov"
+            )
+        }
+
+        try {
+            return new JsonSlurper().parseText(output)
+        } catch (Exception e) {
+            return [raw: output]
+        }
+    } finally {
+        tempFile.delete()
+    }
+}
+
+def apiRequestPatch(endpoint, data, publicKey, secretKey) {
+    return apiRequest(endpoint, 'PATCH', data, publicKey, secretKey)
+}
+
+def apiRequestText(endpoint, method, body, publicKey, secretKey) {
+    def tempFile = File.createTempFile('un_env_', '.txt')
+    try {
+        if (body) {
+            tempFile.text = body
+        }
+
+        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
+                       '-H', 'Content-Type: text/plain']
+
+        if (secretKey) {
+            def timestamp = (System.currentTimeMillis() / 1000) as long
+            def message = "${timestamp}:${method}:${endpoint}:${body ?: ''}"
+
+            def mac = Mac.getInstance("HmacSHA256")
+            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
+            curlCmd += ['-H', "X-Signature: ${signature}"]
+        } else {
+            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
+        }
+
+        if (body) {
+            curlCmd += ['--data-binary', "@${tempFile.absolutePath}"]
+        }
+
+        def proc = curlCmd.execute()
+        def output = proc.text
+        proc.waitFor()
+
+        return proc.exitValue() == 0
+    } finally {
+        tempFile.delete()
+    }
+}
+
+// ============================================================================
+// Core Library Functions
+// ============================================================================
+
+/**
+ * Execute code synchronously and return results.
+ *
+ * @param language Programming language (python, javascript, go, rust, etc.)
+ * @param code Source code to execute
+ * @param options Optional parameters:
+ *   <ul>
+ *     <li>env: Map of environment variables</li>
+ *     <li>inputFiles: List of [filename: "...", content: "..."] or [filename: "...", contentBase64: "..."]</li>
+ *     <li>networkMode: "zerotrust" (no network) or "semitrusted" (internet access)</li>
+ *     <li>ttl: Execution timeout in seconds (1-900, default 60)</li>
+ *     <li>vcpu: Virtual CPUs (1-8, default 1)</li>
+ *     <li>returnArtifact: Return compiled binary</li>
+ *     <li>returnWasmArtifact: Compile to WebAssembly</li>
+ *     <li>publicKey: API public key</li>
+ *     <li>secretKey: API secret key</li>
+ *   </ul>
+ * @return Map with keys: success, stdout, stderr, exit_code, language, job_id, total_time_ms, network_mode, artifacts
+ * @throws AuthenticationError Invalid or missing credentials
+ * @throws ExecutionError Code execution failed
+ * @throws APIError API request failed
+ *
+ * <pre>{@code
+ * def result = un.execute("python", 'print("Hello World")')
+ * println result.stdout  // "Hello World\n"
+ * }</pre>
+ */
+def execute(String language, String code, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(
+        options.publicKey,
+        options.secretKey,
+        options.accountIndex ?: 0
+    )
+
+    def payload = [
+        language: language,
+        code: code,
+        network_mode: options.networkMode ?: 'zerotrust',
+        ttl: options.ttl ?: DEFAULT_TTL,
+        vcpu: options.vcpu ?: 1
+    ]
+
+    if (options.env) {
+        payload.env = options.env
+    }
+
+    if (options.inputFiles) {
+        payload.input_files = options.inputFiles.collect { f ->
+            if (f.contentBase64 || f.content_base64) {
+                return [filename: f.filename, content_base64: f.contentBase64 ?: f.content_base64]
+            } else if (f.content) {
+                return [filename: f.filename, content_base64: f.content.bytes.encodeBase64().toString()]
+            }
+            return f
+        }
+    }
+
+    if (options.returnArtifact) payload.return_artifact = true
+    if (options.returnWasmArtifact) payload.return_wasm_artifact = true
+
+    return apiRequest('/execute', 'POST', payload, publicKey, secretKey)
+}
+
+/**
+ * Execute code asynchronously. Returns immediately with job_id for polling.
+ *
+ * @param language Programming language
+ * @param code Source code to execute
+ * @param options Same options as execute()
+ * @return Map with keys: job_id, status ("pending")
+ *
+ * <pre>{@code
+ * def job = un.executeAsync("python", longRunningCode)
+ * println "Job submitted: ${job.job_id}"
+ * def result = un.wait(job.job_id)
+ * }</pre>
+ */
+def executeAsync(String language, String code, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(
+        options.publicKey,
+        options.secretKey,
+        options.accountIndex ?: 0
+    )
+
+    def payload = [
+        language: language,
+        code: code,
+        network_mode: options.networkMode ?: 'zerotrust',
+        ttl: options.ttl ?: DEFAULT_TTL,
+        vcpu: options.vcpu ?: 1
+    ]
+
+    if (options.env) payload.env = options.env
+    if (options.inputFiles) {
+        payload.input_files = options.inputFiles.collect { f ->
+            if (f.contentBase64 || f.content_base64) {
+                return [filename: f.filename, content_base64: f.contentBase64 ?: f.content_base64]
+            } else if (f.content) {
+                return [filename: f.filename, content_base64: f.content.bytes.encodeBase64().toString()]
+            }
+            return f
+        }
+    }
+    if (options.returnArtifact) payload.return_artifact = true
+    if (options.returnWasmArtifact) payload.return_wasm_artifact = true
+
+    return apiRequest('/execute/async', 'POST', payload, publicKey, secretKey)
+}
+
+/**
+ * Execute code with automatic language detection from shebang.
+ *
+ * @param code Source code with shebang (e.g., #!/usr/bin/env python3)
+ * @param options Optional parameters (env, networkMode, ttl, publicKey, secretKey)
+ * @return Map with keys: success, stdout, stderr, exit_code, detected_language, ...
+ *
+ * <pre>{@code
+ * def code = '''#!/usr/bin/env python3
+ * print("Auto-detected!")
+ * '''
+ * def result = un.run(code)
+ * println result.detected_language  // "python"
+ * }</pre>
+ */
+def run(String code, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(
+        options.publicKey,
+        options.secretKey,
+        options.accountIndex ?: 0
+    )
+
+    def ttl = options.ttl ?: DEFAULT_TTL
+    def networkMode = options.networkMode ?: 'zerotrust'
+    def endpoint = "/run?ttl=${ttl}&network_mode=${networkMode}"
+
+    if (options.env) {
+        endpoint += "&env=${URLEncoder.encode(JsonOutput.toJson(options.env), 'UTF-8')}"
+    }
+
+    return apiRequest(endpoint, 'POST', code, publicKey, secretKey, DEFAULT_TIMEOUT, 'text/plain')
+}
+
+/**
+ * Execute code asynchronously with automatic language detection.
+ *
+ * @param code Source code with shebang
+ * @param options Optional parameters
+ * @return Map with keys: job_id, detected_language, status ("pending")
+ */
+def runAsync(String code, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(
+        options.publicKey,
+        options.secretKey,
+        options.accountIndex ?: 0
+    )
+
+    def ttl = options.ttl ?: DEFAULT_TTL
+    def networkMode = options.networkMode ?: 'zerotrust'
+    def endpoint = "/run/async?ttl=${ttl}&network_mode=${networkMode}"
+
+    if (options.env) {
+        endpoint += "&env=${URLEncoder.encode(JsonOutput.toJson(options.env), 'UTF-8')}"
+    }
+
+    return apiRequest(endpoint, 'POST', code, publicKey, secretKey, DEFAULT_TIMEOUT, 'text/plain')
+}
+
+// ============================================================================
+// Job Management
+// ============================================================================
+
+/**
+ * Get job status and results.
+ *
+ * @param jobId Job ID from executeAsync or runAsync
+ * @param options Optional parameters (publicKey, secretKey)
+ * @return Map with keys: job_id, status, result (if completed), timestamps
+ *
+ * <p>Status values: pending, running, completed, failed, timeout, cancelled</p>
+ */
+def getJob(String jobId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/jobs/${jobId}", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Wait for job completion with exponential backoff polling.
+ *
+ * @param jobId Job ID from executeAsync or runAsync
+ * @param options Optional parameters:
+ *   <ul>
+ *     <li>maxPolls: Maximum number of poll attempts (default 100)</li>
+ *     <li>publicKey: API public key</li>
+ *     <li>secretKey: API secret key</li>
+ *   </ul>
+ * @return Final job result Map
+ * @throws TimeoutError Max polls exceeded
+ * @throws ExecutionError Job failed
+ *
+ * <pre>{@code
+ * def job = un.executeAsync("python", code)
+ * def result = un.wait(job.job_id)
+ * println result.stdout
+ * }</pre>
+ */
+def wait(String jobId, Map options = [:]) {
+    def maxPolls = options.maxPolls ?: 100
+    def terminalStates = ['completed', 'failed', 'timeout', 'cancelled'] as Set
+
+    for (int i = 0; i < maxPolls; i++) {
+        // Exponential backoff delay
+        def delayIdx = Math.min(i, POLL_DELAYS.size() - 1)
+        Thread.sleep(POLL_DELAYS[delayIdx])
+
+        def result = getJob(jobId, options)
+        def status = result.status ?: ''
+
+        if (status in terminalStates) {
+            if (status == 'failed') {
+                throw new ExecutionError(
+                    "Job failed: ${result.error ?: 'Unknown error'}",
+                    result.exit_code,
+                    result.stderr
+                )
+            }
+            if (status == 'timeout') {
+                throw new TimeoutError("Job timed out: ${jobId}")
+            }
+            return result
+        }
+    }
+
+    throw new TimeoutError("Max polls (${maxPolls}) exceeded for job ${jobId}")
+}
+
+/**
+ * Cancel a running job.
+ *
+ * @param jobId Job ID to cancel
+ * @param options Optional parameters (publicKey, secretKey)
+ * @return Partial output and artifacts collected before cancellation
+ */
+def cancelJob(String jobId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/jobs/${jobId}", 'DELETE', null, publicKey, secretKey)
+}
+
+/**
+ * List all active jobs for this API key.
+ *
+ * @param options Optional parameters (publicKey, secretKey)
+ * @return List of job summary Maps with keys: job_id, language, status, submitted_at
+ */
+def listJobs(Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def result = apiRequest('/jobs', 'GET', null, publicKey, secretKey)
+    return result.jobs ?: []
+}
+
+// ============================================================================
+// Image Generation
+// ============================================================================
+
+/**
+ * Generate images from text prompt.
+ *
+ * @param prompt Text description of the image to generate
+ * @param options Optional parameters:
+ *   <ul>
+ *     <li>model: Model to use (optional, uses default)</li>
+ *     <li>size: Image size (e.g., "1024x1024", "512x512")</li>
+ *     <li>quality: "standard" or "hd"</li>
+ *     <li>n: Number of images to generate</li>
+ *     <li>publicKey: API public key</li>
+ *     <li>secretKey: API secret key</li>
+ *   </ul>
+ * @return Map with keys: images (list of base64 or URLs), created_at
+ *
+ * <pre>{@code
+ * def result = un.image("A sunset over mountains")
+ * println result.images[0]
+ * }</pre>
+ */
+def image(String prompt, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+
+    def payload = [
+        prompt: prompt,
+        size: options.size ?: '1024x1024',
+        quality: options.quality ?: 'standard',
+        n: options.n ?: 1
+    ]
+    if (options.model) payload.model = options.model
+
+    return apiRequest('/image', 'POST', payload, publicKey, secretKey)
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/** Cache max age for languages (1 hour in milliseconds) */
+def LANGUAGES_CACHE_MAX_AGE = 3600000
+
+/**
+ * Get list of supported programming languages.
+ *
+ * <p>Results are cached in ~/.unsandbox/languages.json for 1 hour.</p>
+ *
+ * @param options Optional parameters:
+ *   <ul>
+ *     <li>forceRefresh: Bypass cache and fetch fresh data</li>
+ *     <li>publicKey: API public key</li>
+ *     <li>secretKey: API secret key</li>
+ *   </ul>
+ * @return Map with keys: languages (list), count, aliases (map)
+ */
+def languages(Map options = [:]) {
+    def cachePath = new File(System.getProperty('user.home'), '.unsandbox/languages.json')
+
+    // Check cache unless force refresh
+    if (!options.forceRefresh && cachePath.exists()) {
+        try {
+            def cacheAge = System.currentTimeMillis() - cachePath.lastModified()
+            if (cacheAge < LANGUAGES_CACHE_MAX_AGE) {
+                return new JsonSlurper().parseText(cachePath.text)
+            }
+        } catch (Exception e) {
+            // Cache read failed, fetch from API
+        }
+    }
+
+    // Fetch from API
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def result = apiRequest('/languages', 'GET', null, publicKey, secretKey)
+
+    // Save to cache
+    try {
+        cachePath.parentFile.mkdirs()
+        cachePath.text = JsonOutput.toJson(result)
+    } catch (Exception e) {
+        // Cache write failed, continue anyway
+    }
+
+    return result
+}
+
+/**
+ * Detect programming language from file extension or shebang.
+ *
+ * @param filename File path
+ * @return Language name or null if undetected
+ */
+def detectLanguage(String filename) {
+    def dotIndex = filename.lastIndexOf('.')
+    if (dotIndex == -1) return null
+
+    def ext = filename.substring(dotIndex)
+    def language = EXT_MAP[ext]
+    if (language) return language
+
+    // Try shebang
+    try {
+        def file = new File(filename)
+        if (file.exists()) {
+            def firstLine = file.readLines()[0]
+            if (firstLine?.startsWith('#!')) {
+                if (firstLine.contains('python')) return 'python'
+                if (firstLine.contains('node')) return 'javascript'
+                if (firstLine.contains('ruby')) return 'ruby'
+                if (firstLine.contains('perl')) return 'perl'
+                if (firstLine.contains('bash') || firstLine.contains('/sh')) return 'bash'
+                if (firstLine.contains('lua')) return 'lua'
+                if (firstLine.contains('php')) return 'php'
+            }
+        }
+    } catch (Exception e) {
+        // Ignore file read errors
+    }
+
+    return null
+}
+
+// ============================================================================
+// Client Class
+// ============================================================================
+
+/**
+ * Unsandbox API client with stored credentials.
+ *
+ * <p>Use the Client class when making multiple API calls to avoid
+ * repeated credential resolution.</p>
+ *
+ * <pre>{@code
+ * // With explicit credentials
+ * def client = new un.Client(publicKey: "unsb-pk-...", secretKey: "unsb-sk-...")
+ * def result = client.execute("python", 'print("Hello")')
+ *
+ * // Or load from environment/config automatically
+ * def client = new un.Client()
+ * def result = client.execute("python", code)
+ * }</pre>
+ *
+ * @author Permacomputer Project
+ */
+class Client {
+    String publicKey
+    String secretKey
+
+    /**
+     * Initialize client with credentials.
+     *
+     * @param options Optional parameters:
+     *   <ul>
+     *     <li>publicKey: API public key (unsb-pk-...)</li>
+     *     <li>secretKey: API secret key (unsb-sk-...)</li>
+     *     <li>accountIndex: Account index in ~/.unsandbox/accounts.csv (default 0)</li>
+     *   </ul>
+     */
+    Client(Map options = [:]) {
+        def creds = getCredentialsStatic(
+            options.publicKey,
+            options.secretKey,
+            options.accountIndex ?: 0
+        )
+        this.publicKey = creds[0]
+        this.secretKey = creds[1]
+    }
+
+    private static getCredentialsStatic(String publicKey, String secretKey, int accountIndex) {
+        if (publicKey && secretKey) {
+            return [publicKey, secretKey]
+        }
+
+        def envPk = System.getenv('UNSANDBOX_PUBLIC_KEY')
+        def envSk = System.getenv('UNSANDBOX_SECRET_KEY')
+        if (envPk && envSk) {
+            return [envPk, envSk]
+        }
+
+        def accountsPath = new File(System.getProperty('user.home'), '.unsandbox/accounts.csv')
+        if (accountsPath.exists()) {
+            try {
+                def lines = accountsPath.text.trim().split('\n')
+                def validAccounts = []
+                lines.each { line ->
+                    def trimmed = line.trim()
+                    if (!trimmed || trimmed.startsWith('#')) return
+                    if (trimmed.contains(',')) {
+                        def parts = trimmed.split(',', 2)
+                        def pk = parts[0]
+                        def sk = parts[1]
+                        if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
+                            validAccounts << [pk, sk]
+                        }
+                    }
+                }
+                if (validAccounts && accountIndex < validAccounts.size()) {
+                    return validAccounts[accountIndex]
+                }
+            } catch (Exception e) {
+                // Ignore
+            }
+        }
+
+        throw new AuthenticationError(
+            "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY."
+        )
+    }
+
+    /**
+     * Execute code synchronously.
+     * @see #execute(String, String, Map)
+     */
+    def execute(String language, String code, Map options = [:]) {
+        options.publicKey = this.publicKey
+        options.secretKey = this.secretKey
+        return binding.execute(language, code, options)
+    }
+
+    /**
+     * Execute code asynchronously.
+     * @see #executeAsync(String, String, Map)
+     */
+    def executeAsync(String language, String code, Map options = [:]) {
+        options.publicKey = this.publicKey
+        options.secretKey = this.secretKey
+        return binding.executeAsync(language, code, options)
+    }
+
+    /**
+     * Execute with auto-detect.
+     * @see #run(String, Map)
+     */
+    def run(String code, Map options = [:]) {
+        options.publicKey = this.publicKey
+        options.secretKey = this.secretKey
+        return binding.run(code, options)
+    }
+
+    /**
+     * Execute async with auto-detect.
+     * @see #runAsync(String, Map)
+     */
+    def runAsync(String code, Map options = [:]) {
+        options.publicKey = this.publicKey
+        options.secretKey = this.secretKey
+        return binding.runAsync(code, options)
+    }
+
+    /**
+     * Get job status.
+     * @see #getJob(String, Map)
+     */
+    def getJob(String jobId) {
+        return binding.getJob(jobId, [publicKey: this.publicKey, secretKey: this.secretKey])
+    }
+
+    /**
+     * Wait for job completion.
+     * @see #wait(String, Map)
+     */
+    def wait(String jobId, Map options = [:]) {
+        options.publicKey = this.publicKey
+        options.secretKey = this.secretKey
+        return binding.wait(jobId, options)
+    }
+
+    /**
+     * Cancel a job.
+     * @see #cancelJob(String, Map)
+     */
+    def cancelJob(String jobId) {
+        return binding.cancelJob(jobId, [publicKey: this.publicKey, secretKey: this.secretKey])
+    }
+
+    /**
+     * List active jobs.
+     * @see #listJobs(Map)
+     */
+    def listJobs() {
+        return binding.listJobs([publicKey: this.publicKey, secretKey: this.secretKey])
+    }
+
+    /**
+     * Generate image.
+     * @see #image(String, Map)
+     */
+    def image(String prompt, Map options = [:]) {
+        options.publicKey = this.publicKey
+        options.secretKey = this.secretKey
+        return binding.image(prompt, options)
+    }
+
+    /**
+     * Get supported languages.
+     * @see #languages(Map)
+     */
+    def languages() {
+        return binding.languages([publicKey: this.publicKey, secretKey: this.secretKey])
+    }
+}
+
+// ============================================================================
+// CLI Support Classes and Functions
+// ============================================================================
 
 class Args {
     String command = null
     String sourceFile = null
+    String inlineLang = null
     String apiKey = null
     String network = null
     Integer vcpu = 0
@@ -117,159 +1026,6 @@ class Args {
     String envTarget = null
 }
 
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
-
-def getApiKeys(argsKey) {
-    def publicKey = System.getenv('UNSANDBOX_PUBLIC_KEY')
-    def secretKey = System.getenv('UNSANDBOX_SECRET_KEY')
-
-    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-    if (!publicKey || !secretKey) {
-        def legacyKey = argsKey ?: System.getenv('UNSANDBOX_API_KEY')
-        if (!legacyKey) {
-            System.err.println("${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}")
-            System.exit(1)
-        }
-        return [legacyKey, null]
-    }
-
-    return [publicKey, secretKey]
-}
-
-def detectLanguage(filename) {
-    def dotIndex = filename.lastIndexOf('.')
-    if (dotIndex == -1) {
-        System.err.println("${RED}Error: No file extension${RESET}")
-        System.exit(1)
-    }
-    def ext = filename.substring(dotIndex)
-    def language = EXT_MAP[ext]
-    if (!language) {
-        System.err.println("${RED}Error: Unsupported extension: ${ext}${RESET}")
-        System.exit(1)
-    }
-    return language
-}
-
-def apiRequest(endpoint, method, data, publicKey, secretKey) {
-    def tempFile = File.createTempFile('un_request_', '.json')
-    try {
-        def body = data ?: ""
-        if (data) {
-            tempFile.text = data
-        }
-
-        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
-                       '-H', 'Content-Type: application/json']
-
-        // Add HMAC authentication headers if secretKey is provided
-        if (secretKey) {
-            def timestamp = (System.currentTimeMillis() / 1000) as long
-            def message = "${timestamp}:${method}:${endpoint}:${body}"
-
-            def mac = Mac.getInstance("HmacSHA256")
-            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
-            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
-
-            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
-            curlCmd += ['-H', "X-Signature: ${signature}"]
-        } else {
-            // Legacy API key authentication
-            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-        }
-
-        if (data) {
-            curlCmd += ['-d', "@${tempFile.absolutePath}"]
-        }
-
-        def proc = curlCmd.execute()
-        def output = proc.text
-        proc.waitFor()
-
-        if (proc.exitValue() != 0) {
-            System.err.println("${RED}Error: curl failed${RESET}")
-            System.exit(1)
-        }
-
-        // Check for timestamp authentication errors
-        if (output.toLowerCase().contains('timestamp') &&
-            (output.contains('401') || output.toLowerCase().contains('expired') || output.toLowerCase().contains('invalid'))) {
-            System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
-            System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
-            System.err.println("Check your system time and sync with NTP if needed:")
-            System.err.println("  Linux:   sudo ntpdate -s time.nist.gov")
-            System.err.println("  macOS:   sudo sntp -sS time.apple.com")
-            System.err.println("  Windows: w32tm /resync")
-            System.exit(1)
-        }
-
-        return output
-    } finally {
-        tempFile.delete()
-    }
-}
-
-def apiRequestPatch(endpoint, data, publicKey, secretKey) {
-    def tempFile = File.createTempFile('un_request_', '.json')
-    try {
-        def body = data ?: ""
-        if (data) {
-            tempFile.text = data
-        }
-
-        def curlCmd = ['curl', '-s', '-X', 'PATCH', "${API_BASE}${endpoint}",
-                       '-H', 'Content-Type: application/json']
-
-        // Add HMAC authentication headers if secretKey is provided
-        if (secretKey) {
-            def timestamp = (System.currentTimeMillis() / 1000) as long
-            def message = "${timestamp}:PATCH:${endpoint}:${body}"
-
-            def mac = Mac.getInstance("HmacSHA256")
-            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
-            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
-
-            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
-            curlCmd += ['-H', "X-Signature: ${signature}"]
-        } else {
-            // Legacy API key authentication
-            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-        }
-
-        if (data) {
-            curlCmd += ['-d', "@${tempFile.absolutePath}"]
-        }
-
-        def proc = curlCmd.execute()
-        def output = proc.text
-        proc.waitFor()
-
-        if (proc.exitValue() != 0) {
-            System.err.println("${RED}Error: curl failed${RESET}")
-            System.exit(1)
-        }
-
-        // Check for timestamp authentication errors
-        if (output.toLowerCase().contains('timestamp') &&
-            (output.contains('401') || output.toLowerCase().contains('expired') || output.toLowerCase().contains('invalid'))) {
-            System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
-            System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
-            System.err.println("Check your system time and sync with NTP if needed:")
-            System.err.println("  Linux:   sudo ntpdate -s time.nist.gov")
-            System.err.println("  macOS:   sudo sntp -sS time.apple.com")
-            System.err.println("  Windows: w32tm /resync")
-            System.exit(1)
-        }
-
-        return output
-    } finally {
-        tempFile.delete()
-    }
-}
-
 def readEnvFile(filename) {
     def file = new File(filename)
     if (!file.exists()) {
@@ -282,12 +1038,10 @@ def readEnvFile(filename) {
 def buildEnvContent(envs, envFile) {
     def result = new StringBuilder()
 
-    // Add -e flags
     envs.each { env ->
         result.append(env).append('\n')
     }
 
-    // Add content from env file
     if (envFile) {
         def content = readEnvFile(envFile)
         content.split('\n').each { line ->
@@ -301,46 +1055,6 @@ def buildEnvContent(envs, envFile) {
     return result.toString()
 }
 
-def apiRequestText(endpoint, method, body, publicKey, secretKey) {
-    def tempFile = File.createTempFile('un_env_', '.txt')
-    try {
-        if (body) {
-            tempFile.text = body
-        }
-
-        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
-                       '-H', 'Content-Type: text/plain']
-
-        // Add HMAC authentication headers if secretKey is provided
-        if (secretKey) {
-            def timestamp = (System.currentTimeMillis() / 1000) as long
-            def message = "${timestamp}:${method}:${endpoint}:${body ?: ''}"
-
-            def mac = Mac.getInstance("HmacSHA256")
-            mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
-            def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
-
-            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-            curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
-            curlCmd += ['-H', "X-Signature: ${signature}"]
-        } else {
-            curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-        }
-
-        if (body) {
-            curlCmd += ['--data-binary', "@${tempFile.absolutePath}"]
-        }
-
-        def proc = curlCmd.execute()
-        def output = proc.text
-        proc.waitFor()
-
-        return proc.exitValue() == 0
-    } finally {
-        tempFile.delete()
-    }
-}
-
 def serviceEnvSet(serviceId, content, publicKey, secretKey) {
     return apiRequestText("/services/${serviceId}/env", 'PUT', content, publicKey, secretKey)
 }
@@ -351,7 +1065,7 @@ def cmdServiceEnv(args) {
     switch (args.envAction) {
         case 'status':
             def output = apiRequest("/services/${args.envTarget}/env", 'GET', null, publicKey, secretKey)
-            println(output)
+            println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
             break
         case 'set':
             if (!args.svcEnvs && !args.svcEnvFile) {
@@ -369,7 +1083,7 @@ def cmdServiceEnv(args) {
             break
         case 'export':
             def output = apiRequest("/services/${args.envTarget}/env/export", 'POST', null, publicKey, secretKey)
-            println(output)
+            println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
             break
         case 'delete':
             apiRequest("/services/${args.envTarget}/env", 'DELETE', null, publicKey, secretKey)
@@ -383,133 +1097,117 @@ def cmdServiceEnv(args) {
 
 def cmdExecute(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey)
-    def file = new File(args.sourceFile)
-    if (!file.exists()) {
-        System.err.println("${RED}Error: File not found: ${args.sourceFile}${RESET}")
-        System.exit(1)
-    }
 
-    def code = file.text
-    def language = detectLanguage(args.sourceFile)
+    String code
+    String language
 
-    def escapedCode = code.replace('\\', '\\\\')
-                          .replace('"', '\\"')
-                          .replace('\n', '\\n')
-                          .replace('\r', '\\r')
-                          .replace('\t', '\\t')
-
-    def json = """{"language":"${language}","code":"${escapedCode}""""
-
-    if (args.env) {
-        def envJson = args.env.collect { e ->
-            def parts = e.split('=', 2)
-            if (parts.size() == 2) {
-                return "\"${parts[0]}\":\"${parts[1]}\""
-            }
-            return null
-        }.findAll { it != null }.join(',')
-        if (envJson) {
-            json += ""","env":{${envJson}}"""
+    if (args.inlineLang) {
+        language = args.inlineLang
+        code = args.sourceFile ?: ""
+    } else {
+        def file = new File(args.sourceFile)
+        if (!file.exists()) {
+            System.err.println("${RED}Error: File not found: ${args.sourceFile}${RESET}")
+            System.exit(1)
+        }
+        code = file.text
+        language = detectLanguage(args.sourceFile)
+        if (!language) {
+            System.err.println("${RED}Error: Cannot detect language for ${args.sourceFile}${RESET}")
+            System.exit(1)
         }
     }
 
+    def options = [
+        networkMode: args.network ?: 'zerotrust',
+        vcpu: args.vcpu > 0 ? args.vcpu : 1,
+        publicKey: publicKey,
+        secretKey: secretKey
+    ]
+
+    if (args.env) {
+        def envMap = [:]
+        args.env.each { e ->
+            def parts = e.split('=', 2)
+            if (parts.size() == 2) {
+                envMap[parts[0]] = parts[1]
+            }
+        }
+        if (envMap) options.env = envMap
+    }
+
     if (args.files) {
-        def filesJson = args.files.collect { filepath ->
+        options.inputFiles = args.files.collect { filepath ->
             def f = new File(filepath)
             if (!f.exists()) {
                 System.err.println("${RED}Error: Input file not found: ${filepath}${RESET}")
                 System.exit(1)
             }
-            def content = f.bytes.encodeBase64().toString()
-            return """{"filename":"${f.name}","content_base64":"${content}"}"""
-        }.join(',')
-        json += ""","input_files":[${filesJson}]"""
-    }
-
-    if (args.artifacts) {
-        json += ',"return_artifacts":true'
-    }
-    if (args.network) {
-        json += ""","network":"${args.network}""""
-    }
-    if (args.vcpu > 0) {
-        json += ""","vcpu":${args.vcpu}"""
-    }
-
-    json += '}'
-
-    def output = apiRequest('/execute', 'POST', json, publicKey, secretKey)
-
-    def stdoutMatch = output =~ /"stdout":"((?:[^"\\]|\\.)*)"/
-    def stderrMatch = output =~ /"stderr":"((?:[^"\\]|\\.)*)"/
-    def exitCodeMatch = output =~ /"exit_code":(\d+)/
-
-    if (stdoutMatch.find()) {
-        def stdout = stdoutMatch.group(1)
-                               .replace('\\n', '\n')
-                               .replace('\\t', '\t')
-                               .replace('\\"', '"')
-                               .replace('\\\\', '\\')
-        print("${BLUE}${stdout}${RESET}")
-    }
-
-    if (stderrMatch.find()) {
-        def stderr = stderrMatch.group(1)
-                               .replace('\\n', '\n')
-                               .replace('\\t', '\t')
-                               .replace('\\"', '"')
-                               .replace('\\\\', '\\')
-        System.err.print("${RED}${stderr}${RESET}")
-    }
-
-    if (args.artifacts) {
-        def artifactsMatch = output =~ /"artifacts":\[(.*?)\]/
-        if (artifactsMatch.find()) {
-            def outDir = args.outputDir ?: '.'
-            new File(outDir).mkdirs()
-            System.err.println("${GREEN}Artifacts saved to ${outDir}${RESET}")
+            return [filename: f.name, contentBase64: f.bytes.encodeBase64().toString()]
         }
     }
 
-    def exitCode = 0
-    if (exitCodeMatch.find()) {
-        exitCode = exitCodeMatch.group(1).toInteger()
+    if (args.artifacts) {
+        options.returnArtifact = true
     }
 
-    System.exit(exitCode)
+    def result = execute(language, code, options)
+
+    if (result.stdout) {
+        print("${BLUE}${result.stdout}${RESET}")
+    }
+    if (result.stderr) {
+        System.err.print("${RED}${result.stderr}${RESET}")
+    }
+
+    if (args.artifacts && result.artifacts) {
+        def outDir = args.outputDir ?: '.'
+        new File(outDir).mkdirs()
+        result.artifacts.each { artifact ->
+            def filename = artifact.filename ?: 'artifact'
+            def content = artifact.content_base64.decodeBase64()
+            def filepath = new File(outDir, filename)
+            filepath.bytes = content
+            "chmod 755 ${filepath.absolutePath}".execute().waitFor()
+            System.err.println("${GREEN}Saved: ${filepath.absolutePath}${RESET}")
+        }
+    }
+
+    System.exit(result.exit_code ?: 0)
 }
 
 def cmdSession(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     if (args.sessionSnapshot) {
-        def json = "{"
-        if (args.sessionSnapshotName) {
-            json += "\"name\":\"${args.sessionSnapshotName.replace('\\', '\\\\').replace('"', '\\"')}\""
-        }
-        if (args.sessionHot) {
-            if (args.sessionSnapshotName) json += ","
-            json += "\"hot\":true"
-        }
-        json += "}"
-        def output = apiRequest("/sessions/${args.sessionSnapshot}/snapshot", 'POST', json, publicKey, secretKey)
+        def payload = [:]
+        if (args.sessionSnapshotName) payload.name = args.sessionSnapshotName
+        if (args.sessionHot) payload.hot = true
+        def output = apiRequest("/sessions/${args.sessionSnapshot}/snapshot", 'POST', payload, publicKey, secretKey)
         println("${GREEN}Snapshot created${RESET}")
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
     if (args.sessionRestore) {
-        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
-        def output = apiRequest("/snapshots/${args.sessionRestore}/restore", 'POST', '{}', publicKey, secretKey)
+        def output = apiRequest("/snapshots/${args.sessionRestore}/restore", 'POST', [:], publicKey, secretKey)
         println("${GREEN}Session restored from snapshot${RESET}")
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
     if (args.sessionList) {
         def output = apiRequest('/sessions', 'GET', null, publicKey, secretKey)
-        println("%-40s %-10s %-10s %s".format("ID", "Shell", "Status", "Created"))
-        println("No sessions (list parsing not implemented)")
+        def sessions = output.sessions ?: []
+        if (sessions.isEmpty()) {
+            println("No active sessions")
+        } else {
+            println(String.format("%-40s %-10s %-10s %s", "ID", "Shell", "Status", "Created"))
+            sessions.each { s ->
+                println(String.format("%-40s %-10s %-10s %s",
+                    s.id ?: '', s.shell ?: '', s.status ?: '', s.created_at ?: ''))
+            }
+        }
         return
     }
 
@@ -519,38 +1217,24 @@ def cmdSession(args) {
         return
     }
 
-    def json = """{"shell":"${args.sessionShell ?: 'bash'}""""
-    if (args.network) {
-        json += ""","network":"${args.network}""""
-    }
-    if (args.vcpu > 0) {
-        json += ""","vcpu":${args.vcpu}"""
-    }
+    def payload = [shell: args.sessionShell ?: 'bash']
+    if (args.network) payload.network = args.network
+    if (args.vcpu > 0) payload.vcpu = args.vcpu
 
-    // Add input files
     if (args.files) {
-        def filesJson = args.files.collect { filepath ->
+        payload.input_files = args.files.collect { filepath ->
             def f = new File(filepath)
             if (!f.exists()) {
                 System.err.println("${RED}Error: Input file not found: ${filepath}${RESET}")
                 System.exit(1)
             }
-            def content = f.bytes.encodeBase64().toString()
-            return """{"filename":"${f.name}","content_base64":"${content}"}"""
-        }.join(',')
-        json += ""","input_files":[${filesJson}]"""
+            return [filename: f.name, content_base64: f.bytes.encodeBase64().toString()]
+        }
     }
-
-    json += '}'
 
     println("${YELLOW}Creating session...${RESET}")
-    def output = apiRequest('/sessions', 'POST', json, publicKey, secretKey)
-    def idMatch = output =~ /"id":"([^"]+)"/
-    if (idMatch.find()) {
-        println("${GREEN}Session created: ${idMatch.group(1)}${RESET}")
-    } else {
-        println("${GREEN}Session created${RESET}")
-    }
+    def output = apiRequest('/sessions', 'POST', payload, publicKey, secretKey)
+    println("${GREEN}Session created: ${output.id ?: 'unknown'}${RESET}")
     println("${YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${RESET}")
 }
 
@@ -574,13 +1258,13 @@ def cmdSnapshot(args) {
 
     if (args.snapshotList) {
         def output = apiRequest('/snapshots', 'GET', null, publicKey, secretKey)
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
     if (args.snapshotInfo) {
         def output = apiRequest("/snapshots/${args.snapshotInfo}", 'GET', null, publicKey, secretKey)
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
@@ -595,20 +1279,13 @@ def cmdSnapshot(args) {
             System.err.println("${RED}Error: --type required (session or service)${RESET}")
             System.exit(1)
         }
-        def json = "{\"type\":\"${args.snapshotType}\""
-        if (args.snapshotName) {
-            json += ",\"name\":\"${args.snapshotName.replace('\\', '\\\\').replace('"', '\\"')}\""
-        }
-        if (args.snapshotShell) {
-            json += ",\"shell\":\"${args.snapshotShell}\""
-        }
-        if (args.snapshotPorts) {
-            json += ",\"ports\":[${args.snapshotPorts}]"
-        }
-        json += "}"
-        def output = apiRequest("/snapshots/${args.snapshotClone}/clone", 'POST', json, publicKey, secretKey)
+        def payload = [type: args.snapshotType]
+        if (args.snapshotName) payload.name = args.snapshotName
+        if (args.snapshotShell) payload.shell = args.snapshotShell
+        if (args.snapshotPorts) payload.ports = args.snapshotPorts.split(',').collect { it.trim().toInteger() }
+        def output = apiRequest("/snapshots/${args.snapshotClone}/clone", 'POST', payload, publicKey, secretKey)
         println("${GREEN}Created from snapshot${RESET}")
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
@@ -622,7 +1299,6 @@ def cmdKey(args) {
     def curlCmd = ['curl', '-s', '-X', 'POST', "${PORTAL_BASE}/keys/validate",
                    '-H', 'Content-Type: application/json']
 
-    // Add HMAC authentication headers if secretKey is provided
     if (secretKey) {
         def timestamp = (System.currentTimeMillis() / 1000) as long
         def message = "${timestamp}:POST:/keys/validate:{}"
@@ -650,28 +1326,20 @@ def cmdKey(args) {
         System.exit(1)
     }
 
-    def publicKeyMatch = output =~ /"public_key":"([^"]+)"/
-    def tierMatch = output =~ /"tier":"([^"]+)"/
-    def statusMatch = output =~ /"status":"([^"]+)"/
-    def expiresAtMatch = output =~ /"expires_at":"([^"]+)"/
-    def timeRemainingMatch = output =~ /"time_remaining":"([^"]+)"/
-    def rateLimitMatch = output =~ /"rate_limit":([0-9.]+)/
-    def burstMatch = output =~ /"burst":([0-9.]+)/
-    def concurrencyMatch = output =~ /"concurrency":([0-9.]+)/
-    def expiredMatch = output =~ /"expired":(true|false)/
+    def result = new JsonSlurper().parseText(output)
 
-    def publicKey = publicKeyMatch.find() ? publicKeyMatch.group(1) : 'N/A'
-    def tier = tierMatch.find() ? tierMatch.group(1) : 'N/A'
-    def status = statusMatch.find() ? statusMatch.group(1) : 'N/A'
-    def expiresAt = expiresAtMatch.find() ? expiresAtMatch.group(1) : 'N/A'
-    def timeRemaining = timeRemainingMatch.find() ? timeRemainingMatch.group(1) : 'N/A'
-    def rateLimit = rateLimitMatch.find() ? rateLimitMatch.group(1) : 'N/A'
-    def burst = burstMatch.find() ? burstMatch.group(1) : 'N/A'
-    def concurrency = concurrencyMatch.find() ? concurrencyMatch.group(1) : 'N/A'
-    def expired = expiredMatch.find() ? expiredMatch.group(1) == 'true' : false
+    def fetchedPublicKey = result.public_key ?: 'N/A'
+    def tier = result.tier ?: 'N/A'
+    def status = result.status ?: 'N/A'
+    def expiresAt = result.expires_at ?: 'N/A'
+    def timeRemaining = result.time_remaining ?: 'N/A'
+    def rateLimit = result.rate_limit ?: 'N/A'
+    def burst = result.burst ?: 'N/A'
+    def concurrency = result.concurrency ?: 'N/A'
+    def expired = result.expired ?: false
 
-    if (args.keyExtend && publicKey != 'N/A') {
-        def extendUrl = "${PORTAL_BASE}/keys/extend?pk=${publicKey}"
+    if (args.keyExtend && fetchedPublicKey != 'N/A') {
+        def extendUrl = "${PORTAL_BASE}/keys/extend?pk=${fetchedPublicKey}"
         println("${BLUE}Opening browser to extend key...${RESET}")
         openBrowser(extendUrl)
         return
@@ -679,7 +1347,7 @@ def cmdKey(args) {
 
     if (expired) {
         println("${RED}Expired${RESET}")
-        println("Public Key: ${publicKey}")
+        println("Public Key: ${fetchedPublicKey}")
         println("Tier: ${tier}")
         println("Expired: ${expiresAt}")
         println("${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}")
@@ -687,7 +1355,7 @@ def cmdKey(args) {
     }
 
     println("${GREEN}Valid${RESET}")
-    println("Public Key: ${publicKey}")
+    println("Public Key: ${fetchedPublicKey}")
     println("Tier: ${tier}")
     println("Status: ${status}")
     println("Expires: ${expiresAt}")
@@ -701,57 +1369,54 @@ def cmdService(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
     if (args.serviceSnapshot) {
-        def json = "{"
-        if (args.serviceSnapshotName) {
-            json += "\"name\":\"${args.serviceSnapshotName.replace('\\', '\\\\').replace('"', '\\"')}\""
-        }
-        if (args.serviceHot) {
-            if (args.serviceSnapshotName) json += ","
-            json += "\"hot\":true"
-        }
-        json += "}"
-        def output = apiRequest("/services/${args.serviceSnapshot}/snapshot", 'POST', json, publicKey, secretKey)
+        def payload = [:]
+        if (args.serviceSnapshotName) payload.name = args.serviceSnapshotName
+        if (args.serviceHot) payload.hot = true
+        def output = apiRequest("/services/${args.serviceSnapshot}/snapshot", 'POST', payload, publicKey, secretKey)
         println("${GREEN}Snapshot created${RESET}")
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
     if (args.serviceRestore) {
-        // --restore takes snapshot ID directly, calls /snapshots/:id/restore
-        def output = apiRequest("/snapshots/${args.serviceRestore}/restore", 'POST', '{}', publicKey, secretKey)
+        def output = apiRequest("/snapshots/${args.serviceRestore}/restore", 'POST', [:], publicKey, secretKey)
         println("${GREEN}Service restored from snapshot${RESET}")
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
     if (args.serviceList) {
         def output = apiRequest('/services', 'GET', null, publicKey, secretKey)
-        println("%-20s %-15s %-10s %-15s %s".format("ID", "Name", "Status", "Ports", "Domains"))
-        println("No services (list parsing not implemented)")
+        def services = output.services ?: []
+        if (services.isEmpty()) {
+            println("No services")
+        } else {
+            println(String.format("%-20s %-15s %-10s %-15s %s", "ID", "Name", "Status", "Ports", "Domains"))
+            services.each { s ->
+                def ports = (s.ports ?: []).join(',')
+                def domains = (s.domains ?: []).join(',')
+                println(String.format("%-20s %-15s %-10s %-15s %s",
+                    s.id ?: '', s.name ?: '', s.status ?: '', ports, domains))
+            }
+        }
         return
     }
 
     if (args.serviceInfo) {
         def output = apiRequest("/services/${args.serviceInfo}", 'GET', null, publicKey, secretKey)
-        println(output)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
         return
     }
 
     if (args.serviceLogs) {
         def output = apiRequest("/services/${args.serviceLogs}/logs", 'GET', null, publicKey, secretKey)
-        def logsMatch = output =~ /"logs":"((?:[^"\\]|\\.)*)"/
-        if (logsMatch.find()) {
-            println(logsMatch.group(1).replace('\\n', '\n'))
-        }
+        println(output.logs ?: '')
         return
     }
 
     if (args.serviceTail) {
         def output = apiRequest("/services/${args.serviceTail}/logs?lines=9000", 'GET', null, publicKey, secretKey)
-        def logsMatch = output =~ /"logs":"((?:[^"\\]|\\.)*)"/
-        if (logsMatch.find()) {
-            println(logsMatch.group(1).replace('\\n', '\n'))
-        }
+        println(output.logs ?: '')
         return
     }
 
@@ -778,55 +1443,29 @@ def cmdService(args) {
             System.err.println("${RED}Error: --resize requires --vcpu N (1-8)${RESET}")
             System.exit(1)
         }
-        def json = """{"vcpu":${args.vcpu}}"""
-        apiRequestPatch("/services/${args.serviceResize}", json, publicKey, secretKey)
+        apiRequestPatch("/services/${args.serviceResize}", [vcpu: args.vcpu], publicKey, secretKey)
         def ram = args.vcpu * 2
         println("${GREEN}Service resized to ${args.vcpu} vCPU, ${ram} GB RAM${RESET}")
         return
     }
 
     if (args.serviceExecute) {
-        def json = """{"command":"${args.serviceCommand}"}"""
-        def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST', json, publicKey, secretKey)
-        def stdoutMatch = output =~ /"stdout":"((?:[^"\\\\]|\\\\.)*)"/
-        def stderrMatch = output =~ /"stderr":"((?:[^"\\\\]|\\\\.)*)"/
-
-        if (stdoutMatch.find()) {
-            def stdout = stdoutMatch.group(1)
-                                   .replace('\\n', '\n')
-                                   .replace('\\t', '\t')
-                                   .replace('\\"', '"')
-                                   .replace('\\\\', '\\')
-            print("${BLUE}${stdout}${RESET}")
-        }
-
-        if (stderrMatch.find()) {
-            def stderr = stderrMatch.group(1)
-                                   .replace('\\n', '\n')
-                                   .replace('\\t', '\t')
-                                   .replace('\\"', '"')
-                                   .replace('\\\\', '\\')
-            System.err.print("${RED}${stderr}${RESET}")
-        }
+        def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST',
+            [command: args.serviceCommand], publicKey, secretKey)
+        if (output.stdout) print("${BLUE}${output.stdout}${RESET}")
+        if (output.stderr) System.err.print("${RED}${output.stderr}${RESET}")
         return
     }
 
     if (args.serviceDumpBootstrap) {
         System.err.println("Fetching bootstrap script from ${args.serviceDumpBootstrap}...")
-        def json = """{"command":"cat /tmp/bootstrap.sh"}"""
-        def output = apiRequest("/services/${args.serviceDumpBootstrap}/execute", 'POST', json, publicKey, secretKey)
+        def output = apiRequest("/services/${args.serviceDumpBootstrap}/execute", 'POST',
+            [command: 'cat /tmp/bootstrap.sh'], publicKey, secretKey)
 
-        def stdoutMatch = output =~ /"stdout":"((?:[^"\\\\]|\\\\.)*)"/
-        if (stdoutMatch.find()) {
-            def bootstrap = stdoutMatch.group(1)
-                                      .replace('\\n', '\n')
-                                      .replace('\\t', '\t')
-                                      .replace('\\"', '"')
-                                      .replace('\\\\', '\\')
-
+        if (output.stdout) {
             if (args.serviceDumpFile) {
                 try {
-                    new File(args.serviceDumpFile).text = bootstrap
+                    new File(args.serviceDumpFile).text = output.stdout
                     "chmod 755 ${args.serviceDumpFile}".execute().waitFor()
                     println("Bootstrap saved to ${args.serviceDumpFile}")
                 } catch (Exception e) {
@@ -834,7 +1473,7 @@ def cmdService(args) {
                     System.exit(1)
                 }
             } else {
-                print(bootstrap)
+                print(output.stdout)
             }
         } else {
             System.err.println("${RED}Error: Failed to fetch bootstrap (service not running or no bootstrap file)${RESET}")
@@ -844,66 +1483,41 @@ def cmdService(args) {
     }
 
     if (args.serviceName) {
-        def json = """{"name":"${args.serviceName}""""
+        def payload = [name: args.serviceName]
+
         if (args.servicePorts) {
-            def ports = args.servicePorts.split(',').collect { it.trim() }.join(',')
-            json += ""","ports":[${ports}]"""
+            payload.ports = args.servicePorts.split(',').collect { it.trim().toInteger() }
         }
-        if (args.serviceType) {
-            json += ""","service_type":"${args.serviceType}""""
-        }
-        if (args.serviceBootstrap) {
-            def escaped = args.serviceBootstrap.replace('\\', '\\\\').replace('"', '\\"')
-            json += ""","bootstrap":"${escaped}""""
-        }
+        if (args.serviceType) payload.service_type = args.serviceType
+        if (args.serviceBootstrap) payload.bootstrap = args.serviceBootstrap
         if (args.serviceBootstrapFile) {
             def file = new File(args.serviceBootstrapFile)
             if (file.exists()) {
-                def content = file.text.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                json += ""","bootstrap_content":"${content}""""
+                payload.bootstrap_content = file.text
             } else {
                 System.err.println("${RED}Error: Bootstrap file not found: ${args.serviceBootstrapFile}${RESET}")
                 System.exit(1)
             }
         }
-        if (args.network) {
-            json += ""","network":"${args.network}""""
-        }
-        if (args.vcpu > 0) {
-            json += ""","vcpu":${args.vcpu}"""
-        }
+        if (args.network) payload.network = args.network
+        if (args.vcpu > 0) payload.vcpu = args.vcpu
 
-        // Add input files
         if (args.files) {
-            def filesJson = args.files.collect { filepath ->
+            payload.input_files = args.files.collect { filepath ->
                 def f = new File(filepath)
                 if (!f.exists()) {
                     System.err.println("${RED}Error: Input file not found: ${filepath}${RESET}")
                     System.exit(1)
                 }
-                def content = f.bytes.encodeBase64().toString()
-                return """{"filename":"${f.name}","content_base64":"${content}"}"""
-            }.join(',')
-            json += ""","input_files":[${filesJson}]"""
+                return [filename: f.name, content_base64: f.bytes.encodeBase64().toString()]
+            }
         }
 
-        json += '}'
-
-        def output = apiRequest('/services', 'POST', json, publicKey, secretKey)
-        def idMatch = output =~ /"id":"([^"]+)"/
-        def serviceId = null
-        if (idMatch.find()) {
-            serviceId = idMatch.group(1)
-            println("${GREEN}Service created: ${serviceId}${RESET}")
-        }
-        def nameMatch = output =~ /"name":"([^"]+)"/
-        if (nameMatch.find()) {
-            println("Name: ${nameMatch.group(1)}")
-        }
-        def urlMatch = output =~ /"url":"([^"]+)"/
-        if (urlMatch.find()) {
-            println("URL: ${urlMatch.group(1)}")
-        }
+        def output = apiRequest('/services', 'POST', payload, publicKey, secretKey)
+        def serviceId = output.id
+        println("${GREEN}Service created: ${serviceId ?: 'unknown'}${RESET}")
+        println("Name: ${output.name ?: ''}")
+        if (output.url) println("URL: ${output.url}")
 
         // Auto-set vault if -e or --env-file provided
         if (serviceId && (args.svcEnvs || args.svcEnvFile)) {
@@ -933,7 +1547,6 @@ def parseArgs(argv) {
                 args.command = 'service'
                 break
             case 'env':
-                // service env <action> <service_id>
                 if (args.command == 'service' && i + 2 < argv.size()) {
                     args.envAction = argv[++i]
                     args.envTarget = argv[++i]
@@ -945,9 +1558,16 @@ def parseArgs(argv) {
             case 'key':
                 args.command = 'key'
                 break
+            case '-s':
+                args.inlineLang = argv[++i]
+                break
             case '-k':
             case '--api-key':
                 args.apiKey = argv[++i]
+                break
+            case '-p':
+            case '--public-key':
+                args.apiKey = argv[++i]  // For compatibility
                 break
             case '-n':
             case '--network':
@@ -984,10 +1604,11 @@ def parseArgs(argv) {
             case '--list':
                 if (args.command == 'session') args.sessionList = true
                 else if (args.command == 'service') args.serviceList = true
+                else if (args.command == 'snapshot') args.snapshotList = true
                 break
-            case '-s':
             case '--shell':
-                args.sessionShell = argv[++i]
+                if (args.command == 'snapshot') args.snapshotShell = argv[++i]
+                else args.sessionShell = argv[++i]
                 break
             case '--kill':
                 args.sessionKill = argv[++i]
@@ -1029,10 +1650,6 @@ def parseArgs(argv) {
             case '--name':
                 if (args.command == 'snapshot') args.snapshotName = argv[++i]
                 else args.serviceName = argv[++i]
-                break
-            case '--shell':
-                if (args.command == 'snapshot') args.snapshotShell = argv[++i]
-                else args.sessionShell = argv[++i]
                 break
             case '--ports':
                 if (args.command == 'snapshot') args.snapshotPorts = argv[++i]
@@ -1091,45 +1708,53 @@ def parseArgs(argv) {
 }
 
 def printHelp() {
-    println '''Usage: groovy un.groovy [options] <source_file>
+    println '''unsandbox SDK for Groovy - Execute code in secure sandboxes
+https://unsandbox.com | https://api.unsandbox.com/openapi
+
+Usage: groovy un.groovy [options] <source_file>
+       groovy un.groovy -s <language> '<code>'
        groovy un.groovy session [options]
        groovy un.groovy service [options]
        groovy un.groovy service env <action> <service_id> [options]
        groovy un.groovy key [options]
 
 Execute options:
-  -e KEY=VALUE      Set environment variable
-  -f FILE           Add input file
-  -a                Return artifacts
-  -o DIR            Output directory for artifacts
-  -n MODE           Network mode (zerotrust/semitrusted)
-  -v N              vCPU count (1-8)
-  -k KEY            API key
+  -s LANG             Execute inline code with specified language
+  -e KEY=VALUE        Set environment variable
+  -f FILE             Add input file
+  -a                  Return artifacts
+  -o DIR              Output directory for artifacts
+  -n MODE             Network mode (zerotrust/semitrusted)
+  -v N                vCPU count (1-8)
+  -k KEY              API key (legacy)
+  -p KEY              Public key
 
 Session options:
-  --list            List active sessions
-  --shell NAME      Shell/REPL to use
-  --kill ID         Terminate session
+  --list              List active sessions
+  --shell NAME        Shell/REPL to use
+  --kill ID           Terminate session
+  --snapshot ID       Create snapshot of session
+  --restore ID        Restore session from snapshot
 
 Service options:
-  --list            List services
-  --name NAME       Service name
-  --ports PORTS     Comma-separated ports
-  --type TYPE       Service type (minecraft/mumble/teamspeak/source/tcp/udp)
-  --bootstrap CMD   Bootstrap command
-  -e KEY=VALUE      Set env var in vault (when creating service)
-  --env-file FILE   Load env vars from file
-  --info ID         Get service details
-  --logs ID         Get all logs
-  --tail ID         Get last 9000 lines
-  --freeze ID        Freeze service
-  --unfreeze ID         Unfreeze service
-  --destroy ID      Destroy service
-  --resize ID       Resize service (requires --vcpu N)
-  --execute ID      Execute command in service
-  --command CMD     Command to execute (with --execute)
-  --dump-bootstrap ID   Dump bootstrap script
-  --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
+  --list              List services
+  --name NAME         Service name (creates service)
+  --ports PORTS       Comma-separated ports
+  --type TYPE         Service type
+  --bootstrap CMD     Bootstrap command
+  -e KEY=VALUE        Set env var in vault (when creating)
+  --env-file FILE     Load env vars from file
+  --info ID           Get service details
+  --logs ID           Get all logs
+  --tail ID           Get last 9000 lines
+  --freeze ID         Freeze service
+  --unfreeze ID       Unfreeze service
+  --destroy ID        Destroy service
+  --resize ID         Resize service (requires --vcpu N)
+  --execute ID        Execute command in service
+  --command CMD       Command to execute (with --execute)
+  --dump-bootstrap ID Dump bootstrap script
+  --dump-file FILE    File to save bootstrap
 
 Vault commands:
   service env status <id>   Check vault status
@@ -1138,19 +1763,25 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --extend          Open browser to extend key
-  -k KEY            API key to validate
+  --extend            Open browser to extend key
+
+Library Usage:
+  import un
+  def result = un.execute("python", 'print("Hello")')
+  def client = new un.Client(publicKey: "unsb-pk-...", secretKey: "unsb-sk-...")
 '''
 }
 
-// Main execution
+// ============================================================================
+// Main Execution (CLI)
+// ============================================================================
+
 try {
     def args = parseArgs(this.args as List)
 
     if (args.command == 'session') {
         cmdSession(args)
     } else if (args.command == 'service') {
-        // Check for env subcommand
         if (args.envAction && args.envTarget) {
             cmdServiceEnv(args)
         } else {
@@ -1160,12 +1791,15 @@ try {
         cmdSnapshot(args)
     } else if (args.command == 'key') {
         cmdKey(args)
-    } else if (args.sourceFile) {
+    } else if (args.sourceFile || args.inlineLang) {
         cmdExecute(args)
     } else {
         printHelp()
         System.exit(1)
     }
+} catch (UnsandboxError e) {
+    System.err.println("${RED}Error: ${e.message}${RESET}")
+    System.exit(1)
 } catch (Exception e) {
     System.err.println("${RED}Error: ${e.message}${RESET}")
     System.exit(1)

@@ -1,59 +1,93 @@
--- PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
---
--- This is free public domain software for the public good of a permacomputer hosted
--- at permacomputer.com - an always-on computer by the people, for the people. One
--- which is durable, easy to repair, and distributed like tap water for machine
--- learning intelligence.
---
--- The permacomputer is community-owned infrastructure optimized around four values:
---
---   TRUTH    - First principles, math & science, open source code freely distributed
---   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
---   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
---   LOVE     - Be yourself without hurting others, cooperation through natural law
---
--- This software contributes to that vision by enabling code execution across 42+
--- programming languages through a unified interface, accessible to all. Code is
--- seeds to sprout on any abandoned technology.
---
--- Learn more: https://www.permacomputer.com
---
--- Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
--- software, either in source code form or as a compiled binary, for any purpose,
--- commercial or non-commercial, and by any means.
---
--- NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
---
--- That said, our permacomputer's digital membrane stratum continuously runs unit,
--- integration, and functional tests on all of it's own software - with our
--- permacomputer monitoring itself, repairing itself, with minimal human in the
--- loop guidance. Our agents do their best.
---
--- Copyright 2025 TimeHexOn & foxhop & russell@unturf
--- https://www.timehexon.com
--- https://www.foxhop.net
--- https://www.unturf.com/software
+(* PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+ *
+ * This is free public domain software for the public good of a permacomputer hosted
+ * at permacomputer.com - an always-on computer by the people, for the people. One
+ * which is durable, easy to repair, and distributed like tap water for machine
+ * learning intelligence.
+ *
+ * The permacomputer is community-owned infrastructure optimized around four values:
+ *
+ *   TRUTH    - First principles, math & science, open source code freely distributed
+ *   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
+ *   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
+ *   LOVE     - Be yourself without hurting others, cooperation through natural law
+ *
+ * This software contributes to that vision by enabling code execution across 42+
+ * programming languages through a unified interface, accessible to all. Code is
+ * seeds to sprout on any abandoned technology.
+ *
+ * Learn more: https://www.permacomputer.com
+ *
+ * Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+ * software, either in source code form or as a compiled binary, for any purpose,
+ * commercial or non-commercial, and by any means.
+ *
+ * NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+ *
+ * That said, our permacomputer's digital membrane stratum continuously runs unit,
+ * integration, and functional tests on all of it's own software - with our
+ * permacomputer monitoring itself, repairing itself, with minimal human in the
+ * loop guidance. Our agents do their best.
+ *
+ * Copyright 2025 TimeHexOn & foxhop & russell@unturf
+ * https://www.timehexon.com
+ * https://www.foxhop.net
+ * https://www.unturf.com/software
+ *)
 
+(** {1 unsandbox OCaml SDK}
+
+    Secure code execution in sandboxed containers.
+
+    {2 Library Usage}
+    {[
+      (* Simple execution *)
+      let result = Un.execute "python" "print('Hello World')" () in
+      print_endline result.stdout
+
+      (* Using Client for stored credentials *)
+      let client = Un.Client.create ~public_key:"unsb-pk-..." ~secret_key:"unsb-sk-..." () in
+      let result = Un.Client.execute client "python" code in
+      print_endline result.stdout
+
+      (* Async execution *)
+      let job = Un.execute_async "python" long_code () in
+      let result = Un.wait job.job_id () in
+      print_endline result.stdout
+    ]}
+
+    {2 CLI Usage}
+    {[
+      chmod +x un.ml
+      ./un.ml script.py
+      ./un.ml session --shell python3
+      ./un.ml service --name web --ports 80
+    ]}
+
+    {2 Authentication}
+    Credentials are loaded in priority order:
+    + Function arguments (public_key, secret_key)
+    + Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+    + Config file (~/.unsandbox/accounts.csv)
+*)
 
 #!/usr/bin/env ocaml
 
-(*
-OCaml UN CLI - Unsandbox CLI Client
+(* ============================================================================
+   Configuration
+   ============================================================================ *)
 
-Full-featured CLI matching un.py capabilities:
-- Execute code with env vars, input files, artifacts
-- Interactive sessions with shell/REPL support
-- Persistent services with domains and ports
+(** API base URL *)
+let api_base = "https://api.unsandbox.com"
 
-Usage:
-  chmod +x un.ml
-  export UNSANDBOX_API_KEY="your_key_here"
-  ./un.ml [options] <source_file>
-  ./un.ml session [options]
-  ./un.ml service [options]
+(** Portal base URL *)
+let portal_base = "https://unsandbox.com"
 
-Uses curl for HTTP (no external dependencies)
-*)
+(** Default execution timeout in seconds *)
+let default_timeout = 300
+
+(** Default TTL for code execution *)
+let default_ttl = 60
 
 (* ANSI colors *)
 let blue = "\x1b[34m"
@@ -62,10 +96,58 @@ let green = "\x1b[32m"
 let yellow = "\x1b[33m"
 let reset = "\x1b[0m"
 
-(* Portal base URL *)
-let portal_base = "https://unsandbox.com"
+(* ============================================================================
+   Types
+   ============================================================================ *)
 
-(* Extension to language mapping *)
+(** Execution options for API calls *)
+type exec_options = {
+  env: (string * string) list;       (** Environment variables *)
+  input_files: string list;          (** Input file paths *)
+  network_mode: string;              (** "zerotrust" or "semitrusted" *)
+  ttl: int;                          (** Execution timeout in seconds *)
+  vcpu: int;                         (** vCPU count (1-8) *)
+  return_artifacts: bool;            (** Return compiled artifacts *)
+}
+
+(** Default execution options *)
+let default_exec_options = {
+  env = [];
+  input_files = [];
+  network_mode = "zerotrust";
+  ttl = default_ttl;
+  vcpu = 1;
+  return_artifacts = false;
+}
+
+(** Execution result *)
+type exec_result = {
+  success: bool;
+  stdout: string;
+  stderr: string;
+  exit_code: int;
+  job_id: string option;
+}
+
+(** Job status *)
+type job_status = {
+  job_id: string;
+  status: string;  (** "pending", "running", "completed", "failed", "timeout", "cancelled" *)
+  result: exec_result option;
+}
+
+(** Language info *)
+type language_info = {
+  name: string;
+  version: string;
+  aliases: string list;
+}
+
+(* ============================================================================
+   Utility Functions
+   ============================================================================ *)
+
+(** Extension to language mapping *)
 let ext_to_lang ext =
   match ext with
   | ".hs" -> Some "haskell" | ".ml" -> Some "ocaml" | ".clj" -> Some "clojure"
@@ -83,7 +165,7 @@ let ext_to_lang ext =
   | ".php" -> Some "php"
   | _ -> None
 
-(* Read file contents *)
+(** Read file contents *)
 let read_file filename =
   let ic = open_in filename in
   let n = in_channel_length ic in
@@ -91,7 +173,7 @@ let read_file filename =
   close_in ic;
   s
 
-(* Base64 encode a file using shell command *)
+(** Base64 encode a file using shell command *)
 let base64_encode_file filename =
   let cmd = Printf.sprintf "base64 -w0 %s" (Filename.quote filename) in
   let ic = Unix.open_process_in cmd in
@@ -99,7 +181,7 @@ let base64_encode_file filename =
   let _ = Unix.close_process_in ic in
   String.trim result
 
-(* Build input_files JSON from list of filenames *)
+(** Build input_files JSON from list of filenames *)
 let build_input_files_json files =
   if files = [] then ""
   else
@@ -110,14 +192,14 @@ let build_input_files_json files =
     ) files in
     ",\"input_files\":[" ^ (String.concat "," entries) ^ "]"
 
-(* Get file extension *)
+(** Get file extension *)
 let get_extension filename =
   try
     let dot_pos = String.rindex filename '.' in
     String.sub filename dot_pos (String.length filename - dot_pos)
   with Not_found -> ""
 
-(* Escape JSON string *)
+(** Escape JSON string *)
 let escape_json s =
   let buf = Buffer.create (String.length s) in
   String.iter (fun c ->
@@ -131,7 +213,142 @@ let escape_json s =
   ) s;
   Buffer.contents buf
 
-(* Check for clock drift errors *)
+(** Unescape JSON string *)
+let unescape_json s =
+  let s = Str.global_replace (Str.regexp "\\\\n") "\n" s in
+  let s = Str.global_replace (Str.regexp "\\\\t") "\t" s in
+  let s = Str.global_replace (Str.regexp "\\\\\"") "\"" s in
+  let s = Str.global_replace (Str.regexp "\\\\\\\\") "\\" s in
+  s
+
+(** Extract JSON value - simple regex-based parser *)
+let extract_json_value json_str key =
+  let pattern = "\"" ^ key ^ "\"\\s*:\\s*\"\\([^\"]*\\)\"" in
+  let regex = Str.regexp pattern in
+  try
+    let _ = Str.search_forward regex json_str 0 in
+    Some (Str.matched_group 1 json_str)
+  with Not_found -> None
+
+(** Extract JSON integer value *)
+let extract_json_int json_str key =
+  let pattern = "\"" ^ key ^ "\"\\s*:\\s*\\([0-9]+\\)" in
+  let regex = Str.regexp pattern in
+  try
+    let _ = Str.search_forward regex json_str 0 in
+    Some (int_of_string (Str.matched_group 1 json_str))
+  with Not_found -> None
+
+(* ============================================================================
+   Credentials Management
+   ============================================================================ *)
+
+(** Get credentials from config file ~/.unsandbox/accounts.csv *)
+let get_credentials_from_file ?(account_index=0) () =
+  let home = try Sys.getenv "HOME" with Not_found -> "." in
+  let accounts_path = Filename.concat home ".unsandbox/accounts.csv" in
+  if Sys.file_exists accounts_path then
+    try
+      let content = read_file accounts_path in
+      let lines = String.split_on_char '\n' content in
+      let valid_accounts = List.filter_map (fun line ->
+        let line = String.trim line in
+        if String.length line = 0 || line.[0] = '#' then None
+        else
+          try
+            let comma_pos = String.index line ',' in
+            let pk = String.sub line 0 comma_pos in
+            let sk = String.sub line (comma_pos + 1) (String.length line - comma_pos - 1) in
+            if String.length pk > 8 && String.sub pk 0 8 = "unsb-pk-" &&
+               String.length sk > 8 && String.sub sk 0 8 = "unsb-sk-" then
+              Some (pk, sk)
+            else None
+          with Not_found -> None
+      ) lines in
+      if account_index < List.length valid_accounts then
+        Some (List.nth valid_accounts account_index)
+      else None
+    with _ -> None
+  else None
+
+(**
+   Get API credentials in priority order:
+   1. Function arguments
+   2. Environment variables
+   3. ~/.unsandbox/accounts.csv
+
+   @param public_key Optional public key override
+   @param secret_key Optional secret key override
+   @param account_index Account index in config file (default 0)
+   @return (public_key, secret_key) tuple
+   @raise Failure if no credentials found
+*)
+let get_credentials ?public_key ?secret_key ?(account_index=0) () =
+  (* Priority 1: Function arguments *)
+  match (public_key, secret_key) with
+  | (Some pk, Some sk) -> (pk, sk)
+  | _ ->
+    (* Priority 2: Environment variables *)
+    let env_pk = try Some (Sys.getenv "UNSANDBOX_PUBLIC_KEY") with Not_found -> None in
+    let env_sk = try Some (Sys.getenv "UNSANDBOX_SECRET_KEY") with Not_found -> None in
+    match (env_pk, env_sk) with
+    | (Some pk, Some sk) -> (pk, sk)
+    | _ ->
+      (* Priority 3: Config file *)
+      match get_credentials_from_file ~account_index () with
+      | Some (pk, sk) -> (pk, sk)
+      | None ->
+        failwith "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY, \
+                  or create ~/.unsandbox/accounts.csv, or pass credentials to function."
+
+(* Legacy function for backward compatibility *)
+let get_api_keys () =
+  try
+    get_credentials ()
+  with Failure _ ->
+    (* Fall back to old API key for backwards compat *)
+    let api_key = try Some (Sys.getenv "UNSANDBOX_API_KEY") with Not_found -> None in
+    match api_key with
+    | Some ak -> (ak, ak)  (* Use same key for both in legacy mode *)
+    | None ->
+      Printf.fprintf stderr "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set\n";
+      exit 1
+
+let get_api_key () =
+  let (public_key, _) = get_api_keys () in
+  public_key
+
+(* ============================================================================
+   HMAC Authentication
+   ============================================================================ *)
+
+(** HMAC-SHA256 using openssl command *)
+let hmac_sha256 secret message =
+  let cmd = Printf.sprintf "echo -n '%s' | openssl dgst -sha256 -hmac '%s' | awk '{print $2}'"
+    (Str.global_replace (Str.regexp "'") "'\\''" message)
+    (Str.global_replace (Str.regexp "'") "'\\''" secret) in
+  let ic = Unix.open_process_in cmd in
+  let result = input_line ic in
+  let _ = Unix.close_process_in ic in
+  String.trim result
+
+(**
+   Generate HMAC-SHA256 signature for API request.
+
+   Signature = HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
+*)
+let make_signature secret_key timestamp method_ path body =
+  let message = Printf.sprintf "%s:%s:%s:%s" timestamp method_ path body in
+  hmac_sha256 secret_key message
+
+(** Build authentication headers for HTTP request *)
+let build_auth_headers public_key secret_key method_ path body =
+  let timestamp = string_of_int (int_of_float (Unix.time ())) in
+  let signature = make_signature secret_key timestamp method_ path body in
+  Printf.sprintf " -H 'Authorization: Bearer %s' -H 'X-Timestamp: %s' -H 'X-Signature: %s'"
+    public_key timestamp signature
+
+(** Check for clock drift errors in API response *)
 let check_clock_drift response =
   let response_lower = String.lowercase_ascii response in
   let contains_substring s sub =
@@ -156,16 +373,20 @@ let check_clock_drift response =
     exit 1
   end
 
-(* Execute curl command *)
-let curl_post api_key endpoint json =
-  let (public_key, secret_key) = get_api_keys () in
-  let auth_headers = build_auth_headers public_key secret_key "POST" endpoint json in
+(* ============================================================================
+   HTTP Client
+   ============================================================================ *)
+
+(** Make authenticated POST request to API *)
+let api_post ?public_key ?secret_key endpoint json =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "POST" endpoint json in
   let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com%s -H 'Content-Type: application/json'%s -d @%s"
-    endpoint auth_headers tmp_file in
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
     try let line = input_line ic in read_all (acc ^ line ^ "\n")
@@ -177,13 +398,44 @@ let curl_post api_key endpoint json =
   check_clock_drift output;
   output
 
-let portal_curl_post api_key endpoint json =
+(** Make authenticated GET request to API *)
+let api_get ?public_key ?secret_key endpoint =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "GET" endpoint "" in
+  let cmd = Printf.sprintf "curl -s %s%s%s" api_base endpoint auth_headers in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let output = read_all "" in
+  let _ = Unix.close_process_in ic in
+  check_clock_drift output;
+  output
+
+(** Make authenticated DELETE request to API *)
+let api_delete ?public_key ?secret_key endpoint =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "DELETE" endpoint "" in
+  let cmd = Printf.sprintf "curl -s -X DELETE %s%s%s" api_base endpoint auth_headers in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let output = read_all "" in
+  let _ = Unix.close_process_in ic in
+  check_clock_drift output;
+  output
+
+(** Make authenticated POST request to portal *)
+let portal_post ?public_key ?secret_key endpoint json =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "POST" endpoint json in
   let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let (public_key, secret_key) = get_api_keys () in
-  let auth_headers = build_auth_headers public_key secret_key "POST" endpoint json in
   let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
     portal_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
@@ -197,39 +449,375 @@ let portal_curl_post api_key endpoint json =
   check_clock_drift output;
   output
 
-let curl_get api_key endpoint =
-  let (public_key, secret_key) = get_api_keys () in
-  let auth_headers = build_auth_headers public_key secret_key "GET" endpoint "" in
-  let cmd = Printf.sprintf "curl -s https://api.unsandbox.com%s%s"
-    endpoint auth_headers in
+(* ============================================================================
+   Library API - Core Execution Functions
+   ============================================================================ *)
+
+(**
+   Execute code synchronously and return results.
+
+   @param language Programming language (python, javascript, go, rust, etc.)
+   @param code Source code to execute
+   @param opts Execution options (optional)
+   @param public_key API public key (optional if env vars set)
+   @param secret_key API secret key (optional if env vars set)
+   @return Execution result
+
+   @example
+   {[
+     let result = execute "python" "print('Hello')" () in
+     print_endline result.stdout
+   ]}
+*)
+let execute ?public_key ?secret_key ?(opts=default_exec_options) language code =
+  let env_json = if opts.env = [] then ""
+    else ",\"env\":{" ^ (String.concat "," (List.map (fun (k, v) ->
+      Printf.sprintf "\"%s\":\"%s\"" k (escape_json v)) opts.env)) ^ "}"
+  in
+  let input_files_json = build_input_files_json opts.input_files in
+  let artifacts_json = if opts.return_artifacts then ",\"return_artifacts\":true" else "" in
+  let network_json = Printf.sprintf ",\"network\":\"%s\"" opts.network_mode in
+  let vcpu_json = Printf.sprintf ",\"vcpu\":%d" opts.vcpu in
+  let ttl_json = Printf.sprintf ",\"ttl\":%d" opts.ttl in
+
+  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s%s}"
+    language (escape_json code) env_json input_files_json artifacts_json network_json vcpu_json ttl_json in
+
+  let response = api_post ?public_key ?secret_key "/execute" json in
+
+  let stdout_val = match extract_json_value response "stdout" with Some s -> unescape_json s | None -> "" in
+  let stderr_val = match extract_json_value response "stderr" with Some s -> unescape_json s | None -> "" in
+  let exit_code = match extract_json_int response "exit_code" with Some i -> i | None -> 0 in
+  let job_id = extract_json_value response "job_id" in
+
+  { success = (exit_code = 0); stdout = stdout_val; stderr = stderr_val; exit_code; job_id }
+
+(**
+   Execute code asynchronously. Returns immediately with job_id for polling.
+
+   @param language Programming language
+   @param code Source code to execute
+   @param opts Execution options (optional)
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return Job status with job_id
+
+   @example
+   {[
+     let job = execute_async "python" long_code () in
+     let result = wait job.job_id () in
+     print_endline result.stdout
+   ]}
+*)
+let execute_async ?public_key ?secret_key ?(opts=default_exec_options) language code =
+  let env_json = if opts.env = [] then ""
+    else ",\"env\":{" ^ (String.concat "," (List.map (fun (k, v) ->
+      Printf.sprintf "\"%s\":\"%s\"" k (escape_json v)) opts.env)) ^ "}"
+  in
+  let input_files_json = build_input_files_json opts.input_files in
+  let artifacts_json = if opts.return_artifacts then ",\"return_artifacts\":true" else "" in
+  let network_json = Printf.sprintf ",\"network\":\"%s\"" opts.network_mode in
+  let vcpu_json = Printf.sprintf ",\"vcpu\":%d" opts.vcpu in
+  let ttl_json = Printf.sprintf ",\"ttl\":%d" opts.ttl in
+
+  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s%s}"
+    language (escape_json code) env_json input_files_json artifacts_json network_json vcpu_json ttl_json in
+
+  let response = api_post ?public_key ?secret_key "/execute/async" json in
+
+  let job_id = match extract_json_value response "job_id" with Some s -> s | None -> "" in
+  let status = match extract_json_value response "status" with Some s -> s | None -> "pending" in
+
+  { job_id; status; result = None }
+
+(**
+   Execute code with automatic language detection from shebang.
+
+   @param code Source code with shebang (e.g., #!/usr/bin/env python3)
+   @param opts Execution options (optional)
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return Execution result
+*)
+let run ?public_key ?secret_key ?(opts=default_exec_options) code =
+  let endpoint = Printf.sprintf "/run?ttl=%d&network_mode=%s" opts.ttl opts.network_mode in
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "POST" endpoint code in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.txt" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc code;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: text/plain'%s --data-binary @%s"
+    api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
-    try
-      let line = input_line ic in
-      read_all (acc ^ line ^ "\n")
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
     with End_of_file -> acc
   in
-  let output = read_all "" in
+  let response = read_all "" in
   let _ = Unix.close_process_in ic in
-  check_clock_drift output;
-  output
+  Sys.remove tmp_file;
+  check_clock_drift response;
+
+  let stdout_val = match extract_json_value response "stdout" with Some s -> unescape_json s | None -> "" in
+  let stderr_val = match extract_json_value response "stderr" with Some s -> unescape_json s | None -> "" in
+  let exit_code = match extract_json_int response "exit_code" with Some i -> i | None -> 0 in
+  let job_id = extract_json_value response "job_id" in
+
+  { success = (exit_code = 0); stdout = stdout_val; stderr = stderr_val; exit_code; job_id }
+
+(**
+   Execute code asynchronously with automatic language detection.
+
+   @param code Source code with shebang
+   @param opts Execution options (optional)
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return Job status with job_id
+*)
+let run_async ?public_key ?secret_key ?(opts=default_exec_options) code =
+  let endpoint = Printf.sprintf "/run/async?ttl=%d&network_mode=%s" opts.ttl opts.network_mode in
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "POST" endpoint code in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.txt" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc code;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: text/plain'%s --data-binary @%s"
+    api_base endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let response = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  check_clock_drift response;
+
+  let job_id = match extract_json_value response "job_id" with Some s -> s | None -> "" in
+  let status = match extract_json_value response "status" with Some s -> s | None -> "pending" in
+
+  { job_id; status; result = None }
+
+(* ============================================================================
+   Library API - Job Management
+   ============================================================================ *)
+
+(** Polling delays (ms) - exponential backoff *)
+let poll_delays = [|300; 450; 700; 900; 650; 1600; 2000|]
+
+(**
+   Get job status and results.
+
+   @param job_id Job ID from execute_async or run_async
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return Job status
+*)
+let get_job ?public_key ?secret_key job_id =
+  let response = api_get ?public_key ?secret_key (Printf.sprintf "/jobs/%s" job_id) in
+
+  let status = match extract_json_value response "status" with Some s -> s | None -> "unknown" in
+  let result = if status = "completed" || status = "failed" then
+    let stdout_val = match extract_json_value response "stdout" with Some s -> unescape_json s | None -> "" in
+    let stderr_val = match extract_json_value response "stderr" with Some s -> unescape_json s | None -> "" in
+    let exit_code = match extract_json_int response "exit_code" with Some i -> i | None -> 0 in
+    Some { success = (exit_code = 0); stdout = stdout_val; stderr = stderr_val; exit_code; job_id = Some job_id }
+  else None in
+
+  { job_id; status; result }
+
+(**
+   Wait for job completion with exponential backoff polling.
+
+   @param job_id Job ID from execute_async or run_async
+   @param max_polls Maximum number of poll attempts (default 100)
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return Final execution result
+   @raise Failure if max polls exceeded or job failed
+*)
+let wait ?public_key ?secret_key ?(max_polls=100) job_id =
+  let terminal_states = ["completed"; "failed"; "timeout"; "cancelled"] in
+
+  let rec poll i =
+    if i >= max_polls then
+      failwith (Printf.sprintf "Max polls (%d) exceeded for job %s" max_polls job_id)
+    else begin
+      let delay_idx = min i (Array.length poll_delays - 1) in
+      Unix.sleepf (float_of_int poll_delays.(delay_idx) /. 1000.0);
+
+      let job = get_job ?public_key ?secret_key job_id in
+      if List.mem job.status terminal_states then
+        match job.result with
+        | Some result -> result
+        | None -> { success = false; stdout = ""; stderr = ""; exit_code = 1; job_id = Some job_id }
+      else
+        poll (i + 1)
+    end
+  in
+  poll 0
+
+(**
+   Cancel a running job.
+
+   @param job_id Job ID to cancel
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return Partial result with output collected before cancellation
+*)
+let cancel_job ?public_key ?secret_key job_id =
+  let response = api_delete ?public_key ?secret_key (Printf.sprintf "/jobs/%s" job_id) in
+
+  let stdout_val = match extract_json_value response "stdout" with Some s -> unescape_json s | None -> "" in
+  let stderr_val = match extract_json_value response "stderr" with Some s -> unescape_json s | None -> "" in
+  let exit_code = match extract_json_int response "exit_code" with Some i -> i | None -> 137 in
+
+  { success = false; stdout = stdout_val; stderr = stderr_val; exit_code; job_id = Some job_id }
+
+(**
+   List all active jobs for this API key.
+
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return List of job status records
+*)
+let list_jobs ?public_key ?secret_key () =
+  let response = api_get ?public_key ?secret_key "/jobs" in
+  (* Return raw response for now - proper parsing would require JSON library *)
+  response
+
+(* ============================================================================
+   Library API - Image Generation
+   ============================================================================ *)
+
+(**
+   Generate images from text prompt.
+
+   @param prompt Text description of the image to generate
+   @param model Model to use (optional)
+   @param size Image size (default "1024x1024")
+   @param quality "standard" or "hd" (default "standard")
+   @param n Number of images to generate (default 1)
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return JSON response with images
+*)
+let image ?public_key ?secret_key ?(model="") ?(size="1024x1024") ?(quality="standard") ?(n=1) prompt =
+  let model_json = if model = "" then "" else Printf.sprintf ",\"model\":\"%s\"" model in
+  let json = Printf.sprintf "{\"prompt\":\"%s\",\"size\":\"%s\",\"quality\":\"%s\",\"n\":%d%s}"
+    (escape_json prompt) size quality n model_json in
+
+  api_post ?public_key ?secret_key "/image" json
+
+(* ============================================================================
+   Library API - Languages
+   ============================================================================ *)
+
+(**
+   Get list of supported programming languages.
+
+   @param public_key API public key (optional)
+   @param secret_key API secret key (optional)
+   @return JSON response with languages list
+*)
+let languages ?public_key ?secret_key () =
+  api_get ?public_key ?secret_key "/languages"
+
+(* ============================================================================
+   Client Module
+   ============================================================================ *)
+
+(**
+   Client module with stored credentials for convenient API access.
+
+   @example
+   {[
+     let client = Client.create ~public_key:"unsb-pk-..." ~secret_key:"unsb-sk-..." () in
+     let result = Client.execute client "python" "print('Hello')" in
+     print_endline result.stdout
+   ]}
+*)
+module Client = struct
+  (** Client type with stored credentials *)
+  type t = {
+    public_key: string;
+    secret_key: string;
+  }
+
+  (**
+     Create a new client with credentials.
+
+     @param public_key API public key (optional - uses env/config if not provided)
+     @param secret_key API secret key (optional - uses env/config if not provided)
+     @param account_index Account index in config file (default 0)
+     @return Client instance
+  *)
+  let create ?public_key ?secret_key ?(account_index=0) () =
+    let (pk, sk) = get_credentials ?public_key ?secret_key ~account_index () in
+    { public_key = pk; secret_key = sk }
+
+  (** Execute code synchronously *)
+  let execute client ?opts language code =
+    execute ~public_key:client.public_key ~secret_key:client.secret_key ?opts language code
+
+  (** Execute code asynchronously *)
+  let execute_async client ?opts language code =
+    execute_async ~public_key:client.public_key ~secret_key:client.secret_key ?opts language code
+
+  (** Execute with auto-detect language *)
+  let run client ?opts code =
+    run ~public_key:client.public_key ~secret_key:client.secret_key ?opts code
+
+  (** Execute async with auto-detect language *)
+  let run_async client ?opts code =
+    run_async ~public_key:client.public_key ~secret_key:client.secret_key ?opts code
+
+  (** Get job status *)
+  let get_job client job_id =
+    get_job ~public_key:client.public_key ~secret_key:client.secret_key job_id
+
+  (** Wait for job completion *)
+  let wait client ?max_polls job_id =
+    wait ~public_key:client.public_key ~secret_key:client.secret_key ?max_polls job_id
+
+  (** Cancel a job *)
+  let cancel_job client job_id =
+    cancel_job ~public_key:client.public_key ~secret_key:client.secret_key job_id
+
+  (** List active jobs *)
+  let list_jobs client =
+    list_jobs ~public_key:client.public_key ~secret_key:client.secret_key ()
+
+  (** Generate image *)
+  let image client ?model ?size ?quality ?n prompt =
+    image ~public_key:client.public_key ~secret_key:client.secret_key ?model ?size ?quality ?n prompt
+
+  (** Get supported languages *)
+  let languages client =
+    languages ~public_key:client.public_key ~secret_key:client.secret_key ()
+end
+
+(* ============================================================================
+   CLI - Legacy curl-based functions for CLI
+   ============================================================================ *)
+
+let curl_post api_key endpoint json =
+  let (public_key, secret_key) = get_api_keys () in
+  api_post ~public_key ~secret_key endpoint json
+
+let curl_get api_key endpoint =
+  let (public_key, secret_key) = get_api_keys () in
+  api_get ~public_key ~secret_key endpoint
 
 let curl_delete api_key endpoint =
   let (public_key, secret_key) = get_api_keys () in
-  let auth_headers = build_auth_headers public_key secret_key "DELETE" endpoint "" in
-  let cmd = Printf.sprintf "curl -s -X DELETE https://api.unsandbox.com%s%s"
-    endpoint auth_headers in
-  let ic = Unix.open_process_in cmd in
-  let rec read_all acc =
-    try
-      let line = input_line ic in
-      read_all (acc ^ line ^ "\n")
-    with End_of_file -> acc
-  in
-  let output = read_all "" in
-  let _ = Unix.close_process_in ic in
-  check_clock_drift output;
-  output
+  api_delete ~public_key ~secret_key endpoint
+
+let portal_curl_post api_key endpoint json =
+  let (public_key, secret_key) = get_api_keys () in
+  portal_post ~public_key ~secret_key endpoint json
 
 let curl_put_text endpoint body =
   let (public_key, secret_key) = get_api_keys () in
@@ -238,8 +826,8 @@ let curl_put_text endpoint body =
   let oc = open_out tmp_file in
   output_string oc body;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT https://api.unsandbox.com%s -H 'Content-Type: text/plain'%s -d @%s"
-    endpoint auth_headers tmp_file in
+  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT %s%s -H 'Content-Type: text/plain'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let status = try input_line ic with End_of_file -> "0" in
   let _ = Unix.close_process_in ic in
@@ -290,8 +878,8 @@ let service_env_export service_id =
   let oc = open_out tmp_file in
   output_string oc "{}";
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com%s -H 'Content-Type: application/json'%s -d @%s"
-    endpoint auth_headers tmp_file in
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
     try let line = input_line ic in read_all (acc ^ line ^ "\n")
@@ -376,24 +964,13 @@ let service_env_command action target envs env_file =
     Printf.fprintf stderr "Usage: un.ml service env <status|set|export|delete> <service_id>\n";
     exit 1
 
-(* Extract JSON value - simple regex-based parser *)
-let extract_json_value json_str key =
-  let pattern = "\"" ^ key ^ "\"\\s*:\\s*\"\\([^\"]*\\)\"" in
-  let regex = Str.regexp pattern in
-  try
-    let _ = Str.search_forward regex json_str 0 in
-    Some (Str.matched_group 1 json_str)
-  with Not_found -> None
-
 (* Open browser *)
 let open_browser url =
   Printf.printf "%sOpening browser: %s%s\n" blue url reset;
   let _ = match Sys.os_type with
     | "Unix" | "Cygwin" ->
-      (* Try xdg-open for Linux *)
       (try Sys.command (Printf.sprintf "xdg-open '%s' 2>/dev/null" url)
        with _ ->
-         (* Fallback to open for macOS *)
          try Sys.command (Printf.sprintf "open '%s' 2>/dev/null" url)
          with _ -> 1)
     | "Win32" ->
@@ -415,53 +992,6 @@ let extract_field field json =
       let _ = Str.search_forward regex json 0 in
       Some (Str.matched_group 1 json)
     with Not_found -> None
-
-let unescape_json s =
-  let s = Str.global_replace (Str.regexp "\\\\n") "\n" s in
-  let s = Str.global_replace (Str.regexp "\\\\t") "\t" s in
-  let s = Str.global_replace (Str.regexp "\\\\\"") "\"" s in
-  let s = Str.global_replace (Str.regexp "\\\\\\\\") "\\" s in
-  s
-
-(* Get API keys *)
-let get_api_keys () =
-  let public_key = try Some (Sys.getenv "UNSANDBOX_PUBLIC_KEY") with Not_found -> None in
-  let secret_key = try Some (Sys.getenv "UNSANDBOX_SECRET_KEY") with Not_found -> None in
-  let api_key = try Some (Sys.getenv "UNSANDBOX_API_KEY") with Not_found -> None in
-  match (public_key, secret_key, api_key) with
-  | (Some pk, Some sk, _) -> (pk, Some sk)
-  | (_, _, Some ak) -> (ak, None)
-  | _ ->
-    Printf.fprintf stderr "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)\n";
-    exit 1
-
-let get_api_key () =
-  let (public_key, _) = get_api_keys () in
-  public_key
-
-(* HMAC-SHA256 using openssl command *)
-let hmac_sha256 secret message =
-  let cmd = Printf.sprintf "echo -n '%s' | openssl dgst -sha256 -hmac '%s' | awk '{print $2}'"
-    (Str.global_replace (Str.regexp "'") "'\\''" message)
-    (Str.global_replace (Str.regexp "'") "'\\''" secret) in
-  let ic = Unix.open_process_in cmd in
-  let result = input_line ic in
-  let _ = Unix.close_process_in ic in
-  String.trim result
-
-let make_signature secret_key timestamp method_ path body =
-  let message = Printf.sprintf "%s:%s:%s:%s" timestamp method_ path body in
-  hmac_sha256 secret_key message
-
-let build_auth_headers public_key secret_key method_ path body =
-  match secret_key with
-  | Some sk ->
-    let timestamp = string_of_int (int_of_float (Unix.time ())) in
-    let signature = make_signature sk timestamp method_ path body in
-    Printf.sprintf " -H 'Authorization: Bearer %s' -H 'X-Timestamp: %s' -H 'X-Signature: %s'"
-      public_key timestamp signature
-  | None ->
-    Printf.sprintf " -H 'Authorization: Bearer %s'" public_key
 
 (* Execute command *)
 let execute_command file env_vars artifacts out_dir network vcpu =
@@ -489,8 +1019,10 @@ let execute_command file env_vars artifacts out_dir network vcpu =
   output_string oc json;
   close_out oc;
 
-  let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/execute -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-    api_key tmp_file in
+  let (public_key, secret_key) = get_api_keys () in
+  let auth_headers = build_auth_headers public_key secret_key "POST" "/execute" json in
+  let cmd = Printf.sprintf "curl -s -X POST %s/execute -H 'Content-Type: application/json'%s -d @%s"
+    api_base auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
     try let line = input_line ic in read_all (acc ^ line ^ "\n")
@@ -580,7 +1112,7 @@ let session_command action shell network vcpu input_files =
   | "kill" ->
     (match shell with
      | Some sid ->
-       let response = curl_delete api_key ("/sessions/" ^ sid) in
+       let _ = curl_delete api_key ("/sessions/" ^ sid) in
        Printf.printf "%sSession terminated: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --kill requires session ID\n";
@@ -591,20 +1123,7 @@ let session_command action shell network vcpu input_files =
     let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
     let input_files_json = build_input_files_json input_files in
     let json = Printf.sprintf "{\"shell\":\"%s\"%s%s%s}" sh network_json vcpu_json input_files_json in
-    let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-    let oc = open_out tmp_file in
-    output_string oc json;
-    close_out oc;
-    let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/sessions -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-      api_key tmp_file in
-    let ic = Unix.open_process_in cmd in
-    let rec read_all acc =
-      try let line = input_line ic in read_all (acc ^ line ^ "\n")
-      with End_of_file -> acc
-    in
-    let response = read_all "" in
-    let _ = Unix.close_process_in ic in
-    Sys.remove tmp_file;
+    let response = curl_post api_key "/sessions" json in
     Printf.printf "%sSession created (WebSocket required)%s\n" yellow reset;
     Printf.printf "%s\n" response
   | _ -> ()
@@ -643,14 +1162,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
   | "sleep" ->
     (match name with
      | Some sid ->
-       let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-       let oc = open_out tmp_file in
-       output_string oc "{}";
-       close_out oc;
-       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/freeze -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-         sid api_key tmp_file in
-       let _ = Sys.command cmd in
-       Sys.remove tmp_file;
+       let _ = curl_post api_key ("/services/" ^ sid ^ "/freeze") "{}" in
        Printf.printf "%sService frozen: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --freeze requires service ID\n";
@@ -658,14 +1170,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
   | "wake" ->
     (match name with
      | Some sid ->
-       let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-       let oc = open_out tmp_file in
-       output_string oc "{}";
-       close_out oc;
-       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/unfreeze -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-         sid api_key tmp_file in
-       let _ = Sys.command cmd in
-       Sys.remove tmp_file;
+       let _ = curl_post api_key ("/services/" ^ sid ^ "/unfreeze") "{}" in
        Printf.printf "%sService unfreezing: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --unfreeze requires service ID\n";
@@ -673,7 +1178,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
   | "destroy" ->
     (match name with
      | Some sid ->
-       let response = curl_delete api_key ("/services/" ^ sid) in
+       let _ = curl_delete api_key ("/services/" ^ sid) in
        Printf.printf "%sService destroyed: %s%s\n" green sid reset
      | None ->
        Printf.fprintf stderr "Error: --destroy requires service ID\n";
@@ -693,8 +1198,8 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let oc = open_out tmp_file in
        output_string oc json;
        close_out oc;
-       let cmd = Printf.sprintf "curl -s -X PATCH https://api.unsandbox.com%s -H 'Content-Type: application/json'%s -d @%s"
-         endpoint auth_headers tmp_file in
+       let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+         api_base endpoint auth_headers tmp_file in
        let _ = Sys.command cmd in
        Sys.remove tmp_file;
        let ram = v * 2 in
@@ -711,20 +1216,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        (match bootstrap with
         | Some cmd ->
           let json = Printf.sprintf "{\"command\":\"%s\"}" (escape_json cmd) in
-          let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-          let oc = open_out tmp_file in
-          output_string oc json;
-          close_out oc;
-          let curl_cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/execute -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-            sid api_key tmp_file in
-          let ic = Unix.open_process_in curl_cmd in
-          let rec read_all acc =
-            try let line = input_line ic in read_all (acc ^ line ^ "\n")
-            with End_of_file -> acc
-          in
-          let response = read_all "" in
-          let _ = Unix.close_process_in ic in
-          Sys.remove tmp_file;
+          let response = curl_post api_key ("/services/" ^ sid ^ "/execute") json in
           (match extract_field "stdout" response with
            | Some s -> Printf.printf "%s%s%s" blue (unescape_json s) reset
            | None -> ())
@@ -739,20 +1231,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
      | Some sid ->
        Printf.fprintf stderr "Fetching bootstrap script from %s...\n" sid;
        let json = "{\"command\":\"cat /tmp/bootstrap.sh\"}" in
-       let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-       let oc = open_out tmp_file in
-       output_string oc json;
-       close_out oc;
-       let curl_cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services/%s/execute -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-         sid api_key tmp_file in
-       let ic = Unix.open_process_in curl_cmd in
-       let rec read_all acc =
-         try let line = input_line ic in read_all (acc ^ line ^ "\n")
-         with End_of_file -> acc
-       in
-       let response = read_all "" in
-       let _ = Unix.close_process_in ic in
-       Sys.remove tmp_file;
+       let response = curl_post api_key ("/services/" ^ sid ^ "/execute") json in
        (match extract_field "stdout" response with
         | Some s ->
           let script = unescape_json s in
@@ -787,20 +1266,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
        let input_files_json = build_input_files_json input_files in
        let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s%s%s}" n ports_json bootstrap_json bootstrap_content_json service_type_json network_json vcpu_json input_files_json in
-       let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-       let oc = open_out tmp_file in
-       output_string oc json;
-       close_out oc;
-       let cmd = Printf.sprintf "curl -s -X POST https://api.unsandbox.com/services -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @%s"
-         api_key tmp_file in
-       let ic = Unix.open_process_in cmd in
-       let rec read_all acc =
-         try let line = input_line ic in read_all (acc ^ line ^ "\n")
-         with End_of_file -> acc
-       in
-       let response = read_all "" in
-       let _ = Unix.close_process_in ic in
-       Sys.remove tmp_file;
+       let response = curl_post api_key "/services" json in
        Printf.printf "%sService created%s\n" green reset;
        Printf.printf "%s\n" response;
        (* Auto-set vault if env vars were provided *)
@@ -830,7 +1296,10 @@ let rec parse_input_files acc = function
     end
   | _ :: rest -> parse_input_files acc rest
 
-(* Parse arguments *)
+(* ============================================================================
+   CLI Entry Point
+   ============================================================================ *)
+
 let () =
   Random.self_init ();
   let args = Array.to_list Sys.argv in
