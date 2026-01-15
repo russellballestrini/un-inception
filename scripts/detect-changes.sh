@@ -20,14 +20,14 @@ fi
 CHANGED_FILES=$(git diff --name-only "$BASE...HEAD" 2>/dev/null || echo "")
 
 # Extract unique languages from TWO sources:
-# 1. Root-level files (un.py, un.go, etc.)
-# 2. Client directory files (clients/python/*, clients/go/*, etc.)
+# 1. Root-level files (un.py, un.go, un.c, etc.)
+# 2. Client directory files (clients/python/*, clients/go/*, clients/c/*, etc.)
 
 CHANGED_LANGS=$(
   {
-    # Root-level implementations
+    # Root-level implementations (un.py, un.c, etc.)
     echo "$CHANGED_FILES" | grep -E '^un\.' | sed 's/un\.\([^.]*\).*/\1/'
-    # Client directory implementations
+    # Client directory implementations (clients/python/, clients/c/, etc.)
     echo "$CHANGED_FILES" | grep -E '^clients/([^/]+)/' | sed 's|^clients/\([^/]*\)/.*|\1|'
   } | sort -u || echo ""
 )
