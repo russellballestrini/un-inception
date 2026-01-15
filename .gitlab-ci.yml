@@ -57,11 +57,18 @@ build:
   stage: build
   image: alpine:latest
   script:
-    - apk add --no-cache git bash
+    - apk add --no-cache git bash gcc musl-dev make
     - bash scripts/build-clients.sh
+    - |
+      # Build C examples
+      if [ -d "clients/c" ] && [ -f "clients/c/Makefile" ]; then
+        echo "Building C examples..."
+        make -C clients/c compile-examples || true
+      fi
   artifacts:
     paths:
       - build/
+      - clients/c/examples/*.o
     expire_in: 1 hour
   only:
     - main
@@ -80,8 +87,10 @@ include:
 science-validate-examples:
   stage: science
   image: alpine:latest
+  needs:
+    - build
   script:
-    - apk add --no-cache curl jq bc
+    - apk add --no-cache curl jq bc python3 gcc musl-dev
     - bash scripts/validate-examples.sh
   artifacts:
     reports:

@@ -1,9 +1,9 @@
 {
     "report_type": "examples_validation",
-    "timestamp": "2026-01-15T20:57:48Z",
-    "timestamp_readable": "2026-01-15 20:57:48 UTC",
+    "timestamp": "2026-01-15T21:18:04Z",
+    "timestamp_readable": "2026-01-15 21:18:04 UTC",
     "summary": {
-        "total_examples": 5,
+        "total_examples": 21,
         "total_validated": 0,
         "total_failed": 0,
         "success_rate": "0%"

@@ -134,6 +134,64 @@ safe_json_extract() {
     echo "$json" | jq -r ".$key // \"\"" 2>/dev/null || echo ""
 }
 
+# Helper: Compile C example to binary
+compile_c_example() {
+    local source_file=$1
+    local binary_file="${TEMP_DIR}/example-${RANDOM}"
+
+    debug "Compiling C example: $source_file"
+
+    # Compile with gcc (using standard flags)
+    if gcc -o "$binary_file" "$source_file" 2>/dev/null; then
+        echo "$binary_file"
+        return 0
+    else
+        debug "C compilation failed for $source_file"
+        return 1
+    fi
+}
+
+# Helper: Execute Python async example via subprocess
+execute_python_async() {
+    local python_code=$1
+
+    debug "Executing Python async code"
+
+    # Use Python to run async code via asyncio.run()
+    # This allows testing of async/await patterns
+    python3 -c "import asyncio; asyncio.run(eval('async def _async_main():\\n' + '\\n'.join('    ' + line for line in '''$python_code'''.split('\\n')) + '\\n\\nasyncio.run(_async_main())'))" 2>&1
+    return $?
+}
+
+# Helper: Execute local binary or script directly
+execute_local_file() {
+    local file=$1
+    local language=$2
+
+    debug "Executing local file: $file ($language)"
+
+    case "$language" in
+        c)
+            # For C examples, compile and execute
+            local binary=$(compile_c_example "$file")
+            if [[ -n "$binary" ]] && [[ -x "$binary" ]]; then
+                timeout "$TIMEOUT_SECONDS" "$binary" 2>&1
+                return $?
+            else
+                return 1
+            fi
+            ;;
+        python)
+            # For Python examples, execute directly
+            timeout "$TIMEOUT_SECONDS" python3 "$file" 2>&1
+            return $?
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Main validation function for a single example file
 validate_example() {
     local example_file=$1
@@ -147,6 +205,7 @@ validate_example() {
     local stderr_content
     local exit_code
     local result_file="${TEMP_DIR}/result-${RANDOM}.json"
+    local execution_method="api"
 
     # Detect language
     language=$(detect_language "$example_file")
@@ -167,55 +226,74 @@ validate_example() {
         return 1
     fi
 
-    # Check if we have API key
-    if [[ -z "$UNSANDBOX_API_KEY" ]]; then
-        log_warn "UNSANDBOX_API_KEY not set, skipping actual execution"
-        return 0
-    fi
-
-    api_lang=$(get_api_language "$language")
-
     # Measure execution time
     start_time=$(date +%s%N)
 
-    # Execute via API with timeout
-    debug "Executing $example_file ($api_lang)"
-    api_response=$(curl -s -X POST "${UNSANDBOX_API_URL}/execute" \
-        -H "Authorization: Bearer ${UNSANDBOX_API_KEY}" \
-        -H "Content-Type: application/json" \
-        --max-time "$TIMEOUT_SECONDS" \
-        -d "{\"language\": \"${api_lang}\", \"code\": $(echo "$code" | jq -R -s .)}" \
-        2>&1)
+    # Determine execution method
+    # If no API key, try local execution for C and Python
+    if [[ -z "$UNSANDBOX_API_KEY" ]]; then
+        case "$language" in
+            c|python)
+                debug "No API key - attempting local execution for $language"
+                execution_method="local"
+                ;;
+            *)
+                log_warn "$example_file - UNSANDBOX_API_KEY not set, skipping execution"
+                return 0
+                ;;
+        esac
+    fi
 
-    exit_code=$?
+    # Execute via local method or API
+    if [[ "$execution_method" == "local" ]]; then
+        # Local execution for C and Python
+        api_response=$(execute_local_file "$example_file" "$language")
+        exit_code=$?
+        stdout_content="$api_response"
+        stderr_content=""
+    else
+        # API execution (default for all languages when key is available)
+        api_lang=$(get_api_language "$language")
+
+        # Execute via API with timeout
+        debug "Executing $example_file ($api_lang) via API"
+        api_response=$(curl -s -X POST "${UNSANDBOX_API_URL}/execute" \
+            -H "Authorization: Bearer ${UNSANDBOX_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --max-time "$TIMEOUT_SECONDS" \
+            -d "{\"language\": \"${api_lang}\", \"code\": $(echo "$code" | jq -R -s .)}" \
+            2>&1)
+
+        exit_code=$?
+
+        # Extract results from API response
+        if [[ $exit_code -eq 0 ]]; then
+            stdout_content=$(safe_json_extract "$api_response" "stdout")
+            stderr_content=$(safe_json_extract "$api_response" "stderr")
+            exit_code=$(safe_json_extract "$api_response" "exit_code")
+
+            # Treat empty stderr as success
+            if [[ -z "$stderr_content" || "$stderr_content" == "null" ]]; then
+                stderr_content=""
+            fi
+        else
+            stderr_content="API request failed (curl exit code $exit_code)"
+        fi
+    fi
+
     elapsed_time=$(( ($(date +%s%N) - start_time) / 1000000 ))  # Convert to milliseconds
 
-    # Extract results from API response
-    if [[ $exit_code -eq 0 ]]; then
-        stdout_content=$(safe_json_extract "$api_response" "stdout")
-        stderr_content=$(safe_json_extract "$api_response" "stderr")
-        exit_code=$(safe_json_extract "$api_response" "exit_code")
-
-        # Treat empty stderr as success
-        if [[ -z "$stderr_content" || "$stderr_content" == "null" ]]; then
-            stderr_content=""
-        fi
-
-        # Check if execution was successful
-        if [[ "$exit_code" == "0" || -z "$exit_code" ]]; then
-            log_pass "$example_file ($api_lang) - ${elapsed_time}ms"
-            LANGUAGE_STATS[$language]=$((${LANGUAGE_STATS[$language]} + 1))
-            EXECUTION_TIMES[$language]=$((${EXECUTION_TIMES[$language]:-0} + elapsed_time))
-            TOTAL_VALIDATED=$((TOTAL_VALIDATED + 1))
-        else
-            log_fail "$example_file ($api_lang) - exit code $exit_code"
-            if [[ -n "$stderr_content" ]]; then
-                debug "stderr: $stderr_content"
-            fi
-            TOTAL_FAILED=$((TOTAL_FAILED + 1))
-        fi
+    # Check if execution was successful
+    if [[ "$exit_code" == "0" || -z "$exit_code" ]]; then
+        log_pass "$example_file ($language) - ${elapsed_time}ms [$execution_method]"
+        LANGUAGE_STATS[$language]=$((${LANGUAGE_STATS[$language]} + 1))
+        EXECUTION_TIMES[$language]=$((${EXECUTION_TIMES[$language]:-0} + elapsed_time))
+        TOTAL_VALIDATED=$((TOTAL_VALIDATED + 1))
     else
-        log_fail "$example_file - API request failed (curl exit code $exit_code)"
+        log_fail "$example_file ($language) - exit code $exit_code [$execution_method]"
+        if [[ -n "$stderr_content" ]]; then
+            debug "stderr: $stderr_content"
+        fi
         TOTAL_FAILED=$((TOTAL_FAILED + 1))
     fi
 
@@ -224,6 +302,7 @@ validate_example() {
 {
     "file": "$example_file",
     "language": "$language",
+    "execution_method": "$execution_method",
     "status": $([ "$exit_code" == "0" ] && echo "\"pass\"" || echo "\"fail\""),
     "execution_time_ms": $elapsed_time,
     "exit_code": $exit_code,
@@ -269,6 +348,7 @@ find_examples() {
 
     # Find all files in examples directories
     # Look for common example patterns and extensions
+    # Includes Python (.py), C (.c), JavaScript, Go, Rust, Java, etc.
     find "$EXAMPLES_DIR" \
         -path "*/examples/*" \
         \( -type f -name "*.py" -o -name "*.js" -o -name "*.go" -o \

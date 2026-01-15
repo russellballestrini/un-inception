@@ -10,6 +10,7 @@ CHANGED_LANGS=$(echo "$CHANGES" | jq -r '.changed_langs[]' 2>/dev/null || echo "
 TEST_ALL=$(echo "$CHANGES" | jq -r '.test_all' 2>/dev/null || echo "false")
 
 # If test_all is true or no changes detected, generate comprehensive matrix
+# Now includes Python and C with full SDK support
 if [ "$TEST_ALL" = "true" ]; then
     LANGS="python javascript typescript go ruby php perl lua bash rust java csharp cpp c haskell kotlin elixir erlang crystal dart nim julia r groovy clojure fsharp ocaml objc d vlang zig fortran cobol scheme lisp tcl awk prolog forth powershell raku"
 elif [ -z "$CHANGED_LANGS" ]; then

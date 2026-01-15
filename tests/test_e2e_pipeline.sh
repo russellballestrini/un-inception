@@ -111,8 +111,10 @@ test_step "Create mock client examples"
 
 # Create mock clients structure
 mkdir -p "$MOCK_CLIENTS_DIR/python/sync/examples"
+mkdir -p "$MOCK_CLIENTS_DIR/python/async/examples"
 mkdir -p "$MOCK_CLIENTS_DIR/javascript/sync/examples"
 mkdir -p "$MOCK_CLIENTS_DIR/go/async/examples"
+mkdir -p "$MOCK_CLIENTS_DIR/c/examples"
 mkdir -p "$RESULTS_DIR"
 
 # Python example - hello.py
@@ -123,6 +125,23 @@ Python SDK example: Hello World
 Expected output: hello
 """
 print("hello")
+EOF
+
+# Python async example - async_hello.py
+cat > "$MOCK_CLIENTS_DIR/python/async/examples/async_hello.py" << 'EOF'
+#!/usr/bin/env python3
+"""
+Python async SDK example: Async Hello World
+Expected output: async hello
+"""
+import asyncio
+
+async def main():
+    await asyncio.sleep(0.001)
+    print("async hello")
+
+if __name__ == "__main__":
+    asyncio.run(main())
 EOF
 
 # JavaScript example - hello.js
@@ -147,14 +166,42 @@ func main() {
 }
 EOF
 
+# C example - hello.c
+cat > "$MOCK_CLIENTS_DIR/c/examples/hello.c" << 'EOF'
+#include <stdio.h>
+
+// C SDK example: Hello World
+// Expected output: hello
+int main() {
+    printf("hello\n");
+    return 0;
+}
+EOF
+
 # Verify files were created
-if [ -f "$MOCK_CLIENTS_DIR/python/sync/examples/hello.py" ] && \
-   [ -f "$MOCK_CLIENTS_DIR/javascript/sync/examples/hello.js" ] && \
-   [ -f "$MOCK_CLIENTS_DIR/go/async/examples/hello.go" ]; then
-    test_pass "Created 3 mock example files"
+EXPECTED_FILES=(
+    "$MOCK_CLIENTS_DIR/python/sync/examples/hello.py"
+    "$MOCK_CLIENTS_DIR/python/async/examples/async_hello.py"
+    "$MOCK_CLIENTS_DIR/javascript/sync/examples/hello.js"
+    "$MOCK_CLIENTS_DIR/go/async/examples/hello.go"
+    "$MOCK_CLIENTS_DIR/c/examples/hello.c"
+)
+
+ALL_CREATED=true
+for file in "${EXPECTED_FILES[@]}"; do
+    if [ ! -f "$file" ]; then
+        ALL_CREATED=false
+        break
+    fi
+done
+
+if [ "$ALL_CREATED" = true ]; then
+    test_pass "Created 5 mock example files (Python sync/async, JavaScript, Go, C)"
     log "  - $MOCK_CLIENTS_DIR/python/sync/examples/hello.py"
+    log "  - $MOCK_CLIENTS_DIR/python/async/examples/async_hello.py"
     log "  - $MOCK_CLIENTS_DIR/javascript/sync/examples/hello.js"
     log "  - $MOCK_CLIENTS_DIR/go/async/examples/hello.go"
+    log "  - $MOCK_CLIENTS_DIR/c/examples/hello.c"
 else
     test_fail "Failed to create mock example files"
     exit 1
@@ -179,8 +226,8 @@ if [ -z "$CHANGES_JSON" ]; then
     # This is OK - might be because git state is clean
     log "Git state appears clean - creating synthetic changes.json"
 
-    # Create synthetic changes.json for testing
-    CHANGES_JSON='{"changed_langs": ["python", "javascript", "go"], "reason": "E2E test", "test_all": false}'
+    # Create synthetic changes.json for testing (includes Python, JavaScript, Go, and C)
+    CHANGES_JSON='{"changed_langs": ["python", "javascript", "go", "c"], "reason": "E2E test", "test_all": false}'
 fi
 
 # Save changes to file for next steps
@@ -257,16 +304,16 @@ if [ ! -f "$VALIDATION_RESULTS" ]; then
     "timestamp": "$TIMESTAMP",
     "timestamp_readable": "$TIMESTAMP_READABLE",
     "summary": {
-        "total_examples": 3,
-        "total_validated": 3,
+        "total_examples": 5,
+        "total_validated": 5,
         "total_failed": 0,
         "success_rate": 100.0
     },
     "language_stats": [
         {
             "language": "python",
-            "validated": 1,
-            "total_time_ms": 1200,
+            "validated": 2,
+            "total_time_ms": 2400,
             "avg_time_ms": 1200
         },
         {
@@ -280,9 +327,15 @@ if [ ! -f "$VALIDATION_RESULTS" ]; then
             "validated": 1,
             "total_time_ms": 1500,
             "avg_time_ms": 1500
+        },
+        {
+            "language": "c",
+            "validated": 1,
+            "total_time_ms": 850,
+            "avg_time_ms": 850
         }
     ],
-    "notes": "E2E test validation results. Examples validated through mock execution."
+    "notes": "E2E test validation results. Examples validated through mock execution (Python sync/async, JavaScript, Go, C)."
 }
 EOF
 fi
@@ -347,12 +400,15 @@ cd "$REPO_ROOT"
 # Create synthetic test result files for filter-results.sh to aggregate
 mkdir -p "$RESULTS_DIR/test-results"
 
-# Python test results
+# Python test results (includes sync and async)
 cat > "$RESULTS_DIR/test-results/test-results-python.xml" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="Python Examples" tests="1" failures="0">
-    <testcase name="hello.py" classname="python.examples">
+  <testsuite name="Python Examples" tests="2" failures="0">
+    <testcase name="hello.py" classname="python.sync.examples">
+      <system-out>Test passed</system-out>
+    </testcase>
+    <testcase name="async_hello.py" classname="python.async.examples">
       <system-out>Test passed</system-out>
     </testcase>
   </testsuite>
@@ -378,6 +434,18 @@ cat > "$RESULTS_DIR/test-results/test-results-go.xml" << 'EOF'
   <testsuite name="Go Examples" tests="1" failures="0">
     <testcase name="hello.go" classname="go.examples">
       <system-out>Test passed</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
+EOF
+
+# C test results
+cat > "$RESULTS_DIR/test-results/test-results-c.xml" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="C Examples" tests="1" failures="0">
+    <testcase name="hello.c" classname="c.examples">
+      <system-out>Test passed (compiled and executed)</system-out>
     </testcase>
   </testsuite>
 </testsuites>
@@ -432,11 +500,11 @@ log "Artifact verification: $ARTIFACT_COUNT/$ARTIFACT_REQUIRED created"
 test_step "Verify mock examples were discoverable"
 
 if [ -d "$MOCK_CLIENTS_DIR" ]; then
-    EXAMPLE_COUNT=$(find "$MOCK_CLIENTS_DIR" -name "*.py" -o -name "*.js" -o -name "*.go" | wc -l)
-    if [ "$EXAMPLE_COUNT" -eq 3 ]; then
-        test_pass "All 3 mock examples present"
+    EXAMPLE_COUNT=$(find "$MOCK_CLIENTS_DIR" -type f \( -name "*.py" -o -name "*.js" -o -name "*.go" -o -name "*.c" \) | wc -l)
+    if [ "$EXAMPLE_COUNT" -eq 5 ]; then
+        test_pass "All 5 mock examples present (Python sync/async, JavaScript, Go, C)"
     else
-        test_warn "Expected 3 examples, found $EXAMPLE_COUNT"
+        test_warn "Expected 5 examples, found $EXAMPLE_COUNT"
     fi
 else
     test_warn "Mock clients directory missing (already cleaned)"

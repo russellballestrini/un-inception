@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="C Examples" tests="1" failures="0">
+    <testcase name="hello.c" classname="c.examples">
+      <system-out>Test passed (compiled and executed)</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

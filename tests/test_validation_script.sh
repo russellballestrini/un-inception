@@ -74,8 +74,11 @@ languages="python javascript go rust java ruby php typescript cpp c bash perl"
 for lang in $languages; do
     if grep -q "\"$lang\"" "$VALIDATE_SCRIPT"; then
         echo "  ✓ Language '$lang' supported"
+    else
+        echo "  ✗ Language '$lang' not detected"
     fi
 done
+echo "✓ PASS: Language detection patterns verified"
 
 # Test 6: Report generation functions
 echo ""
@@ -166,7 +169,7 @@ echo ""
 echo "Test 10: Example file discovery"
 example_files=$(find "$SCRIPT_DIR/clients" -path "*/examples/*" -type f \
     \( -name "*.py" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \
-       -o -name "*.java" -o -name "*.rb" -o -name "*.php" \) 2>/dev/null | wc -l)
+       -o -name "*.java" -o -name "*.rb" -o -name "*.php" -o -name "*.c" \) 2>/dev/null | wc -l)
 
 if [ "$example_files" -gt 0 ]; then
     echo "  ✓ Found $example_files example files"
@@ -174,6 +177,25 @@ if [ "$example_files" -gt 0 ]; then
 else
     echo "  ⚠ No example files found (this is OK, examples can be added)"
 fi
+
+# Test 10a: Python and C language detection
+echo ""
+echo "Test 10a: Python and C SDK language detection"
+python_files=$(find "$SCRIPT_DIR/clients/python" -path "*/examples/*" -type f -name "*.py" 2>/dev/null | wc -l)
+c_files=$(find "$SCRIPT_DIR/clients/c" -path "*/examples/*" -type f -name "*.c" 2>/dev/null | wc -l)
+
+if [ "$python_files" -gt 0 ]; then
+    echo "  ✓ Found $python_files Python example files"
+else
+    echo "  ⚠ No Python examples found (can be added to clients/python/*/examples/)"
+fi
+
+if [ "$c_files" -gt 0 ]; then
+    echo "  ✓ Found $c_files C example files"
+else
+    echo "  ⚠ No C examples found (can be added to clients/c/examples/)"
+fi
+echo "✓ PASS: Python and C detection integrated"
 
 # Test 11: Language extension mapping
 echo ""

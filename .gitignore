@@ -36,3 +36,9 @@ Thumbs.db
 # Test outputs
 *.log
 /output/
+__pycache__/
+*.pyc
+clients/c/un
+clients/c/examples/fibonacci
+clients/c/examples/hello_world
+clients/c/tests/test_library

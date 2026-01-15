@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="Python Examples" tests="1" failures="0">
-    <testcase name="hello.py" classname="python.examples">
+  <testsuite name="Python Examples" tests="2" failures="0">
+    <testcase name="hello.py" classname="python.sync.examples">
+      <system-out>Test passed</system-out>
+    </testcase>
+    <testcase name="async_hello.py" classname="python.async.examples">
       <system-out>Test passed</system-out>
     </testcase>
   </testsuite>
