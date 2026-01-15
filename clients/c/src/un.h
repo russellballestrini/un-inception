@@ -74,8 +74,8 @@ extern "C" {
  * ============================================================================ */
 
 typedef struct {
-    char *stdout;
-    char *stderr;
+    char *stdout_str;      /* Use stdout_str to avoid conflict with stdio macro */
+    char *stderr_str;      /* Use stderr_str to avoid conflict with stdio macro */
     int exit_code;
     char *language;
     double execution_time;
@@ -282,6 +282,16 @@ int unsandbox_resolve_credentials(
 /* ============================================================================
  * Utility Functions
  * ============================================================================ */
+
+/**
+ * Generate HMAC-SHA256 signature for API authentication
+ *
+ * @param secret_key The secret key
+ * @param message The message to sign (format: "timestamp:METHOD:path:body")
+ * @return Hex-encoded signature string (64 chars). Must be freed with free().
+ *         Returns NULL if inputs are invalid.
+ */
+char *unsandbox_hmac_sign(const char *secret_key, const char *message);
 
 /**
  * Get last error message from failed operation

@@ -33,6 +33,10 @@
 #include <libwebsockets.h>
 #include <pwd.h>
 
+#ifdef UNSANDBOX_LIBRARY
+#include "un.h"
+#endif
+
 #define API_URL "https://api.unsandbox.com/execute"
 #define API_BASE "https://api.unsandbox.com"
 #define PORTAL_BASE "https://unsandbox.com"
@@ -5026,6 +5030,82 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  3. ~/.unsandbox/accounts.csv (format: public_key,secret_key per line)\n");
     fprintf(stderr, "     Use --account N to select account by index (0-based, default: 0)\n");
     fprintf(stderr, "     Or set UNSANDBOX_ACCOUNT=N env var\n");
+}
+
+/* ============================================================================
+ * LIBRARY API IMPLEMENTATION
+ * These functions implement the un.h public API for library use.
+ * ============================================================================ */
+
+const char *unsandbox_version(void) {
+    return "2.0.0";
+}
+
+const char *unsandbox_detect_language(const char *filename) {
+    if (!filename) return NULL;
+    return detect_language_from_extension(filename);
+}
+
+char *unsandbox_hmac_sign(const char *secret_key, const char *message) {
+    if (!secret_key || !message) return NULL;
+    return hmac_sha256_hex(secret_key, strlen(secret_key), message, strlen(message));
+}
+
+int unsandbox_health_check(void) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, API_BASE "/health");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) return -1;
+    return (http_code == 200) ? 1 : 0;
+}
+
+/* Memory management */
+void unsandbox_free_result(unsandbox_result_t *result) {
+    if (!result) return;
+    free(result->stdout_str);
+    free(result->stderr_str);
+    free(result->language);
+    free(result->error_message);
+    free(result);
+}
+
+void unsandbox_free_job(unsandbox_job_t *job) {
+    if (!job) return;
+    free(job->id);
+    free(job->language);
+    free(job->status);
+    free(job->error_message);
+    free(job);
+}
+
+void unsandbox_free_job_list(unsandbox_job_list_t *jobs) {
+    if (!jobs) return;
+    for (size_t i = 0; i < jobs->count; i++) {
+        free(jobs->jobs[i].id);
+        free(jobs->jobs[i].language);
+        free(jobs->jobs[i].status);
+        free(jobs->jobs[i].error_message);
+    }
+    free(jobs->jobs);
+    free(jobs);
+}
+
+void unsandbox_free_languages(unsandbox_languages_t *langs) {
+    if (!langs) return;
+    for (size_t i = 0; i < langs->count; i++) {
+        free(langs->languages[i]);
+    }
+    free(langs->languages);
+    free(langs);
 }
 
 #ifndef UNSANDBOX_LIBRARY

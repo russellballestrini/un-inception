@@ -251,6 +251,84 @@ git remote set-url --add --push origin ssh://git@git.unturf.com:2222/engineering
 git remote set-url --add --push origin git@github.com:russellballestrini/un-inception.git
 ```
 
+## SDK Testing Philosophy
+
+**SDKs are LIBRARIES for embedding in other people's code.** They are NOT just CLIs.
+
+### Three Testing Levels (ALL REQUIRED)
+
+| Level | What It Tests | How |
+|-------|--------------|-----|
+| **Unit** | Exported library functions | Test actual exports in native language. NO MOCKING. NO RE-IMPLEMENTING. |
+| **Integration** | SDK components work together | Internal SDK tests (auth + request + response parsing) |
+| **Functional** | Real API lifecycle | Actually call api.unsandbox.com - execute, sessions, services |
+
+### CRITICAL: No Mocking or Local Re-implementation
+
+**FORBIDDEN**: Re-implementing functions locally to "test" them.
+
+```c
+// ❌ WRONG - test_library.c re-implements SHA-256 locally
+static void sha256_transform(...) { /* local copy */ }
+void test_sha256() { /* tests local copy, not actual SDK */ }
+
+// ✅ CORRECT - test actual exported SDK functions
+#include "un.h"
+void test_sha256() {
+    // Call the REAL exported function from un.c
+    char *result = unsandbox_hmac_sign("key", "message");
+    assert(strcmp(result, expected) == 0);
+    free(result);
+}
+```
+
+### SDK Export Requirements
+
+Each SDK MUST export functions that can be:
+1. **Imported** - Other code can `import`/`require`/`use` the SDK
+2. **Tested** - Unit tests can call exported functions directly
+3. **Documented** - Public API is clear and documented
+
+**Example (C SDK)**:
+```c
+// un.h declares public API
+unsandbox_result_t *unsandbox_execute(const char *lang, const char *code, ...);
+char *unsandbox_hmac_sign(const char *secret, const char *message);
+
+// un.c implements with NON-STATIC functions (when built as library)
+#ifndef UNSANDBOX_CLI_ONLY
+unsandbox_result_t *unsandbox_execute(...) { /* real implementation */ }
+char *unsandbox_hmac_sign(...) { /* real implementation */ }
+#endif
+```
+
+### Test File Structure
+
+```
+clients/{language}/
+├── src/           # Source files
+├── tests/
+│   ├── unit/      # Unit tests - test exported functions
+│   ├── integration/  # Integration tests - SDK internal consistency
+│   └── functional/   # Functional tests - real API calls
+├── Makefile       # Build + test targets
+└── README.md
+```
+
+### Makefile Test Targets
+
+Every client Makefile MUST have:
+```makefile
+test: test-cli test-library test-integration test-functional
+
+test-cli:          # CLI binary works (--help, --version)
+test-library:      # Unit tests of exported library functions
+test-integration:  # SDK internal consistency tests
+test-functional:   # Real API calls (requires UNSANDBOX_* env vars)
+```
+
+See **docs/TESTING.md** for complete testing guidelines.
+
 ## Related Repos
 
 - `~/git/unsandbox.com/` - Portal (contains un.c CLI at cli/un.c)
