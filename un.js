@@ -754,6 +754,92 @@ function detectLanguage(filename) {
 }
 
 // ============================================================================
+// Snapshots (Save/Restore Session & Service State)
+// ============================================================================
+
+/**
+ * Create a snapshot of a session's current state.
+ *
+ * @param {string} sessionId - ID of the session to snapshot
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with snapshot_id, created_at, status
+ */
+async function sessionSnapshot(sessionId, options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest(`/sessions/${sessionId}/snapshot`, {
+        method: "POST",
+        data: {},
+        publicKey,
+        secretKey,
+    });
+}
+
+/**
+ * Create a snapshot of a service's current state.
+ *
+ * @param {string} serviceId - ID of the service to snapshot
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with snapshot_id, created_at, status
+ */
+async function serviceSnapshot(serviceId, options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest(`/services/${serviceId}/snapshot`, {
+        method: "POST",
+        data: {},
+        publicKey,
+        secretKey,
+    });
+}
+
+/**
+ * List all available snapshots.
+ *
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with snapshots array, count
+ */
+async function listSnapshots(options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest("/snapshots", {
+        method: "GET",
+        publicKey,
+        secretKey,
+    });
+}
+
+/**
+ * Restore a session or service from a snapshot.
+ *
+ * @param {string} snapshotId - ID of the snapshot to restore
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with restored_id, status
+ */
+async function restoreSnapshot(snapshotId, options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest(`/snapshots/${snapshotId}/restore`, {
+        method: "POST",
+        data: {},
+        publicKey,
+        secretKey,
+    });
+}
+
+/**
+ * Delete a snapshot.
+ *
+ * @param {string} snapshotId - ID of the snapshot to delete
+ * @param {Object} options - Optional parameters
+ * @returns {Promise<Object>} Result with status
+ */
+async function deleteSnapshot(snapshotId, options = {}) {
+    const { publicKey = null, secretKey = null } = options;
+    return apiRequest(`/snapshots/${snapshotId}`, {
+        method: "DELETE",
+        publicKey,
+        secretKey,
+    });
+}
+
+// ============================================================================
 // Client Class
 // ============================================================================
 
@@ -846,6 +932,26 @@ class Client {
 
     async languages(options = {}) {
         return languages({ ...options, publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async sessionSnapshot(sessionId) {
+        return sessionSnapshot(sessionId, { publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async serviceSnapshot(serviceId) {
+        return serviceSnapshot(serviceId, { publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async listSnapshots() {
+        return listSnapshots({ publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async restoreSnapshot(snapshotId) {
+        return restoreSnapshot(snapshotId, { publicKey: this.publicKey, secretKey: this.secretKey });
+    }
+
+    async deleteSnapshot(snapshotId) {
+        return deleteSnapshot(snapshotId, { publicKey: this.publicKey, secretKey: this.secretKey });
     }
 }
 
@@ -1047,6 +1153,13 @@ module.exports = {
 
     // Image generation
     image,
+
+    // Snapshots
+    sessionSnapshot,
+    serviceSnapshot,
+    listSnapshots,
+    restoreSnapshot,
+    deleteSnapshot,
 
     // Utilities
     languages,

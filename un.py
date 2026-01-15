@@ -91,7 +91,9 @@ __version__ = "2.0.0"
 __all__ = [
     "execute", "execute_async", "run", "run_async",
     "get_job", "wait", "cancel_job", "list_jobs",
-    "image", "languages", "Client",
+    "image", "languages",
+    "session_snapshot", "service_snapshot", "list_snapshots", "restore_snapshot", "delete_snapshot",
+    "Client",
 ]
 
 # ============================================================================
@@ -718,6 +720,128 @@ def image(
 
 
 # ============================================================================
+# Snapshots (Save/Restore Session & Service State)
+# ============================================================================
+
+def session_snapshot(
+    session_id: str,
+    *,
+    public_key: str = None,
+    secret_key: str = None,
+) -> Dict[str, Any]:
+    """
+    Create a snapshot of a session's current state.
+
+    Args:
+        session_id: ID of the session to snapshot
+
+    Returns:
+        dict with snapshot_id, created_at, status
+
+    Example:
+        >>> snap = un.session_snapshot("sess-abc123")
+        >>> print(snap["snapshot_id"])
+    """
+    return _api_request(
+        f"/sessions/{session_id}/snapshot",
+        method="POST",
+        data={},
+        public_key=public_key,
+        secret_key=secret_key,
+    )
+
+
+def service_snapshot(
+    service_id: str,
+    *,
+    public_key: str = None,
+    secret_key: str = None,
+) -> Dict[str, Any]:
+    """
+    Create a snapshot of a service's current state.
+
+    Args:
+        service_id: ID of the service to snapshot
+
+    Returns:
+        dict with snapshot_id, created_at, status
+    """
+    return _api_request(
+        f"/services/{service_id}/snapshot",
+        method="POST",
+        data={},
+        public_key=public_key,
+        secret_key=secret_key,
+    )
+
+
+def list_snapshots(
+    *,
+    public_key: str = None,
+    secret_key: str = None,
+) -> Dict[str, Any]:
+    """
+    List all available snapshots.
+
+    Returns:
+        dict with snapshots (list), count
+    """
+    return _api_request(
+        "/snapshots",
+        method="GET",
+        public_key=public_key,
+        secret_key=secret_key,
+    )
+
+
+def restore_snapshot(
+    snapshot_id: str,
+    *,
+    public_key: str = None,
+    secret_key: str = None,
+) -> Dict[str, Any]:
+    """
+    Restore a session or service from a snapshot.
+
+    Args:
+        snapshot_id: ID of the snapshot to restore
+
+    Returns:
+        dict with restored_id (session or service ID), status
+    """
+    return _api_request(
+        f"/snapshots/{snapshot_id}/restore",
+        method="POST",
+        data={},
+        public_key=public_key,
+        secret_key=secret_key,
+    )
+
+
+def delete_snapshot(
+    snapshot_id: str,
+    *,
+    public_key: str = None,
+    secret_key: str = None,
+) -> Dict[str, Any]:
+    """
+    Delete a snapshot.
+
+    Args:
+        snapshot_id: ID of the snapshot to delete
+
+    Returns:
+        dict with status
+    """
+    return _api_request(
+        f"/snapshots/{snapshot_id}",
+        method="DELETE",
+        public_key=public_key,
+        secret_key=secret_key,
+    )
+
+
+# ============================================================================
 # Utility Functions
 # ============================================================================
 
@@ -890,6 +1014,26 @@ class Client:
     def languages(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Get supported languages (cached for 1 hour)."""
         return languages(public_key=self.public_key, secret_key=self.secret_key, force_refresh=force_refresh)
+
+    def session_snapshot(self, session_id: str) -> Dict[str, Any]:
+        """Create snapshot of session. See module-level session_snapshot() for details."""
+        return session_snapshot(session_id, public_key=self.public_key, secret_key=self.secret_key)
+
+    def service_snapshot(self, service_id: str) -> Dict[str, Any]:
+        """Create snapshot of service. See module-level service_snapshot() for details."""
+        return service_snapshot(service_id, public_key=self.public_key, secret_key=self.secret_key)
+
+    def list_snapshots(self) -> Dict[str, Any]:
+        """List all snapshots. See module-level list_snapshots() for details."""
+        return list_snapshots(public_key=self.public_key, secret_key=self.secret_key)
+
+    def restore_snapshot(self, snapshot_id: str) -> Dict[str, Any]:
+        """Restore from snapshot. See module-level restore_snapshot() for details."""
+        return restore_snapshot(snapshot_id, public_key=self.public_key, secret_key=self.secret_key)
+
+    def delete_snapshot(self, snapshot_id: str) -> Dict[str, Any]:
+        """Delete snapshot. See module-level delete_snapshot() for details."""
+        return delete_snapshot(snapshot_id, public_key=self.public_key, secret_key=self.secret_key)
 
 
 # ============================================================================
