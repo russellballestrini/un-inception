@@ -5108,6 +5108,473 @@ void unsandbox_free_languages(unsandbox_languages_t *langs) {
     free(langs);
 }
 
+void unsandbox_free_session(unsandbox_session_t *session) {
+    if (!session) return;
+    free(session->id);
+    free(session->container_name);
+    free(session->status);
+    free(session->network_mode);
+    free(session);
+}
+
+void unsandbox_free_session_list(unsandbox_session_list_t *sessions) {
+    if (!sessions) return;
+    for (size_t i = 0; i < sessions->count; i++) {
+        free(sessions->sessions[i].id);
+        free(sessions->sessions[i].container_name);
+        free(sessions->sessions[i].status);
+        free(sessions->sessions[i].network_mode);
+    }
+    free(sessions->sessions);
+    free(sessions);
+}
+
+void unsandbox_free_service(unsandbox_service_t *service) {
+    if (!service) return;
+    free(service->id);
+    free(service->name);
+    free(service->status);
+    free(service->container_name);
+    free(service->network_mode);
+    free(service->ports);
+    free(service->domains);
+    free(service);
+}
+
+void unsandbox_free_service_list(unsandbox_service_list_t *services) {
+    if (!services) return;
+    for (size_t i = 0; i < services->count; i++) {
+        free(services->services[i].id);
+        free(services->services[i].name);
+        free(services->services[i].status);
+        free(services->services[i].container_name);
+        free(services->services[i].network_mode);
+        free(services->services[i].ports);
+        free(services->services[i].domains);
+    }
+    free(services->services);
+    free(services);
+}
+
+void unsandbox_free_snapshot(unsandbox_snapshot_t *snapshot) {
+    if (!snapshot) return;
+    free(snapshot->id);
+    free(snapshot->name);
+    free(snapshot->type);
+    free(snapshot->source_id);
+    free(snapshot);
+}
+
+void unsandbox_free_snapshot_list(unsandbox_snapshot_list_t *snapshots) {
+    if (!snapshots) return;
+    for (size_t i = 0; i < snapshots->count; i++) {
+        free(snapshots->snapshots[i].id);
+        free(snapshots->snapshots[i].name);
+        free(snapshots->snapshots[i].type);
+        free(snapshots->snapshots[i].source_id);
+    }
+    free(snapshots->snapshots);
+    free(snapshots);
+}
+
+void unsandbox_free_key_info(unsandbox_key_info_t *info) {
+    if (!info) return;
+    free(info->tier);
+    free(info->error_message);
+    free(info);
+}
+
+/* ============================================================================
+ * Session Functions Implementation
+ * ============================================================================ */
+
+int unsandbox_session_destroy(const char *session_id,
+                              const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = kill_session(creds, session_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_session_freeze(const char *session_id,
+                             const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = freeze_session(creds, session_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_session_unfreeze(const char *session_id,
+                               const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = unfreeze_session(creds, session_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_session_boost(const char *session_id, int vcpu,
+                            const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = boost_session(creds, session_id, vcpu);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_session_unboost(const char *session_id,
+                              const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = unboost_session(creds, session_id);
+    free_credentials(creds);
+    return result;
+}
+
+/* ============================================================================
+ * Service Functions Implementation
+ * ============================================================================ */
+
+int unsandbox_service_destroy(const char *service_id,
+                              const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = destroy_service(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_freeze(const char *service_id,
+                             const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = freeze_service(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_unfreeze(const char *service_id,
+                               const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = unfreeze_service(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_lock(const char *service_id,
+                           const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = lock_service(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_unlock(const char *service_id,
+                             const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = unlock_service(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_redeploy(const char *service_id, const char *bootstrap,
+                               const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = redeploy_service(creds, service_id, bootstrap);
+    free_credentials(creds);
+    return result;
+}
+
+char *unsandbox_service_logs(const char *service_id, int all_logs,
+                             const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return NULL;
+    char *result = get_service_logs(creds, service_id, all_logs);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_env_set(const char *service_id, const char *env_content,
+                              const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = service_env_set(creds, service_id, env_content);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_env_delete(const char *service_id,
+                                 const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = service_env_delete(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_resize(const char *service_id, int vcpu,
+                             const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = resize_service(creds, service_id, vcpu);
+    free_credentials(creds);
+    return result;
+}
+
+/* ============================================================================
+ * Snapshot Functions Implementation
+ * ============================================================================ */
+
+int unsandbox_snapshot_delete(const char *snapshot_id,
+                              const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = delete_snapshot(creds, snapshot_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_snapshot_lock(const char *snapshot_id,
+                            const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = lock_snapshot(creds, snapshot_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_snapshot_unlock(const char *snapshot_id,
+                              const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = unlock_snapshot(creds, snapshot_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_snapshot_restore(const char *snapshot_id,
+                               const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = restore_from_snapshot(creds, snapshot_id, NULL);
+    free_credentials(creds);
+    return result;
+}
+
+/* ============================================================================
+ * Key Validation Implementation
+ * ============================================================================ */
+
+unsandbox_key_info_t *unsandbox_validate_keys(const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return NULL;
+
+    unsandbox_key_info_t *info = calloc(1, sizeof(unsandbox_key_info_t));
+    if (!info) {
+        free_credentials(creds);
+        return NULL;
+    }
+
+    int result = validate_api_key(creds);
+    info->valid = (result == 0) ? 1 : 0;
+
+    free_credentials(creds);
+    return info;
+}
+
+/* ============================================================================
+ * Stub Implementations (TODO: Full implementation)
+ * These functions are declared in un.h but need HTTP/JSON handling
+ * ============================================================================ */
+
+/* Execution - these need HTTP POST with JSON parsing */
+unsandbox_result_t *unsandbox_execute(
+    const char *language, const char *code,
+    const char *public_key, const char *secret_key) {
+    (void)language; (void)code; (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs JSON parsing of API response */
+    return NULL;
+}
+
+char *unsandbox_execute_async(
+    const char *language, const char *code,
+    const char *public_key, const char *secret_key) {
+    (void)language; (void)code; (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs JSON parsing of API response */
+    return NULL;
+}
+
+unsandbox_result_t *unsandbox_wait_job(
+    const char *job_id,
+    const char *public_key, const char *secret_key) {
+    (void)job_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs polling and JSON parsing */
+    return NULL;
+}
+
+unsandbox_job_t *unsandbox_get_job(
+    const char *job_id,
+    const char *public_key, const char *secret_key) {
+    (void)job_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs JSON parsing */
+    return NULL;
+}
+
+int unsandbox_cancel_job(
+    const char *job_id,
+    const char *public_key, const char *secret_key) {
+    (void)job_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement */
+    return -1;
+}
+
+unsandbox_job_list_t *unsandbox_list_jobs(
+    const char *public_key, const char *secret_key) {
+    (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs JSON array parsing */
+    return NULL;
+}
+
+unsandbox_languages_t *unsandbox_get_languages(
+    const char *public_key, const char *secret_key) {
+    (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs JSON array parsing */
+    return NULL;
+}
+
+/* Session - list/get/create need JSON parsing */
+unsandbox_session_list_t *unsandbox_session_list(
+    const char *public_key, const char *secret_key) {
+    (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal list_sessions prints to stdout */
+    return NULL;
+}
+
+unsandbox_session_t *unsandbox_session_get(
+    const char *session_id,
+    const char *public_key, const char *secret_key) {
+    (void)session_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs JSON parsing */
+    return NULL;
+}
+
+unsandbox_session_t *unsandbox_session_create(
+    const char *network_mode, const char *shell,
+    const char *public_key, const char *secret_key) {
+    (void)network_mode; (void)shell; (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal create_session returns struct but starts WebSocket */
+    return NULL;
+}
+
+unsandbox_result_t *unsandbox_session_execute(
+    const char *session_id, const char *command,
+    const char *public_key, const char *secret_key) {
+    (void)session_id; (void)command; (void)public_key; (void)secret_key;
+    /* TODO: Implement - needs HTTP POST and JSON parsing */
+    return NULL;
+}
+
+/* Service - list/get/create need JSON parsing */
+unsandbox_service_list_t *unsandbox_service_list(
+    const char *public_key, const char *secret_key) {
+    (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal list_services prints to stdout */
+    return NULL;
+}
+
+unsandbox_service_t *unsandbox_service_get(
+    const char *service_id,
+    const char *public_key, const char *secret_key) {
+    (void)service_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal get_service_info prints to stdout */
+    return NULL;
+}
+
+char *unsandbox_service_create(
+    const char *name, const char *ports, const char *domains,
+    const char *bootstrap, const char *network_mode,
+    const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return NULL;
+    char *result = create_service(creds, name, ports, domains, bootstrap, NULL, network_mode, 0, NULL, NULL, 0, NULL);
+    free_credentials(creds);
+    return result;
+}
+
+unsandbox_result_t *unsandbox_service_execute(
+    const char *service_id, const char *command, int timeout_ms,
+    const char *public_key, const char *secret_key) {
+    (void)service_id; (void)command; (void)timeout_ms; (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal execute_service prints output */
+    return NULL;
+}
+
+char *unsandbox_service_env_get(
+    const char *service_id,
+    const char *public_key, const char *secret_key) {
+    (void)service_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal service_env_status prints to stdout */
+    return NULL;
+}
+
+char *unsandbox_service_env_export(
+    const char *service_id,
+    const char *public_key, const char *secret_key) {
+    (void)service_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal service_env_export prints to stdout */
+    return NULL;
+}
+
+/* Snapshot - list/get/create need JSON parsing */
+unsandbox_snapshot_list_t *unsandbox_snapshot_list(
+    const char *public_key, const char *secret_key) {
+    (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal list_snapshots prints to stdout */
+    return NULL;
+}
+
+unsandbox_snapshot_t *unsandbox_snapshot_get(
+    const char *snapshot_id,
+    const char *public_key, const char *secret_key) {
+    (void)snapshot_id; (void)public_key; (void)secret_key;
+    /* TODO: Implement - internal get_snapshot_info prints to stdout */
+    return NULL;
+}
+
+char *unsandbox_snapshot_session(
+    const char *session_id, const char *name, int hot,
+    const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return NULL;
+    int result = create_session_snapshot(creds, session_id, name, hot);
+    free_credentials(creds);
+    /* TODO: Return snapshot ID - internal function returns int status */
+    return (result == 0) ? strdup("snapshot_created") : NULL;
+}
+
+char *unsandbox_snapshot_service(
+    const char *service_id, const char *name, int hot,
+    const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return NULL;
+    int result = create_service_snapshot(creds, service_id, name, hot);
+    free_credentials(creds);
+    /* TODO: Return snapshot ID - internal function returns int status */
+    return (result == 0) ? strdup("snapshot_created") : NULL;
+}
+
+/* Utility */
+const char *unsandbox_last_error(void) {
+    /* TODO: Implement thread-local error storage */
+    return NULL;
+}
+
 #ifndef UNSANDBOX_LIBRARY
 int main(int argc, char *argv[]) {
     // Disable stdout buffering for real-time output
