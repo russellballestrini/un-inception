@@ -25,6 +25,14 @@
 #     # Snapshot operations
 #     snapshot_id = Un.session_snapshot(session_id)
 #
+# CLI Usage:
+#     ruby un.rb script.py                  # Execute Python script
+#     ruby un.rb -s bash 'echo hello'       # Inline bash command
+#     ruby un.rb session --list             # List sessions
+#     ruby un.rb service --list             # List services
+#     ruby un.rb snapshot --list            # List snapshots
+#     ruby un.rb key                        # Check API key
+#
 # Authentication Priority (4-tier):
 #     1. Method arguments (public_key:, secret_key:)
 #     2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
@@ -46,6 +54,7 @@ require 'uri'
 require 'json'
 require 'openssl'
 require 'fileutils'
+require 'optparse'
 
 # Unsandbox Ruby SDK module (synchronous)
 module Un
@@ -929,6 +938,36 @@ module Un
       make_request('POST', '/keys/validate', pk, sk, {})
     end
 
+    # Generate images from text prompt using AI.
+    #
+    # @param prompt [String] Text description of the image to generate
+    # @param model [String, nil] Model to use (optional)
+    # @param size [String] Image size (default: "1024x1024")
+    # @param quality [String] "standard" or "hd" (default: "standard")
+    # @param n [Integer] Number of images to generate (default: 1)
+    # @param public_key [String, nil] API public key
+    # @param secret_key [String, nil] API secret key
+    # @return [Hash] Result with :images array and :created_at
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.image("A sunset over mountains")
+    #     puts result["images"]  # Array of image data/URLs
+    def image(prompt, model: nil, size: '1024x1024', quality: 'standard', n: 1,
+              public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      payload = {
+        prompt: prompt,
+        size: size,
+        quality: quality,
+        n: n
+      }
+      payload[:model] = model if model
+
+      make_request('POST', '/image', pk, sk, payload)
+    end
+
     private
 
     # Language detection mapping (file extension -> language)
@@ -1231,4 +1270,893 @@ module Un
       nil
     end
   end
+
+  # ============================================================================
+  # CLI Implementation
+  # ============================================================================
+
+  # Exit codes
+  EXIT_SUCCESS = 0
+  EXIT_ERROR = 1
+  EXIT_INVALID_ARGS = 2
+  EXIT_AUTH_ERROR = 3
+  EXIT_API_ERROR = 4
+  EXIT_TIMEOUT = 5
+
+  class << self
+    # Main CLI entry point
+    def cli_main
+      # Global options
+      options = {
+        shell: nil,
+        env: [],
+        files: [],
+        file_paths: [],
+        public_key: nil,
+        secret_key: nil,
+        network: 'zerotrust',
+        vcpu: 1,
+        yes: false,
+        artifacts: false,
+        output: nil
+      }
+
+      # Check for subcommands first
+      if ARGV.empty?
+        cli_show_help
+        exit(EXIT_INVALID_ARGS)
+      end
+
+      case ARGV[0]
+      when 'session'
+        ARGV.shift
+        cli_session(options)
+      when 'service'
+        ARGV.shift
+        cli_service(options)
+      when 'snapshot'
+        ARGV.shift
+        cli_snapshot(options)
+      when 'key'
+        ARGV.shift
+        cli_key(options)
+      when '-h', '--help', 'help'
+        cli_show_help
+        exit(EXIT_SUCCESS)
+      else
+        cli_execute(options)
+      end
+    rescue CredentialsError => e
+      $stderr.puts "Error: #{e.message}"
+      exit(EXIT_AUTH_ERROR)
+    rescue APIError => e
+      $stderr.puts "Error: #{e.message}"
+      exit(EXIT_API_ERROR)
+    rescue OptionParser::InvalidOption, OptionParser::MissingArgument => e
+      $stderr.puts "Error: #{e.message}"
+      exit(EXIT_INVALID_ARGS)
+    rescue Interrupt
+      $stderr.puts "\nInterrupted"
+      exit(EXIT_ERROR)
+    end
+
+    private
+
+    # Show main help
+    def cli_show_help
+      puts <<~HELP
+        unsandbox.com Ruby SDK - Secure Code Execution
+
+        Usage:
+          ruby un.rb [options] <source_file>      Execute code file
+          ruby un.rb [options] -s LANG 'code'     Execute inline code
+          ruby un.rb session [options]            Manage sessions
+          ruby un.rb service [options]            Manage services
+          ruby un.rb snapshot [options]           Manage snapshots
+          ruby un.rb key                          Check API key
+
+        Global Options:
+          -s, --shell LANG       Language for inline code
+          -e, --env KEY=VAL      Set environment variable (can repeat)
+          -f, --file FILE        Add input file to /tmp/
+          -F, --file-path FILE   Add input file with path preserved
+          -a, --artifacts        Return compiled artifacts
+          -o, --output DIR       Output directory for artifacts
+          -p, --public-key KEY   API public key
+          -k, --secret-key KEY   API secret key
+          -n, --network MODE     Network mode: zerotrust or semitrusted
+          -v, --vcpu N           vCPU count (1-8)
+          -y, --yes              Skip confirmation prompts
+          -h, --help             Show this help
+
+        Examples:
+          ruby un.rb script.py
+          ruby un.rb -s python 'print("hello")'
+          ruby un.rb -n semitrusted crawler.py
+          ruby un.rb session --list
+          ruby un.rb service --name web --ports 80 --bootstrap "python -m http.server 80"
+      HELP
+    end
+
+    # Parse global options from ARGV
+    def parse_global_options(options)
+      OptionParser.new do |opts|
+        opts.on('-s', '--shell LANG', 'Language for inline code') do |v|
+          options[:shell] = v
+        end
+        opts.on('-e', '--env KEY=VAL', 'Set environment variable') do |v|
+          options[:env] << v
+        end
+        opts.on('-f', '--file FILE', 'Add input file to /tmp/') do |v|
+          options[:files] << v
+        end
+        opts.on('-F', '--file-path FILE', 'Add input file with path preserved') do |v|
+          options[:file_paths] << v
+        end
+        opts.on('-a', '--artifacts', 'Return compiled artifacts') do
+          options[:artifacts] = true
+        end
+        opts.on('-o', '--output DIR', 'Output directory for artifacts') do |v|
+          options[:output] = v
+        end
+        opts.on('-p', '--public-key KEY', 'API public key') do |v|
+          options[:public_key] = v
+        end
+        opts.on('-k', '--secret-key KEY', 'API secret key') do |v|
+          options[:secret_key] = v
+        end
+        opts.on('-n', '--network MODE', 'Network mode') do |v|
+          options[:network] = v
+        end
+        opts.on('-v', '--vcpu N', Integer, 'vCPU count (1-8)') do |v|
+          options[:vcpu] = v
+        end
+        opts.on('-y', '--yes', 'Skip confirmation prompts') do
+          options[:yes] = true
+        end
+        opts.on('-h', '--help', 'Show help') do
+          yield if block_given?
+          exit(EXIT_SUCCESS)
+        end
+      end
+    end
+
+    # Execute code command
+    def cli_execute(options)
+      parser = parse_global_options(options) do
+        cli_show_help
+      end
+      parser.parse!(ARGV)
+
+      if ARGV.empty?
+        $stderr.puts 'Error: No source file or code provided'
+        exit(EXIT_INVALID_ARGS)
+      end
+
+      code = nil
+      language = nil
+
+      if options[:shell]
+        # Inline code mode: -s LANG 'code'
+        language = options[:shell]
+        code = ARGV.join(' ')
+      else
+        # File mode: script.py
+        filename = ARGV[0]
+        unless File.exist?(filename)
+          $stderr.puts "Error: File not found: #{filename}"
+          exit(EXIT_INVALID_ARGS)
+        end
+        code = File.read(filename)
+        language = detect_language(filename)
+        unless language
+          $stderr.puts "Error: Cannot detect language for: #{filename}"
+          $stderr.puts 'Use -s/--shell to specify language'
+          exit(EXIT_INVALID_ARGS)
+        end
+      end
+
+      # Execute the code
+      result = execute_code(
+        language,
+        code,
+        public_key: options[:public_key],
+        secret_key: options[:secret_key]
+      )
+
+      # Output results
+      cli_print_execute_result(result)
+    end
+
+    # Print execution result
+    def cli_print_execute_result(result)
+      puts result['stdout'] if result['stdout'] && !result['stdout'].empty?
+      $stderr.puts result['stderr'] if result['stderr'] && !result['stderr'].empty?
+      puts '---'
+      puts "Exit code: #{result['exit_code'] || 0}"
+      if result['execution_time_ms']
+        puts "Execution time: #{result['execution_time_ms']}ms"
+      end
+    end
+
+    # Session subcommand
+    def cli_session(options)
+      session_opts = {
+        list: false,
+        attach: nil,
+        kill: nil,
+        freeze: nil,
+        unfreeze: nil,
+        boost: nil,
+        unboost: nil,
+        snapshot: nil,
+        snapshot_name: nil,
+        hot: false,
+        tmux: false,
+        screen: false,
+        shell: 'bash',
+        audit: false
+      }
+
+      parser = parse_global_options(options) do
+        cli_session_help
+      end
+
+      parser.on('-l', '--list', 'List active sessions') do
+        session_opts[:list] = true
+      end
+      parser.on('--attach ID', 'Reconnect to existing session') do |v|
+        session_opts[:attach] = v
+      end
+      parser.on('--kill ID', 'Terminate a session') do |v|
+        session_opts[:kill] = v
+      end
+      parser.on('--freeze ID', 'Pause session') do |v|
+        session_opts[:freeze] = v
+      end
+      parser.on('--unfreeze ID', 'Resume session') do |v|
+        session_opts[:unfreeze] = v
+      end
+      parser.on('--boost ID', 'Add vCPUs/RAM') do |v|
+        session_opts[:boost] = v
+      end
+      parser.on('--unboost ID', 'Remove boost') do |v|
+        session_opts[:unboost] = v
+      end
+      parser.on('--snapshot ID', 'Create snapshot') do |v|
+        session_opts[:snapshot] = v
+      end
+      parser.on('--snapshot-name NAME', 'Name for snapshot') do |v|
+        session_opts[:snapshot_name] = v
+      end
+      parser.on('--hot', 'Live snapshot (no freeze)') do
+        session_opts[:hot] = true
+      end
+      parser.on('--tmux', 'Enable persistence with tmux') do
+        session_opts[:tmux] = true
+      end
+      parser.on('--screen', 'Enable persistence with screen') do
+        session_opts[:screen] = true
+      end
+      parser.on('--shell SHELL', 'Shell/REPL to use') do |v|
+        session_opts[:shell] = v
+      end
+      parser.on('--audit', 'Record session') do
+        session_opts[:audit] = true
+      end
+
+      parser.parse!(ARGV)
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+
+      if session_opts[:list]
+        sessions = list_sessions(**creds)
+        cli_print_sessions_table(sessions)
+      elsif session_opts[:kill]
+        result = delete_session(session_opts[:kill], **creds)
+        puts "Session #{session_opts[:kill]} terminated"
+      elsif session_opts[:freeze]
+        result = freeze_session(session_opts[:freeze], **creds)
+        puts "Session #{session_opts[:freeze]} frozen"
+      elsif session_opts[:unfreeze]
+        result = unfreeze_session(session_opts[:unfreeze], **creds)
+        puts "Session #{session_opts[:unfreeze]} unfrozen"
+      elsif session_opts[:boost]
+        result = boost_session(session_opts[:boost], **creds)
+        puts "Session #{session_opts[:boost]} boosted"
+      elsif session_opts[:unboost]
+        result = unboost_session(session_opts[:unboost], **creds)
+        puts "Session #{session_opts[:unboost]} unboosted"
+      elsif session_opts[:snapshot]
+        snapshot_id = session_snapshot(
+          session_opts[:snapshot],
+          name: session_opts[:snapshot_name],
+          ephemeral: session_opts[:hot],
+          **creds
+        )
+        puts "Snapshot created: #{snapshot_id}"
+      elsif session_opts[:attach]
+        # Attach to existing session - show info
+        session = get_session(session_opts[:attach], **creds)
+        puts "Session: #{session['id']}"
+        puts "Status: #{session['status']}"
+        puts "WebSocket URL: #{session['websocket_url']}" if session['websocket_url']
+        puts "\nNote: Use a WebSocket client to connect interactively"
+      else
+        # Create new session
+        multiplexer = nil
+        multiplexer = 'tmux' if session_opts[:tmux]
+        multiplexer = 'screen' if session_opts[:screen]
+
+        result = create_session(
+          session_opts[:shell],
+          network_mode: options[:network],
+          vcpu: options[:vcpu],
+          multiplexer: multiplexer,
+          **creds
+        )
+        puts "Session created: #{result['session_id']}"
+        puts "Container: #{result['container_name']}" if result['container_name']
+        puts "WebSocket URL: #{result['websocket_url']}" if result['websocket_url']
+        puts "\nNote: Use a WebSocket client to connect interactively"
+      end
+    end
+
+    # Print sessions table
+    def cli_print_sessions_table(sessions)
+      if sessions.empty?
+        puts 'No active sessions'
+        return
+      end
+
+      # Header
+      puts format('%-38s %-20s %-10s %-20s', 'ID', 'NAME', 'STATUS', 'CREATED')
+      sessions.each do |s|
+        puts format('%-38s %-20s %-10s %-20s',
+                    s['id'] || s['session_id'] || '-',
+                    s['name'] || '-',
+                    s['status'] || s['state'] || '-',
+                    s['created_at'] || '-')
+      end
+    end
+
+    # Session help
+    def cli_session_help
+      puts <<~HELP
+        Session Management
+
+        Usage:
+          ruby un.rb session [options]
+
+        Options:
+          --shell SHELL          Shell/REPL to use (default: bash)
+          -l, --list             List active sessions
+          --attach ID            Reconnect to existing session
+          --kill ID              Terminate a session
+          --freeze ID            Pause session
+          --unfreeze ID          Resume session
+          --boost ID             Add vCPUs/RAM
+          --unboost ID           Remove boost
+          --tmux                 Enable persistence with tmux
+          --screen               Enable persistence with screen
+          --snapshot ID          Create snapshot
+          --snapshot-name NAME   Name for snapshot
+          --hot                  Live snapshot (no freeze)
+          --audit                Record session
+
+        Examples:
+          ruby un.rb session                          # New bash session
+          ruby un.rb session --shell python3          # Python REPL
+          ruby un.rb session --tmux                   # Persistent session
+          ruby un.rb session --list                   # List sessions
+          ruby un.rb session --kill abc123            # Kill session
+      HELP
+    end
+
+    # Service subcommand
+    def cli_service(options)
+      service_opts = {
+        list: false,
+        name: nil,
+        ports: nil,
+        domains: nil,
+        type: nil,
+        bootstrap: nil,
+        bootstrap_file: nil,
+        env_file: nil,
+        info: nil,
+        logs: nil,
+        tail: nil,
+        freeze: nil,
+        unfreeze: nil,
+        destroy: nil,
+        lock: nil,
+        unlock: nil,
+        resize: nil,
+        redeploy: nil,
+        execute: nil,
+        execute_cmd: nil,
+        snapshot: nil,
+        snapshot_name: nil
+      }
+
+      parser = parse_global_options(options) do
+        cli_service_help
+      end
+
+      parser.on('-l', '--list', 'List all services') do
+        service_opts[:list] = true
+      end
+      parser.on('--name NAME', 'Service name (creates new)') do |v|
+        service_opts[:name] = v
+      end
+      parser.on('--ports PORTS', 'Comma-separated ports') do |v|
+        service_opts[:ports] = v.split(',').map(&:to_i)
+      end
+      parser.on('--domains DOMAINS', 'Custom domains') do |v|
+        service_opts[:domains] = v.split(',')
+      end
+      parser.on('--type TYPE', 'Service type (minecraft, tcp, udp)') do |v|
+        service_opts[:type] = v
+      end
+      parser.on('--bootstrap CMD', 'Bootstrap command') do |v|
+        service_opts[:bootstrap] = v
+      end
+      parser.on('--bootstrap-file FILE', 'Bootstrap from file') do |v|
+        service_opts[:bootstrap_file] = v
+      end
+      parser.on('--env-file FILE', 'Load env from .env file') do |v|
+        service_opts[:env_file] = v
+      end
+      parser.on('--info ID', 'Get service details') do |v|
+        service_opts[:info] = v
+      end
+      parser.on('--logs ID', 'Get all logs') do |v|
+        service_opts[:logs] = v
+      end
+      parser.on('--tail ID', 'Get last 9000 lines') do |v|
+        service_opts[:tail] = v
+      end
+      parser.on('--freeze ID', 'Pause service') do |v|
+        service_opts[:freeze] = v
+      end
+      parser.on('--unfreeze ID', 'Resume service') do |v|
+        service_opts[:unfreeze] = v
+      end
+      parser.on('--destroy ID', 'Delete service') do |v|
+        service_opts[:destroy] = v
+      end
+      parser.on('--lock ID', 'Prevent deletion') do |v|
+        service_opts[:lock] = v
+      end
+      parser.on('--unlock ID', 'Allow deletion') do |v|
+        service_opts[:unlock] = v
+      end
+      parser.on('--resize ID', 'Resize (with --vcpu)') do |v|
+        service_opts[:resize] = v
+      end
+      parser.on('--redeploy ID', 'Re-run bootstrap') do |v|
+        service_opts[:redeploy] = v
+      end
+      parser.on('--execute ID', 'Run command in service') do |v|
+        service_opts[:execute] = v
+      end
+      parser.on('--snapshot ID', 'Create snapshot') do |v|
+        service_opts[:snapshot] = v
+      end
+      parser.on('--snapshot-name NAME', 'Name for snapshot') do |v|
+        service_opts[:snapshot_name] = v
+      end
+
+      parser.parse!(ARGV)
+
+      # Check for env subcommand
+      if ARGV[0] == 'env'
+        ARGV.shift
+        cli_service_env(options, service_opts)
+        return
+      end
+
+      # Get command argument for execute
+      service_opts[:execute_cmd] = ARGV.join(' ') if service_opts[:execute] && !ARGV.empty?
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+
+      if service_opts[:list]
+        services = list_services(**creds)
+        cli_print_services_table(services)
+      elsif service_opts[:info]
+        service = get_service(service_opts[:info], **creds)
+        cli_print_service_info(service)
+      elsif service_opts[:logs]
+        result = get_service_logs(service_opts[:logs], all: true, **creds)
+        puts result['log'] || result['logs'] || ''
+      elsif service_opts[:tail]
+        result = get_service_logs(service_opts[:tail], all: false, **creds)
+        puts result['log'] || result['logs'] || ''
+      elsif service_opts[:freeze]
+        freeze_service(service_opts[:freeze], **creds)
+        puts "Service #{service_opts[:freeze]} frozen"
+      elsif service_opts[:unfreeze]
+        unfreeze_service(service_opts[:unfreeze], **creds)
+        puts "Service #{service_opts[:unfreeze]} unfrozen"
+      elsif service_opts[:destroy]
+        delete_service(service_opts[:destroy], **creds)
+        puts "Service #{service_opts[:destroy]} destroyed"
+      elsif service_opts[:lock]
+        lock_service(service_opts[:lock], **creds)
+        puts "Service #{service_opts[:lock]} locked"
+      elsif service_opts[:unlock]
+        unlock_service(service_opts[:unlock], **creds)
+        puts "Service #{service_opts[:unlock]} unlocked"
+      elsif service_opts[:resize]
+        update_service(service_opts[:resize], vcpu: options[:vcpu], **creds)
+        puts "Service #{service_opts[:resize]} resized to #{options[:vcpu]} vCPUs"
+      elsif service_opts[:redeploy]
+        bootstrap = nil
+        if service_opts[:bootstrap_file]
+          bootstrap = File.read(service_opts[:bootstrap_file])
+        elsif service_opts[:bootstrap]
+          bootstrap = service_opts[:bootstrap]
+        end
+        redeploy_service(service_opts[:redeploy], bootstrap: bootstrap, **creds)
+        puts "Service #{service_opts[:redeploy]} redeployed"
+      elsif service_opts[:execute]
+        cmd = service_opts[:execute_cmd]
+        if cmd.nil? || cmd.empty?
+          $stderr.puts 'Error: No command provided for --execute'
+          exit(EXIT_INVALID_ARGS)
+        end
+        result = execute_in_service(service_opts[:execute], cmd, **creds)
+        cli_print_execute_result(result)
+      elsif service_opts[:snapshot]
+        snapshot_id = service_snapshot(
+          service_opts[:snapshot],
+          name: service_opts[:snapshot_name],
+          **creds
+        )
+        puts "Snapshot created: #{snapshot_id}"
+      elsif service_opts[:name]
+        # Create new service
+        bootstrap = service_opts[:bootstrap]
+        if service_opts[:bootstrap_file]
+          bootstrap = File.read(service_opts[:bootstrap_file])
+        end
+
+        unless bootstrap
+          $stderr.puts 'Error: --bootstrap or --bootstrap-file required'
+          exit(EXIT_INVALID_ARGS)
+        end
+        unless service_opts[:ports]
+          $stderr.puts 'Error: --ports required'
+          exit(EXIT_INVALID_ARGS)
+        end
+
+        result = create_service(
+          service_opts[:name],
+          service_opts[:ports],
+          bootstrap,
+          network_mode: options[:network],
+          vcpu: options[:vcpu],
+          custom_domains: service_opts[:domains],
+          service_type: service_opts[:type],
+          **creds
+        )
+        puts "Service created: #{result['service_id']}"
+        puts "URL: #{result['url']}" if result['url']
+      else
+        cli_service_help
+        exit(EXIT_INVALID_ARGS)
+      end
+    end
+
+    # Print services table
+    def cli_print_services_table(services)
+      if services.empty?
+        puts 'No services'
+        return
+      end
+
+      puts format('%-38s %-20s %-10s %-20s', 'ID', 'NAME', 'STATUS', 'CREATED')
+      services.each do |s|
+        puts format('%-38s %-20s %-10s %-20s',
+                    s['id'] || s['service_id'] || '-',
+                    s['name'] || '-',
+                    s['status'] || s['state'] || '-',
+                    s['created_at'] || '-')
+      end
+    end
+
+    # Print service info
+    def cli_print_service_info(service)
+      puts "ID: #{service['id'] || service['service_id']}"
+      puts "Name: #{service['name']}"
+      puts "Status: #{service['status'] || service['state']}"
+      puts "URL: #{service['url']}" if service['url']
+      puts "Ports: #{service['ports']&.join(', ')}" if service['ports']
+      puts "vCPU: #{service['vcpu']}" if service['vcpu']
+      puts "Network: #{service['network_mode']}" if service['network_mode']
+      puts "Created: #{service['created_at']}" if service['created_at']
+      puts "Locked: #{service['locked']}" if service.key?('locked')
+    end
+
+    # Service help
+    def cli_service_help
+      puts <<~HELP
+        Service Management
+
+        Usage:
+          ruby un.rb service [options]
+          ruby un.rb service env <command> <id>
+
+        Options:
+          --name NAME            Service name (creates new)
+          --ports PORTS          Comma-separated ports
+          --domains DOMAINS      Custom domains
+          --type TYPE            Service type (minecraft, tcp, udp)
+          --bootstrap CMD        Bootstrap command
+          --bootstrap-file FILE  Bootstrap from file
+          --env-file FILE        Load env from .env file
+          -l, --list             List all services
+          --info ID              Get service details
+          --logs ID              Get all logs
+          --tail ID              Get last 9000 lines
+          --freeze ID            Pause service
+          --unfreeze ID          Resume service
+          --destroy ID           Delete service
+          --lock ID              Prevent deletion
+          --unlock ID            Allow deletion
+          --resize ID            Resize (with --vcpu)
+          --redeploy ID          Re-run bootstrap
+          --execute ID 'cmd'     Run command in service
+          --snapshot ID          Create snapshot
+
+        Env Subcommands:
+          ruby un.rb service env status ID    Show vault status
+          ruby un.rb service env set ID       Set from --env-file or stdin
+          ruby un.rb service env export ID    Export to stdout
+          ruby un.rb service env delete ID    Delete vault
+
+        Examples:
+          ruby un.rb service --name web --ports 80 --bootstrap "python -m http.server 80"
+          ruby un.rb service --list
+          ruby un.rb service --logs abc123
+          ruby un.rb service --execute abc123 'ls -la'
+          ruby un.rb service env status abc123
+      HELP
+    end
+
+    # Service env subcommand
+    def cli_service_env(options, service_opts)
+      if ARGV.empty?
+        $stderr.puts 'Error: env subcommand requires: status, set, export, or delete'
+        exit(EXIT_INVALID_ARGS)
+      end
+
+      cmd = ARGV.shift
+      service_id = ARGV.shift
+
+      unless service_id
+        $stderr.puts 'Error: Service ID required'
+        exit(EXIT_INVALID_ARGS)
+      end
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+
+      case cmd
+      when 'status'
+        result = get_service_env(service_id, **creds)
+        puts "Has vault: #{result['has_vault'] || false}"
+        puts "Variables: #{result['count'] || 0}"
+        puts "Updated: #{result['updated_at']}" if result['updated_at']
+      when 'set'
+        env_content = nil
+        if service_opts[:env_file]
+          env_content = File.read(service_opts[:env_file])
+        elsif !$stdin.tty?
+          env_content = $stdin.read
+        else
+          $stderr.puts 'Error: Provide --env-file or pipe content to stdin'
+          exit(EXIT_INVALID_ARGS)
+        end
+        set_service_env(service_id, env_content, **creds)
+        puts "Environment vault updated for #{service_id}"
+      when 'export'
+        result = export_service_env(service_id, **creds)
+        puts result['env'] || ''
+      when 'delete'
+        delete_service_env(service_id, **creds)
+        puts "Environment vault deleted for #{service_id}"
+      else
+        $stderr.puts "Error: Unknown env command: #{cmd}"
+        exit(EXIT_INVALID_ARGS)
+      end
+    end
+
+    # Snapshot subcommand
+    def cli_snapshot(options)
+      snapshot_opts = {
+        list: false,
+        info: nil,
+        delete: nil,
+        lock: nil,
+        unlock: nil,
+        clone: nil,
+        clone_type: 'session',
+        clone_name: nil,
+        clone_shell: nil,
+        clone_ports: nil
+      }
+
+      parser = parse_global_options(options) do
+        cli_snapshot_help
+      end
+
+      parser.on('-l', '--list', 'List all snapshots') do
+        snapshot_opts[:list] = true
+      end
+      parser.on('--info ID', 'Get snapshot details') do |v|
+        snapshot_opts[:info] = v
+      end
+      parser.on('--delete ID', 'Delete snapshot') do |v|
+        snapshot_opts[:delete] = v
+      end
+      parser.on('--lock ID', 'Prevent deletion') do |v|
+        snapshot_opts[:lock] = v
+      end
+      parser.on('--unlock ID', 'Allow deletion') do |v|
+        snapshot_opts[:unlock] = v
+      end
+      parser.on('--clone ID', 'Clone snapshot') do |v|
+        snapshot_opts[:clone] = v
+      end
+      parser.on('--type TYPE', 'Clone type: session or service') do |v|
+        snapshot_opts[:clone_type] = v
+      end
+      parser.on('--name NAME', 'Name for cloned resource') do |v|
+        snapshot_opts[:clone_name] = v
+      end
+      parser.on('--shell SHELL', 'Shell for cloned session') do |v|
+        snapshot_opts[:clone_shell] = v
+      end
+      parser.on('--ports PORTS', 'Ports for cloned service') do |v|
+        snapshot_opts[:clone_ports] = v.split(',').map(&:to_i)
+      end
+
+      parser.parse!(ARGV)
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+
+      if snapshot_opts[:list]
+        snapshots = list_snapshots(**creds)
+        cli_print_snapshots_table(snapshots)
+      elsif snapshot_opts[:info]
+        # Get snapshot details via restore endpoint or list
+        snapshots = list_snapshots(**creds)
+        snapshot = snapshots.find { |s| s['snapshot_id'] == snapshot_opts[:info] || s['id'] == snapshot_opts[:info] }
+        if snapshot
+          cli_print_snapshot_info(snapshot)
+        else
+          $stderr.puts "Error: Snapshot not found: #{snapshot_opts[:info]}"
+          exit(EXIT_ERROR)
+        end
+      elsif snapshot_opts[:delete]
+        delete_snapshot(snapshot_opts[:delete], **creds)
+        puts "Snapshot #{snapshot_opts[:delete]} deleted"
+      elsif snapshot_opts[:lock]
+        lock_snapshot(snapshot_opts[:lock], **creds)
+        puts "Snapshot #{snapshot_opts[:lock]} locked"
+      elsif snapshot_opts[:unlock]
+        unlock_snapshot(snapshot_opts[:unlock], **creds)
+        puts "Snapshot #{snapshot_opts[:unlock]} unlocked"
+      elsif snapshot_opts[:clone]
+        result = clone_snapshot(
+          snapshot_opts[:clone],
+          type: snapshot_opts[:clone_type],
+          name: snapshot_opts[:clone_name],
+          shell: snapshot_opts[:clone_shell],
+          ports: snapshot_opts[:clone_ports],
+          **creds
+        )
+        if result['session_id']
+          puts "Session created: #{result['session_id']}"
+        elsif result['service_id']
+          puts "Service created: #{result['service_id']}"
+        else
+          puts 'Clone completed'
+          puts JSON.pretty_generate(result)
+        end
+      else
+        cli_snapshot_help
+        exit(EXIT_INVALID_ARGS)
+      end
+    end
+
+    # Print snapshots table
+    def cli_print_snapshots_table(snapshots)
+      if snapshots.empty?
+        puts 'No snapshots'
+        return
+      end
+
+      puts format('%-38s %-20s %-10s %-20s', 'ID', 'NAME', 'TYPE', 'CREATED')
+      snapshots.each do |s|
+        puts format('%-38s %-20s %-10s %-20s',
+                    s['snapshot_id'] || s['id'] || '-',
+                    s['name'] || '-',
+                    s['type'] || s['source_type'] || '-',
+                    s['created_at'] || '-')
+      end
+    end
+
+    # Print snapshot info
+    def cli_print_snapshot_info(snapshot)
+      puts "ID: #{snapshot['snapshot_id'] || snapshot['id']}"
+      puts "Name: #{snapshot['name']}" if snapshot['name']
+      puts "Type: #{snapshot['type'] || snapshot['source_type']}"
+      puts "Source ID: #{snapshot['source_id']}" if snapshot['source_id']
+      puts "Size: #{snapshot['size']}" if snapshot['size']
+      puts "Locked: #{snapshot['locked']}" if snapshot.key?('locked')
+      puts "Created: #{snapshot['created_at']}" if snapshot['created_at']
+    end
+
+    # Snapshot help
+    def cli_snapshot_help
+      puts <<~HELP
+        Snapshot Management
+
+        Usage:
+          ruby un.rb snapshot [options]
+
+        Options:
+          -l, --list             List all snapshots
+          --info ID              Get snapshot details
+          --delete ID            Delete snapshot
+          --lock ID              Prevent deletion
+          --unlock ID            Allow deletion
+          --clone ID             Clone snapshot
+          --type TYPE            Clone type: session or service
+          --name NAME            Name for cloned resource
+          --shell SHELL          Shell for cloned session
+          --ports PORTS          Ports for cloned service
+
+        Examples:
+          ruby un.rb snapshot --list
+          ruby un.rb snapshot --clone abc123 --type service --name myapp --ports 80
+      HELP
+    end
+
+    # Key command
+    def cli_key(options)
+      parser = parse_global_options(options) do
+        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY]'
+        puts
+        puts 'Check API key validity and show account info'
+      end
+      parser.parse!(ARGV)
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+
+      begin
+        result = validate_keys(**creds)
+        puts "Valid: #{result['valid']}"
+        puts "Account: #{result['account'] || result['account_id']}" if result['account'] || result['account_id']
+        puts "Email: #{result['email']}" if result['email']
+        puts "Plan: #{result['plan']}" if result['plan']
+        puts "Credits: #{result['credits']}" if result['credits']
+      rescue APIError => e
+        if e.status_code == 401 || e.status_code == 403
+          puts 'Valid: false'
+          puts "Error: #{e.message}"
+          exit(EXIT_AUTH_ERROR)
+        end
+        raise
+      end
+    end
+  end
+end
+
+# CLI entry point
+if __FILE__ == $0
+  Un.cli_main
 end

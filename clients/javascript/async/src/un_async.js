@@ -1067,6 +1067,35 @@ async function validateKeys(publicKey, secretKey) {
   return makeRequest('POST', '/keys/validate', publicKey, secretKey, {});
 }
 
+// ============================================================================
+// Image Generation
+// ============================================================================
+
+/**
+ * Generate images from text prompt using AI.
+ *
+ * Args:
+ *   prompt: Text description of the image to generate
+ *   options: Generation options:
+ *     - model: Model to use (optional)
+ *     - size: Image size (default: "1024x1024")
+ *     - quality: "standard" or "hd" (default: "standard")
+ *     - n: Number of images (default: 1)
+ *     - publicKey: API public key
+ *     - secretKey: API secret key
+ *
+ * Returns: Promise<Object> (result with images array and created_at)
+ */
+async function image(prompt, options = {}) {
+  const { model, size = "1024x1024", quality = "standard", n = 1, publicKey, secretKey } = options;
+  const [pk, sk] = resolveCredentials(publicKey, secretKey);
+
+  const payload = { prompt, size, quality, n };
+  if (model) payload.model = model;
+
+  return makeRequest('POST', '/image', pk, sk, payload);
+}
+
 // ES Module exports
 export {
   // Code execution
@@ -1116,9 +1145,13 @@ export {
   cloneSnapshot,
   // Key validation
   validateKeys,
+  // Image generation
+  image,
   // Errors
   CredentialsError,
   TimeoutError,
+  // CLI
+  cliMain,
 };
 
 // Default export for convenience
@@ -1170,7 +1203,929 @@ export default {
   cloneSnapshot,
   // Key validation
   validateKeys,
+  // Image generation
+  image,
   // Errors
   CredentialsError,
   TimeoutError,
+  // CLI
+  cliMain,
 };
+
+// ============================================================================
+// CLI Implementation
+// ============================================================================
+
+const HELP_TEXT = `
+unsandbox CLI - Secure code execution platform (async version)
+
+USAGE:
+  node un_async.js [options] <source_file>     Execute code file
+  node un_async.js -s <lang> '<code>'          Execute inline code
+  node un_async.js session [options]           Interactive session management
+  node un_async.js service [options]           Service management
+  node un_async.js snapshot [options]          Snapshot management
+  node un_async.js key                         Check API key validity
+
+GLOBAL OPTIONS:
+  -s, --shell <lang>      Language for inline code execution
+  -e, --env <KEY=VAL>     Set environment variable (can be repeated)
+  -f, --file <path>       Add input file to /tmp/ (can be repeated)
+  -F, --file-path <path>  Add input file with path preserved
+  -a, --artifacts         Return compiled artifacts
+  -o, --output <dir>      Output directory for artifacts
+  -p, --public-key <key>  API public key
+  -k, --secret-key <key>  API secret key
+  -n, --network <mode>    Network mode: zerotrust (default) or semitrusted
+  -v, --vcpu <n>          vCPU count (1-8)
+  -y, --yes               Skip confirmation prompts
+  -h, --help              Show this help message
+
+SESSION COMMANDS:
+  node un_async.js session                     Start interactive bash session
+  node un_async.js session --shell python3     Start Python REPL
+  node un_async.js session --tmux              Persistent session with tmux
+  node un_async.js session --screen            Persistent session with screen
+  node un_async.js session --list              List active sessions
+  node un_async.js session --attach <id>       Reconnect to session
+  node un_async.js session --kill <id>         Terminate session
+  node un_async.js session --freeze <id>       Pause session
+  node un_async.js session --unfreeze <id>     Resume session
+  node un_async.js session --boost <id>        Add resources
+  node un_async.js session --unboost <id>      Remove boost
+  node un_async.js session --snapshot <id>     Create snapshot
+
+SERVICE COMMANDS:
+  node un_async.js service --list              List all services
+  node un_async.js service --name <n> --ports <p> --bootstrap <cmd>
+                                               Create new service
+  node un_async.js service --info <id>         Get service details
+  node un_async.js service --logs <id>         Get service logs
+  node un_async.js service --tail <id>         Get last 9000 lines
+  node un_async.js service --freeze <id>       Pause service
+  node un_async.js service --unfreeze <id>     Resume service
+  node un_async.js service --destroy <id>      Delete service
+  node un_async.js service --lock <id>         Prevent deletion
+  node un_async.js service --unlock <id>       Allow deletion
+  node un_async.js service --execute <id> <cmd> Run command in service
+  node un_async.js service --redeploy <id>     Re-run bootstrap
+  node un_async.js service --snapshot <id>     Create snapshot
+
+SERVICE ENV COMMANDS:
+  node un_async.js service env status <id>     Show vault status
+  node un_async.js service env set <id>        Set from --env-file or stdin
+  node un_async.js service env export <id>     Export to stdout
+  node un_async.js service env delete <id>     Delete vault
+
+SNAPSHOT COMMANDS:
+  node un_async.js snapshot --list             List all snapshots
+  node un_async.js snapshot --info <id>        Get snapshot details
+  node un_async.js snapshot --delete <id>      Delete snapshot
+  node un_async.js snapshot --lock <id>        Prevent deletion
+  node un_async.js snapshot --unlock <id>      Allow deletion
+  node un_async.js snapshot --clone <id>       Clone snapshot to new resource
+
+EXAMPLES:
+  node un_async.js script.py                   Execute Python script
+  node un_async.js -s bash 'echo hello'        Run bash command
+  node un_async.js -e DEBUG=1 script.py        Execute with env var
+  node un_async.js -n semitrusted crawler.py   Execute with network access
+  node un_async.js session --tmux              Start persistent session
+  node un_async.js service --list              List all services
+`;
+
+/**
+ * Parse command line arguments manually.
+ * Returns object with parsed options and positional args.
+ */
+function parseArgs(args) {
+  const result = {
+    command: null,        // session, service, snapshot, key, or null (execute)
+    subcommand: null,     // env (for service env commands)
+    positional: [],
+    shell: null,
+    env: [],
+    files: [],
+    filesWithPath: [],
+    artifacts: false,
+    output: null,
+    publicKey: null,
+    secretKey: null,
+    network: 'zerotrust',
+    vcpu: 1,
+    yes: false,
+    help: false,
+    // Session options
+    list: false,
+    attach: null,
+    kill: null,
+    freeze: null,
+    unfreeze: null,
+    boost: null,
+    unboost: null,
+    snapshot: null,
+    snapshotName: null,
+    hot: false,
+    audit: false,
+    tmux: false,
+    screen: false,
+    // Service options
+    name: null,
+    ports: null,
+    domains: null,
+    type: null,
+    bootstrap: null,
+    bootstrapFile: null,
+    envFile: null,
+    info: null,
+    logs: null,
+    tail: null,
+    destroy: null,
+    lock: null,
+    unlock: null,
+    resize: null,
+    redeploy: null,
+    execute: null,
+    executeCmd: null,
+    // Snapshot options
+    delete: null,
+    clone: null,
+  };
+
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+
+    // Check for subcommands first
+    if (arg === 'session' && result.command === null) {
+      result.command = 'session';
+      i++;
+      continue;
+    }
+    if (arg === 'service' && result.command === null) {
+      result.command = 'service';
+      i++;
+      continue;
+    }
+    if (arg === 'snapshot' && result.command === null) {
+      result.command = 'snapshot';
+      i++;
+      continue;
+    }
+    if (arg === 'key' && result.command === null) {
+      result.command = 'key';
+      i++;
+      continue;
+    }
+    // Service env subcommand
+    if (arg === 'env' && result.command === 'service') {
+      result.subcommand = 'env';
+      i++;
+      continue;
+    }
+    // Service env operations (status, set, export, delete)
+    if (result.command === 'service' && result.subcommand === 'env') {
+      if (['status', 'set', 'export', 'delete'].includes(arg)) {
+        result.envOperation = arg;
+        i++;
+        continue;
+      }
+    }
+
+    // Parse options
+    if (arg === '-h' || arg === '--help') {
+      result.help = true;
+      i++;
+    } else if (arg === '-s' || arg === '--shell') {
+      result.shell = args[++i];
+      i++;
+    } else if (arg === '-e' || arg === '--env') {
+      result.env.push(args[++i]);
+      i++;
+    } else if (arg === '-f' || arg === '--file') {
+      result.files.push(args[++i]);
+      i++;
+    } else if (arg === '-F' || arg === '--file-path') {
+      result.filesWithPath.push(args[++i]);
+      i++;
+    } else if (arg === '-a' || arg === '--artifacts') {
+      result.artifacts = true;
+      i++;
+    } else if (arg === '-o' || arg === '--output') {
+      result.output = args[++i];
+      i++;
+    } else if (arg === '-p' || arg === '--public-key') {
+      result.publicKey = args[++i];
+      i++;
+    } else if (arg === '-k' || arg === '--secret-key') {
+      result.secretKey = args[++i];
+      i++;
+    } else if (arg === '-n' || arg === '--network') {
+      result.network = args[++i];
+      i++;
+    } else if (arg === '-v' || arg === '--vcpu') {
+      result.vcpu = parseInt(args[++i], 10);
+      i++;
+    } else if (arg === '-y' || arg === '--yes') {
+      result.yes = true;
+      i++;
+    } else if (arg === '-l' || arg === '--list') {
+      result.list = true;
+      i++;
+    } else if (arg === '--attach') {
+      result.attach = args[++i];
+      i++;
+    } else if (arg === '--kill') {
+      result.kill = args[++i];
+      i++;
+    } else if (arg === '--freeze') {
+      result.freeze = args[++i];
+      i++;
+    } else if (arg === '--unfreeze') {
+      result.unfreeze = args[++i];
+      i++;
+    } else if (arg === '--boost') {
+      result.boost = args[++i];
+      i++;
+    } else if (arg === '--unboost') {
+      result.unboost = args[++i];
+      i++;
+    } else if (arg === '--snapshot') {
+      result.snapshot = args[++i];
+      i++;
+    } else if (arg === '--snapshot-name') {
+      result.snapshotName = args[++i];
+      i++;
+    } else if (arg === '--hot') {
+      result.hot = true;
+      i++;
+    } else if (arg === '--audit') {
+      result.audit = true;
+      i++;
+    } else if (arg === '--tmux') {
+      result.tmux = true;
+      i++;
+    } else if (arg === '--screen') {
+      result.screen = true;
+      i++;
+    } else if (arg === '--name') {
+      result.name = args[++i];
+      i++;
+    } else if (arg === '--ports') {
+      result.ports = args[++i];
+      i++;
+    } else if (arg === '--domains') {
+      result.domains = args[++i];
+      i++;
+    } else if (arg === '--type') {
+      result.type = args[++i];
+      i++;
+    } else if (arg === '--bootstrap') {
+      result.bootstrap = args[++i];
+      i++;
+    } else if (arg === '--bootstrap-file') {
+      result.bootstrapFile = args[++i];
+      i++;
+    } else if (arg === '--env-file') {
+      result.envFile = args[++i];
+      i++;
+    } else if (arg === '--info') {
+      result.info = args[++i];
+      i++;
+    } else if (arg === '--logs') {
+      result.logs = args[++i];
+      i++;
+    } else if (arg === '--tail') {
+      result.tail = args[++i];
+      i++;
+    } else if (arg === '--destroy') {
+      result.destroy = args[++i];
+      i++;
+    } else if (arg === '--lock') {
+      result.lock = args[++i];
+      i++;
+    } else if (arg === '--unlock') {
+      result.unlock = args[++i];
+      i++;
+    } else if (arg === '--resize') {
+      result.resize = args[++i];
+      i++;
+    } else if (arg === '--redeploy') {
+      result.redeploy = args[++i];
+      i++;
+    } else if (arg === '--execute') {
+      result.execute = args[++i];
+      // Next arg is the command to execute
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        result.executeCmd = args[++i];
+      }
+      i++;
+    } else if (arg === '--delete') {
+      result.delete = args[++i];
+      i++;
+    } else if (arg === '--clone') {
+      result.clone = args[++i];
+      i++;
+    } else if (arg.startsWith('-')) {
+      console.error(`Error: Unknown option: ${arg}`);
+      process.exit(2);
+    } else {
+      result.positional.push(arg);
+      i++;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Format timestamp for display.
+ */
+function formatTimestamp(ts) {
+  if (!ts) return 'N/A';
+  const date = new Date(ts * 1000);
+  return date.toISOString().replace('T', ' ').substring(0, 19);
+}
+
+/**
+ * Format list output in table format.
+ */
+function formatTable(items, columns) {
+  if (!items || items.length === 0) {
+    console.log('No items found.');
+    return;
+  }
+
+  // Calculate column widths
+  const widths = {};
+  for (const col of columns) {
+    widths[col.key] = col.label.length;
+    for (const item of items) {
+      const val = String(col.getter ? col.getter(item) : (item[col.key] || 'N/A'));
+      widths[col.key] = Math.max(widths[col.key], val.length);
+    }
+  }
+
+  // Print header
+  let header = '';
+  for (const col of columns) {
+    header += col.label.padEnd(widths[col.key] + 2);
+  }
+  console.log(header);
+
+  // Print rows
+  for (const item of items) {
+    let row = '';
+    for (const col of columns) {
+      const val = String(col.getter ? col.getter(item) : (item[col.key] || 'N/A'));
+      row += val.padEnd(widths[col.key] + 2);
+    }
+    console.log(row);
+  }
+}
+
+/**
+ * Handle session commands.
+ */
+async function handleSession(opts) {
+  const pk = opts.publicKey;
+  const sk = opts.secretKey;
+
+  // List sessions
+  if (opts.list) {
+    const sessions = await listSessions(pk, sk);
+    formatTable(sessions, [
+      { key: 'session_id', label: 'ID' },
+      { key: 'name', label: 'NAME' },
+      { key: 'status', label: 'STATUS' },
+      { key: 'created_at', label: 'CREATED', getter: (s) => formatTimestamp(s.created_at) },
+    ]);
+    return;
+  }
+
+  // Attach to session
+  if (opts.attach) {
+    const session = await getSession(opts.attach, pk, sk);
+    console.log(`Session ${opts.attach}:`);
+    console.log(JSON.stringify(session, null, 2));
+    console.log('\nNote: Interactive attach requires WebSocket connection (not supported in this CLI)');
+    return;
+  }
+
+  // Kill session
+  if (opts.kill) {
+    await deleteSession(opts.kill, pk, sk);
+    console.log(`Session ${opts.kill} terminated.`);
+    return;
+  }
+
+  // Freeze session
+  if (opts.freeze) {
+    await freezeSession(opts.freeze, pk, sk);
+    console.log(`Session ${opts.freeze} frozen.`);
+    return;
+  }
+
+  // Unfreeze session
+  if (opts.unfreeze) {
+    await unfreezeSession(opts.unfreeze, pk, sk);
+    console.log(`Session ${opts.unfreeze} unfrozen.`);
+    return;
+  }
+
+  // Boost session
+  if (opts.boost) {
+    await boostSession(opts.boost, opts.vcpu || 2, pk, sk);
+    console.log(`Session ${opts.boost} boosted.`);
+    return;
+  }
+
+  // Unboost session
+  if (opts.unboost) {
+    await unboostSession(opts.unboost, pk, sk);
+    console.log(`Session ${opts.unboost} unboosted.`);
+    return;
+  }
+
+  // Snapshot session
+  if (opts.snapshot) {
+    const snapshotId = await sessionSnapshot(opts.snapshot, pk, sk, opts.snapshotName, opts.hot);
+    console.log(`Snapshot created: ${snapshotId}`);
+    return;
+  }
+
+  // Create new session
+  const sessionOpts = {
+    networkMode: opts.network,
+    vcpu: opts.vcpu,
+  };
+  if (opts.tmux) sessionOpts.multiplexer = 'tmux';
+  if (opts.screen) sessionOpts.multiplexer = 'screen';
+
+  const session = await createSession(opts.shell || 'bash', sessionOpts, pk, sk);
+  console.log(`Session created: ${session.session_id}`);
+  console.log(JSON.stringify(session, null, 2));
+  console.log('\nNote: Interactive session requires WebSocket connection (not supported in this CLI)');
+}
+
+/**
+ * Handle service commands.
+ */
+async function handleService(opts) {
+  const pk = opts.publicKey;
+  const sk = opts.secretKey;
+
+  // Handle env subcommand
+  if (opts.subcommand === 'env') {
+    const serviceId = opts.positional[0];
+    if (!serviceId) {
+      console.error('Error: Service ID required for env commands');
+      process.exit(2);
+    }
+
+    switch (opts.envOperation) {
+      case 'status': {
+        const status = await getServiceEnv(serviceId, pk, sk);
+        console.log(JSON.stringify(status, null, 2));
+        break;
+      }
+      case 'set': {
+        let envContent;
+        if (opts.envFile) {
+          envContent = fs.readFileSync(opts.envFile, 'utf-8');
+        } else {
+          // Read from stdin
+          envContent = fs.readFileSync(0, 'utf-8');
+        }
+        await setServiceEnv(serviceId, envContent, pk, sk);
+        console.log('Environment vault updated.');
+        break;
+      }
+      case 'export': {
+        const exported = await exportServiceEnv(serviceId, pk, sk);
+        if (exported.content) {
+          console.log(exported.content);
+        } else {
+          console.log(JSON.stringify(exported, null, 2));
+        }
+        break;
+      }
+      case 'delete': {
+        await deleteServiceEnv(serviceId, null, pk, sk);
+        console.log('Environment vault deleted.');
+        break;
+      }
+      default:
+        console.error('Error: Unknown env operation. Use: status, set, export, delete');
+        process.exit(2);
+    }
+    return;
+  }
+
+  // List services
+  if (opts.list) {
+    const services = await listServices(pk, sk);
+    formatTable(services, [
+      { key: 'service_id', label: 'ID' },
+      { key: 'name', label: 'NAME' },
+      { key: 'status', label: 'STATUS' },
+      { key: 'created_at', label: 'CREATED', getter: (s) => formatTimestamp(s.created_at) },
+    ]);
+    return;
+  }
+
+  // Get service info
+  if (opts.info) {
+    const service = await getService(opts.info, pk, sk);
+    console.log(JSON.stringify(service, null, 2));
+    return;
+  }
+
+  // Get service logs
+  if (opts.logs) {
+    const logs = await getServiceLogs(opts.logs, true, pk, sk);
+    if (logs.logs) {
+      console.log(logs.logs);
+    } else if (logs.stdout) {
+      console.log(logs.stdout);
+    } else {
+      console.log(JSON.stringify(logs, null, 2));
+    }
+    return;
+  }
+
+  // Get service tail
+  if (opts.tail) {
+    const logs = await getServiceLogs(opts.tail, false, pk, sk);
+    if (logs.logs) {
+      console.log(logs.logs);
+    } else if (logs.stdout) {
+      console.log(logs.stdout);
+    } else {
+      console.log(JSON.stringify(logs, null, 2));
+    }
+    return;
+  }
+
+  // Freeze service
+  if (opts.freeze) {
+    await freezeService(opts.freeze, pk, sk);
+    console.log(`Service ${opts.freeze} frozen.`);
+    return;
+  }
+
+  // Unfreeze service
+  if (opts.unfreeze) {
+    await unfreezeService(opts.unfreeze, pk, sk);
+    console.log(`Service ${opts.unfreeze} unfrozen.`);
+    return;
+  }
+
+  // Destroy service
+  if (opts.destroy) {
+    await deleteService(opts.destroy, pk, sk);
+    console.log(`Service ${opts.destroy} destroyed.`);
+    return;
+  }
+
+  // Lock service
+  if (opts.lock) {
+    await lockService(opts.lock, pk, sk);
+    console.log(`Service ${opts.lock} locked.`);
+    return;
+  }
+
+  // Unlock service
+  if (opts.unlock) {
+    await unlockService(opts.unlock, pk, sk);
+    console.log(`Service ${opts.unlock} unlocked.`);
+    return;
+  }
+
+  // Resize service
+  if (opts.resize) {
+    await updateService(opts.resize, { vcpu: opts.vcpu }, pk, sk);
+    console.log(`Service ${opts.resize} resized.`);
+    return;
+  }
+
+  // Redeploy service
+  if (opts.redeploy) {
+    let bootstrap = opts.bootstrap;
+    if (opts.bootstrapFile) {
+      bootstrap = fs.readFileSync(opts.bootstrapFile, 'utf-8');
+    }
+    await redeployService(opts.redeploy, bootstrap, pk, sk);
+    console.log(`Service ${opts.redeploy} redeployed.`);
+    return;
+  }
+
+  // Execute command in service
+  if (opts.execute) {
+    if (!opts.executeCmd) {
+      console.error('Error: Command required for --execute');
+      process.exit(2);
+    }
+    const result = await executeInService(opts.execute, opts.executeCmd, 30000, pk, sk);
+    if (result.stdout) {
+      process.stdout.write(result.stdout);
+    }
+    if (result.stderr) {
+      process.stderr.write(result.stderr);
+    }
+    if (result.exit_code !== undefined) {
+      console.log('---');
+      console.log(`Exit code: ${result.exit_code}`);
+    }
+    return;
+  }
+
+  // Snapshot service
+  if (opts.snapshot) {
+    const snapshotId = await serviceSnapshot(opts.snapshot, pk, sk, opts.snapshotName);
+    console.log(`Snapshot created: ${snapshotId}`);
+    return;
+  }
+
+  // Create new service
+  if (opts.name) {
+    let ports = [];
+    if (opts.ports) {
+      ports = opts.ports.split(',').map((p) => parseInt(p.trim(), 10));
+    }
+
+    let bootstrap = opts.bootstrap;
+    if (opts.bootstrapFile) {
+      bootstrap = fs.readFileSync(opts.bootstrapFile, 'utf-8');
+    }
+
+    const serviceOpts = {
+      networkMode: opts.network,
+      vcpu: opts.vcpu,
+    };
+    if (opts.domains) {
+      serviceOpts.domains = opts.domains.split(',').map((d) => d.trim());
+    }
+    if (opts.type) {
+      serviceOpts.serviceType = opts.type;
+    }
+
+    const service = await createService(opts.name, ports, bootstrap, serviceOpts, pk, sk);
+    console.log(`Service created: ${service.service_id}`);
+    console.log(JSON.stringify(service, null, 2));
+    return;
+  }
+
+  // No action specified
+  console.error('Error: No service action specified. Use --list, --name, --info, etc.');
+  process.exit(2);
+}
+
+/**
+ * Handle snapshot commands.
+ */
+async function handleSnapshot(opts) {
+  const pk = opts.publicKey;
+  const sk = opts.secretKey;
+
+  // List snapshots
+  if (opts.list) {
+    const snapshots = await listSnapshots(pk, sk);
+    formatTable(snapshots, [
+      { key: 'snapshot_id', label: 'ID' },
+      { key: 'name', label: 'NAME' },
+      { key: 'type', label: 'TYPE' },
+      { key: 'created_at', label: 'CREATED', getter: (s) => formatTimestamp(s.created_at) },
+    ]);
+    return;
+  }
+
+  // Get snapshot info
+  if (opts.info) {
+    // Use GET /snapshots/{id}
+    const [resolvedPk, resolvedSk] = resolveCredentials(pk, sk);
+    const snapshot = await makeRequest('GET', `/snapshots/${opts.info}`, resolvedPk, resolvedSk);
+    console.log(JSON.stringify(snapshot, null, 2));
+    return;
+  }
+
+  // Delete snapshot
+  if (opts.delete) {
+    await deleteSnapshot(opts.delete, pk, sk);
+    console.log(`Snapshot ${opts.delete} deleted.`);
+    return;
+  }
+
+  // Lock snapshot
+  if (opts.lock) {
+    await lockSnapshot(opts.lock, pk, sk);
+    console.log(`Snapshot ${opts.lock} locked.`);
+    return;
+  }
+
+  // Unlock snapshot
+  if (opts.unlock) {
+    await unlockSnapshot(opts.unlock, pk, sk);
+    console.log(`Snapshot ${opts.unlock} unlocked.`);
+    return;
+  }
+
+  // Clone snapshot
+  if (opts.clone) {
+    const cloneOpts = {};
+    if (opts.type) cloneOpts.type = opts.type;
+    if (opts.shell) cloneOpts.shell = opts.shell;
+    if (opts.ports) {
+      cloneOpts.ports = opts.ports.split(',').map((p) => parseInt(p.trim(), 10));
+    }
+
+    const result = await cloneSnapshot(opts.clone, opts.name, cloneOpts, pk, sk);
+    console.log('Snapshot cloned:');
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  // No action specified
+  console.error('Error: No snapshot action specified. Use --list, --info, --delete, --clone, etc.');
+  process.exit(2);
+}
+
+/**
+ * Handle key command.
+ */
+async function handleKey(opts) {
+  try {
+    const result = await validateKeys(opts.publicKey, opts.secretKey);
+    console.log('API Key Status:');
+    console.log(JSON.stringify(result, null, 2));
+  } catch (err) {
+    // If validate endpoint doesn't exist, just show that credentials were resolved
+    const [pk] = resolveCredentials(opts.publicKey, opts.secretKey);
+    console.log(`Public Key: ${pk}`);
+    console.log('Key validation endpoint returned error - key may still be valid.');
+  }
+}
+
+/**
+ * Handle execute command (default).
+ */
+async function handleExecute(opts) {
+  const pk = opts.publicKey;
+  const sk = opts.secretKey;
+
+  let code;
+  let language;
+
+  // Inline code with -s flag
+  if (opts.shell && opts.positional.length > 0) {
+    language = opts.shell;
+    code = opts.positional[0];
+  }
+  // File execution
+  else if (opts.positional.length > 0) {
+    const filePath = opts.positional[0];
+    language = detectLanguage(filePath);
+    if (!language) {
+      console.error(`Error: Could not detect language for file: ${filePath}`);
+      console.error('Use -s <language> to specify explicitly.');
+      process.exit(2);
+    }
+    code = fs.readFileSync(filePath, 'utf-8');
+  } else {
+    console.error('Error: No source file or inline code provided.');
+    console.error('Use: node un_async.js <file> or node un_async.js -s <lang> "<code>"');
+    process.exit(2);
+  }
+
+  // Build execution options
+  const execPayload = {
+    language,
+    code,
+  };
+
+  // Add environment variables
+  if (opts.env.length > 0) {
+    execPayload.env = {};
+    for (const e of opts.env) {
+      const idx = e.indexOf('=');
+      if (idx > 0) {
+        execPayload.env[e.substring(0, idx)] = e.substring(idx + 1);
+      }
+    }
+  }
+
+  // Add network mode if not default
+  if (opts.network !== 'zerotrust') {
+    execPayload.network_mode = opts.network;
+  }
+
+  // Execute code
+  const [resolvedPk, resolvedSk] = resolveCredentials(pk, sk);
+  const result = await makeRequest('POST', '/execute', resolvedPk, resolvedSk, execPayload);
+
+  // If job_id returned, wait for completion
+  let finalResult = result;
+  if (result.job_id && ['pending', 'running'].includes(result.status)) {
+    finalResult = await waitForJob(result.job_id, resolvedPk, resolvedSk);
+  }
+
+  // Output results
+  if (finalResult.stdout) {
+    process.stdout.write(finalResult.stdout);
+  }
+  if (finalResult.stderr) {
+    process.stderr.write(finalResult.stderr);
+  }
+
+  // Print summary
+  console.log('---');
+  if (finalResult.exit_code !== undefined) {
+    console.log(`Exit code: ${finalResult.exit_code}`);
+  }
+  if (finalResult.execution_time_ms !== undefined) {
+    console.log(`Execution time: ${finalResult.execution_time_ms}ms`);
+  } else if (finalResult.duration_ms !== undefined) {
+    console.log(`Execution time: ${finalResult.duration_ms}ms`);
+  }
+
+  // Exit with code's exit code
+  if (finalResult.exit_code && finalResult.exit_code !== 0) {
+    process.exit(1);
+  }
+}
+
+/**
+ * Main CLI entry point.
+ */
+async function cliMain() {
+  const args = process.argv.slice(2);
+
+  if (args.length === 0) {
+    console.log(HELP_TEXT);
+    process.exit(0);
+  }
+
+  const opts = parseArgs(args);
+
+  if (opts.help) {
+    console.log(HELP_TEXT);
+    process.exit(0);
+  }
+
+  try {
+    switch (opts.command) {
+      case 'session':
+        await handleSession(opts);
+        break;
+      case 'service':
+        await handleService(opts);
+        break;
+      case 'snapshot':
+        await handleSnapshot(opts);
+        break;
+      case 'key':
+        await handleKey(opts);
+        break;
+      default:
+        await handleExecute(opts);
+    }
+  } catch (err) {
+    if (err instanceof CredentialsError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(3);
+    } else if (err instanceof TimeoutError) {
+      console.error(`Error: ${err.message}`);
+      process.exit(5);
+    } else if (err.message && err.message.includes('HTTP 401')) {
+      console.error('Error: Authentication failed. Check your API keys.');
+      process.exit(3);
+    } else if (err.message && err.message.includes('HTTP 403')) {
+      console.error('Error: Access denied.');
+      process.exit(3);
+    } else if (err.message && err.message.includes('HTTP 404')) {
+      console.error('Error: Resource not found.');
+      process.exit(4);
+    } else if (err.message && err.message.includes('timeout')) {
+      console.error('Error: Request timeout.');
+      process.exit(5);
+    } else {
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+}
+
+// CLI entry point - detect if running as main module (ESM)
+// In ESM, we use import.meta.url to check if this is the main module
+const isMain = process.argv[1] && (
+  process.argv[1].endsWith('/un_async.js') ||
+  process.argv[1].endsWith('\\un_async.js') ||
+  import.meta.url === `file://${process.argv[1]}`
+);
+
+if (isMain) {
+  cliMain().catch((err) => {
+    console.error('Error:', err.message);
+    process.exit(1);
+  });
+}

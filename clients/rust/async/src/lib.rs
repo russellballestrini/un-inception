@@ -397,6 +397,28 @@ pub struct ServiceUpdateOptions {
     pub vcpu: Option<u32>,
 }
 
+/// Options for AI image generation
+#[derive(Debug, Clone, Default)]
+pub struct ImageOptions {
+    /// Model to use (optional)
+    pub model: Option<String>,
+    /// Image size (default: "1024x1024")
+    pub size: Option<String>,
+    /// Quality: "standard" or "hd" (default: "standard")
+    pub quality: Option<String>,
+    /// Number of images to generate (default: 1)
+    pub n: Option<i32>,
+}
+
+/// Result of image generation
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageResult {
+    /// Generated images (base64 or URLs)
+    pub images: Vec<String>,
+    /// Timestamp when images were created
+    pub created_at: String,
+}
+
 // =============================================================================
 // Internal Response Types
 // =============================================================================
@@ -1822,6 +1844,51 @@ pub async fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
 
     let result: KeysValid = serde_json::from_str(&response_text)?;
     Ok(result)
+}
+
+// =============================================================================
+// AI Image Generation API Functions
+// =============================================================================
+
+/// Generate images from a text prompt using AI.
+///
+/// # Arguments
+/// * `prompt` - Text description of the image to generate
+/// * `creds` - API credentials
+/// * `opts` - Optional generation parameters
+///
+/// # Returns
+/// * `Result<ImageResult>` - Generated images
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let result = image("A sunset over mountains", &creds, None).await?;
+/// for img in result.images {
+///     println!("Image: {}", img);
+/// }
+///
+/// // With options
+/// let opts = ImageOptions {
+///     size: Some("512x512".to_string()),
+///     quality: Some("hd".to_string()),
+///     n: Some(2),
+///     ..Default::default()
+/// };
+/// let result = image("A futuristic city", &creds, Some(opts)).await?;
+/// ```
+pub async fn image(prompt: &str, creds: &Credentials, opts: Option<ImageOptions>) -> Result<ImageResult> {
+    let opts = opts.unwrap_or_default();
+
+    let payload = serde_json::json!({
+        "prompt": prompt,
+        "size": opts.size.unwrap_or_else(|| "1024x1024".to_string()),
+        "quality": opts.quality.unwrap_or_else(|| "standard".to_string()),
+        "n": opts.n.unwrap_or(1),
+        "model": opts.model,
+    });
+
+    make_request("POST", "/image", creds, Some(&payload)).await
 }
 
 // =============================================================================

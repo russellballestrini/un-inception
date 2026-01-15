@@ -27,6 +27,14 @@
 #     snapshot_future = UnAsync.session_snapshot(session_id)
 #     snapshot_id = snapshot_future.value
 #
+# CLI Usage:
+#     ruby un_async.rb script.py                  # Execute Python script
+#     ruby un_async.rb -s bash 'echo hello'       # Inline bash command
+#     ruby un_async.rb session --list             # List sessions
+#     ruby un_async.rb service --list             # List services
+#     ruby un_async.rb snapshot --list            # List snapshots
+#     ruby un_async.rb key                        # Check API key
+#
 # Authentication Priority (4-tier):
 #     1. Method arguments (public_key:, secret_key:)
 #     2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
@@ -54,6 +62,7 @@ require 'json'
 require 'openssl'
 require 'fileutils'
 require 'thread'
+require 'optparse'
 
 # Unsandbox Ruby SDK module (asynchronous)
 # Returns Future objects that can be awaited with .value
@@ -1087,6 +1096,38 @@ module UnAsync
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         make_request_sync('POST', '/keys/validate', pk, sk, {})
+      end
+    end
+
+    # Generate images from text prompt using AI.
+    #
+    # @param prompt [String] Text description of the image to generate
+    # @param model [String, nil] Model to use (optional)
+    # @param size [String] Image size (default: "1024x1024")
+    # @param quality [String] "standard" or "hd" (default: "standard")
+    # @param n [Integer] Number of images to generate (default: 1)
+    # @param public_key [String, nil] API public key
+    # @param secret_key [String, nil] API secret key
+    # @return [Future<Hash>] Future resolving to result with :images array and :created_at
+    # @raise [CredentialsError] If no credentials found (on .value)
+    # @raise [APIError] If API request fails (on .value)
+    #
+    # @example
+    #     result = UnAsync.image("A sunset over mountains").value
+    #     puts result["images"]  # Array of image data/URLs
+    def image(prompt, model: nil, size: '1024x1024', quality: 'standard', n: 1,
+              public_key: nil, secret_key: nil)
+      Future.new do
+        pk, sk = resolve_credentials(public_key, secret_key)
+        payload = {
+          prompt: prompt,
+          size: size,
+          quality: quality,
+          n: n
+        }
+        payload[:model] = model if model
+
+        make_request_sync('POST', '/image', pk, sk, payload)
       end
     end
 

@@ -392,6 +392,81 @@ pub struct ServiceUpdateOptions {
     pub vcpu: Option<u32>,
 }
 
+/// Options for AI image generation
+#[derive(Debug, Clone, Default)]
+pub struct ImageOptions {
+    /// Model to use (optional)
+    pub model: Option<String>,
+    /// Image size (default: "1024x1024")
+    pub size: Option<String>,
+    /// Quality: "standard" or "hd" (default: "standard")
+    pub quality: Option<String>,
+    /// Number of images to generate (default: 1)
+    pub n: Option<i32>,
+}
+
+/// Result of image generation
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageResult {
+    /// Generated images (base64 or URLs)
+    pub images: Vec<String>,
+    /// Timestamp when images were created
+    pub created_at: String,
+}
+
+/// LXD container image information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LxdImage {
+    /// Image ID
+    pub image_id: String,
+    /// Image name
+    #[serde(default)]
+    pub name: String,
+    /// Image description
+    #[serde(default)]
+    pub description: String,
+    /// Source type: "session" or "service"
+    #[serde(default)]
+    pub source_type: String,
+    /// Source ID (session_id or service_id)
+    #[serde(default)]
+    pub source_id: String,
+    /// Image visibility: "private", "shared", or "public"
+    #[serde(default)]
+    pub visibility: String,
+    /// Whether the image is locked (cannot be modified/deleted)
+    #[serde(default)]
+    pub locked: bool,
+    /// Owner API key
+    #[serde(default)]
+    pub owner_key: String,
+    /// List of API keys with access to this image
+    #[serde(default)]
+    pub trusted_keys: Vec<String>,
+    /// Created timestamp
+    #[serde(default)]
+    pub created_at: String,
+    /// Size in bytes
+    #[serde(default)]
+    pub size_bytes: u64,
+}
+
+/// Result of spawning a service from an image
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnFromImageResult {
+    /// Service ID of the spawned service
+    pub service_id: String,
+    /// Service name
+    #[serde(default)]
+    pub name: String,
+    /// Service URL
+    #[serde(default)]
+    pub url: String,
+    /// Service status
+    #[serde(default)]
+    pub status: String,
+}
+
 // =============================================================================
 // Internal Response Types
 // =============================================================================
@@ -1740,6 +1815,1419 @@ pub fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
 }
 
 // =============================================================================
+// AI Image Generation API Functions
+// =============================================================================
+
+/// Generate images from a text prompt using AI.
+///
+/// # Arguments
+/// * `prompt` - Text description of the image to generate
+/// * `creds` - API credentials
+/// * `opts` - Optional generation parameters
+///
+/// # Returns
+/// * `Result<ImageResult>` - Generated images
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let result = image("A sunset over mountains", &creds, None)?;
+/// for img in result.images {
+///     println!("Image: {}", img);
+/// }
+///
+/// // With options
+/// let opts = ImageOptions {
+///     size: Some("512x512".to_string()),
+///     quality: Some("hd".to_string()),
+///     n: Some(2),
+///     ..Default::default()
+/// };
+/// let result = image("A futuristic city", &creds, Some(opts))?;
+/// ```
+pub fn image(prompt: &str, creds: &Credentials, opts: Option<ImageOptions>) -> Result<ImageResult> {
+    let opts = opts.unwrap_or_default();
+
+    let payload = serde_json::json!({
+        "prompt": prompt,
+        "size": opts.size.unwrap_or_else(|| "1024x1024".to_string()),
+        "quality": opts.quality.unwrap_or_else(|| "standard".to_string()),
+        "n": opts.n.unwrap_or(1),
+        "model": opts.model,
+    });
+
+    make_request("POST", "/image", creds, Some(&payload))
+}
+
+// =============================================================================
+// CLI Exit Codes
+// =============================================================================
+
+/// Exit code for success
+pub const EXIT_SUCCESS: i32 = 0;
+/// Exit code for general error
+pub const EXIT_ERROR: i32 = 1;
+/// Exit code for invalid arguments
+pub const EXIT_INVALID_ARGS: i32 = 2;
+/// Exit code for authentication error
+pub const EXIT_AUTH_ERROR: i32 = 3;
+/// Exit code for API error
+pub const EXIT_API_ERROR: i32 = 4;
+/// Exit code for timeout
+pub const EXIT_TIMEOUT: i32 = 5;
+
+// =============================================================================
+// CLI Implementation
+// =============================================================================
+
+/// CLI options parsed from command line arguments
+#[derive(Debug, Default)]
+struct CliOptions {
+    // Global options
+    shell: Option<String>,         // -s, --shell
+    env_vars: Vec<(String, String)>, // -e, --env
+    files: Vec<String>,            // -f, --file
+    file_paths: Vec<String>,       // -F, --file-path
+    artifacts: bool,               // -a, --artifacts
+    output_dir: Option<String>,    // -o, --output
+    public_key: Option<String>,    // -p, --public-key
+    secret_key: Option<String>,    // -k, --secret-key
+    network: Option<String>,       // -n, --network
+    vcpu: Option<u32>,             // -v, --vcpu
+    yes: bool,                     // -y, --yes
+    help: bool,                    // -h, --help
+
+    // Command and positional args
+    command: Option<String>,
+    subcommand: Option<String>,
+    positional: Vec<String>,
+
+    // Session options
+    session_list: bool,
+    session_attach: Option<String>,
+    session_kill: Option<String>,
+    session_freeze: Option<String>,
+    session_unfreeze: Option<String>,
+    session_boost: Option<String>,
+    session_unboost: Option<String>,
+    session_snapshot: Option<String>,
+    session_tmux: bool,
+    session_screen: bool,
+    snapshot_name: Option<String>,
+    snapshot_hot: bool,
+    audit: bool,
+
+    // Service options
+    service_list: bool,
+    service_name: Option<String>,
+    service_ports: Option<String>,
+    service_domains: Option<String>,
+    service_type: Option<String>,
+    service_bootstrap: Option<String>,
+    service_bootstrap_file: Option<String>,
+    service_env_file: Option<String>,
+    service_info: Option<String>,
+    service_logs: Option<String>,
+    service_tail: Option<String>,
+    service_freeze: Option<String>,
+    service_unfreeze: Option<String>,
+    service_destroy: Option<String>,
+    service_lock: Option<String>,
+    service_unlock: Option<String>,
+    service_resize: Option<String>,
+    service_redeploy: Option<String>,
+    service_execute: Option<String>,
+    service_execute_cmd: Option<String>,
+    service_snapshot: Option<String>,
+
+    // Snapshot options
+    snapshot_list: bool,
+    snapshot_info: Option<String>,
+    snapshot_delete: Option<String>,
+    snapshot_lock: Option<String>,
+    snapshot_unlock: Option<String>,
+    snapshot_clone: Option<String>,
+    clone_type: Option<String>,
+    clone_name: Option<String>,
+    clone_shell: Option<String>,
+    clone_ports: Option<String>,
+}
+
+fn print_help() {
+    println!("un - unsandbox.com CLI (Rust sync)
+
+USAGE:
+    un [OPTIONS] <source_file>           Execute code file
+    un [OPTIONS] -s LANG 'code'          Execute inline code
+    un session [OPTIONS]                 Interactive session
+    un service [OPTIONS]                 Manage services
+    un snapshot [OPTIONS]                Manage snapshots
+    un key                               Check API key
+
+GLOBAL OPTIONS:
+    -s, --shell LANG       Language for inline code execution
+    -e, --env KEY=VAL      Set environment variable (can repeat)
+    -f, --file FILE        Add input file to /tmp/
+    -F, --file-path FILE   Add input file with path preserved
+    -a, --artifacts        Return compiled artifacts
+    -o, --output DIR       Output directory for artifacts
+    -p, --public-key KEY   API public key
+    -k, --secret-key KEY   API secret key
+    -n, --network MODE     Network mode: zerotrust or semitrusted
+    -v, --vcpu N           vCPU count (1-8)
+    -y, --yes              Skip confirmation prompts
+    -h, --help             Show this help
+
+SESSION COMMANDS:
+    un session                     Start interactive bash session
+    un session --shell python3     Start Python REPL
+    un session --tmux              Persistent session with tmux
+    un session --screen            Persistent session with screen
+    un session --list              List active sessions
+    un session --attach ID         Reconnect to session
+    un session --kill ID           Terminate session
+    un session --freeze ID         Pause session
+    un session --unfreeze ID       Resume session
+    un session --boost ID          Add resources
+    un session --unboost ID        Remove boost
+    un session --snapshot ID       Create snapshot
+
+SERVICE COMMANDS:
+    un service --list                          List all services
+    un service --name NAME --ports P           Create service
+    un service --info ID                       Get service details
+    un service --logs ID                       Get all logs
+    un service --tail ID                       Get last 9000 lines
+    un service --freeze ID                     Pause service
+    un service --unfreeze ID                   Resume service
+    un service --destroy ID                    Delete service
+    un service --lock ID                       Prevent deletion
+    un service --unlock ID                     Allow deletion
+    un service --execute ID 'cmd'              Run command
+    un service --redeploy ID                   Re-run bootstrap
+    un service --snapshot ID                   Create snapshot
+    un service env status ID                   Show vault status
+    un service env set ID                      Set env vars
+    un service env export ID                   Export env vars
+    un service env delete ID                   Delete vault
+
+SNAPSHOT COMMANDS:
+    un snapshot --list             List all snapshots
+    un snapshot --info ID          Get snapshot details
+    un snapshot --delete ID        Delete snapshot
+    un snapshot --lock ID          Prevent deletion
+    un snapshot --unlock ID        Allow deletion
+    un snapshot --clone ID         Clone snapshot
+
+EXAMPLES:
+    un script.py                   Execute Python script
+    un -s bash 'echo hello'        Run inline bash command
+    un -n semitrusted crawler.py   Execute with network access
+    un session --tmux              Start persistent session
+    un service --name web --ports 80 --bootstrap 'python -m http.server 80'
+");
+}
+
+fn parse_args(args: &[String]) -> CliOptions {
+    let mut opts = CliOptions::default();
+    let mut i = 1; // Skip program name
+
+    while i < args.len() {
+        let arg = &args[i];
+
+        match arg.as_str() {
+            "-h" | "--help" => {
+                opts.help = true;
+                i += 1;
+            }
+            "-s" | "--shell" => {
+                if i + 1 < args.len() {
+                    opts.shell = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-e" | "--env" => {
+                if i + 1 < args.len() {
+                    let kv = &args[i + 1];
+                    if let Some(pos) = kv.find('=') {
+                        let key = kv[..pos].to_string();
+                        let val = kv[pos + 1..].to_string();
+                        opts.env_vars.push((key, val));
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-f" | "--file" => {
+                if i + 1 < args.len() {
+                    opts.files.push(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-F" | "--file-path" => {
+                if i + 1 < args.len() {
+                    opts.file_paths.push(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-a" | "--artifacts" => {
+                opts.artifacts = true;
+                i += 1;
+            }
+            "-o" | "--output" => {
+                if i + 1 < args.len() {
+                    opts.output_dir = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-p" | "--public-key" => {
+                if i + 1 < args.len() {
+                    opts.public_key = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-k" | "--secret-key" => {
+                if i + 1 < args.len() {
+                    opts.secret_key = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-n" | "--network" => {
+                if i + 1 < args.len() {
+                    opts.network = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-v" | "--vcpu" => {
+                if i + 1 < args.len() {
+                    opts.vcpu = args[i + 1].parse().ok();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "-y" | "--yes" => {
+                opts.yes = true;
+                i += 1;
+            }
+            "-l" | "--list" => {
+                // Used by session, service, snapshot
+                opts.session_list = true;
+                opts.service_list = true;
+                opts.snapshot_list = true;
+                i += 1;
+            }
+            "--attach" => {
+                if i + 1 < args.len() {
+                    opts.session_attach = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--kill" => {
+                if i + 1 < args.len() {
+                    opts.session_kill = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--freeze" => {
+                if i + 1 < args.len() {
+                    // Context-dependent: session or service
+                    opts.session_freeze = Some(args[i + 1].clone());
+                    opts.service_freeze = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--unfreeze" => {
+                if i + 1 < args.len() {
+                    opts.session_unfreeze = Some(args[i + 1].clone());
+                    opts.service_unfreeze = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--boost" => {
+                if i + 1 < args.len() {
+                    opts.session_boost = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--unboost" => {
+                if i + 1 < args.len() {
+                    opts.session_unboost = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--tmux" => {
+                opts.session_tmux = true;
+                i += 1;
+            }
+            "--screen" => {
+                opts.session_screen = true;
+                i += 1;
+            }
+            "--snapshot" => {
+                if i + 1 < args.len() {
+                    opts.session_snapshot = Some(args[i + 1].clone());
+                    opts.service_snapshot = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--snapshot-name" => {
+                if i + 1 < args.len() {
+                    opts.snapshot_name = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--hot" => {
+                opts.snapshot_hot = true;
+                i += 1;
+            }
+            "--audit" => {
+                opts.audit = true;
+                i += 1;
+            }
+            "--name" => {
+                if i + 1 < args.len() {
+                    opts.service_name = Some(args[i + 1].clone());
+                    opts.clone_name = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--ports" => {
+                if i + 1 < args.len() {
+                    opts.service_ports = Some(args[i + 1].clone());
+                    opts.clone_ports = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--domains" => {
+                if i + 1 < args.len() {
+                    opts.service_domains = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--type" => {
+                if i + 1 < args.len() {
+                    opts.service_type = Some(args[i + 1].clone());
+                    opts.clone_type = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--bootstrap" => {
+                if i + 1 < args.len() {
+                    opts.service_bootstrap = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--bootstrap-file" => {
+                if i + 1 < args.len() {
+                    opts.service_bootstrap_file = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--env-file" => {
+                if i + 1 < args.len() {
+                    opts.service_env_file = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--info" => {
+                if i + 1 < args.len() {
+                    opts.service_info = Some(args[i + 1].clone());
+                    opts.snapshot_info = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--logs" => {
+                if i + 1 < args.len() {
+                    opts.service_logs = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--tail" => {
+                if i + 1 < args.len() {
+                    opts.service_tail = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--destroy" => {
+                if i + 1 < args.len() {
+                    opts.service_destroy = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--lock" => {
+                if i + 1 < args.len() {
+                    opts.service_lock = Some(args[i + 1].clone());
+                    opts.snapshot_lock = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--unlock" => {
+                if i + 1 < args.len() {
+                    opts.service_unlock = Some(args[i + 1].clone());
+                    opts.snapshot_unlock = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--resize" => {
+                if i + 1 < args.len() {
+                    opts.service_resize = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--redeploy" => {
+                if i + 1 < args.len() {
+                    opts.service_redeploy = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--execute" => {
+                if i + 1 < args.len() {
+                    opts.service_execute = Some(args[i + 1].clone());
+                    if i + 2 < args.len() && !args[i + 2].starts_with('-') {
+                        opts.service_execute_cmd = Some(args[i + 2].clone());
+                        i += 3;
+                    } else {
+                        i += 2;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            "--delete" => {
+                if i + 1 < args.len() {
+                    opts.snapshot_delete = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--clone" => {
+                if i + 1 < args.len() {
+                    opts.snapshot_clone = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                // Positional argument or subcommand
+                if opts.command.is_none() && !arg.starts_with('-') {
+                    match arg.as_str() {
+                        "session" | "service" | "snapshot" | "key" | "env" => {
+                            if opts.command.is_some() {
+                                opts.subcommand = Some(arg.clone());
+                            } else {
+                                opts.command = Some(arg.clone());
+                            }
+                        }
+                        _ => {
+                            opts.positional.push(arg.clone());
+                        }
+                    }
+                } else if !arg.starts_with('-') {
+                    opts.positional.push(arg.clone());
+                }
+                i += 1;
+            }
+        }
+    }
+
+    opts
+}
+
+fn get_credentials(opts: &CliOptions) -> Result<Credentials> {
+    resolve_credentials(
+        opts.public_key.as_deref(),
+        opts.secret_key.as_deref(),
+    )
+}
+
+fn format_session_list(sessions: &[Session]) {
+    if sessions.is_empty() {
+        println!("No active sessions.");
+        return;
+    }
+    println!("{:<40} {:<20} {:<10} {}", "ID", "NAME", "STATUS", "CREATED");
+    for s in sessions {
+        println!(
+            "{:<40} {:<20} {:<10} {}",
+            s.session_id, s.container_name, s.status, s.created_at
+        );
+    }
+}
+
+fn format_service_list(services: &[Service]) {
+    if services.is_empty() {
+        println!("No active services.");
+        return;
+    }
+    println!("{:<40} {:<20} {:<10} {}", "ID", "NAME", "STATUS", "URL");
+    for s in services {
+        println!(
+            "{:<40} {:<20} {:<10} {}",
+            s.service_id, s.name, s.status, s.url
+        );
+    }
+}
+
+fn format_snapshot_list(snapshots: &[Snapshot]) {
+    if snapshots.is_empty() {
+        println!("No snapshots.");
+        return;
+    }
+    println!("{:<40} {:<20} {:<10} {}", "ID", "NAME", "TYPE", "CREATED");
+    for s in snapshots {
+        println!(
+            "{:<40} {:<20} {:<10} {}",
+            s.snapshot_id, s.name, s.source_type, s.created_at
+        );
+    }
+}
+
+fn cmd_execute(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    // Determine language and code
+    let (language, code) = if let Some(ref shell) = opts.shell {
+        // Inline code: -s LANG 'code'
+        let code = opts.positional.first().cloned().unwrap_or_default();
+        (shell.clone(), code)
+    } else if let Some(ref file) = opts.positional.first() {
+        // File execution
+        let lang = match detect_language(file) {
+            Some(l) => l.to_string(),
+            None => {
+                eprintln!("Error: Cannot detect language from file: {}", file);
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let code = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error: Cannot read file '{}': {}", file, e);
+                return EXIT_ERROR;
+            }
+        };
+        (lang, code)
+    } else {
+        eprintln!("Error: No source file or inline code provided");
+        print_help();
+        return EXIT_INVALID_ARGS;
+    };
+
+    // Execute the code
+    match execute_code(&language, &code, &creds) {
+        Ok(result) => {
+            print!("{}", result.output);
+            println!("---");
+            println!("Exit code: {}", result.exit_code);
+            println!("Execution time: {}ms", result.execution_time_ms);
+            if result.exit_code != 0 {
+                EXIT_ERROR
+            } else {
+                EXIT_SUCCESS
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            match e {
+                UnsandboxError::Timeout(_) => EXIT_TIMEOUT,
+                UnsandboxError::ApiError { .. } => EXIT_API_ERROR,
+                UnsandboxError::NoCredentials => EXIT_AUTH_ERROR,
+                _ => EXIT_ERROR,
+            }
+        }
+    }
+}
+
+fn cmd_session(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    // Handle session subcommands
+    if opts.session_list {
+        match list_sessions(&creds) {
+            Ok(sessions) => {
+                format_session_list(&sessions);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_attach {
+        match get_session(id, &creds) {
+            Ok(session) => {
+                println!("Session: {}", session.session_id);
+                println!("Container: {}", session.container_name);
+                println!("Status: {}", session.status);
+                println!("Shell: {}", session.shell);
+                println!("\nNote: Interactive attach requires terminal support not available in this SDK.");
+                println!("Use 'un session --attach {}' with the C CLI for full functionality.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_kill {
+        match delete_session(id, &creds) {
+            Ok(()) => {
+                println!("Session {} terminated.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_freeze {
+        match freeze_session(id, &creds) {
+            Ok(session) => {
+                println!("Session {} frozen.", session.session_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_unfreeze {
+        match unfreeze_session(id, &creds) {
+            Ok(session) => {
+                println!("Session {} unfrozen.", session.session_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_boost {
+        match boost_session(id, &creds) {
+            Ok(session) => {
+                println!("Session {} boosted.", session.session_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_unboost {
+        match unboost_session(id, &creds) {
+            Ok(session) => {
+                println!("Session {} unboosted.", session.session_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.session_snapshot {
+        match session_snapshot(id, &creds, opts.snapshot_name.as_deref(), opts.snapshot_hot) {
+            Ok(snapshot) => {
+                println!("Snapshot created: {}", snapshot.snapshot_id);
+                if !snapshot.name.is_empty() {
+                    println!("Name: {}", snapshot.name);
+                }
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Create new session
+    let shell = opts.shell.clone().unwrap_or_else(|| "bash".to_string());
+    let session_opts = SessionCreateOptions {
+        network_mode: opts.network.clone(),
+        shell: Some(shell.clone()),
+        vcpu: opts.vcpu,
+        tmux: if opts.session_tmux { Some(true) } else { None },
+        screen: if opts.session_screen { Some(true) } else { None },
+    };
+
+    match create_session(&shell, &creds, Some(session_opts)) {
+        Ok(session) => {
+            println!("Session created: {}", session.session_id);
+            println!("Container: {}", session.container_name);
+            println!("Status: {}", session.status);
+            println!("\nNote: Interactive session requires terminal support not available in this SDK.");
+            println!("Use the C CLI for interactive sessions.");
+            EXIT_SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            EXIT_API_ERROR
+        }
+    }
+}
+
+fn cmd_service(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    // Handle service env subcommand
+    if opts.command.as_deref() == Some("service") {
+        if let Some(ref subcmd) = opts.subcommand {
+            if subcmd == "env" {
+                return cmd_service_env(opts, &creds);
+            }
+        }
+        // Check if first positional is "env"
+        if opts.positional.first().map(|s| s.as_str()) == Some("env") {
+            return cmd_service_env(opts, &creds);
+        }
+    }
+
+    // Handle service subcommands
+    if opts.service_list {
+        match list_services(&creds) {
+            Ok(services) => {
+                format_service_list(&services);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_info {
+        match get_service(id, &creds) {
+            Ok(service) => {
+                println!("Service ID: {}", service.service_id);
+                println!("Name: {}", service.name);
+                println!("Status: {}", service.status);
+                println!("URL: {}", service.url);
+                println!("Ports: {:?}", service.ports);
+                println!("Domains: {:?}", service.domains);
+                println!("vCPU: {}", service.vcpu);
+                println!("Memory: {} MB", service.memory_mb);
+                println!("Locked: {}", service.locked);
+                println!("Created: {}", service.created_at);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_logs {
+        match get_service_logs(id, true, &creds) {
+            Ok(logs) => {
+                print!("{}", logs);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_tail {
+        match get_service_logs(id, false, &creds) {
+            Ok(logs) => {
+                print!("{}", logs);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_freeze {
+        match freeze_service(id, &creds) {
+            Ok(service) => {
+                println!("Service {} frozen.", service.service_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_unfreeze {
+        match unfreeze_service(id, &creds) {
+            Ok(service) => {
+                println!("Service {} unfrozen.", service.service_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_destroy {
+        match delete_service(id, &creds) {
+            Ok(()) => {
+                println!("Service {} destroyed.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_lock {
+        match lock_service(id, &creds) {
+            Ok(service) => {
+                println!("Service {} locked.", service.service_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_unlock {
+        match unlock_service(id, &creds) {
+            Ok(service) => {
+                println!("Service {} unlocked.", service.service_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_redeploy {
+        match redeploy_service(id, &creds) {
+            Ok(service) => {
+                println!("Service {} redeployed.", service.service_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_execute {
+        let cmd = opts.service_execute_cmd.clone().unwrap_or_default();
+        if cmd.is_empty() {
+            eprintln!("Error: --execute requires a command");
+            return EXIT_INVALID_ARGS;
+        }
+        match execute_in_service(id, &cmd, &creds) {
+            Ok(result) => {
+                print!("{}", result.output);
+                return if result.exit_code == 0 { EXIT_SUCCESS } else { EXIT_ERROR };
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.service_snapshot {
+        match service_snapshot(id, &creds, opts.snapshot_name.as_deref()) {
+            Ok(snapshot) => {
+                println!("Snapshot created: {}", snapshot.snapshot_id);
+                if !snapshot.name.is_empty() {
+                    println!("Name: {}", snapshot.name);
+                }
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Create new service
+    if let Some(ref name) = opts.service_name {
+        let ports_str = opts.service_ports.clone().unwrap_or_default();
+        let ports: Vec<u16> = ports_str
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+
+        if ports.is_empty() {
+            eprintln!("Error: --ports is required for service creation");
+            return EXIT_INVALID_ARGS;
+        }
+
+        let bootstrap = if let Some(ref cmd) = opts.service_bootstrap {
+            cmd.clone()
+        } else if let Some(ref file) = opts.service_bootstrap_file {
+            match fs::read_to_string(file) {
+                Ok(content) => content,
+                Err(e) => {
+                    eprintln!("Error: Cannot read bootstrap file '{}': {}", file, e);
+                    return EXIT_ERROR;
+                }
+            }
+        } else {
+            String::new()
+        };
+
+        let service_opts = ServiceCreateOptions {
+            network_mode: opts.network.clone(),
+            vcpu: opts.vcpu,
+            domains: opts.service_domains.as_ref().map(|d| {
+                d.split(',').map(|s| s.trim().to_string()).collect()
+            }),
+            ..Default::default()
+        };
+
+        match create_service(name, &ports, &bootstrap, &creds, Some(service_opts)) {
+            Ok(service) => {
+                println!("Service created: {}", service.service_id);
+                println!("Name: {}", service.name);
+                println!("URL: {}", service.url);
+                println!("Status: {}", service.status);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // No action specified, show list
+    match list_services(&creds) {
+        Ok(services) => {
+            format_service_list(&services);
+            EXIT_SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            EXIT_API_ERROR
+        }
+    }
+}
+
+fn cmd_service_env(opts: &CliOptions, creds: &Credentials) -> i32 {
+    // Parse: un service env <action> <service_id>
+    // positional[0] = "env", positional[1] = action, positional[2] = service_id
+    let action = opts.positional.get(1).map(|s| s.as_str()).unwrap_or("");
+    let service_id = opts.positional.get(2).cloned().unwrap_or_default();
+
+    if service_id.is_empty() && action != "status" {
+        eprintln!("Error: Service ID required");
+        return EXIT_INVALID_ARGS;
+    }
+
+    match action {
+        "status" => {
+            if service_id.is_empty() {
+                eprintln!("Error: Service ID required");
+                return EXIT_INVALID_ARGS;
+            }
+            match get_service_env(&service_id, creds) {
+                Ok(env) => {
+                    if env.is_empty() {
+                        println!("No environment variables set.");
+                    } else {
+                        println!("Environment variables ({} total):", env.len());
+                        for (k, _) in &env {
+                            println!("  {}", k);
+                        }
+                    }
+                    EXIT_SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    EXIT_API_ERROR
+                }
+            }
+        }
+        "set" => {
+            // Read from --env-file or stdin
+            let content = if let Some(ref file) = opts.service_env_file {
+                match fs::read_to_string(file) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Error: Cannot read env file '{}': {}", file, e);
+                        return EXIT_ERROR;
+                    }
+                }
+            } else {
+                eprintln!("Error: --env-file required for 'set' command");
+                return EXIT_INVALID_ARGS;
+            };
+
+            let mut env = HashMap::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some(pos) = line.find('=') {
+                    let key = line[..pos].to_string();
+                    let val = line[pos + 1..].to_string();
+                    env.insert(key, val);
+                }
+            }
+
+            match set_service_env(&service_id, &env, creds) {
+                Ok(()) => {
+                    println!("Environment variables set ({} variables).", env.len());
+                    EXIT_SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    EXIT_API_ERROR
+                }
+            }
+        }
+        "export" => {
+            match export_service_env(&service_id, creds) {
+                Ok(content) => {
+                    print!("{}", content);
+                    EXIT_SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    EXIT_API_ERROR
+                }
+            }
+        }
+        "delete" => {
+            // Delete all env vars
+            match get_service_env(&service_id, creds) {
+                Ok(env) => {
+                    let keys: Vec<&str> = env.keys().map(|s| s.as_str()).collect();
+                    if keys.is_empty() {
+                        println!("No environment variables to delete.");
+                        return EXIT_SUCCESS;
+                    }
+                    match delete_service_env(&service_id, &keys, creds) {
+                        Ok(()) => {
+                            println!("Environment vault deleted.");
+                            EXIT_SUCCESS
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            EXIT_API_ERROR
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    EXIT_API_ERROR
+                }
+            }
+        }
+        _ => {
+            eprintln!("Error: Unknown env command '{}'. Use: status, set, export, delete", action);
+            EXIT_INVALID_ARGS
+        }
+    }
+}
+
+fn cmd_snapshot(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    if opts.snapshot_list {
+        match list_snapshots(&creds) {
+            Ok(snapshots) => {
+                format_snapshot_list(&snapshots);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.snapshot_info {
+        // Get snapshot details - reuse list and filter
+        match list_snapshots(&creds) {
+            Ok(snapshots) => {
+                if let Some(snapshot) = snapshots.iter().find(|s| s.snapshot_id == *id) {
+                    println!("Snapshot ID: {}", snapshot.snapshot_id);
+                    println!("Name: {}", snapshot.name);
+                    println!("Source Type: {}", snapshot.source_type);
+                    println!("Source ID: {}", snapshot.source_id);
+                    println!("Hot: {}", snapshot.hot);
+                    println!("Size: {} bytes", snapshot.size_bytes);
+                    println!("Created: {}", snapshot.created_at);
+                    return EXIT_SUCCESS;
+                } else {
+                    eprintln!("Error: Snapshot not found: {}", id);
+                    return EXIT_API_ERROR;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.snapshot_delete {
+        match delete_snapshot(id, &creds) {
+            Ok(()) => {
+                println!("Snapshot {} deleted.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.snapshot_lock {
+        match lock_snapshot(id, &creds) {
+            Ok(snapshot) => {
+                println!("Snapshot {} locked.", snapshot.snapshot_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.snapshot_unlock {
+        match unlock_snapshot(id, &creds) {
+            Ok(snapshot) => {
+                println!("Snapshot {} unlocked.", snapshot.snapshot_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    if let Some(ref id) = opts.snapshot_clone {
+        let name = opts.clone_name.clone().unwrap_or_else(|| format!("{}-clone", id));
+        match clone_snapshot(id, &name, &creds) {
+            Ok(snapshot) => {
+                println!("Snapshot cloned: {}", snapshot.snapshot_id);
+                println!("Name: {}", snapshot.name);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Default: list snapshots
+    match list_snapshots(&creds) {
+        Ok(snapshots) => {
+            format_snapshot_list(&snapshots);
+            EXIT_SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            EXIT_API_ERROR
+        }
+    }
+}
+
+fn cmd_key(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    match validate_keys(&creds) {
+        Ok(result) => {
+            if result.valid {
+                println!("API keys valid.");
+                println!("Account ID: {}", result.account_id);
+                if !result.email.is_empty() {
+                    println!("Email: {}", result.email);
+                }
+                if !result.plan.is_empty() {
+                    println!("Plan: {}", result.plan);
+                }
+                EXIT_SUCCESS
+            } else {
+                eprintln!("Error: Invalid API keys");
+                if !result.error.is_empty() {
+                    eprintln!("Details: {}", result.error);
+                }
+                EXIT_AUTH_ERROR
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            EXIT_API_ERROR
+        }
+    }
+}
+
+/// CLI entry point. Call this from main() to run the CLI.
+///
+/// # Examples
+/// ```ignore
+/// fn main() {
+///     std::process::exit(un::cli_main());
+/// }
+/// ```
+pub fn cli_main() -> i32 {
+    let args: Vec<String> = env::args().collect();
+    let opts = parse_args(&args);
+
+    if opts.help {
+        print_help();
+        return EXIT_SUCCESS;
+    }
+
+    // Dispatch based on command
+    match opts.command.as_deref() {
+        Some("session") => cmd_session(&opts),
+        Some("service") => cmd_service(&opts),
+        Some("snapshot") => cmd_snapshot(&opts),
+        Some("key") => cmd_key(&opts),
+        None => {
+            // Default: execute code
+            if opts.positional.is_empty() && opts.shell.is_none() {
+                print_help();
+                EXIT_SUCCESS
+            } else {
+                cmd_execute(&opts)
+            }
+        }
+        Some(cmd) => {
+            // Treat unknown command as file to execute
+            let mut new_opts = opts;
+            new_opts.positional.insert(0, cmd.to_string());
+            new_opts.command = None;
+            cmd_execute(&new_opts)
+        }
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1785,5 +3273,56 @@ mod tests {
         let ts = get_timestamp();
         // Should be a reasonable Unix timestamp (after 2024)
         assert!(ts > 1700000000);
+    }
+
+    #[test]
+    fn test_parse_args_help() {
+        let args = vec!["un".to_string(), "--help".to_string()];
+        let opts = parse_args(&args);
+        assert!(opts.help);
+    }
+
+    #[test]
+    fn test_parse_args_execute() {
+        let args = vec!["un".to_string(), "script.py".to_string()];
+        let opts = parse_args(&args);
+        assert_eq!(opts.positional, vec!["script.py"]);
+    }
+
+    #[test]
+    fn test_parse_args_inline() {
+        let args = vec![
+            "un".to_string(),
+            "-s".to_string(),
+            "python".to_string(),
+            "print(1)".to_string(),
+        ];
+        let opts = parse_args(&args);
+        assert_eq!(opts.shell, Some("python".to_string()));
+        assert_eq!(opts.positional, vec!["print(1)"]);
+    }
+
+    #[test]
+    fn test_parse_args_session() {
+        let args = vec!["un".to_string(), "session".to_string(), "--list".to_string()];
+        let opts = parse_args(&args);
+        assert_eq!(opts.command, Some("session".to_string()));
+        assert!(opts.session_list);
+    }
+
+    #[test]
+    fn test_parse_args_service() {
+        let args = vec![
+            "un".to_string(),
+            "service".to_string(),
+            "--name".to_string(),
+            "myapp".to_string(),
+            "--ports".to_string(),
+            "80".to_string(),
+        ];
+        let opts = parse_args(&args);
+        assert_eq!(opts.command, Some("service".to_string()));
+        assert_eq!(opts.service_name, Some("myapp".to_string()));
+        assert_eq!(opts.service_ports, Some("80".to_string()));
     }
 }

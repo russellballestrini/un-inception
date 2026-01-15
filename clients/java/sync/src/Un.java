@@ -1741,6 +1741,52 @@ public class Un {
     }
 
     // ========================================================================
+    // Image Generation API
+    // ========================================================================
+
+    /**
+     * Generate images from text prompt using AI.
+     *
+     * @param prompt Text description of the image to generate
+     * @param model Model to use (optional, can be null)
+     * @param size Image size (e.g., "1024x1024")
+     * @param quality "standard" or "hd"
+     * @param n Number of images to generate
+     * @param publicKey API public key (optional)
+     * @param secretKey API secret key (optional)
+     * @return Map containing "images" (List of base64/URLs) and "created_at"
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> image(
+        String prompt,
+        String model,
+        String size,
+        String quality,
+        int n,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+
+        if (size == null) size = "1024x1024";
+        if (quality == null) quality = "standard";
+        if (n <= 0) n = 1;
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("prompt", prompt);
+        data.put("size", size);
+        data.put("quality", quality);
+        data.put("n", n);
+        if (model != null && !model.isEmpty()) {
+            data.put("model", model);
+        }
+
+        return makeRequest("POST", "/image", creds[0], creds[1], data);
+    }
+
+    // ========================================================================
     // HTTP Request Helpers
     // ========================================================================
 
@@ -1806,5 +1852,837 @@ public class Un {
         }
 
         return parseJson(responseBody);
+    }
+
+    // ========================================================================
+    // CLI Implementation
+    // ========================================================================
+
+    /**
+     * CLI entry point.
+     */
+    public static void main(String[] args) {
+        try {
+            cliMain(args);
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+
+    /**
+     * CLI main implementation.
+     */
+    public static void cliMain(String[] args) throws Exception {
+        if (args.length == 0) {
+            printHelp();
+            System.exit(0);
+        }
+
+        // Parse global options
+        String publicKey = null;
+        String secretKey = null;
+        String language = null;
+        String networkMode = "zerotrust";
+        int vcpu = 1;
+        List<String> envVars = new ArrayList<>();
+        List<String> files = new ArrayList<>();
+        List<String> positionalArgs = new ArrayList<>();
+        boolean showHelp = false;
+
+        int i = 0;
+        while (i < args.length) {
+            String arg = args[i];
+            if (arg.equals("-h") || arg.equals("--help")) {
+                showHelp = true;
+                i++;
+            } else if (arg.equals("-s") || arg.equals("--shell")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -s/--shell requires an argument");
+                    System.exit(2);
+                }
+                language = args[++i];
+                i++;
+            } else if (arg.equals("-p") || arg.equals("--public-key")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -p/--public-key requires an argument");
+                    System.exit(2);
+                }
+                publicKey = args[++i];
+                i++;
+            } else if (arg.equals("-k") || arg.equals("--secret-key")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -k/--secret-key requires an argument");
+                    System.exit(2);
+                }
+                secretKey = args[++i];
+                i++;
+            } else if (arg.equals("-n") || arg.equals("--network")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -n/--network requires an argument");
+                    System.exit(2);
+                }
+                networkMode = args[++i];
+                i++;
+            } else if (arg.equals("-v") || arg.equals("--vcpu")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -v/--vcpu requires an argument");
+                    System.exit(2);
+                }
+                vcpu = Integer.parseInt(args[++i]);
+                i++;
+            } else if (arg.equals("-e") || arg.equals("--env")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -e/--env requires an argument");
+                    System.exit(2);
+                }
+                envVars.add(args[++i]);
+                i++;
+            } else if (arg.equals("-f") || arg.equals("--file")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: -f/--file requires an argument");
+                    System.exit(2);
+                }
+                files.add(args[++i]);
+                i++;
+            } else if (arg.startsWith("-")) {
+                System.err.println("Error: Unknown option: " + arg);
+                System.exit(2);
+            } else {
+                positionalArgs.add(arg);
+                i++;
+            }
+        }
+
+        if (showHelp || positionalArgs.isEmpty()) {
+            printHelp();
+            System.exit(0);
+        }
+
+        String command = positionalArgs.get(0);
+
+        // Route to subcommand handlers
+        switch (command) {
+            case "session":
+                handleSession(positionalArgs, publicKey, secretKey, networkMode, vcpu, language);
+                break;
+            case "service":
+                handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars);
+                break;
+            case "snapshot":
+                handleSnapshot(positionalArgs, publicKey, secretKey);
+                break;
+            case "key":
+                handleKey(publicKey, secretKey);
+                break;
+            default:
+                // Default: execute code
+                handleExecute(positionalArgs, publicKey, secretKey, language, networkMode, vcpu, envVars, files);
+                break;
+        }
+    }
+
+    private static void printHelp() {
+        System.out.println("Un - unsandbox.com CLI (Java Synchronous SDK)");
+        System.out.println();
+        System.out.println("Usage:");
+        System.out.println("  java Un [options] <source_file>        Execute code file");
+        System.out.println("  java Un [options] -s LANG 'code'       Execute inline code");
+        System.out.println("  java Un session [options]              Interactive session");
+        System.out.println("  java Un service [options]              Manage services");
+        System.out.println("  java Un snapshot [options]             Manage snapshots");
+        System.out.println("  java Un key                            Check API key");
+        System.out.println();
+        System.out.println("Global Options:");
+        System.out.println("  -s, --shell LANG      Language for inline code");
+        System.out.println("  -e, --env KEY=VAL     Set environment variable");
+        System.out.println("  -f, --file FILE       Add input file to /tmp/");
+        System.out.println("  -p, --public-key KEY  API public key");
+        System.out.println("  -k, --secret-key KEY  API secret key");
+        System.out.println("  -n, --network MODE    Network: zerotrust or semitrusted");
+        System.out.println("  -v, --vcpu N          vCPU count (1-8)");
+        System.out.println("  -h, --help            Show help");
+        System.out.println();
+        System.out.println("Session Options:");
+        System.out.println("  --list, -l            List active sessions");
+        System.out.println("  --attach ID           Reconnect to session");
+        System.out.println("  --kill ID             Terminate session");
+        System.out.println("  --freeze ID           Pause session");
+        System.out.println("  --unfreeze ID         Resume session");
+        System.out.println("  --boost ID            Add resources");
+        System.out.println("  --unboost ID          Remove boost");
+        System.out.println("  --snapshot ID         Create snapshot");
+        System.out.println("  --tmux                Enable persistence with tmux");
+        System.out.println("  --screen              Enable persistence with screen");
+        System.out.println("  --shell SHELL         Shell/REPL to use");
+        System.out.println();
+        System.out.println("Service Options:");
+        System.out.println("  --list, -l            List all services");
+        System.out.println("  --name NAME           Service name (creates new)");
+        System.out.println("  --ports PORTS         Comma-separated ports");
+        System.out.println("  --bootstrap CMD       Bootstrap command");
+        System.out.println("  --info ID             Get service details");
+        System.out.println("  --logs ID             Get all logs");
+        System.out.println("  --freeze ID           Pause service");
+        System.out.println("  --unfreeze ID         Resume service");
+        System.out.println("  --destroy ID          Delete service");
+        System.out.println("  --lock ID             Prevent deletion");
+        System.out.println("  --unlock ID           Allow deletion");
+        System.out.println("  --execute ID CMD      Run command in service");
+        System.out.println("  --redeploy ID         Re-run bootstrap");
+        System.out.println("  --snapshot ID         Create snapshot");
+        System.out.println();
+        System.out.println("Service Env Subcommand:");
+        System.out.println("  java Un service env status ID   Show vault status");
+        System.out.println("  java Un service env set ID      Set from stdin");
+        System.out.println("  java Un service env export ID   Export to stdout");
+        System.out.println("  java Un service env delete ID   Delete vault");
+        System.out.println();
+        System.out.println("Snapshot Options:");
+        System.out.println("  --list, -l            List all snapshots");
+        System.out.println("  --info ID             Get snapshot details");
+        System.out.println("  --delete ID           Delete snapshot");
+        System.out.println("  --lock ID             Prevent deletion");
+        System.out.println("  --unlock ID           Allow deletion");
+        System.out.println("  --clone ID            Clone snapshot");
+    }
+
+    private static void handleExecute(
+        List<String> args,
+        String publicKey,
+        String secretKey,
+        String language,
+        String networkMode,
+        int vcpu,
+        List<String> envVars,
+        List<String> files
+    ) throws Exception {
+        String codeOrFile = args.get(0);
+        String code;
+
+        if (language != null) {
+            // Inline code mode: -s python 'print(1)'
+            code = codeOrFile;
+        } else {
+            // File mode: script.py
+            Path filePath = Paths.get(codeOrFile);
+            if (!Files.exists(filePath)) {
+                System.err.println("Error: File not found: " + codeOrFile);
+                System.exit(1);
+            }
+            code = new String(Files.readAllBytes(filePath), StandardCharsets.UTF_8);
+            language = detectLanguage(codeOrFile);
+            if (language == null) {
+                System.err.println("Error: Cannot detect language from file extension: " + codeOrFile);
+                System.exit(1);
+            }
+        }
+
+        Map<String, Object> result = executeCode(language, code, publicKey, secretKey);
+
+        // Print output
+        Object stdout = result.get("stdout");
+        if (stdout != null && !stdout.toString().isEmpty()) {
+            System.out.print(stdout);
+        }
+
+        Object stderr = result.get("stderr");
+        if (stderr != null && !stderr.toString().isEmpty()) {
+            System.err.print(stderr);
+        }
+
+        System.out.println("---");
+        Object exitCode = result.get("exit_code");
+        System.out.println("Exit code: " + (exitCode != null ? exitCode : "0"));
+
+        Object executionTime = result.get("execution_time_ms");
+        if (executionTime != null) {
+            System.out.println("Execution time: " + executionTime + "ms");
+        }
+
+        // Exit with the code's exit code
+        if (exitCode != null && exitCode instanceof Number) {
+            int code_exit = ((Number) exitCode).intValue();
+            if (code_exit != 0) {
+                System.exit(code_exit);
+            }
+        }
+    }
+
+    private static void handleSession(
+        List<String> args,
+        String publicKey,
+        String secretKey,
+        String networkMode,
+        int vcpu,
+        String shell
+    ) throws Exception {
+        // Parse session-specific options
+        boolean list = false;
+        String attachId = null;
+        String killId = null;
+        String freezeId = null;
+        String unfreezeId = null;
+        String boostId = null;
+        String unboostId = null;
+        String snapshotId = null;
+        String snapshotName = null;
+        boolean hot = false;
+        boolean useTmux = false;
+        boolean useScreen = false;
+
+        int i = 1; // Skip "session" command
+        while (i < args.size()) {
+            String arg = args.get(i);
+            if (arg.equals("--list") || arg.equals("-l")) {
+                list = true;
+                i++;
+            } else if (arg.equals("--attach")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --attach requires an ID");
+                    System.exit(2);
+                }
+                attachId = args.get(++i);
+                i++;
+            } else if (arg.equals("--kill")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --kill requires an ID");
+                    System.exit(2);
+                }
+                killId = args.get(++i);
+                i++;
+            } else if (arg.equals("--freeze")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --freeze requires an ID");
+                    System.exit(2);
+                }
+                freezeId = args.get(++i);
+                i++;
+            } else if (arg.equals("--unfreeze")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --unfreeze requires an ID");
+                    System.exit(2);
+                }
+                unfreezeId = args.get(++i);
+                i++;
+            } else if (arg.equals("--boost")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --boost requires an ID");
+                    System.exit(2);
+                }
+                boostId = args.get(++i);
+                i++;
+            } else if (arg.equals("--unboost")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --unboost requires an ID");
+                    System.exit(2);
+                }
+                unboostId = args.get(++i);
+                i++;
+            } else if (arg.equals("--snapshot")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --snapshot requires an ID");
+                    System.exit(2);
+                }
+                snapshotId = args.get(++i);
+                i++;
+            } else if (arg.equals("--snapshot-name")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --snapshot-name requires a name");
+                    System.exit(2);
+                }
+                snapshotName = args.get(++i);
+                i++;
+            } else if (arg.equals("--hot")) {
+                hot = true;
+                i++;
+            } else if (arg.equals("--tmux")) {
+                useTmux = true;
+                i++;
+            } else if (arg.equals("--screen")) {
+                useScreen = true;
+                i++;
+            } else if (arg.equals("--shell")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --shell requires a value");
+                    System.exit(2);
+                }
+                shell = args.get(++i);
+                i++;
+            } else {
+                i++;
+            }
+        }
+
+        if (list) {
+            List<Map<String, Object>> sessions = listSessions(publicKey, secretKey);
+            printSessionList(sessions);
+        } else if (attachId != null) {
+            Map<String, Object> session = getSession(attachId, publicKey, secretKey);
+            System.out.println("Session: " + attachId);
+            printMap(session);
+        } else if (killId != null) {
+            deleteSession(killId, publicKey, secretKey);
+            System.out.println("Session terminated: " + killId);
+        } else if (freezeId != null) {
+            freezeSession(freezeId, publicKey, secretKey);
+            System.out.println("Session frozen: " + freezeId);
+        } else if (unfreezeId != null) {
+            unfreezeSession(unfreezeId, publicKey, secretKey);
+            System.out.println("Session unfrozen: " + unfreezeId);
+        } else if (boostId != null) {
+            boostSession(boostId, publicKey, secretKey);
+            System.out.println("Session boosted: " + boostId);
+        } else if (unboostId != null) {
+            unboostSession(unboostId, publicKey, secretKey);
+            System.out.println("Session unboosted: " + unboostId);
+        } else if (snapshotId != null) {
+            String snapId = sessionSnapshot(snapshotId, publicKey, secretKey, snapshotName, hot);
+            System.out.println("Snapshot created: " + snapId);
+        } else {
+            // Create new session
+            Map<String, Object> opts = new LinkedHashMap<>();
+            opts.put("network_mode", networkMode);
+            if (vcpu > 1) {
+                opts.put("vcpu", vcpu);
+            }
+            if (useTmux) {
+                opts.put("multiplexer", "tmux");
+            } else if (useScreen) {
+                opts.put("multiplexer", "screen");
+            }
+
+            Map<String, Object> result = createSession(shell != null ? shell : "bash", publicKey, secretKey, opts);
+            System.out.println("Session created:");
+            printMap(result);
+        }
+    }
+
+    private static void handleService(
+        List<String> args,
+        String publicKey,
+        String secretKey,
+        String networkMode,
+        int vcpu,
+        List<String> envVars
+    ) throws Exception {
+        // Check for "env" subcommand
+        if (args.size() > 1 && args.get(1).equals("env")) {
+            handleServiceEnv(args, publicKey, secretKey);
+            return;
+        }
+
+        // Parse service-specific options
+        boolean list = false;
+        String name = null;
+        String ports = null;
+        String bootstrap = null;
+        String infoId = null;
+        String logsId = null;
+        String freezeId = null;
+        String unfreezeId = null;
+        String destroyId = null;
+        String lockId = null;
+        String unlockId = null;
+        String executeId = null;
+        String executeCmd = null;
+        String redeployId = null;
+        String snapshotId = null;
+
+        int i = 1; // Skip "service" command
+        while (i < args.size()) {
+            String arg = args.get(i);
+            if (arg.equals("--list") || arg.equals("-l")) {
+                list = true;
+                i++;
+            } else if (arg.equals("--name")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --name requires a value");
+                    System.exit(2);
+                }
+                name = args.get(++i);
+                i++;
+            } else if (arg.equals("--ports")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --ports requires a value");
+                    System.exit(2);
+                }
+                ports = args.get(++i);
+                i++;
+            } else if (arg.equals("--bootstrap")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --bootstrap requires a value");
+                    System.exit(2);
+                }
+                bootstrap = args.get(++i);
+                i++;
+            } else if (arg.equals("--info")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --info requires an ID");
+                    System.exit(2);
+                }
+                infoId = args.get(++i);
+                i++;
+            } else if (arg.equals("--logs")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --logs requires an ID");
+                    System.exit(2);
+                }
+                logsId = args.get(++i);
+                i++;
+            } else if (arg.equals("--freeze")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --freeze requires an ID");
+                    System.exit(2);
+                }
+                freezeId = args.get(++i);
+                i++;
+            } else if (arg.equals("--unfreeze")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --unfreeze requires an ID");
+                    System.exit(2);
+                }
+                unfreezeId = args.get(++i);
+                i++;
+            } else if (arg.equals("--destroy")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --destroy requires an ID");
+                    System.exit(2);
+                }
+                destroyId = args.get(++i);
+                i++;
+            } else if (arg.equals("--lock")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --lock requires an ID");
+                    System.exit(2);
+                }
+                lockId = args.get(++i);
+                i++;
+            } else if (arg.equals("--unlock")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --unlock requires an ID");
+                    System.exit(2);
+                }
+                unlockId = args.get(++i);
+                i++;
+            } else if (arg.equals("--execute")) {
+                if (i + 2 >= args.size()) {
+                    System.err.println("Error: --execute requires ID and command");
+                    System.exit(2);
+                }
+                executeId = args.get(++i);
+                executeCmd = args.get(++i);
+                i++;
+            } else if (arg.equals("--redeploy")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --redeploy requires an ID");
+                    System.exit(2);
+                }
+                redeployId = args.get(++i);
+                i++;
+            } else if (arg.equals("--snapshot")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --snapshot requires an ID");
+                    System.exit(2);
+                }
+                snapshotId = args.get(++i);
+                i++;
+            } else {
+                i++;
+            }
+        }
+
+        if (list) {
+            List<Map<String, Object>> services = listServices(publicKey, secretKey);
+            printServiceList(services);
+        } else if (infoId != null) {
+            Map<String, Object> service = getService(infoId, publicKey, secretKey);
+            printMap(service);
+        } else if (logsId != null) {
+            Map<String, Object> logs = getServiceLogs(logsId, true, publicKey, secretKey);
+            Object content = logs.get("logs");
+            if (content != null) {
+                System.out.println(content);
+            }
+        } else if (freezeId != null) {
+            freezeService(freezeId, publicKey, secretKey);
+            System.out.println("Service frozen: " + freezeId);
+        } else if (unfreezeId != null) {
+            unfreezeService(unfreezeId, publicKey, secretKey);
+            System.out.println("Service unfrozen: " + unfreezeId);
+        } else if (destroyId != null) {
+            deleteService(destroyId, publicKey, secretKey);
+            System.out.println("Service destroyed: " + destroyId);
+        } else if (lockId != null) {
+            lockService(lockId, publicKey, secretKey);
+            System.out.println("Service locked: " + lockId);
+        } else if (unlockId != null) {
+            unlockService(unlockId, publicKey, secretKey);
+            System.out.println("Service unlocked: " + unlockId);
+        } else if (executeId != null && executeCmd != null) {
+            Map<String, Object> result = executeInService(executeId, executeCmd, publicKey, secretKey);
+            Object stdout = result.get("stdout");
+            if (stdout != null) {
+                System.out.print(stdout);
+            }
+            Object stderr = result.get("stderr");
+            if (stderr != null && !stderr.toString().isEmpty()) {
+                System.err.print(stderr);
+            }
+        } else if (redeployId != null) {
+            redeployService(redeployId, publicKey, secretKey);
+            System.out.println("Service redeployed: " + redeployId);
+        } else if (snapshotId != null) {
+            String snapId = serviceSnapshot(snapshotId, publicKey, secretKey, null);
+            System.out.println("Snapshot created: " + snapId);
+        } else if (name != null) {
+            // Create new service
+            Map<String, Object> result = createService(name, ports, bootstrap, publicKey, secretKey);
+            System.out.println("Service created:");
+            printMap(result);
+        } else {
+            System.err.println("Error: No service action specified. Use --list, --name, --info, etc.");
+            System.exit(2);
+        }
+    }
+
+    private static void handleServiceEnv(
+        List<String> args,
+        String publicKey,
+        String secretKey
+    ) throws Exception {
+        if (args.size() < 4) {
+            System.err.println("Error: service env requires action and service ID");
+            System.err.println("Usage: java Un service env <status|set|export|delete> <service_id>");
+            System.exit(2);
+        }
+
+        String action = args.get(2);
+        String serviceId = args.get(3);
+
+        switch (action) {
+            case "status":
+                Map<String, Object> status = getServiceEnv(serviceId, publicKey, secretKey);
+                printMap(status);
+                break;
+            case "set":
+                // Read env from stdin
+                Map<String, String> env = new LinkedHashMap<>();
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.isEmpty() || line.startsWith("#")) {
+                            continue;
+                        }
+                        int eqIdx = line.indexOf('=');
+                        if (eqIdx > 0) {
+                            String key = line.substring(0, eqIdx);
+                            String value = line.substring(eqIdx + 1);
+                            env.put(key, value);
+                        }
+                    }
+                }
+                if (!env.isEmpty()) {
+                    setServiceEnv(serviceId, env, publicKey, secretKey);
+                    System.out.println("Environment set for service: " + serviceId);
+                } else {
+                    System.err.println("Error: No environment variables provided");
+                    System.exit(1);
+                }
+                break;
+            case "export":
+                Map<String, Object> exported = exportServiceEnv(serviceId, publicKey, secretKey);
+                Object envData = exported.get("env");
+                if (envData instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> envMap = (Map<String, Object>) envData;
+                    for (Map.Entry<String, Object> entry : envMap.entrySet()) {
+                        System.out.println(entry.getKey() + "=" + entry.getValue());
+                    }
+                }
+                break;
+            case "delete":
+                deleteServiceEnv(serviceId, null, publicKey, secretKey);
+                System.out.println("Environment deleted for service: " + serviceId);
+                break;
+            default:
+                System.err.println("Error: Unknown env action: " + action);
+                System.err.println("Valid actions: status, set, export, delete");
+                System.exit(2);
+        }
+    }
+
+    private static void handleSnapshot(
+        List<String> args,
+        String publicKey,
+        String secretKey
+    ) throws Exception {
+        // Parse snapshot-specific options
+        boolean list = false;
+        String infoId = null;
+        String deleteId = null;
+        String lockId = null;
+        String unlockId = null;
+        String cloneId = null;
+        String cloneName = null;
+        String cloneType = null;
+        String clonePorts = null;
+
+        int i = 1; // Skip "snapshot" command
+        while (i < args.size()) {
+            String arg = args.get(i);
+            if (arg.equals("--list") || arg.equals("-l")) {
+                list = true;
+                i++;
+            } else if (arg.equals("--info")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --info requires an ID");
+                    System.exit(2);
+                }
+                infoId = args.get(++i);
+                i++;
+            } else if (arg.equals("--delete")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --delete requires an ID");
+                    System.exit(2);
+                }
+                deleteId = args.get(++i);
+                i++;
+            } else if (arg.equals("--lock")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --lock requires an ID");
+                    System.exit(2);
+                }
+                lockId = args.get(++i);
+                i++;
+            } else if (arg.equals("--unlock")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --unlock requires an ID");
+                    System.exit(2);
+                }
+                unlockId = args.get(++i);
+                i++;
+            } else if (arg.equals("--clone")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --clone requires an ID");
+                    System.exit(2);
+                }
+                cloneId = args.get(++i);
+                i++;
+            } else if (arg.equals("--name")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --name requires a value");
+                    System.exit(2);
+                }
+                cloneName = args.get(++i);
+                i++;
+            } else if (arg.equals("--type")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --type requires a value");
+                    System.exit(2);
+                }
+                cloneType = args.get(++i);
+                i++;
+            } else if (arg.equals("--ports")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --ports requires a value");
+                    System.exit(2);
+                }
+                clonePorts = args.get(++i);
+                i++;
+            } else {
+                i++;
+            }
+        }
+
+        if (list) {
+            List<Map<String, Object>> snapshots = listSnapshots(publicKey, secretKey);
+            printSnapshotList(snapshots);
+        } else if (infoId != null) {
+            // Get snapshot info via restore API (or just list and filter)
+            List<Map<String, Object>> snapshots = listSnapshots(publicKey, secretKey);
+            for (Map<String, Object> snap : snapshots) {
+                Object id = snap.get("id");
+                if (id != null && id.toString().equals(infoId)) {
+                    printMap(snap);
+                    return;
+                }
+            }
+            System.err.println("Error: Snapshot not found: " + infoId);
+            System.exit(1);
+        } else if (deleteId != null) {
+            deleteSnapshot(deleteId, publicKey, secretKey);
+            System.out.println("Snapshot deleted: " + deleteId);
+        } else if (lockId != null) {
+            lockSnapshot(lockId, publicKey, secretKey);
+            System.out.println("Snapshot locked: " + lockId);
+        } else if (unlockId != null) {
+            unlockSnapshot(unlockId, publicKey, secretKey);
+            System.out.println("Snapshot unlocked: " + unlockId);
+        } else if (cloneId != null) {
+            Map<String, Object> result = cloneSnapshot(cloneId, cloneName, publicKey, secretKey);
+            System.out.println("Snapshot cloned:");
+            printMap(result);
+        } else {
+            System.err.println("Error: No snapshot action specified. Use --list, --info, --delete, etc.");
+            System.exit(2);
+        }
+    }
+
+    private static void handleKey(String publicKey, String secretKey) throws Exception {
+        Map<String, Object> result = validateKeys(publicKey, secretKey);
+        printMap(result);
+    }
+
+    private static void printSessionList(List<Map<String, Object>> sessions) {
+        System.out.printf("%-40s %-20s %-10s %-20s%n", "ID", "NAME", "STATUS", "CREATED");
+        for (Map<String, Object> session : sessions) {
+            String id = getStr(session, "id", "session_id");
+            String name = getStr(session, "name", "container_name");
+            String status = getStr(session, "status", "state");
+            String created = getStr(session, "created_at", "created");
+            System.out.printf("%-40s %-20s %-10s %-20s%n", id, name, status, created);
+        }
+    }
+
+    private static void printServiceList(List<Map<String, Object>> services) {
+        System.out.printf("%-40s %-20s %-10s %-20s%n", "ID", "NAME", "STATUS", "CREATED");
+        for (Map<String, Object> service : services) {
+            String id = getStr(service, "id", "service_id");
+            String name = getStr(service, "name", "");
+            String status = getStr(service, "state", "status");
+            String created = getStr(service, "created_at", "created");
+            System.out.printf("%-40s %-20s %-10s %-20s%n", id, name, status, created);
+        }
+    }
+
+    private static void printSnapshotList(List<Map<String, Object>> snapshots) {
+        System.out.printf("%-40s %-20s %-10s %-20s%n", "ID", "NAME", "TYPE", "CREATED");
+        for (Map<String, Object> snapshot : snapshots) {
+            String id = getStr(snapshot, "id", "snapshot_id");
+            String name = getStr(snapshot, "name", "");
+            String type = getStr(snapshot, "type", "source_type");
+            String created = getStr(snapshot, "created_at", "created");
+            System.out.printf("%-40s %-20s %-10s %-20s%n", id, name, type, created);
+        }
+    }
+
+    private static String getStr(Map<String, Object> map, String key1, String key2) {
+        Object val = map.get(key1);
+        if (val != null) {
+            return val.toString();
+        }
+        val = map.get(key2);
+        if (val != null) {
+            return val.toString();
+        }
+        return "";
+    }
+
+    private static void printMap(Map<String, Object> map) {
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            System.out.println(entry.getKey() + ": " + entry.getValue());
+        }
     }
 }

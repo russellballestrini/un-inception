@@ -1005,6 +1005,46 @@ class UnsandboxAsync {
         return $this->makeRequest('POST', '/keys/validate', $publicKey, $secretKey, []);
     }
 
+    // =========================================================================
+    // Image Generation
+    // =========================================================================
+
+    /**
+     * Generate images from text prompt using AI.
+     *
+     * @param string $prompt Text description of the image to generate
+     * @param string|null $model Model to use (optional)
+     * @param string $size Image size (default: "1024x1024")
+     * @param string $quality "standard" or "hd" (default: "standard")
+     * @param int $n Number of images to generate (default: 1)
+     * @param string|null $publicKey API public key
+     * @param string|null $secretKey API secret key
+     * @return PromiseInterface Resolves to result with 'images' array and 'created_at'
+     */
+    public function image(
+        string $prompt,
+        ?string $model = null,
+        string $size = "1024x1024",
+        string $quality = "standard",
+        int $n = 1,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $payload = [
+            'prompt' => $prompt,
+            'size' => $size,
+            'quality' => $quality,
+            'n' => $n,
+        ];
+        if ($model !== null) {
+            $payload['model'] = $model;
+        }
+
+        return $this->makeRequest('POST', '/image', $publicKey, $secretKey, $payload);
+    }
+
     /**
      * Get path to ~/.unsandbox directory, creating if necessary.
      *
@@ -1303,4 +1343,1115 @@ class UnsandboxAsync {
         ];
         file_put_contents($cachePath, json_encode($data));
     }
+
+    // =========================================================================
+    // CLI Methods
+    // =========================================================================
+
+    /**
+     * Main CLI entry point.
+     *
+     * @param array $argv Command line arguments
+     */
+    public function cliMain(array $argv): void {
+        $script = array_shift($argv);
+
+        if (empty($argv)) {
+            $this->cliShowHelp();
+            exit(0);
+        }
+
+        // Parse global options and determine command
+        $globalOpts = $this->cliParseGlobalOptions($argv);
+        $args = $globalOpts['args'];
+        $opts = $globalOpts['opts'];
+
+        // Handle help flag
+        if ($opts['help']) {
+            $this->cliShowHelp();
+            exit(0);
+        }
+
+        // Set credentials from options
+        if (!empty($opts['public_key'])) {
+            $this->defaultPublicKey = $opts['public_key'];
+        }
+        if (!empty($opts['secret_key'])) {
+            $this->defaultSecretKey = $opts['secret_key'];
+        }
+
+        // Determine the command
+        if (empty($args)) {
+            $this->cliShowHelp();
+            exit(0);
+        }
+
+        $command = $args[0];
+
+        try {
+            switch ($command) {
+                case 'session':
+                    $this->cliHandleSession(array_slice($args, 1), $opts);
+                    break;
+                case 'service':
+                    $this->cliHandleService(array_slice($args, 1), $opts);
+                    break;
+                case 'snapshot':
+                    $this->cliHandleSnapshot(array_slice($args, 1), $opts);
+                    break;
+                case 'key':
+                    $this->cliHandleKey($opts);
+                    break;
+                case '-h':
+                case '--help':
+                case 'help':
+                    $this->cliShowHelp();
+                    break;
+                default:
+                    // Default: execute code file or inline code
+                    $this->cliHandleExecute($args, $opts);
+                    break;
+            }
+        } catch (AsyncCredentialsException $e) {
+            $this->cliError("Authentication error: " . $e->getMessage());
+            exit(3);
+        } catch (AsyncApiException $e) {
+            $this->cliError("API error: " . $e->getMessage());
+            exit(4);
+        } catch (\Exception $e) {
+            $this->cliError("Error: " . $e->getMessage());
+            exit(1);
+        }
+    }
+
+    /**
+     * Parse global CLI options.
+     *
+     * @param array $argv Arguments to parse
+     * @return array ['opts' => [...], 'args' => [...]]
+     */
+    private function cliParseGlobalOptions(array $argv): array {
+        $opts = [
+            'shell' => null,
+            'env' => [],
+            'files' => [],
+            'files_path' => [],
+            'artifacts' => false,
+            'output' => null,
+            'public_key' => null,
+            'secret_key' => null,
+            'network' => 'zerotrust',
+            'vcpu' => 1,
+            'yes' => false,
+            'help' => false,
+        ];
+        $args = [];
+
+        $i = 0;
+        while ($i < count($argv)) {
+            $arg = $argv[$i];
+
+            if ($arg === '-s' || $arg === '--shell') {
+                $i++;
+                $opts['shell'] = $argv[$i] ?? null;
+            } elseif ($arg === '-e' || $arg === '--env') {
+                $i++;
+                if (isset($argv[$i])) {
+                    $opts['env'][] = $argv[$i];
+                }
+            } elseif ($arg === '-f' || $arg === '--file') {
+                $i++;
+                if (isset($argv[$i])) {
+                    $opts['files'][] = $argv[$i];
+                }
+            } elseif ($arg === '-F' || $arg === '--file-path') {
+                $i++;
+                if (isset($argv[$i])) {
+                    $opts['files_path'][] = $argv[$i];
+                }
+            } elseif ($arg === '-a' || $arg === '--artifacts') {
+                $opts['artifacts'] = true;
+            } elseif ($arg === '-o' || $arg === '--output') {
+                $i++;
+                $opts['output'] = $argv[$i] ?? null;
+            } elseif ($arg === '-p' || $arg === '--public-key') {
+                $i++;
+                $opts['public_key'] = $argv[$i] ?? null;
+            } elseif ($arg === '-k' || $arg === '--secret-key') {
+                $i++;
+                $opts['secret_key'] = $argv[$i] ?? null;
+            } elseif ($arg === '-n' || $arg === '--network') {
+                $i++;
+                $opts['network'] = $argv[$i] ?? 'zerotrust';
+            } elseif ($arg === '-v' || $arg === '--vcpu') {
+                $i++;
+                $opts['vcpu'] = (int)($argv[$i] ?? 1);
+            } elseif ($arg === '-y' || $arg === '--yes') {
+                $opts['yes'] = true;
+            } elseif ($arg === '-h' || $arg === '--help') {
+                $opts['help'] = true;
+            } elseif (strpos($arg, '-') !== 0) {
+                $args[] = $arg;
+            }
+
+            $i++;
+        }
+
+        return ['opts' => $opts, 'args' => $args];
+    }
+
+    /**
+     * Handle execute command (default command).
+     *
+     * @param array $args Positional arguments
+     * @param array $opts Options
+     */
+    private function cliHandleExecute(array $args, array $opts): void {
+        $code = null;
+        $language = null;
+
+        // If shell option is set, treat first arg as code
+        if (!empty($opts['shell'])) {
+            $language = $opts['shell'];
+            $code = $args[0] ?? '';
+        } else {
+            // First arg is a file
+            $file = $args[0] ?? '';
+            if (empty($file)) {
+                $this->cliError("No source file specified");
+                exit(2);
+            }
+
+            if (!file_exists($file)) {
+                $this->cliError("File not found: {$file}");
+                exit(2);
+            }
+
+            $code = file_get_contents($file);
+            if ($code === false) {
+                $this->cliError("Cannot read file: {$file}");
+                exit(2);
+            }
+
+            $language = self::detectLanguage($file);
+            if ($language === null) {
+                $this->cliError("Cannot detect language from file extension: {$file}");
+                exit(2);
+            }
+        }
+
+        // Build request options
+        $requestOpts = [
+            'network_mode' => $opts['network'],
+        ];
+        if ($opts['vcpu'] > 1) {
+            $requestOpts['vcpu'] = $opts['vcpu'];
+        }
+
+        // Handle environment variables
+        $envVars = [];
+        foreach ($opts['env'] as $envPair) {
+            $pos = strpos($envPair, '=');
+            if ($pos !== false) {
+                $key = substr($envPair, 0, $pos);
+                $val = substr($envPair, $pos + 1);
+                $envVars[$key] = $val;
+            }
+        }
+
+        // Handle input files
+        $inputFiles = [];
+        foreach ($opts['files'] as $filepath) {
+            if (file_exists($filepath)) {
+                $content = file_get_contents($filepath);
+                $inputFiles[] = [
+                    'name' => basename($filepath),
+                    'content' => base64_encode($content),
+                ];
+            }
+        }
+        foreach ($opts['files_path'] as $filepath) {
+            if (file_exists($filepath)) {
+                $content = file_get_contents($filepath);
+                $inputFiles[] = [
+                    'name' => $filepath,
+                    'content' => base64_encode($content),
+                    'preserve_path' => true,
+                ];
+            }
+        }
+
+        $result = $this->executeCode($language, $code)->wait();
+
+        // Output result
+        if (isset($result['stdout'])) {
+            echo $result['stdout'];
+        }
+        if (isset($result['stderr']) && !empty($result['stderr'])) {
+            fwrite(STDERR, $result['stderr']);
+        }
+        echo "---\n";
+        echo "Exit code: " . ($result['exit_code'] ?? 0) . "\n";
+        if (isset($result['execution_time'])) {
+            echo "Execution time: " . $result['execution_time'] . "ms\n";
+        }
+
+        exit($result['exit_code'] ?? 0);
+    }
+
+    /**
+     * Handle session subcommand.
+     *
+     * @param array $args Positional arguments
+     * @param array $opts Options
+     */
+    private function cliHandleSession(array $args, array $opts): void {
+        // Parse session-specific options
+        $sessionOpts = $this->cliParseSessionOptions($args);
+
+        if ($sessionOpts['list']) {
+            $sessions = $this->listSessions()->wait();
+            $this->cliPrintList($sessions, 'session');
+            return;
+        }
+
+        if ($sessionOpts['attach']) {
+            $session = $this->getSession($sessionOpts['attach'])->wait();
+            $this->cliPrintSessionInfo($session);
+            echo "\nNote: Interactive attachment requires WebSocket support\n";
+            return;
+        }
+
+        if ($sessionOpts['kill']) {
+            $result = $this->deleteSession($sessionOpts['kill'])->wait();
+            echo "Session terminated: " . $sessionOpts['kill'] . "\n";
+            return;
+        }
+
+        if ($sessionOpts['freeze']) {
+            $result = $this->freezeSession($sessionOpts['freeze'])->wait();
+            echo "Session frozen: " . $sessionOpts['freeze'] . "\n";
+            return;
+        }
+
+        if ($sessionOpts['unfreeze']) {
+            $result = $this->unfreezeSession($sessionOpts['unfreeze'])->wait();
+            echo "Session unfrozen: " . $sessionOpts['unfreeze'] . "\n";
+            return;
+        }
+
+        if ($sessionOpts['boost']) {
+            $result = $this->boostSession($sessionOpts['boost'], null, null, $opts['vcpu'] ?: 2)->wait();
+            echo "Session boosted: " . $sessionOpts['boost'] . "\n";
+            return;
+        }
+
+        if ($sessionOpts['unboost']) {
+            $result = $this->unboostSession($sessionOpts['unboost'])->wait();
+            echo "Session unboost: " . $sessionOpts['unboost'] . "\n";
+            return;
+        }
+
+        if ($sessionOpts['snapshot']) {
+            $snapshotId = $this->sessionSnapshot(
+                $sessionOpts['snapshot'],
+                null,
+                null,
+                $sessionOpts['snapshot_name'],
+                $sessionOpts['hot']
+            )->wait();
+            echo "Snapshot created: {$snapshotId}\n";
+            return;
+        }
+
+        // Create new session
+        $createOpts = [
+            'network_mode' => $opts['network'],
+        ];
+        if (!empty($sessionOpts['shell'])) {
+            $createOpts['shell'] = $sessionOpts['shell'];
+        }
+        if ($sessionOpts['tmux']) {
+            $createOpts['multiplexer'] = 'tmux';
+        } elseif ($sessionOpts['screen']) {
+            $createOpts['multiplexer'] = 'screen';
+        }
+        if ($opts['vcpu'] > 1) {
+            $createOpts['vcpu'] = $opts['vcpu'];
+        }
+
+        $session = $this->createSession($sessionOpts['shell'] ?? 'bash', null, null, $createOpts)->wait();
+        $this->cliPrintSessionInfo($session);
+    }
+
+    /**
+     * Parse session-specific options.
+     *
+     * @param array $args Arguments to parse
+     * @return array Parsed options
+     */
+    private function cliParseSessionOptions(array $args): array {
+        $opts = [
+            'list' => false,
+            'attach' => null,
+            'kill' => null,
+            'freeze' => null,
+            'unfreeze' => null,
+            'boost' => null,
+            'unboost' => null,
+            'snapshot' => null,
+            'snapshot_name' => null,
+            'hot' => false,
+            'tmux' => false,
+            'screen' => false,
+            'shell' => null,
+            'audit' => false,
+        ];
+
+        $i = 0;
+        while ($i < count($args)) {
+            $arg = $args[$i];
+
+            if ($arg === '--list' || $arg === '-l') {
+                $opts['list'] = true;
+            } elseif ($arg === '--attach') {
+                $i++;
+                $opts['attach'] = $args[$i] ?? null;
+            } elseif ($arg === '--kill') {
+                $i++;
+                $opts['kill'] = $args[$i] ?? null;
+            } elseif ($arg === '--freeze') {
+                $i++;
+                $opts['freeze'] = $args[$i] ?? null;
+            } elseif ($arg === '--unfreeze') {
+                $i++;
+                $opts['unfreeze'] = $args[$i] ?? null;
+            } elseif ($arg === '--boost') {
+                $i++;
+                $opts['boost'] = $args[$i] ?? null;
+            } elseif ($arg === '--unboost') {
+                $i++;
+                $opts['unboost'] = $args[$i] ?? null;
+            } elseif ($arg === '--snapshot') {
+                $i++;
+                $opts['snapshot'] = $args[$i] ?? null;
+            } elseif ($arg === '--snapshot-name') {
+                $i++;
+                $opts['snapshot_name'] = $args[$i] ?? null;
+            } elseif ($arg === '--hot') {
+                $opts['hot'] = true;
+            } elseif ($arg === '--tmux') {
+                $opts['tmux'] = true;
+            } elseif ($arg === '--screen') {
+                $opts['screen'] = true;
+            } elseif ($arg === '--shell') {
+                $i++;
+                $opts['shell'] = $args[$i] ?? null;
+            } elseif ($arg === '--audit') {
+                $opts['audit'] = true;
+            }
+
+            $i++;
+        }
+
+        return $opts;
+    }
+
+    /**
+     * Handle service subcommand.
+     *
+     * @param array $args Positional arguments
+     * @param array $opts Global options
+     */
+    private function cliHandleService(array $args, array $opts): void {
+        // Check for env subcommand
+        if (!empty($args) && $args[0] === 'env') {
+            $this->cliHandleServiceEnv(array_slice($args, 1), $opts);
+            return;
+        }
+
+        // Parse service-specific options
+        $serviceOpts = $this->cliParseServiceOptions($args);
+
+        if ($serviceOpts['list']) {
+            $services = $this->listServices()->wait();
+            $this->cliPrintList($services, 'service');
+            return;
+        }
+
+        if ($serviceOpts['info']) {
+            $service = $this->getService($serviceOpts['info'])->wait();
+            $this->cliPrintServiceInfo($service);
+            return;
+        }
+
+        if ($serviceOpts['logs']) {
+            $logs = $this->getServiceLogs($serviceOpts['logs'], true)->wait();
+            echo $logs['logs'] ?? '';
+            return;
+        }
+
+        if ($serviceOpts['tail']) {
+            $logs = $this->getServiceLogs($serviceOpts['tail'], false)->wait();
+            echo $logs['logs'] ?? '';
+            return;
+        }
+
+        if ($serviceOpts['freeze']) {
+            $result = $this->freezeService($serviceOpts['freeze'])->wait();
+            echo "Service frozen: " . $serviceOpts['freeze'] . "\n";
+            return;
+        }
+
+        if ($serviceOpts['unfreeze']) {
+            $result = $this->unfreezeService($serviceOpts['unfreeze'])->wait();
+            echo "Service unfrozen: " . $serviceOpts['unfreeze'] . "\n";
+            return;
+        }
+
+        if ($serviceOpts['destroy']) {
+            if (!$opts['yes']) {
+                fwrite(STDERR, "Warning: This will permanently destroy the service. Use -y to confirm.\n");
+                exit(2);
+            }
+            $result = $this->deleteService($serviceOpts['destroy'])->wait();
+            echo "Service destroyed: " . $serviceOpts['destroy'] . "\n";
+            return;
+        }
+
+        if ($serviceOpts['lock']) {
+            $result = $this->lockService($serviceOpts['lock'])->wait();
+            echo "Service locked: " . $serviceOpts['lock'] . "\n";
+            return;
+        }
+
+        if ($serviceOpts['unlock']) {
+            $result = $this->unlockService($serviceOpts['unlock'])->wait();
+            echo "Service unlocked: " . $serviceOpts['unlock'] . "\n";
+            return;
+        }
+
+        if ($serviceOpts['execute']) {
+            $result = $this->executeInService($serviceOpts['execute'], $serviceOpts['execute_cmd'])->wait();
+            if (isset($result['stdout'])) {
+                echo $result['stdout'];
+            }
+            if (isset($result['stderr']) && !empty($result['stderr'])) {
+                fwrite(STDERR, $result['stderr']);
+            }
+            exit($result['exit_code'] ?? 0);
+        }
+
+        if ($serviceOpts['redeploy']) {
+            $result = $this->redeployService($serviceOpts['redeploy'])->wait();
+            echo "Service redeploying: " . $serviceOpts['redeploy'] . "\n";
+            return;
+        }
+
+        if ($serviceOpts['snapshot']) {
+            $snapshotId = $this->serviceSnapshot($serviceOpts['snapshot'], null, null, $serviceOpts['snapshot_name'])->wait();
+            echo "Snapshot created: {$snapshotId}\n";
+            return;
+        }
+
+        if ($serviceOpts['resize']) {
+            $result = $this->updateService($serviceOpts['resize'], ['vcpu' => $opts['vcpu']])->wait();
+            echo "Service resized: " . $serviceOpts['resize'] . "\n";
+            return;
+        }
+
+        // Create new service
+        if (!empty($serviceOpts['name'])) {
+            $createOpts = [];
+            if (!empty($opts['network'])) {
+                $createOpts['network_mode'] = $opts['network'];
+            }
+            if ($opts['vcpu'] > 1) {
+                $createOpts['vcpu'] = $opts['vcpu'];
+            }
+            if (!empty($serviceOpts['type'])) {
+                $createOpts['service_type'] = $serviceOpts['type'];
+            }
+            if (!empty($serviceOpts['domains'])) {
+                $createOpts['custom_domains'] = explode(',', $serviceOpts['domains']);
+            }
+
+            // Handle bootstrap from file
+            $bootstrap = $serviceOpts['bootstrap'] ?? '';
+            if (!empty($serviceOpts['bootstrap_file'])) {
+                if (file_exists($serviceOpts['bootstrap_file'])) {
+                    $bootstrap = file_get_contents($serviceOpts['bootstrap_file']);
+                } else {
+                    $this->cliError("Bootstrap file not found: " . $serviceOpts['bootstrap_file']);
+                    exit(2);
+                }
+            }
+
+            // Handle env file
+            if (!empty($serviceOpts['env_file'])) {
+                if (file_exists($serviceOpts['env_file'])) {
+                    // Will be applied after creation
+                }
+            }
+
+            $service = $this->createService(
+                $serviceOpts['name'],
+                $serviceOpts['ports'] ?? '80',
+                $bootstrap,
+                null,
+                null,
+                $createOpts
+            )->wait();
+            $this->cliPrintServiceInfo($service);
+            return;
+        }
+
+        $this->cliError("No action specified for service command. Use --list, --info, --name, etc.");
+        exit(2);
+    }
+
+    /**
+     * Parse service-specific options.
+     *
+     * @param array $args Arguments to parse
+     * @return array Parsed options
+     */
+    private function cliParseServiceOptions(array $args): array {
+        $opts = [
+            'list' => false,
+            'name' => null,
+            'ports' => null,
+            'domains' => null,
+            'type' => null,
+            'bootstrap' => null,
+            'bootstrap_file' => null,
+            'env_file' => null,
+            'info' => null,
+            'logs' => null,
+            'tail' => null,
+            'freeze' => null,
+            'unfreeze' => null,
+            'destroy' => null,
+            'lock' => null,
+            'unlock' => null,
+            'resize' => null,
+            'redeploy' => null,
+            'execute' => null,
+            'execute_cmd' => null,
+            'snapshot' => null,
+            'snapshot_name' => null,
+        ];
+
+        $i = 0;
+        while ($i < count($args)) {
+            $arg = $args[$i];
+
+            if ($arg === '--list' || $arg === '-l') {
+                $opts['list'] = true;
+            } elseif ($arg === '--name') {
+                $i++;
+                $opts['name'] = $args[$i] ?? null;
+            } elseif ($arg === '--ports') {
+                $i++;
+                $opts['ports'] = $args[$i] ?? null;
+            } elseif ($arg === '--domains') {
+                $i++;
+                $opts['domains'] = $args[$i] ?? null;
+            } elseif ($arg === '--type') {
+                $i++;
+                $opts['type'] = $args[$i] ?? null;
+            } elseif ($arg === '--bootstrap') {
+                $i++;
+                $opts['bootstrap'] = $args[$i] ?? null;
+            } elseif ($arg === '--bootstrap-file') {
+                $i++;
+                $opts['bootstrap_file'] = $args[$i] ?? null;
+            } elseif ($arg === '--env-file') {
+                $i++;
+                $opts['env_file'] = $args[$i] ?? null;
+            } elseif ($arg === '--info') {
+                $i++;
+                $opts['info'] = $args[$i] ?? null;
+            } elseif ($arg === '--logs') {
+                $i++;
+                $opts['logs'] = $args[$i] ?? null;
+            } elseif ($arg === '--tail') {
+                $i++;
+                $opts['tail'] = $args[$i] ?? null;
+            } elseif ($arg === '--freeze') {
+                $i++;
+                $opts['freeze'] = $args[$i] ?? null;
+            } elseif ($arg === '--unfreeze') {
+                $i++;
+                $opts['unfreeze'] = $args[$i] ?? null;
+            } elseif ($arg === '--destroy') {
+                $i++;
+                $opts['destroy'] = $args[$i] ?? null;
+            } elseif ($arg === '--lock') {
+                $i++;
+                $opts['lock'] = $args[$i] ?? null;
+            } elseif ($arg === '--unlock') {
+                $i++;
+                $opts['unlock'] = $args[$i] ?? null;
+            } elseif ($arg === '--resize') {
+                $i++;
+                $opts['resize'] = $args[$i] ?? null;
+            } elseif ($arg === '--redeploy') {
+                $i++;
+                $opts['redeploy'] = $args[$i] ?? null;
+            } elseif ($arg === '--execute') {
+                $i++;
+                $opts['execute'] = $args[$i] ?? null;
+                // Next argument is the command
+                $i++;
+                $opts['execute_cmd'] = $args[$i] ?? '';
+            } elseif ($arg === '--snapshot') {
+                $i++;
+                $opts['snapshot'] = $args[$i] ?? null;
+            } elseif ($arg === '--snapshot-name') {
+                $i++;
+                $opts['snapshot_name'] = $args[$i] ?? null;
+            }
+
+            $i++;
+        }
+
+        return $opts;
+    }
+
+    /**
+     * Handle service env subcommand.
+     *
+     * @param array $args Positional arguments
+     * @param array $opts Global options
+     */
+    private function cliHandleServiceEnv(array $args, array $opts): void {
+        if (empty($args)) {
+            $this->cliError("Usage: service env <status|set|export|delete> <service_id>");
+            exit(2);
+        }
+
+        $action = $args[0];
+        $serviceId = $args[1] ?? null;
+
+        if (empty($serviceId)) {
+            $this->cliError("Service ID required");
+            exit(2);
+        }
+
+        switch ($action) {
+            case 'status':
+                $result = $this->getServiceEnv($serviceId)->wait();
+                echo "Has vault: " . ($result['has_vault'] ? 'yes' : 'no') . "\n";
+                if (isset($result['count'])) {
+                    echo "Variables: " . $result['count'] . "\n";
+                }
+                if (isset($result['updated_at'])) {
+                    echo "Updated: " . $result['updated_at'] . "\n";
+                }
+                break;
+
+            case 'set':
+                // Read from stdin or --env-file
+                $envContent = '';
+                if (stream_isatty(STDIN)) {
+                    $this->cliError("Provide env content via stdin or --env-file");
+                    exit(2);
+                } else {
+                    $envContent = file_get_contents('php://stdin');
+                }
+                $result = $this->setServiceEnv($serviceId, $envContent)->wait();
+                echo "Environment vault updated\n";
+                break;
+
+            case 'export':
+                $result = $this->exportServiceEnv($serviceId)->wait();
+                echo $result['env'] ?? '';
+                break;
+
+            case 'delete':
+                if (!$opts['yes']) {
+                    fwrite(STDERR, "Warning: This will delete the environment vault. Use -y to confirm.\n");
+                    exit(2);
+                }
+                $result = $this->deleteServiceEnv($serviceId)->wait();
+                echo "Environment vault deleted\n";
+                break;
+
+            default:
+                $this->cliError("Unknown env action: {$action}");
+                exit(2);
+        }
+    }
+
+    /**
+     * Handle snapshot subcommand.
+     *
+     * @param array $args Positional arguments
+     * @param array $opts Global options
+     */
+    private function cliHandleSnapshot(array $args, array $opts): void {
+        $snapshotOpts = $this->cliParseSnapshotOptions($args);
+
+        if ($snapshotOpts['list']) {
+            $snapshots = $this->listSnapshots()->wait();
+            $this->cliPrintList($snapshots, 'snapshot');
+            return;
+        }
+
+        if ($snapshotOpts['info']) {
+            // Get snapshot info via restore endpoint without actually restoring
+            $snapshots = $this->listSnapshots()->wait();
+            foreach ($snapshots as $snapshot) {
+                if (($snapshot['snapshot_id'] ?? $snapshot['id'] ?? '') === $snapshotOpts['info']) {
+                    $this->cliPrintSnapshotInfo($snapshot);
+                    return;
+                }
+            }
+            $this->cliError("Snapshot not found: " . $snapshotOpts['info']);
+            exit(4);
+        }
+
+        if ($snapshotOpts['delete']) {
+            if (!$opts['yes']) {
+                fwrite(STDERR, "Warning: This will permanently delete the snapshot. Use -y to confirm.\n");
+                exit(2);
+            }
+            $result = $this->deleteSnapshot($snapshotOpts['delete'])->wait();
+            echo "Snapshot deleted: " . $snapshotOpts['delete'] . "\n";
+            return;
+        }
+
+        if ($snapshotOpts['lock']) {
+            $result = $this->lockSnapshot($snapshotOpts['lock'])->wait();
+            echo "Snapshot locked: " . $snapshotOpts['lock'] . "\n";
+            return;
+        }
+
+        if ($snapshotOpts['unlock']) {
+            $result = $this->unlockSnapshot($snapshotOpts['unlock'])->wait();
+            echo "Snapshot unlocked: " . $snapshotOpts['unlock'] . "\n";
+            return;
+        }
+
+        if ($snapshotOpts['clone']) {
+            $cloneOpts = [];
+            if (!empty($snapshotOpts['type'])) {
+                $cloneOpts['type'] = $snapshotOpts['type'];
+            }
+            if (!empty($snapshotOpts['shell'])) {
+                $cloneOpts['shell'] = $snapshotOpts['shell'];
+            }
+            if (!empty($snapshotOpts['ports'])) {
+                $cloneOpts['ports'] = explode(',', $snapshotOpts['ports']);
+            }
+
+            $result = $this->cloneSnapshot($snapshotOpts['clone'], $snapshotOpts['name'], null, null, $cloneOpts)->wait();
+            echo "Snapshot cloned:\n";
+            echo json_encode($result, JSON_PRETTY_PRINT) . "\n";
+            return;
+        }
+
+        $this->cliError("No action specified for snapshot command. Use --list, --info, --delete, --clone, etc.");
+        exit(2);
+    }
+
+    /**
+     * Parse snapshot-specific options.
+     *
+     * @param array $args Arguments to parse
+     * @return array Parsed options
+     */
+    private function cliParseSnapshotOptions(array $args): array {
+        $opts = [
+            'list' => false,
+            'info' => null,
+            'delete' => null,
+            'lock' => null,
+            'unlock' => null,
+            'clone' => null,
+            'type' => null,
+            'name' => null,
+            'shell' => null,
+            'ports' => null,
+        ];
+
+        $i = 0;
+        while ($i < count($args)) {
+            $arg = $args[$i];
+
+            if ($arg === '--list' || $arg === '-l') {
+                $opts['list'] = true;
+            } elseif ($arg === '--info') {
+                $i++;
+                $opts['info'] = $args[$i] ?? null;
+            } elseif ($arg === '--delete') {
+                $i++;
+                $opts['delete'] = $args[$i] ?? null;
+            } elseif ($arg === '--lock') {
+                $i++;
+                $opts['lock'] = $args[$i] ?? null;
+            } elseif ($arg === '--unlock') {
+                $i++;
+                $opts['unlock'] = $args[$i] ?? null;
+            } elseif ($arg === '--clone') {
+                $i++;
+                $opts['clone'] = $args[$i] ?? null;
+            } elseif ($arg === '--type') {
+                $i++;
+                $opts['type'] = $args[$i] ?? null;
+            } elseif ($arg === '--name') {
+                $i++;
+                $opts['name'] = $args[$i] ?? null;
+            } elseif ($arg === '--shell') {
+                $i++;
+                $opts['shell'] = $args[$i] ?? null;
+            } elseif ($arg === '--ports') {
+                $i++;
+                $opts['ports'] = $args[$i] ?? null;
+            }
+
+            $i++;
+        }
+
+        return $opts;
+    }
+
+    /**
+     * Handle key subcommand.
+     *
+     * @param array $opts Global options
+     */
+    private function cliHandleKey(array $opts): void {
+        $result = $this->validateKeys()->wait();
+        echo "API Key Valid: " . ($result['valid'] ? 'yes' : 'no') . "\n";
+        if (isset($result['account_id'])) {
+            echo "Account ID: " . $result['account_id'] . "\n";
+        }
+        if (isset($result['email'])) {
+            echo "Email: " . $result['email'] . "\n";
+        }
+    }
+
+    /**
+     * Print list of resources in tabular format.
+     *
+     * @param array $items Items to print
+     * @param string $type Resource type (session, service, snapshot)
+     */
+    private function cliPrintList(array $items, string $type): void {
+        if (empty($items)) {
+            echo "No {$type}s found.\n";
+            return;
+        }
+
+        // Print header
+        printf("%-40s  %-20s  %-12s  %s\n", 'ID', 'NAME', 'STATUS', 'CREATED');
+        echo str_repeat('-', 90) . "\n";
+
+        foreach ($items as $item) {
+            $id = $item["{$type}_id"] ?? $item['id'] ?? 'N/A';
+            $name = $item['name'] ?? 'N/A';
+            $status = $item['status'] ?? 'N/A';
+            $created = $item['created_at'] ?? $item['created'] ?? 'N/A';
+
+            printf("%-40s  %-20s  %-12s  %s\n", $id, $name, $status, $created);
+        }
+    }
+
+    /**
+     * Print session information.
+     *
+     * @param array $session Session data
+     */
+    private function cliPrintSessionInfo(array $session): void {
+        echo "Session ID: " . ($session['session_id'] ?? $session['id'] ?? 'N/A') . "\n";
+        if (isset($session['container_name'])) {
+            echo "Container: " . $session['container_name'] . "\n";
+        }
+        if (isset($session['status'])) {
+            echo "Status: " . $session['status'] . "\n";
+        }
+        if (isset($session['shell'])) {
+            echo "Shell: " . $session['shell'] . "\n";
+        }
+        if (isset($session['network_mode'])) {
+            echo "Network: " . $session['network_mode'] . "\n";
+        }
+        if (isset($session['websocket_url'])) {
+            echo "WebSocket URL: " . $session['websocket_url'] . "\n";
+        }
+    }
+
+    /**
+     * Print service information.
+     *
+     * @param array $service Service data
+     */
+    private function cliPrintServiceInfo(array $service): void {
+        echo "Service ID: " . ($service['service_id'] ?? $service['id'] ?? 'N/A') . "\n";
+        if (isset($service['name'])) {
+            echo "Name: " . $service['name'] . "\n";
+        }
+        if (isset($service['status'])) {
+            echo "Status: " . $service['status'] . "\n";
+        }
+        if (isset($service['ports'])) {
+            echo "Ports: " . (is_array($service['ports']) ? implode(', ', $service['ports']) : $service['ports']) . "\n";
+        }
+        if (isset($service['url'])) {
+            echo "URL: " . $service['url'] . "\n";
+        }
+        if (isset($service['network_mode'])) {
+            echo "Network: " . $service['network_mode'] . "\n";
+        }
+    }
+
+    /**
+     * Print snapshot information.
+     *
+     * @param array $snapshot Snapshot data
+     */
+    private function cliPrintSnapshotInfo(array $snapshot): void {
+        echo "Snapshot ID: " . ($snapshot['snapshot_id'] ?? $snapshot['id'] ?? 'N/A') . "\n";
+        if (isset($snapshot['name'])) {
+            echo "Name: " . $snapshot['name'] . "\n";
+        }
+        if (isset($snapshot['type'])) {
+            echo "Type: " . $snapshot['type'] . "\n";
+        }
+        if (isset($snapshot['status'])) {
+            echo "Status: " . $snapshot['status'] . "\n";
+        }
+        if (isset($snapshot['size'])) {
+            echo "Size: " . $snapshot['size'] . "\n";
+        }
+        if (isset($snapshot['locked'])) {
+            echo "Locked: " . ($snapshot['locked'] ? 'yes' : 'no') . "\n";
+        }
+        if (isset($snapshot['created_at'])) {
+            echo "Created: " . $snapshot['created_at'] . "\n";
+        }
+    }
+
+    /**
+     * Print error message to stderr.
+     *
+     * @param string $message Error message
+     */
+    private function cliError(string $message): void {
+        fwrite(STDERR, "Error: {$message}\n");
+    }
+
+    /**
+     * Show CLI help.
+     */
+    private function cliShowHelp(): void {
+        $help = <<<HELP
+Unsandbox PHP Async CLI
+
+USAGE:
+    php UnsandboxAsync.php [options] <source_file>
+    php UnsandboxAsync.php -s <language> '<code>'
+    php UnsandboxAsync.php session [options]
+    php UnsandboxAsync.php service [options]
+    php UnsandboxAsync.php snapshot [options]
+    php UnsandboxAsync.php key
+
+GLOBAL OPTIONS:
+    -s, --shell LANG        Language for inline code execution
+    -e, --env KEY=VAL       Set environment variable (can be repeated)
+    -f, --file FILE         Add input file to /tmp/ (can be repeated)
+    -F, --file-path FILE    Add input file preserving path (can be repeated)
+    -a, --artifacts         Return compiled artifacts
+    -o, --output DIR        Output directory for artifacts
+    -p, --public-key KEY    API public key
+    -k, --secret-key KEY    API secret key
+    -n, --network MODE      Network mode: zerotrust (default) or semitrusted
+    -v, --vcpu N            vCPU count (1-8)
+    -y, --yes               Skip confirmation prompts
+    -h, --help              Show this help
+
+COMMANDS:
+    <file>                  Execute code file (default command)
+    session                 Manage interactive sessions
+    service                 Manage persistent services
+    snapshot                Manage snapshots
+    key                     Validate API key
+
+SESSION OPTIONS:
+    --list, -l              List active sessions
+    --attach ID             Reconnect to session
+    --kill ID               Terminate session
+    --freeze ID             Pause session
+    --unfreeze ID           Resume session
+    --boost ID              Boost session resources
+    --unboost ID            Remove session boost
+    --snapshot ID           Create session snapshot
+    --snapshot-name NAME    Name for snapshot
+    --hot                   Hot snapshot (no freeze)
+    --tmux                  Use tmux for persistence
+    --screen                Use screen for persistence
+    --shell SHELL           Shell/REPL to use
+
+SERVICE OPTIONS:
+    --list, -l              List all services
+    --name NAME             Create service with name
+    --ports PORTS           Ports to expose (comma-separated)
+    --domains DOMAINS       Custom domains (comma-separated)
+    --type TYPE             Service type (minecraft, tcp, udp)
+    --bootstrap CMD         Bootstrap command
+    --bootstrap-file FILE   Bootstrap from file
+    --env-file FILE         Load environment from file
+    --info ID               Get service details
+    --logs ID               Get all service logs
+    --tail ID               Get last 9000 lines of logs
+    --freeze ID             Pause service
+    --unfreeze ID           Resume service
+    --destroy ID            Delete service (requires -y)
+    --lock ID               Prevent service deletion
+    --unlock ID             Allow service deletion
+    --resize ID             Resize service (with --vcpu)
+    --redeploy ID           Re-run bootstrap
+    --execute ID 'cmd'      Execute command in service
+    --snapshot ID           Create service snapshot
+
+SERVICE ENV SUBCOMMAND:
+    service env status ID   Show vault status
+    service env set ID      Set vault (stdin or --env-file)
+    service env export ID   Export vault to stdout
+    service env delete ID   Delete vault (requires -y)
+
+SNAPSHOT OPTIONS:
+    --list, -l              List all snapshots
+    --info ID               Get snapshot details
+    --delete ID             Delete snapshot (requires -y)
+    --lock ID               Prevent snapshot deletion
+    --unlock ID             Allow snapshot deletion
+    --clone ID              Clone snapshot
+    --type TYPE             Clone type: session or service
+    --name NAME             Name for cloned resource
+    --shell SHELL           Shell for cloned session
+    --ports PORTS           Ports for cloned service
+
+EXAMPLES:
+    php UnsandboxAsync.php script.py
+    php UnsandboxAsync.php -s bash 'echo hello'
+    php UnsandboxAsync.php -n semitrusted crawler.py
+    php UnsandboxAsync.php session --shell python3 --tmux
+    php UnsandboxAsync.php session --list
+    php UnsandboxAsync.php service --name myapp --ports 80 --bootstrap 'python -m http.server 80'
+    php UnsandboxAsync.php service --execute <id> 'ls -la'
+    php UnsandboxAsync.php snapshot --list
+    php UnsandboxAsync.php key
+
+HELP;
+        echo $help;
+    }
+}
+
+// CLI entry point
+if (php_sapi_name() === 'cli' && basename(__FILE__) === basename($argv[0])) {
+    $client = new UnsandboxAsync();
+    $client->cliMain($argv);
 }
