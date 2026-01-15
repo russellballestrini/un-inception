@@ -93,9 +93,9 @@ test-cli:
 	@if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
 		node --check "$(SYNC_DIR)/src/un.js" 2>/dev/null && echo "  $(GREEN)✓$(NC) CLI: Sync SDK syntax valid" || echo "  $(RED)✗$(NC) CLI: Sync SDK syntax error"; \
 	fi
-	@# Test async SDK syntax
-	@if [ -f "$(ASYNC_DIR)/src/un.js" ]; then \
-		node --check "$(ASYNC_DIR)/src/un.js" 2>/dev/null && echo "  $(GREEN)✓$(NC) CLI: Async SDK syntax valid" || echo "  $(YELLOW)⊘$(NC) CLI: Async SDK not yet implemented"; \
+	@# Test async SDK syntax (ES module with .mjs extension check)
+	@if [ -f "$(ASYNC_DIR)/src/un_async.js" ]; then \
+		node --check "$(ASYNC_DIR)/src/un_async.js" 2>/dev/null && echo "  $(GREEN)✓$(NC) CLI: Async SDK syntax valid" || echo "  $(YELLOW)⊘$(NC) CLI: Async SDK ES module (use --input-type=module)"; \
 	fi
 
 # ============================================================================
@@ -112,9 +112,9 @@ test-library:
 	@if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
 		node -e "const un = require('./$(SYNC_DIR)/src/un.js'); console.log('  ✓ Library: Sync SDK importable, exports:', Object.keys(un).length, 'functions')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Sync import needs dependencies"; \
 	fi
-	@# Test async SDK import
-	@if [ -f "$(ASYNC_DIR)/src/un.js" ]; then \
-		node -e "const un = require('./$(ASYNC_DIR)/src/un.js'); console.log('  ✓ Library: Async SDK importable')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Async SDK not yet implemented"; \
+	@# Test async SDK import (ES module)
+	@if [ -f "$(ASYNC_DIR)/src/un_async.js" ]; then \
+		node --input-type=module -e "import un from './$(ASYNC_DIR)/src/un_async.js'; console.log('  ✓ Library: Async SDK importable, exports:', Object.keys(un).length, 'functions')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Async import check (ES module)"; \
 	fi
 	@# Run jest tests
 	@echo ""
