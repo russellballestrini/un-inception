@@ -4674,6 +4674,584 @@ static int clone_snapshot(const UnsandboxCredentials *creds, const char *snapsho
 // ============================================================================
 
 // ============================================================================
+// LXD Container Images API
+// ============================================================================
+
+// Publish an image from a service or snapshot
+static char* image_publish(const UnsandboxCredentials *creds, const char *source_type,
+                           const char *source_id, const char *name, const char *description) {
+    if (!creds || !creds->public_key || !creds->secret_key || !source_type || !source_id) {
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/images", API_BASE);
+
+    // Build JSON body
+    char body[2048];
+    char *p = body;
+    p += sprintf(p, "{\"source_type\":\"%s\",\"source_id\":\"%s\"", source_type, source_id);
+    if (name && strlen(name) > 0) {
+        char *esc = escape_json_string(name);
+        p += sprintf(p, ",\"name\":\"%s\"", esc);
+        free(esc);
+    }
+    if (description && strlen(description) > 0) {
+        char *esc = escape_json_string(description);
+        p += sprintf(p, ",\"description\":\"%s\"", esc);
+        free(esc);
+    }
+    p += sprintf(p, "}");
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", "/images", body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+// List images (filter_type can be NULL, "owned", "shared", or "public")
+static char* list_images(const UnsandboxCredentials *creds, const char *filter_type) {
+    if (!creds || !creds->public_key || !creds->secret_key) {
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    if (filter_type && strlen(filter_type) > 0) {
+        snprintf(url, sizeof(url), "%s/images/%s", API_BASE, filter_type);
+        snprintf(path, sizeof(path), "/images/%s", filter_type);
+    } else {
+        snprintf(url, sizeof(url), "%s/images", API_BASE);
+        snprintf(path, sizeof(path), "/images");
+    }
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+// Get image details
+static char* get_image(const UnsandboxCredentials *creds, const char *image_id) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s", image_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+// Delete an image
+static int delete_image(const UnsandboxCredentials *creds, const char *image_id) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s", image_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "DELETE", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// Lock an image
+static int lock_image(const UnsandboxCredentials *creds, const char *image_id) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/lock", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/lock", image_id);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, "{}");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{}");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// Unlock an image
+static int unlock_image(const UnsandboxCredentials *creds, const char *image_id) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/unlock", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/unlock", image_id);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, "{}");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{}");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// Set image visibility (private, unlisted, public)
+static int set_image_visibility(const UnsandboxCredentials *creds, const char *image_id, const char *visibility) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id || !visibility) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/visibility", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/visibility", image_id);
+
+    char body[128];
+    snprintf(body, sizeof(body), "{\"visibility\":\"%s\"}", visibility);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// Grant image access to another API key
+static int grant_image_access(const UnsandboxCredentials *creds, const char *image_id, const char *trusted_api_key) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id || !trusted_api_key) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/grant", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/grant", image_id);
+
+    char body[256];
+    snprintf(body, sizeof(body), "{\"trusted_api_key\":\"%s\"}", trusted_api_key);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// Revoke image access from another API key
+static int revoke_image_access(const UnsandboxCredentials *creds, const char *image_id, const char *trusted_api_key) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id || !trusted_api_key) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/revoke", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/revoke", image_id);
+
+    char body[256];
+    snprintf(body, sizeof(body), "{\"trusted_api_key\":\"%s\"}", trusted_api_key);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// List API keys with access to an image
+static char* list_image_trusted(const UnsandboxCredentials *creds, const char *image_id) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/trusted", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/trusted", image_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+// Transfer image ownership to another API key
+static int transfer_image(const UnsandboxCredentials *creds, const char *image_id, const char *to_api_key) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id || !to_api_key) {
+        return 1;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/transfer", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/transfer", image_id);
+
+    char body[256];
+    snprintf(body, sizeof(body), "{\"to_api_key\":\"%s\"}", to_api_key);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    free(response.data);
+    return (res == CURLE_OK) ? 0 : 1;
+}
+
+// Spawn a new service from an image
+static char* spawn_from_image(const UnsandboxCredentials *creds, const char *image_id,
+                              const char *name, const char *ports, const char *bootstrap,
+                              const char *network_mode) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/spawn", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/spawn", image_id);
+
+    // Build JSON body
+    char body[4096];
+    char *p = body;
+    p += sprintf(p, "{");
+    int need_comma = 0;
+
+    if (name && strlen(name) > 0) {
+        char *esc = escape_json_string(name);
+        p += sprintf(p, "\"name\":\"%s\"", esc);
+        free(esc);
+        need_comma = 1;
+    }
+    if (ports && strlen(ports) > 0) {
+        if (need_comma) p += sprintf(p, ",");
+        p += sprintf(p, "\"ports\":\"%s\"", ports);
+        need_comma = 1;
+    }
+    if (bootstrap && strlen(bootstrap) > 0) {
+        if (need_comma) p += sprintf(p, ",");
+        char *esc = escape_json_string(bootstrap);
+        p += sprintf(p, "\"bootstrap\":\"%s\"", esc);
+        free(esc);
+        need_comma = 1;
+    }
+    if (network_mode && strlen(network_mode) > 0) {
+        if (need_comma) p += sprintf(p, ",");
+        p += sprintf(p, "\"network_mode\":\"%s\"", network_mode);
+    }
+    p += sprintf(p, "}");
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+// Clone an image to create a copy owned by the current user
+static char* clone_image(const UnsandboxCredentials *creds, const char *image_id,
+                         const char *name, const char *description) {
+    if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    char path[128];
+    snprintf(url, sizeof(url), "%s/images/%s/clone", API_BASE, image_id);
+    snprintf(path, sizeof(path), "/images/%s/clone", image_id);
+
+    // Build JSON body
+    char body[2048];
+    char *p = body;
+    p += sprintf(p, "{");
+    int need_comma = 0;
+
+    if (name && strlen(name) > 0) {
+        char *esc = escape_json_string(name);
+        p += sprintf(p, "\"name\":\"%s\"", esc);
+        free(esc);
+        need_comma = 1;
+    }
+    if (description && strlen(description) > 0) {
+        if (need_comma) p += sprintf(p, ",");
+        char *esc = escape_json_string(description);
+        p += sprintf(p, "\"description\":\"%s\"", esc);
+        free(esc);
+    }
+    p += sprintf(p, "}");
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, body);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+// ============================================================================
+// End LXD Container Images API
+// ============================================================================
+
+// ============================================================================
 // Key Validation Support
 // ============================================================================
 

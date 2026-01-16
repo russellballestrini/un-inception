@@ -19,6 +19,11 @@
  *     // Snapshot management
  *     sessionSnapshot, serviceSnapshot, listSnapshots, restoreSnapshot,
  *     deleteSnapshot, lockSnapshot, unlockSnapshot, cloneSnapshot,
+ *     // Images API (LXD container images)
+ *     imagePublish, listImages, getImage, deleteImage,
+ *     lockImage, unlockImage, setImageVisibility,
+ *     grantImageAccess, revokeImageAccess, listImageTrusted,
+ *     transferImage, spawnFromImage, cloneImage,
  *     // Key validation
  *     validateKeys,
  *   } = require('./un.js');
@@ -1367,6 +1372,20 @@ module.exports = {
   lockSnapshot,
   unlockSnapshot,
   cloneSnapshot,
+  // Images API (LXD container images)
+  imagePublish,
+  listImages,
+  getImage,
+  deleteImage,
+  lockImage,
+  unlockImage,
+  setImageVisibility,
+  grantImageAccess,
+  revokeImageAccess,
+  listImageTrusted,
+  transferImage,
+  spawnFromImage,
+  cloneImage,
   // Key validation
   validateKeys,
   // Image generation

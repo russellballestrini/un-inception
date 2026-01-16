@@ -20,6 +20,10 @@ categories = ["api-bindings", "development-tools"]
 name = "un"
 path = "src/lib.rs"
 
+[[bin]]
+name = "un"
+path = "src/main.rs"
+
 [dependencies]
 # HTTP client (blocking feature for sync)
 reqwest = { version = "0.12", features = ["blocking", "json"] }

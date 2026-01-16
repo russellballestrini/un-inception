@@ -437,6 +437,267 @@ module Un
     end
 
     # ============================================================================
+    # Image Functions (LXD Container Images)
+    # ============================================================================
+
+    # Publish an LXD container image from a session or service
+    #
+    # @param source_type [String] Source type ("session" or "service")
+    # @param source_id [String] ID of the session or service to publish
+    # @param name [String, nil] Optional name for the image
+    # @param description [String, nil] Optional description for the image
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with image_id and other metadata
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example Publish from session
+    #     result = Un.image_publish("session", session_id, name: "my-image")
+    #     puts result["image_id"]
+    #
+    # @example Publish from service
+    #     result = Un.image_publish("service", service_id, description: "Production snapshot")
+    #     puts result["image_id"]
+    def image_publish(source_type, source_id, name: nil, description: nil, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = { source_type: source_type, source_id: source_id }
+      data[:name] = name if name
+      data[:description] = description if description
+      make_request('POST', '/images', pk, sk, data)
+    end
+
+    # List all images for the authenticated account
+    #
+    # @param filter_type [String, nil] Optional filter: "own", "shared", or "public"
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Array<Hash>] List of image hashes
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example List all images
+    #     images = Un.list_images
+    #     images.each { |img| puts "#{img['image_id']}: #{img['name']}" }
+    #
+    # @example List only owned images
+    #     owned = Un.list_images(filter_type: "own")
+    #
+    # @example List shared images
+    #     shared = Un.list_images(filter_type: "shared")
+    def list_images(filter_type: nil, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      path = filter_type ? "/images/#{filter_type}" : '/images'
+      response = make_request('GET', path, pk, sk)
+      response['images'] || []
+    end
+
+    # Get image details by ID
+    #
+    # @param image_id [String] Image ID to retrieve
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Image details hash
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     image = Un.get_image(image_id)
+    #     puts "#{image['name']}: #{image['description']}"
+    def get_image(image_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('GET', "/images/#{image_id}", pk, sk)
+    end
+
+    # Delete an image
+    #
+    # @param image_id [String] Image ID to delete
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with deletion confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.delete_image(image_id)
+    def delete_image(image_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('DELETE', "/images/#{image_id}", pk, sk)
+    end
+
+    # Lock an image to prevent deletion
+    #
+    # @param image_id [String] Image ID to lock
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with lock confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.lock_image(image_id)
+    def lock_image(image_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/images/#{image_id}/lock", pk, sk, {})
+    end
+
+    # Unlock an image to allow deletion
+    #
+    # @param image_id [String] Image ID to unlock
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with unlock confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.unlock_image(image_id)
+    def unlock_image(image_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/images/#{image_id}/unlock", pk, sk, {})
+    end
+
+    # Set image visibility (private, public, or shared)
+    #
+    # @param image_id [String] Image ID to update
+    # @param visibility [String] Visibility level: "private", "public", or "shared"
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with visibility confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example Make image public
+    #     Un.set_image_visibility(image_id, "public")
+    #
+    # @example Make image private
+    #     Un.set_image_visibility(image_id, "private")
+    def set_image_visibility(image_id, visibility, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/images/#{image_id}/visibility", pk, sk, { visibility: visibility })
+    end
+
+    # Grant access to an image for another API key
+    #
+    # @param image_id [String] Image ID to share
+    # @param trusted_api_key [String] Public API key to grant access to
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with grant confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.grant_image_access(image_id, "unsb-pk-xxxxx-xxxxx-xxxxx-xxxxx")
+    def grant_image_access(image_id, trusted_api_key, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/images/#{image_id}/grant", pk, sk, { trusted_api_key: trusted_api_key })
+    end
+
+    # Revoke access to an image from another API key
+    #
+    # @param image_id [String] Image ID to revoke access from
+    # @param trusted_api_key [String] Public API key to revoke access from
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with revoke confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.revoke_image_access(image_id, "unsb-pk-xxxxx-xxxxx-xxxxx-xxxxx")
+    def revoke_image_access(image_id, trusted_api_key, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/images/#{image_id}/revoke", pk, sk, { trusted_api_key: trusted_api_key })
+    end
+
+    # List API keys with access to an image
+    #
+    # @param image_id [String] Image ID to list trusted keys for
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Array<Hash>] List of trusted API key hashes
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     trusted = Un.list_image_trusted(image_id)
+    #     trusted.each { |t| puts t["api_key"] }
+    def list_image_trusted(image_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      response = make_request('GET', "/images/#{image_id}/trusted", pk, sk)
+      response['trusted'] || []
+    end
+
+    # Transfer image ownership to another API key
+    #
+    # @param image_id [String] Image ID to transfer
+    # @param to_api_key [String] Public API key to transfer ownership to
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with transfer confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.transfer_image(image_id, "unsb-pk-xxxxx-xxxxx-xxxxx-xxxxx")
+    def transfer_image(image_id, to_api_key, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('POST', "/images/#{image_id}/transfer", pk, sk, { to_api_key: to_api_key })
+    end
+
+    # Spawn a new service from an image
+    #
+    # @param image_id [String] Image ID to spawn from
+    # @param name [String, nil] Optional name for the service
+    # @param ports [Array<Integer>, nil] Optional ports to expose
+    # @param bootstrap [String, nil] Optional bootstrap script
+    # @param network_mode [String] Network mode ("zerotrust" or "semitrusted", default: "zerotrust")
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with service_id and other metadata
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example Spawn with defaults
+    #     result = Un.spawn_from_image(image_id)
+    #     puts result["service_id"]
+    #
+    # @example Spawn with custom config
+    #     result = Un.spawn_from_image(image_id, name: "web", ports: [80, 443], network_mode: "semitrusted")
+    #     puts result["service_id"]
+    def spawn_from_image(image_id, name: nil, ports: nil, bootstrap: nil, network_mode: 'zerotrust', public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = { network_mode: network_mode }
+      data[:name] = name if name
+      data[:ports] = ports if ports
+      data[:bootstrap] = bootstrap if bootstrap
+      make_request('POST', "/images/#{image_id}/spawn", pk, sk, data)
+    end
+
+    # Clone an image to create a new image
+    #
+    # @param image_id [String] Image ID to clone
+    # @param name [String, nil] Optional name for the cloned image
+    # @param description [String, nil] Optional description for the cloned image
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with new image_id
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     result = Un.clone_image(image_id, name: "my-clone", description: "Cloned from production")
+    #     puts result["image_id"]
+    def clone_image(image_id, name: nil, description: nil, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      data = {}
+      data[:name] = name if name
+      data[:description] = description if description
+      make_request('POST', "/images/#{image_id}/clone", pk, sk, data)
+    end
+
+    # ============================================================================
     # Session Functions
     # ============================================================================
 

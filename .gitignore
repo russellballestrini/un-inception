@@ -14,6 +14,8 @@
 /un_zig
 /Un.class
 
+__pycache__/
+
 # Build directories
 _build/
 deps/

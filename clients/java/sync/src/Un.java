@@ -1719,6 +1719,369 @@ public class Un {
     }
 
     // ========================================================================
+    // Images API Methods (LXD Container Images)
+    // ========================================================================
+
+    /**
+     * Publish a session or service as a reusable LXD container image.
+     *
+     * @param sourceType Source type: "session" or "service"
+     * @param sourceId ID of the session or service to publish
+     * @param name Name for the image
+     * @param description Optional description for the image
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing image_id
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> imagePublish(
+        String sourceType,
+        String sourceId,
+        String name,
+        String description,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("source_type", sourceType);
+        data.put("source_id", sourceId);
+        data.put("name", name);
+        if (description != null && !description.isEmpty()) {
+            data.put("description", description);
+        }
+        return makeRequest("POST", "/images", creds[0], creds[1], data);
+    }
+
+    /**
+     * List container images with optional filtering.
+     *
+     * @param filterType Optional filter: "own", "shared", "public", or null for all
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return List of image maps containing id, name, description, visibility, etc.
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> listImages(
+        String filterType,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        String path = "/images";
+        if (filterType != null && !filterType.isEmpty()) {
+            path = "/images/" + filterType;
+        }
+        Map<String, Object> response = makeRequest("GET", path, creds[0], creds[1], null);
+        Object images = response.get("images");
+        if (images instanceof List) {
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Object item : (List<?>) images) {
+                if (item instanceof Map) {
+                    result.add((Map<String, Object>) item);
+                }
+            }
+            return result;
+        }
+        return new ArrayList<>();
+    }
+
+    /**
+     * Get details of a specific image.
+     *
+     * @param imageId Image ID to retrieve
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Image details map
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> getImage(
+        String imageId,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/images/" + imageId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Delete an image.
+     *
+     * @param imageId Image ID to delete
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with deletion confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> deleteImage(
+        String imageId,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("DELETE", "/images/" + imageId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Lock an image (prevent deletion and modifications).
+     *
+     * @param imageId Image ID to lock
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with lock confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> lockImage(
+        String imageId,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/images/" + imageId + "/lock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Unlock an image (allow deletion and modifications).
+     *
+     * @param imageId Image ID to unlock
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with unlock confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> unlockImage(
+        String imageId,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("POST", "/images/" + imageId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Set the visibility of an image.
+     *
+     * @param imageId Image ID to modify
+     * @param visibility Visibility level: "private", "shared", or "public"
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with visibility change confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> setImageVisibility(
+        String imageId,
+        String visibility,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("visibility", visibility);
+        return makeRequest("POST", "/images/" + imageId + "/visibility", creds[0], creds[1], data);
+    }
+
+    /**
+     * Grant access to an image for another API key (for shared images).
+     *
+     * @param imageId Image ID to grant access to
+     * @param trustedApiKey Public API key to grant access to
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with grant confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> grantImageAccess(
+        String imageId,
+        String trustedApiKey,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("trusted_api_key", trustedApiKey);
+        return makeRequest("POST", "/images/" + imageId + "/grant", creds[0], creds[1], data);
+    }
+
+    /**
+     * Revoke access to an image from another API key.
+     *
+     * @param imageId Image ID to revoke access from
+     * @param trustedApiKey Public API key to revoke access from
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with revoke confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> revokeImageAccess(
+        String imageId,
+        String trustedApiKey,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("trusted_api_key", trustedApiKey);
+        return makeRequest("POST", "/images/" + imageId + "/revoke", creds[0], creds[1], data);
+    }
+
+    /**
+     * List API keys that have been granted access to an image.
+     *
+     * @param imageId Image ID to list trusted keys for
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return List of trusted API key maps
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    @SuppressWarnings("unchecked")
+    public static List<Map<String, Object>> listImageTrusted(
+        String imageId,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> response = makeRequest("GET", "/images/" + imageId + "/trusted", creds[0], creds[1], null);
+        Object trusted = response.get("trusted");
+        if (trusted instanceof List) {
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Object item : (List<?>) trusted) {
+                if (item instanceof Map) {
+                    result.add((Map<String, Object>) item);
+                }
+            }
+            return result;
+        }
+        return new ArrayList<>();
+    }
+
+    /**
+     * Transfer ownership of an image to another API key.
+     *
+     * @param imageId Image ID to transfer
+     * @param toApiKey Public API key of the new owner
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with transfer confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> transferImage(
+        String imageId,
+        String toApiKey,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("to_api_key", toApiKey);
+        return makeRequest("POST", "/images/" + imageId + "/transfer", creds[0], creds[1], data);
+    }
+
+    /**
+     * Spawn a new service from an image.
+     *
+     * @param imageId Image ID to spawn from
+     * @param name Name for the new service
+     * @param ports Comma-separated list of ports to expose (e.g., "80,443")
+     * @param bootstrap Optional bootstrap script or URL
+     * @param networkMode Network mode: "zerotrust" or "semitrusted"
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing service_id
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> spawnFromImage(
+        String imageId,
+        String name,
+        String ports,
+        String bootstrap,
+        String networkMode,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("name", name);
+        if (ports != null && !ports.isEmpty()) {
+            List<Integer> portList = new ArrayList<>();
+            for (String p : ports.split(",")) {
+                try {
+                    portList.add(Integer.parseInt(p.trim()));
+                } catch (NumberFormatException e) {
+                    // Skip invalid port
+                }
+            }
+            data.put("ports", portList);
+        }
+        if (bootstrap != null && !bootstrap.isEmpty()) {
+            if (bootstrap.startsWith("http://") || bootstrap.startsWith("https://")) {
+                data.put("bootstrap_url", bootstrap);
+            } else {
+                data.put("bootstrap", bootstrap);
+            }
+        }
+        if (networkMode != null && !networkMode.isEmpty()) {
+            data.put("network_mode", networkMode);
+        }
+        return makeRequest("POST", "/images/" + imageId + "/spawn", creds[0], creds[1], data);
+    }
+
+    /**
+     * Clone an image to create a new image with a different name.
+     *
+     * @param imageId Image ID to clone
+     * @param name Name for the cloned image
+     * @param description Optional description for the cloned image
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing new image_id
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> cloneImage(
+        String imageId,
+        String name,
+        String description,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (name != null && !name.isEmpty()) {
+            data.put("name", name);
+        }
+        if (description != null && !description.isEmpty()) {
+            data.put("description", description);
+        }
+        return makeRequest("POST", "/images/" + imageId + "/clone", creds[0], creds[1], data);
+    }
+
+    // ========================================================================
     // Key Validation API
     // ========================================================================
 

@@ -541,6 +541,16 @@ struct EnvExportResponse {
     content: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ImagesListResponse {
+    images: Vec<LxdImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustedKeysResponse {
+    trusted_keys: Vec<String>,
+}
+
 // =============================================================================
 // Language Detection
 // =============================================================================
@@ -1192,6 +1202,333 @@ pub fn clone_snapshot(snapshot_id: &str, name: &str, creds: &Credentials) -> Res
     let body = serde_json::json!({
         "name": name
     });
+    make_request("POST", &path, creds, Some(&body))
+}
+
+// =============================================================================
+// Images API Functions (LXD Container Images)
+// =============================================================================
+
+/// Publish an LXD container image from a session or service.
+///
+/// Creates a reusable container image from an existing session or service.
+/// The image can later be used to spawn new services.
+///
+/// # Arguments
+/// * `source_type` - Source type: "session" or "service"
+/// * `source_id` - ID of the session or service to publish from
+/// * `name` - Name for the new image
+/// * `description` - Optional description for the image
+/// * `creds` - API credentials
+///
+/// # Returns
+/// LxdImage information for the published image
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let image = image_publish("service", "svc-abc123", "my-app-image", Some("Production app v1.0"), &creds)?;
+/// println!("Published image: {}", image.image_id);
+/// ```
+pub fn image_publish(
+    source_type: &str,
+    source_id: &str,
+    name: &str,
+    description: Option<&str>,
+    creds: &Credentials,
+) -> Result<LxdImage> {
+    let mut body = serde_json::json!({
+        "source_type": source_type,
+        "source_id": source_id,
+        "name": name
+    });
+    if let Some(desc) = description {
+        body["description"] = serde_json::json!(desc);
+    }
+    make_request("POST", "/images", creds, Some(&body))
+}
+
+/// List LXD container images.
+///
+/// Returns images based on the filter type:
+/// - None or "owned": Images owned by the authenticated user
+/// - "shared": Images shared with the authenticated user
+/// - "public": Publicly available images
+/// - "all": All images accessible to the authenticated user
+///
+/// # Arguments
+/// * `filter_type` - Optional filter: "owned", "shared", "public", or "all"
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Vector of LxdImage information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// // List owned images (default)
+/// let my_images = list_images(None, &creds)?;
+///
+/// // List shared images
+/// let shared = list_images(Some("shared"), &creds)?;
+///
+/// // List all accessible images
+/// let all = list_images(Some("all"), &creds)?;
+/// ```
+pub fn list_images(filter_type: Option<&str>, creds: &Credentials) -> Result<Vec<LxdImage>> {
+    let path = match filter_type {
+        Some(ft) => format!("/images/{}", ft),
+        None => "/images".to_string(),
+    };
+    let response: ImagesListResponse = make_request("GET", &path, creds, None::<&()>)?;
+    Ok(response.images)
+}
+
+/// Get details of a specific LXD container image.
+///
+/// # Arguments
+/// * `image_id` - Image ID to retrieve
+/// * `creds` - API credentials
+///
+/// # Returns
+/// LxdImage information
+pub fn get_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
+    let path = format!("/images/{}", image_id);
+    make_request("GET", &path, creds, None::<&()>)
+}
+
+/// Delete an LXD container image.
+///
+/// The image must be unlocked to be deleted.
+///
+/// # Arguments
+/// * `image_id` - Image ID to delete
+/// * `creds` - API credentials
+pub fn delete_image(image_id: &str, creds: &Credentials) -> Result<()> {
+    let path = format!("/images/{}", image_id);
+    let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>)?;
+    Ok(())
+}
+
+/// Lock an LXD container image to prevent modification or deletion.
+///
+/// # Arguments
+/// * `image_id` - Image ID to lock
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated LxdImage information
+pub fn lock_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
+    let path = format!("/images/{}/lock", image_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// Unlock an LXD container image to allow modification or deletion.
+///
+/// # Arguments
+/// * `image_id` - Image ID to unlock
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated LxdImage information
+pub fn unlock_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
+    let path = format!("/images/{}/unlock", image_id);
+    let body = serde_json::json!({});
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// Set the visibility of an LXD container image.
+///
+/// # Arguments
+/// * `image_id` - Image ID to update
+/// * `visibility` - New visibility: "private", "shared", or "public"
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated LxdImage information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// // Make image public
+/// set_image_visibility("img-abc123", "public", &creds)?;
+///
+/// // Make image private
+/// set_image_visibility("img-abc123", "private", &creds)?;
+/// ```
+pub fn set_image_visibility(
+    image_id: &str,
+    visibility: &str,
+    creds: &Credentials,
+) -> Result<LxdImage> {
+    let path = format!("/images/{}/visibility", image_id);
+    let body = serde_json::json!({
+        "visibility": visibility
+    });
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// Grant access to an LXD container image for another API key.
+///
+/// The image visibility must be "shared" for this to take effect.
+///
+/// # Arguments
+/// * `image_id` - Image ID to grant access to
+/// * `trusted_api_key` - API key (public key) to grant access
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated LxdImage information
+pub fn grant_image_access(
+    image_id: &str,
+    trusted_api_key: &str,
+    creds: &Credentials,
+) -> Result<LxdImage> {
+    let path = format!("/images/{}/grant", image_id);
+    let body = serde_json::json!({
+        "trusted_api_key": trusted_api_key
+    });
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// Revoke access to an LXD container image from another API key.
+///
+/// # Arguments
+/// * `image_id` - Image ID to revoke access from
+/// * `trusted_api_key` - API key (public key) to revoke access
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated LxdImage information
+pub fn revoke_image_access(
+    image_id: &str,
+    trusted_api_key: &str,
+    creds: &Credentials,
+) -> Result<LxdImage> {
+    let path = format!("/images/{}/revoke", image_id);
+    let body = serde_json::json!({
+        "trusted_api_key": trusted_api_key
+    });
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// List API keys that have access to an LXD container image.
+///
+/// # Arguments
+/// * `image_id` - Image ID to list trusted keys for
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Vector of trusted API keys (public keys)
+pub fn list_image_trusted(image_id: &str, creds: &Credentials) -> Result<Vec<String>> {
+    let path = format!("/images/{}/trusted", image_id);
+    let response: TrustedKeysResponse = make_request("GET", &path, creds, None::<&()>)?;
+    Ok(response.trusted_keys)
+}
+
+/// Transfer ownership of an LXD container image to another API key.
+///
+/// After transfer, the original owner loses ownership but may retain
+/// access if they are in the trusted keys list.
+///
+/// # Arguments
+/// * `image_id` - Image ID to transfer
+/// * `to_api_key` - API key (public key) of the new owner
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated LxdImage information
+pub fn transfer_image(image_id: &str, to_api_key: &str, creds: &Credentials) -> Result<LxdImage> {
+    let path = format!("/images/{}/transfer", image_id);
+    let body = serde_json::json!({
+        "to_api_key": to_api_key
+    });
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// Spawn a new service from an LXD container image.
+///
+/// Creates a new running service based on the specified image.
+///
+/// # Arguments
+/// * `image_id` - Image ID to spawn from
+/// * `name` - Name for the new service
+/// * `ports` - Optional list of ports to expose
+/// * `bootstrap` - Optional bootstrap script to run after spawn
+/// * `network_mode` - Optional network mode: "zerotrust" or "semitrusted"
+/// * `creds` - API credentials
+///
+/// # Returns
+/// SpawnFromImageResult with the new service information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// // Spawn with default options
+/// let result = spawn_from_image("img-abc123", "my-service", None, None, None, &creds)?;
+/// println!("Service URL: {}", result.url);
+///
+/// // Spawn with custom ports and bootstrap
+/// let result = spawn_from_image(
+///     "img-abc123",
+///     "web-server",
+///     Some(&[80, 443]),
+///     Some("systemctl start nginx"),
+///     Some("semitrusted"),
+///     &creds
+/// )?;
+/// ```
+pub fn spawn_from_image(
+    image_id: &str,
+    name: &str,
+    ports: Option<&[u16]>,
+    bootstrap: Option<&str>,
+    network_mode: Option<&str>,
+    creds: &Credentials,
+) -> Result<SpawnFromImageResult> {
+    let path = format!("/images/{}/spawn", image_id);
+    let mut body = serde_json::json!({
+        "name": name
+    });
+    if let Some(p) = ports {
+        body["ports"] = serde_json::json!(p);
+    }
+    if let Some(b) = bootstrap {
+        body["bootstrap"] = serde_json::json!(b);
+    }
+    if let Some(nm) = network_mode {
+        body["network_mode"] = serde_json::json!(nm);
+    }
+    make_request("POST", &path, creds, Some(&body))
+}
+
+/// Clone an LXD container image to create a new image with a different name.
+///
+/// # Arguments
+/// * `image_id` - Image ID to clone
+/// * `name` - Name for the new image
+/// * `description` - Optional description for the new image
+/// * `creds` - API credentials
+///
+/// # Returns
+/// New LxdImage information
+pub fn clone_image(
+    image_id: &str,
+    name: &str,
+    description: Option<&str>,
+    creds: &Credentials,
+) -> Result<LxdImage> {
+    let path = format!("/images/{}/clone", image_id);
+    let mut body = serde_json::json!({
+        "name": name
+    });
+    if let Some(desc) = description {
+        body["description"] = serde_json::json!(desc);
+    }
     make_request("POST", &path, creds, Some(&body))
 }
 

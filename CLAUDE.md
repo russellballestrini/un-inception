@@ -24,39 +24,56 @@ On 2026-01-11, raw `lxc delete` destroyed 8 production services causing complete
 
 UN CLI Inception - The UN CLI written in every language it can execute. 42+ implementations, one unified interface.
 
-### SDK Architecture (In Growth)
+### SDK Architecture
 
-**Current State**: Root-level implementations (un.py, un.c, un.go, etc.) serving as both CLI + embeddable libraries.
-
-**Target State**: Migrate to `clients/` directory structure:
+**Directory Structure**:
 ```
 clients/
-├── python/        # clients/python/un.py - sync/async client + CLI
-├── javascript/    # clients/javascript/un.js - SDK + CLI
-├── go/            # clients/go/un.go - SDK + CLI
-├── java/          # clients/java/Un.java - SDK + CLI
-├── ruby/          # clients/ruby/un.rb - SDK + CLI
-├── php/           # clients/php/un.php - SDK + CLI
-├── rust/          # clients/rust/un.rs - SDK + CLI
-├── {42+ more}/
+├── python/
+│   ├── sync/src/un.py          # Synchronous (requests) - 2,698 lines
+│   └── async/src/un_async.py   # Asynchronous (aiohttp) - 2,333 lines
+├── javascript/
+│   ├── sync/src/un.js          # Synchronous (https) - 2,307 lines
+│   └── async/src/un_async.js   # Asynchronous (fetch) - 2,131 lines
+├── go/
+│   ├── sync/src/un.go          # Synchronous (net/http) - 2,652 lines
+│   └── async/src/un_async.go   # Asynchronous (goroutines) - 3,011 lines
+├── java/
+│   ├── sync/src/Un.java        # Synchronous (HttpURLConnection) - 3,051 lines
+│   └── async/src/UnsandboxAsync.java  # Asynchronous (CompletableFuture) - 2,685 lines
+├── ruby/
+│   ├── sync/src/un.rb          # Synchronous (net/http) - 2,423 lines
+│   └── async/src/un_async.rb   # Asynchronous (Future) - 2,441 lines
+├── rust/
+│   ├── sync/src/lib.rs         # Synchronous (reqwest blocking) - 3,665 lines
+│   └── async/src/lib.rs        # Asynchronous (reqwest + tokio) - 3,375 lines
+├── php/
+│   ├── sync/src/un.php         # Synchronous (cURL) - 2,818 lines
+│   └── async/src/UnsandboxAsync.php  # Asynchronous (Guzzle promises) - 2,457 lines
+├── CLI_SPEC.md                 # Full CLI specification (all SDKs must match)
+└── README.md                   # SDK documentation
 ```
 
-**Each client implementation serves THREE purposes**:
-1. **Standalone CLI program** - Argparse/getopt with full command support (execute, session, service)
-2. **Importable client library** - Can import and use as an SDK in other code
-3. **Embeddable library** - Can be bundled into other language projects
+**Total: 38,125 lines across 14 SDK files (7 languages × 2 variants)**
 
-**Example (Python)**:
-```python
-# As CLI: python clients/python/un.py test/fib.py
-# As library: from clients.python.un import UnsandboxClient
-# As embedded: copy un.py into your project, import locally
+**Each SDK is BOTH a library AND a CLI tool** (see `clients/CLI_SPEC.md`):
+```bash
+# Library usage
+python -c "from un import execute_code; print(execute_code('python', 'print(1)'))"
+
+# CLI usage (identical across all languages)
+python un.py script.py              # Execute code file
+python un.py -s bash 'echo hello'   # Inline code
+python un.py session --tmux         # Interactive session
+python un.py service --list         # Manage services
 ```
 
-**Migration Path**:
-- Phase 1 (Current): Grow clients/ directory in parallel with root un.* files
-- Phase 2: Root files eventually deprecated in favor of clients/
-- Phase 3: Root files maintained for backwards compatibility only
+**Every SDK implements**:
+- **43+ API functions** (execute, jobs, sessions, services, snapshots, utilities)
+- **Full CLI** (execute, session, service, service env, snapshot, key subcommands)
+- **4-tier credential resolution** (args > env > ~/.unsandbox/accounts.csv > ./accounts.csv)
+- **HMAC-SHA256 request signing**
+- **1-hour languages cache** (~/.unsandbox/languages.json)
 
 ## Authentication
 

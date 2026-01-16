@@ -511,6 +511,310 @@ class Unsandbox {
     }
 
     // =========================================================================
+    // Images Methods (LXD Container Images)
+    // =========================================================================
+
+    /**
+     * Publish a new image from a session or service container.
+     *
+     * @param string $sourceType Source type: "session" or "service"
+     * @param string $sourceId Session ID or Service ID to publish from
+     * @param string|null $name Optional name for the image
+     * @param string|null $description Optional description for the image
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with image_id and image details
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function imagePublish(
+        string $sourceType,
+        string $sourceId,
+        ?string $name = null,
+        ?string $description = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [
+            'source_type' => $sourceType,
+            'source_id' => $sourceId,
+        ];
+        if ($name !== null) {
+            $data['name'] = $name;
+        }
+        if ($description !== null) {
+            $data['description'] = $description;
+        }
+
+        return $this->makeRequest('POST', '/images', $publicKey, $secretKey, $data);
+    }
+
+    /**
+     * List all images owned by the authenticated account.
+     *
+     * @param string|null $filterType Optional filter: "owned", "shared", "public", or null for all
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array List of image arrays
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function listImages(?string $filterType = null, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $path = $filterType !== null ? "/images/{$filterType}" : '/images';
+        $response = $this->makeRequest('GET', $path, $publicKey, $secretKey);
+        return $response['images'] ?? [];
+    }
+
+    /**
+     * Get details of a specific image.
+     *
+     * @param string $imageId Image ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Image details
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function getImage(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/images/{$imageId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Delete an image.
+     *
+     * @param string $imageId Image ID to delete
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with deletion confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function deleteImage(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('DELETE', "/images/{$imageId}", $publicKey, $secretKey);
+    }
+
+    /**
+     * Lock an image to prevent deletion.
+     *
+     * @param string $imageId Image ID to lock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with lock confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function lockImage(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/images/{$imageId}/lock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Unlock an image to allow deletion.
+     *
+     * @param string $imageId Image ID to unlock
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with unlock confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function unlockImage(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/images/{$imageId}/unlock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Set visibility of an image.
+     *
+     * @param string $imageId Image ID
+     * @param string $visibility Visibility level: "private" or "public"
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with visibility update confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function setImageVisibility(
+        string $imageId,
+        string $visibility,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/images/{$imageId}/visibility", $publicKey, $secretKey, [
+            'visibility' => $visibility,
+        ]);
+    }
+
+    /**
+     * Grant access to an image for another API key.
+     *
+     * @param string $imageId Image ID
+     * @param string $trustedApiKey The API key to grant access to
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with grant confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function grantImageAccess(
+        string $imageId,
+        string $trustedApiKey,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/images/{$imageId}/grant", $publicKey, $secretKey, [
+            'trusted_api_key' => $trustedApiKey,
+        ]);
+    }
+
+    /**
+     * Revoke access to an image from another API key.
+     *
+     * @param string $imageId Image ID
+     * @param string $trustedApiKey The API key to revoke access from
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with revoke confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function revokeImageAccess(
+        string $imageId,
+        string $trustedApiKey,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/images/{$imageId}/revoke", $publicKey, $secretKey, [
+            'trusted_api_key' => $trustedApiKey,
+        ]);
+    }
+
+    /**
+     * List API keys that have been granted access to an image.
+     *
+     * @param string $imageId Image ID
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array List of trusted API key information
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function listImageTrusted(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $response = $this->makeRequest('GET', "/images/{$imageId}/trusted", $publicKey, $secretKey);
+        return $response['trusted'] ?? [];
+    }
+
+    /**
+     * Transfer ownership of an image to another API key.
+     *
+     * @param string $imageId Image ID to transfer
+     * @param string $toApiKey The API key to transfer ownership to
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with transfer confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function transferImage(
+        string $imageId,
+        string $toApiKey,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('POST', "/images/{$imageId}/transfer", $publicKey, $secretKey, [
+            'to_api_key' => $toApiKey,
+        ]);
+    }
+
+    /**
+     * Spawn a new service from an image.
+     *
+     * @param string $imageId Image ID to spawn from
+     * @param string|null $name Optional service name
+     * @param array|string|null $ports Optional port(s) to expose (array of ints or comma-separated string)
+     * @param string|null $bootstrap Optional bootstrap command or URL
+     * @param string $networkMode Network mode: "zerotrust" or "semitrusted"
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with spawned service info
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function spawnFromImage(
+        string $imageId,
+        ?string $name = null,
+        $ports = null,
+        ?string $bootstrap = null,
+        string $networkMode = 'zerotrust',
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [
+            'network_mode' => $networkMode,
+        ];
+        if ($name !== null) {
+            $data['name'] = $name;
+        }
+        if ($ports !== null) {
+            // Convert ports to array if string
+            if (is_string($ports)) {
+                $ports = array_map('intval', explode(',', $ports));
+            }
+            $data['ports'] = $ports;
+        }
+        if ($bootstrap !== null) {
+            $data['bootstrap'] = $bootstrap;
+        }
+
+        return $this->makeRequest('POST', "/images/{$imageId}/spawn", $publicKey, $secretKey, $data);
+    }
+
+    /**
+     * Clone an image to create a new image with a different name/description.
+     *
+     * @param string $imageId Image ID to clone
+     * @param string|null $name Optional name for the cloned image
+     * @param string|null $description Optional description for the cloned image
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with cloned image info
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function cloneImage(
+        string $imageId,
+        ?string $name = null,
+        ?string $description = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $data = [];
+        if ($name !== null) {
+            $data['name'] = $name;
+        }
+        if ($description !== null) {
+            $data['description'] = $description;
+        }
+
+        return $this->makeRequest('POST', "/images/{$imageId}/clone", $publicKey, $secretKey, $data);
+    }
+
+    // =========================================================================
     // Session Methods
     // =========================================================================
 
