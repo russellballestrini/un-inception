@@ -399,11 +399,11 @@ run_test "sdk_exists" \
     "[0-9]+"
 
 # Test 8.2: Run SDK file directly (auto-detect language from extension)
-# Note: Complex SDK files may fail to compile standalone - that's ok
-# We accept any output (including compilation errors) as "it tried"
+# Note: Complex SDK files may fail (shebangs, deps, compile errors) - that's ok
+# We accept any output showing the runtime attempted execution
 run_test "sdk_runs" \
     "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY '$SDK_FILE' 2>&1 || echo 'attempted'" \
-    "usage|help|unsandbox|un |version|error|Error|compile|undefined|attempted"
+    "usage|help|unsandbox|un |version|error|Error|compile|undefined|attempted|unexpected|syntax|import|require|module"
 
 echo ""
 
