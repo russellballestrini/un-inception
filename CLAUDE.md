@@ -6,9 +6,9 @@
 
 ```bash
 # ✅ CORRECT - use un commands
-un2 service --list
-un2 service --destroy <id>
-un2 service --execute <id> 'command'
+un service --list
+un service --destroy <id>
+un service --execute <id> 'command'
 
 # ❌ FORBIDDEN - raw lxc commands bypass auth and state sync
 lxc list / lxc delete / lxc stop / lxc exec
