@@ -9,9 +9,14 @@ CHANGES=$(cat changes.json)
 CHANGED_LANGS=$(echo "$CHANGES" | jq -r '.changed_langs[]' 2>/dev/null || echo "")
 TEST_ALL=$(echo "$CHANGES" | jq -r '.test_all' 2>/dev/null || echo "false")
 
-# Available SDKs in clients/ directory
-# These are the languages that have full SDK implementations
-ALL_SDKS="python javascript go ruby php java rust"
+# Fetch ALL supported languages from the unsandbox API (the source of truth)
+ALL_SDKS=$(curl -s "https://api.unsandbox.com/languages" | jq -r '.languages[]' | tr '\n' ' ')
+if [ -z "$ALL_SDKS" ]; then
+    # Fallback if API is unavailable
+    ALL_SDKS="python javascript typescript ruby perl php lua bash go rust java kotlin c cpp"
+    echo "Warning: Could not fetch languages from API, using fallback list"
+fi
+echo "Available SDKs from API: $ALL_SDKS"
 
 if [ "$TEST_ALL" = "true" ]; then
     LANGS="$ALL_SDKS"
