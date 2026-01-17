@@ -1834,6 +1834,87 @@ static int list_sessions(const UnsandboxCredentials *creds) {
     return 0;
 }
 
+// List supported languages (CLI helper)
+static int list_languages_cli(const UnsandboxCredentials *creds, int json_output) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/languages", API_BASE);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/languages", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || http_code != 200) {
+        fprintf(stderr, "Error: Failed to fetch languages (HTTP %ld)\n", http_code);
+        free(response.data);
+        return 1;
+    }
+
+    // Find the languages array in JSON: "languages":["lang1","lang2",...] or just ["lang1",...]
+    const char *langs_start = strstr(response.data, "\"languages\":[");
+    if (!langs_start) {
+        langs_start = strchr(response.data, '[');
+    }
+
+    if (!langs_start) {
+        fprintf(stderr, "Error: Invalid response format\n");
+        free(response.data);
+        return 1;
+    }
+
+    const char *arr_start = strchr(langs_start, '[');
+    if (!arr_start) {
+        fprintf(stderr, "Error: Invalid response format\n");
+        free(response.data);
+        return 1;
+    }
+
+    if (json_output) {
+        // Output as JSON array - find matching ]
+        const char *arr_end = strchr(arr_start, ']');
+        if (arr_end) {
+            int len = arr_end - arr_start + 1;
+            printf("%.*s\n", len, arr_start);
+        }
+    } else {
+        // Output one language per line
+        const char *p = arr_start + 1;
+        while (*p && *p != ']') {
+            if (*p == '"') {
+                p++;
+                const char *end = strchr(p, '"');
+                if (end) {
+                    printf("%.*s\n", (int)(end - p), p);
+                    p = end + 1;
+                }
+            } else {
+                p++;
+            }
+        }
+    }
+
+    free(response.data);
+    return 0;
+}
+
 // Create a session via HTTP API
 // multiplexer: NULL for no multiplexer (default), "screen", or "tmux"
 // input_files: array of files to include (written to /tmp/ in container)
@@ -8336,33 +8417,10 @@ int main(int argc, char *argv[]) {
         }
 
         curl_global_init(CURL_GLOBAL_DEFAULT);
-        unsandbox_languages_t *langs = unsandbox_get_languages(creds->public_key, creds->secret_key);
+        int ret = list_languages_cli(creds, json_output);
         curl_global_cleanup();
-
-        if (!langs) {
-            fprintf(stderr, "Error: Failed to fetch languages list\n");
-            free_credentials(creds);
-            return 1;
-        }
-
-        if (json_output) {
-            // Output as JSON array
-            printf("[");
-            for (int i = 0; i < langs->count; i++) {
-                printf("\"%s\"", langs->languages[i]);
-                if (i < langs->count - 1) printf(",");
-            }
-            printf("]\n");
-        } else {
-            // Output one per line (pipe-friendly)
-            for (int i = 0; i < langs->count; i++) {
-                printf("%s\n", langs->languages[i]);
-            }
-        }
-
-        unsandbox_free_languages(langs);
         free_credentials(creds);
-        return 0;
+        return ret;
     }
 
     // Check for snapshot command
@@ -8595,26 +8653,66 @@ int main(int argc, char *argv[]) {
         if (do_list) {
             char *response = list_images(creds, NULL);
             if (response) {
-                // Parse and display image list
-                unsandbox_image_list_t *images = unsandbox_image_list(creds->public_key, creds->secret_key);
-                if (images && images->count > 0) {
-                    printf("%-40s %-20s %-10s %-8s %-10s\n", "ID", "NAME", "VISIBILITY", "LOCKED", "SOURCE");
-                    printf("%-40s %-20s %-10s %-8s %-10s\n", "----------------------------------------",
-                           "--------------------", "----------", "--------", "----------");
-                    for (size_t i = 0; i < images->count; i++) {
-                        unsandbox_image_t *img = &images->images[i];
-                        printf("%-40s %-20s %-10s %-8s %-10s\n",
-                               img->id ? img->id : "",
-                               img->name ? img->name : "",
-                               img->visibility ? img->visibility : "",
-                               img->locked ? "yes" : "no",
-                               img->source_type ? img->source_type : "");
-                    }
-                    unsandbox_free_image_list(images);
-                } else {
+                // Parse and display image list from JSON response
+                const char *images_start = strstr(response, "\"images\":[");
+                if (!images_start) {
                     printf("No images found.\n");
+                    free(response);
+                } else {
+                    // Count images
+                    int count = 0;
+                    const char *p = images_start;
+                    while ((p = strchr(p + 1, '{')) != NULL && strchr(images_start, ']') && p < strchr(images_start, ']')) {
+                        count++;
+                    }
+
+                    if (count == 0) {
+                        printf("No images found.\n");
+                    } else {
+                        printf("%-40s %-20s %-10s %-8s %-10s\n", "ID", "NAME", "VISIBILITY", "LOCKED", "SOURCE");
+                        printf("%-40s %-20s %-10s %-8s %-10s\n", "----------------------------------------",
+                               "--------------------", "----------", "--------", "----------");
+
+                        // Parse each image object
+                        const char *pos = strchr(images_start, '[');
+                        if (pos) {
+                            while ((pos = strchr(pos, '{')) != NULL) {
+                                // Check we haven't passed the end of the array
+                                const char *arr_end = strchr(images_start, ']');
+                                if (arr_end && pos > arr_end) break;
+
+                                char *img_id = extract_json_string(pos, "id");
+                                char *img_name = extract_json_string(pos, "name");
+                                char *img_visibility = extract_json_string(pos, "visibility");
+                                char *img_source = extract_json_string(pos, "source_type");
+
+                                // Extract locked boolean
+                                const char *locked_str = strstr(pos, "\"locked\":");
+                                int locked = 0;
+                                if (locked_str && locked_str < strchr(pos, '}')) {
+                                    locked_str += 9;
+                                    while (*locked_str == ' ') locked_str++;
+                                    locked = (strncmp(locked_str, "true", 4) == 0);
+                                }
+
+                                printf("%-40s %-20s %-10s %-8s %-10s\n",
+                                       img_id ? img_id : "",
+                                       img_name ? img_name : "",
+                                       img_visibility ? img_visibility : "",
+                                       locked ? "yes" : "no",
+                                       img_source ? img_source : "");
+
+                                if (img_id) free(img_id);
+                                if (img_name) free(img_name);
+                                if (img_visibility) free(img_visibility);
+                                if (img_source) free(img_source);
+
+                                pos++;
+                            }
+                        }
+                    }
+                    free(response);
                 }
-                free(response);
             } else {
                 fprintf(stderr, "Error: Failed to list images\n");
                 ret = 1;
@@ -8656,7 +8754,7 @@ int main(int argc, char *argv[]) {
                 }
             }
         } else if (do_spawn) {
-            char *result = spawn_from_image(creds, image_id, spawn_name, spawn_ports);
+            char *result = spawn_from_image(creds, image_id, spawn_name, spawn_ports, NULL, NULL);
             if (result) {
                 printf("%s\n", result);
                 free(result);
@@ -8669,8 +8767,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Error: --source-type required for --publish (service or snapshot)\n");
                 ret = 1;
             } else {
-                char *result = unsandbox_image_publish(creds->public_key, creds->secret_key,
-                                                       source_type, image_id, spawn_name, NULL);
+                char *result = image_publish(creds, source_type, image_id, spawn_name, NULL);
                 if (result) {
                     printf("Image published: %s\n", result);
                     free(result);
@@ -8680,7 +8777,7 @@ int main(int argc, char *argv[]) {
                 }
             }
         } else if (do_clone) {
-            char *result = unsandbox_image_clone(creds->public_key, creds->secret_key, image_id, spawn_name);
+            char *result = clone_image(creds, image_id, spawn_name, NULL);
             if (result) {
                 printf("Image cloned: %s\n", result);
                 free(result);

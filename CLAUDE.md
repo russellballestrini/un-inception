@@ -272,6 +272,39 @@ git remote set-url --add --push origin ssh://git@git.unturf.com:2222/engineering
 git remote set-url --add --push origin git@github.com:russellballestrini/un-inception.git
 ```
 
+## Releases & Versioning
+
+**ALWAYS update the VERSION file BEFORE creating a release tag.**
+
+The `VERSION` file in the repo root contains the current semantic version (e.g., `0.0.2`). This file is the source of truth for the release version.
+
+### Release Process
+
+```bash
+# 1. Update VERSION file first
+echo "0.0.3" > VERSION
+
+# 2. Commit the version bump
+git add VERSION
+git commit -m "chore: Bump version to 0.0.3"
+
+# 3. Create and push the tag (triggers full 42-language test matrix)
+git tag -a v0.0.3 -m "Release v0.0.3 - Description of changes"
+git push origin main v0.0.3
+```
+
+### Tag Triggers
+
+- **Tag push** (`v*.*.*`) triggers the **full test matrix** with all 42 languages
+- **Regular push to main** only tests changed SDKs (smart detection)
+
+### Version Format
+
+Use semantic versioning: `MAJOR.MINOR.PATCH`
+- `MAJOR` - Breaking API changes
+- `MINOR` - New features, backward compatible
+- `PATCH` - Bug fixes, backward compatible
+
 ## SDK Testing Philosophy
 
 **SDKs are LIBRARIES for embedding in other people's code.** They are NOT just CLIs.
