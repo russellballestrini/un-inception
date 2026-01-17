@@ -75,10 +75,8 @@ done
 # Complete the test job template
 cat >> test-matrix.yml << 'EOF'
   before_script:
-    # Build the C CLI for inception testing (child pipeline needs its own build)
     - bash scripts/build-clients.sh
   script:
-    - echo "=== Inception Test: $SDK_LANG ==="
     - bash scripts/test-sdk.sh "$SDK_LANG"
   artifacts:
     reports:
