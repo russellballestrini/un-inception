@@ -6,17 +6,10 @@ set -e
 
 # Manual triggers for full matrix:
 # 1. CI variable: TEST_ALL_SDKS=true
-# 2. Commit message contains [test-all]
-# 3. Tag push (releases test everything)
+# 2. Tag push (releases test everything)
 
 if [ "$TEST_ALL_SDKS" = "true" ]; then
     echo '{"changed_langs": ["all"], "reason": "TEST_ALL_SDKS variable set", "test_all": true}'
-    exit 0
-fi
-
-COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null || echo "")
-if echo "$COMMIT_MSG" | grep -qi '\[test-all\]'; then
-    echo '{"changed_langs": ["all"], "reason": "Commit message contains [test-all]", "test_all": true}'
     exit 0
 fi
 
