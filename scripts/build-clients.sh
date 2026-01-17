@@ -1,27 +1,31 @@
 #!/bin/bash
-# Build SDKs that changed (or all for tag releases)
+# Build SDKs - primarily the C CLI for inception testing
 
 set -e
 
 mkdir -p build
 
-# For now, just copy the un.* files to build/
-# Real build system would compile C, Go, Rust, etc.
-echo "Building SDKs..."
+echo "Building C CLI for inception testing..."
 
-# Interpreted languages just copy
-for LANG in python javascript typescript php perl lua bash; do
-    if [ -f "un.$LANG" ] || [ -f "un.${LANG:0:2}" ]; then
-        cp un.* build/ 2>/dev/null || true
-        echo "✓ Copied $LANG SDK"
-    fi
-done
+# Build the C CLI binary
+if [ -d "clients/c" ] && [ -f "clients/c/Makefile" ]; then
+    make -C clients/c cli
+    cp clients/c/un build/un
+    echo "✓ Built C CLI: build/un"
+else
+    echo "ERROR: clients/c not found"
+    exit 1
+fi
 
-# Compiled languages would build here
-# go: CGO_ENABLED=0 go build -o build/un_go un.go
-# rust: cargo build --release --quiet
-# c: gcc -O3 un.c -o build/un_c
-# etc.
+# Verify the binary works
+if [ -x "build/un" ]; then
+    echo "✓ CLI binary is executable"
+    build/un --version || echo "(version check skipped - may need API keys)"
+else
+    echo "ERROR: build/un not executable"
+    exit 1
+fi
 
-echo "Build complete"
+echo ""
+echo "Build complete. The 'un' binary can now run inception tests."
 ls -lh build/

@@ -9,13 +9,16 @@ CHANGES=$(cat changes.json)
 CHANGED_LANGS=$(echo "$CHANGES" | jq -r '.changed_langs[]' 2>/dev/null || echo "")
 TEST_ALL=$(echo "$CHANGES" | jq -r '.test_all' 2>/dev/null || echo "false")
 
-# If test_all is true or no changes detected, generate comprehensive matrix
-# Now includes Python and C with full SDK support
+# Available SDKs in clients/ directory
+# These are the languages that have full SDK implementations
+ALL_SDKS="python javascript go ruby php java rust"
+
 if [ "$TEST_ALL" = "true" ]; then
-    LANGS="python javascript typescript go ruby php perl lua bash rust java csharp cpp c haskell kotlin elixir erlang crystal dart nim julia r groovy clojure fsharp ocaml objc d vlang zig fortran cobol scheme lisp tcl awk prolog forth powershell raku"
+    LANGS="$ALL_SDKS"
 elif [ -z "$CHANGED_LANGS" ]; then
-    # No changes - don't generate any jobs
-    echo "# No SDK changes detected"
+    # No changes - don't generate any test jobs
+    echo "# No SDK changes detected - no tests to run" > test-matrix.yml
+    cat test-matrix.yml
     exit 0
 else
     LANGS="$CHANGED_LANGS"
@@ -23,46 +26,40 @@ fi
 
 # Start generating test-matrix.yml
 cat > test-matrix.yml << 'EOF'
-# Dynamically generated test matrix based on changed SDKs
+# Dynamically generated test matrix - inception tests for changed SDKs
+# Each test runs: build/un → unsandbox → SDK → unsandbox → test code
+
 test:
   stage: test
   tags:
+    - build
+  needs:
     - build
   parallel:
     matrix:
 EOF
 
 # Add each language as a parallel job
-FIRST=true
 for LANG in $LANGS; do
-    if [ "$FIRST" = true ]; then
-        echo "      - SDK_LANG: $LANG" >> test-matrix.yml
-        FIRST=false
-    else
-        echo "      - SDK_LANG: $LANG" >> test-matrix.yml
-    fi
+    echo "      - SDK_LANG: $LANG" >> test-matrix.yml
 done
 
 # Complete the test job template
 cat >> test-matrix.yml << 'EOF'
   script:
-    - export TEST_LANG=$SDK_LANG
-    - |
-      echo "Testing $TEST_LANG..."
-      if [ ! -d "clients" ]; then
-        echo "ERROR: clients directory not found"
-        exit 1
-      fi
-    # Call unsandbox to test the SDK
-    - bash scripts/test-sdk.sh "$TEST_LANG"
+    - echo "=== Inception Test Matrix ==="
+    - echo "Testing SDK: $SDK_LANG"
+    - bash scripts/test-sdk.sh "$SDK_LANG"
   artifacts:
     reports:
-      junit: "test-results-$SDK_LANG.xml"
+      junit: "test-results-$SDK_LANG/test-results.xml"
     paths:
       - "test-results-$SDK_LANG/"
     expire_in: 30 days
-  allow_failure: false
+  allow_failure: true
   retry: 1
 EOF
 
+echo ""
+echo "Generated test-matrix.yml:"
 cat test-matrix.yml

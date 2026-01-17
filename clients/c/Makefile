@@ -35,6 +35,9 @@ RED := \033[31m
 YELLOW := \033[33m
 NC := \033[0m
 
+# CLI binary (for inception testing)
+CLI := un
+
 .DEFAULT_GOAL := build
 
 help:
@@ -57,7 +60,15 @@ help:
 
 all: build
 
-build: lib examples
+build: cli lib examples
+
+cli: $(CLI)
+	@echo "$(GREEN)✓$(NC) CLI binary built: $(CLI)"
+
+$(CLI): $(SRC) $(HEADER)
+	@echo "Building CLI binary..."
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
+	@echo "$(GREEN)✓$(NC) Built: $@"
 
 lib: $(SRC) $(HEADER)
 	@echo "$(GREEN)✓$(NC) Library files ready:"
@@ -122,7 +133,9 @@ $(TEST_DIR)/test_functional: $(TEST_DIR)/test_functional.c $(SRC) $(HEADER)
 # ============================================================================
 
 clean:
+	rm -f $(CLI)
 	rm -f $(TEST_DIR)/test_library
+	rm -f $(TEST_DIR)/test_functional
 	rm -f $(EXAMPLES_DIR)/hello_world
 	rm -f $(EXAMPLES_DIR)/fibonacci
 	rm -f $(EXAMPLES_DIR)/*.o
