@@ -73,7 +73,7 @@ get_sdk_file() {
 # Check if language is compiled
 is_compiled_language() {
     case "$1" in
-        rust|go|c|cpp|java|kotlin|swift|csharp|fsharp|haskell|ocaml|d|nim|zig|crystal|fortran|cobol)
+        rust|go|c|cpp|java|kotlin|swift|csharp|fsharp|haskell|ocaml|d|nim|zig|crystal|fortran|cobol|objc|dart|v)
             return 0 ;;
         *)
             return 1 ;;

@@ -20,7 +20,7 @@ echo "Available SDKs from API: $ALL_SDKS"
 
 # Filter out compiled languages - they can't run inception tests
 # (source files need compilation, can't be executed directly via API)
-COMPILED_LANGS="rust go c cpp java kotlin swift csharp fsharp haskell ocaml d nim zig crystal fortran cobol"
+COMPILED_LANGS="rust go c cpp java kotlin swift csharp fsharp haskell ocaml d nim zig crystal fortran cobol objc v dart"
 
 filter_compiled() {
     local langs="$1"
