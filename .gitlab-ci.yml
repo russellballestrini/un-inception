@@ -21,9 +21,7 @@ variables:
 # ============================================================================
 detect-changes:
   stage: pre
-  image: alpine:latest
   script:
-    - apk add --no-cache git jq
     - bash scripts/detect-changes.sh > changes.json
     - cat changes.json
   artifacts:
@@ -39,11 +37,9 @@ detect-changes:
 # ============================================================================
 generate-matrix:
   stage: pre
-  image: alpine:latest
   needs:
     - detect-changes
   script:
-    - apk add --no-cache git jq python3
     - bash scripts/generate-matrix.sh > test-matrix.yml
     - cat test-matrix.yml
   artifacts:
@@ -59,9 +55,7 @@ generate-matrix:
 # ============================================================================
 build:
   stage: build
-  image: alpine:latest
   script:
-    - apk add --no-cache git bash gcc musl-dev make
     - bash scripts/build-clients.sh
     - |
       # Build C examples
@@ -90,11 +84,9 @@ include:
 # ============================================================================
 science-validate-examples:
   stage: science
-  image: alpine:latest
   needs:
     - build
   script:
-    - apk add --no-cache curl jq bc python3 gcc musl-dev
     - bash scripts/validate-examples.sh
   artifacts:
     reports:
@@ -108,9 +100,7 @@ science-validate-examples:
 
 science-lint-sdks:
   stage: science
-  image: alpine:latest
   script:
-    - apk add --no-cache curl jq
     - bash scripts/science/lint-all-sdks.sh
   artifacts:
     reports:
@@ -124,9 +114,7 @@ science-lint-sdks:
 
 science-benchmark-clients:
   stage: science
-  image: alpine:latest
   script:
-    - apk add --no-cache curl jq
     - bash scripts/science/benchmark-clients.sh
   artifacts:
     reports:
@@ -143,15 +131,13 @@ science-benchmark-clients:
 # ============================================================================
 validate-examples:
   stage: validate
-  image: alpine:latest
   needs:
     - science-validate-examples
   script:
-    - apk add --no-cache jq curl
     - mkdir -p science-results
     - |
       if [ -f science-results/examples-validation-results.json ]; then
-        echo "✓ Example validation results found"
+        echo "Example validation results found"
         cat science-results/examples-validation-results.json
 
         # Extract stats and display summary
@@ -162,7 +148,7 @@ validate-examples:
         echo ""
         echo "Summary: $PASSED/$TOTAL passed, $FAILED failed"
       else
-        echo "⚠ No example validation results found"
+        echo "No example validation results found"
       fi
   artifacts:
     paths:
@@ -177,11 +163,9 @@ validate-examples:
 # ============================================================================
 generate-documentation:
   stage: document
-  image: alpine:latest
   needs:
     - validate-examples
   script:
-    - apk add --no-cache bash jq curl git
     - mkdir -p docs
     - bash scripts/generate-docs.sh || true
     - |
@@ -205,11 +189,9 @@ generate-documentation:
 # ============================================================================
 report:
   stage: report
-  image: alpine:latest
   needs:
     - generate-documentation
   script:
-    - apk add --no-cache jq bash
     - bash scripts/filter-results.sh
     - |
       if [ -f science-results/examples-validation-results.json ]; then
