@@ -95,6 +95,11 @@ API_BASE <- "https://api.unsandbox.com"
 #' @export
 PORTAL_BASE <- "https://unsandbox.com"
 
+#' @title Languages Cache TTL
+#' @description Cache time-to-live in seconds (1 hour)
+#' @export
+LANGUAGES_CACHE_TTL <- 3600
+
 MAX_ENV_CONTENT_SIZE <- 65536
 
 # =============================================================================
@@ -1002,13 +1007,88 @@ cmd_session <- function(args) {
     cat(sprintf("%s(Interactive sessions require WebSocket - use un2 for full support)%s\n", YELLOW, RESET))
 }
 
-cmd_languages <- function(args) {
-    keys <- get_api_keys(args$api_key)
-    public_key <- keys$public_key
-    secret_key <- keys$secret_key
+#' Get Languages Cache Path
+#'
+#' Returns the path to the languages cache file.
+#'
+#' @return Path to ~/.unsandbox/languages.json
+#' @keywords internal
+get_languages_cache_path <- function() {
+    home <- Sys.getenv("HOME")
+    if (home == "") {
+        home <- "."
+    }
+    return(file.path(home, ".unsandbox", "languages.json"))
+}
 
-    result <- api_request("/languages", public_key, secret_key)
-    langs <- result$languages
+#' Load Languages Cache
+#'
+#' Loads languages from the cache file if it exists and is not expired.
+#'
+#' @return Vector of language names, or NULL if cache is missing/expired
+#' @keywords internal
+load_languages_cache <- function() {
+    cache_path <- get_languages_cache_path()
+
+    if (!file.exists(cache_path)) {
+        return(NULL)
+    }
+
+    tryCatch({
+        content <- paste(readLines(cache_path, warn = FALSE), collapse = "\n")
+        data <- fromJSON(content)
+        timestamp <- data$timestamp
+        now <- as.integer(Sys.time())
+
+        if (!is.null(timestamp) && (now - timestamp) < LANGUAGES_CACHE_TTL) {
+            return(data$languages)
+        } else {
+            return(NULL)
+        }
+    }, error = function(e) {
+        return(NULL)
+    })
+}
+
+#' Save Languages Cache
+#'
+#' Saves languages to the cache file.
+#'
+#' @param languages Vector of language names
+#' @keywords internal
+save_languages_cache <- function(languages) {
+    cache_path <- get_languages_cache_path()
+    cache_dir <- dirname(cache_path)
+
+    # Ensure directory exists
+    if (!dir.exists(cache_dir)) {
+        dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+    }
+
+    timestamp <- as.integer(Sys.time())
+    data <- list(languages = languages, timestamp = timestamp)
+
+    tryCatch({
+        writeLines(toJSON(data, auto_unbox = TRUE), cache_path)
+    }, error = function(e) {
+        # Ignore write errors
+    })
+}
+
+cmd_languages <- function(args) {
+    # Try to load from cache first
+    langs <- load_languages_cache()
+
+    if (is.null(langs)) {
+        # Cache miss or expired, fetch from API
+        keys <- get_api_keys(args$api_key)
+        public_key <- keys$public_key
+        secret_key <- keys$secret_key
+
+        result <- api_request("/languages", public_key, secret_key)
+        langs <- result$languages
+        save_languages_cache(langs)
+    }
 
     if (!is.null(args$json_output) && args$json_output) {
         # JSON output - print as JSON array

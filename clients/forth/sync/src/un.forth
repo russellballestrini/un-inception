@@ -46,6 +46,12 @@
     s" https://unsandbox.com"
 ;
 
+3600 constant LANGUAGES_CACHE_TTL
+
+: languages-cache-file ( -- addr len )
+    s" $HOME/.unsandbox/languages.json"
+;
+
 \ Extension to language mapping (simple linear search)
 : ext-lang ( addr len -- addr len | 0 0 )
     2dup s" .jl" compare 0= if 2drop s" julia" exit then
@@ -986,27 +992,54 @@
     1 (bye)
 ;
 
-\ Languages list
+\ Languages list with caching
 : languages-list ( json-flag -- )
     get-api-key
     s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
     s" #!/bin/bash" r@ write-line throw
+    s" CACHE_TTL=3600" r@ write-line throw
+    s" CACHE_FILE=\"$HOME/.unsandbox/languages.json\"" r@ write-line throw
+    s" JSON_OUTPUT=" r@ write-file throw
+    if
+        s" 1" r@ write-line throw
+    else
+        s" 0" r@ write-line throw
+    then
     s" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s" '" r@ write-line throw
     s" SECRET_KEY='" r@ write-file throw
     get-secret-key r@ write-file throw
     s" '" r@ write-line throw
+    \ Check cache first
+    s" if [ -f \"$CACHE_FILE\" ]; then" r@ write-line throw
+    s"     CACHE_TS=$(jq -r '.timestamp // 0' \"$CACHE_FILE\" 2>/dev/null)" r@ write-line throw
+    s"     CURRENT_TS=$(date +%s)" r@ write-line throw
+    s"     AGE=$((CURRENT_TS - CACHE_TS))" r@ write-line throw
+    s"     if [ $AGE -lt $CACHE_TTL ]; then" r@ write-line throw
+    s"         if [ \"$JSON_OUTPUT\" = \"1\" ]; then" r@ write-line throw
+    s"             jq -c '.languages' \"$CACHE_FILE\"" r@ write-line throw
+    s"         else" r@ write-line throw
+    s"             jq -r '.languages[]' \"$CACHE_FILE\"" r@ write-line throw
+    s"         fi" r@ write-line throw
+    s"         exit 0" r@ write-line throw
+    s"     fi" r@ write-line throw
+    s" fi" r@ write-line throw
+    \ Fetch from API
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
     s" MESSAGE=\"$TIMESTAMP:GET:/languages:\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    if
-        \ JSON output
-        s" curl -s -X GET https://api.unsandbox.com/languages -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -c '.languages'" r@ write-line throw
-    else
-        \ One per line
-        s" curl -s -X GET https://api.unsandbox.com/languages -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.languages[]'" r@ write-line throw
-    then
+    s" RESP=$(curl -s -X GET https://api.unsandbox.com/languages -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
+    s" LANGS=$(echo \"$RESP\" | jq -c '.languages // []')" r@ write-line throw
+    \ Save to cache
+    s" mkdir -p \"$HOME/.unsandbox\"" r@ write-line throw
+    s" echo \"{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}\" > \"$CACHE_FILE\"" r@ write-line throw
+    \ Output
+    s" if [ \"$JSON_OUTPUT\" = \"1\" ]; then" r@ write-line throw
+    s"     echo \"$LANGS\"" r@ write-line throw
+    s" else" r@ write-line throw
+    s"     echo \"$LANGS\" | jq -r '.[]'" r@ write-line throw
+    s" fi" r@ write-line throw
     r> close-file throw
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;

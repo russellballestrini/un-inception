@@ -53,6 +53,7 @@ const
   GREEN = "\x1b[32m"
   YELLOW = "\x1b[33m"
   RESET = "\x1b[0m"
+  LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
 
 let langMap = {
   ".py": "python", ".js": "javascript", ".ts": "typescript",
@@ -96,6 +97,82 @@ proc computeHmac(secretKey: string, message: string): string =
 
 proc getTimestamp(): string =
   result = $toUnix(getTime())
+
+proc getLanguagesCachePath(): string =
+  let home = getEnv("HOME", "")
+  if home == "":
+    return ""
+  return joinPath(home, ".unsandbox", "languages.json")
+
+proc loadLanguagesCache(): string =
+  let cachePath = getLanguagesCachePath()
+  if cachePath == "" or not fileExists(cachePath):
+    return ""
+
+  try:
+    let content = readFile(cachePath)
+    # Parse timestamp from JSON
+    let tsStart = content.find("\"timestamp\":")
+    if tsStart < 0:
+      return ""
+
+    let numStart = tsStart + 12  # Length of "\"timestamp\":"
+    var numEnd = numStart
+    while numEnd < content.len and content[numEnd] in {'0'..'9'}:
+      inc numEnd
+
+    if numEnd == numStart:
+      return ""
+
+    let cachedTime = parseInt(content[numStart..<numEnd])
+    let currentTime = toUnix(getTime())
+
+    # Check if cache is still valid (within TTL)
+    if currentTime - cachedTime < LANGUAGES_CACHE_TTL:
+      return content
+  except:
+    # Cache read failed, return empty to fetch fresh
+    discard
+
+  return ""
+
+proc saveLanguagesCache(response: string) =
+  let cachePath = getLanguagesCachePath()
+  if cachePath == "":
+    return
+
+  try:
+    # Ensure directory exists
+    let cacheDir = parentDir(cachePath)
+    if not dirExists(cacheDir):
+      createDir(cacheDir)
+
+    # Find the languages array in response
+    let langStart = response.find("\"languages\":")
+    if langStart < 0:
+      return
+
+    var bracketStart = response.find("[", langStart)
+    if bracketStart < 0:
+      return
+
+    # Find matching closing bracket
+    var depth = 1
+    var bracketEnd = bracketStart + 1
+    while bracketEnd < response.len and depth > 0:
+      if response[bracketEnd] == '[': inc depth
+      elif response[bracketEnd] == ']': dec depth
+      inc bracketEnd
+
+    let languagesArray = response[bracketStart..<bracketEnd]
+
+    # Build cache JSON with timestamp
+    let timestamp = toUnix(getTime())
+    let cacheJson = fmt"""{{"languages":{languagesArray},"timestamp":{timestamp}}}"""
+    writeFile(cachePath, cacheJson)
+  except:
+    # Cache write failed, ignore
+    discard
 
 proc buildAuthHeaders(meth: string, path: string, body: string, publicKey: string, secretKey: string): string =
   if secretKey == "":
@@ -565,9 +642,17 @@ proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
         echo "Error: " & response[errStart..<errEnd]
 
 proc cmdLanguages(jsonOutput: bool, publicKey: string, secretKey: string) =
-  let authHeaders = buildAuthHeaders("GET", "/languages", "", publicKey, secretKey)
-  let cmd = fmt"""curl -s -X GET '{API_BASE}/languages' {authHeaders}"""
-  let response = execCurl(cmd)
+  # Try to load from cache first
+  var response = loadLanguagesCache()
+
+  if response == "":
+    # Fetch from API
+    let authHeaders = buildAuthHeaders("GET", "/languages", "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/languages' {authHeaders}"""
+    response = execCurl(cmd)
+
+    # Save to cache
+    saveLanguagesCache(response)
 
   if jsonOutput:
     # Extract languages array and output as JSON

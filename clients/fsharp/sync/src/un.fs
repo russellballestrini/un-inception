@@ -48,6 +48,8 @@ open System.Security.Cryptography
 
 let apiBase = "https://api.unsandbox.com"
 let portalBase = "https://unsandbox.com"
+let languagesCacheTtl = 3600 // 1 hour in seconds
+
 let blue = "\x1B[34m"
 let red = "\x1B[31m"
 let green = "\x1B[32m"
@@ -433,6 +435,38 @@ let apiRequestText (endpoint: string) (method: string) (body: string) (publicKey
                 ex.Message
         failwithf "HTTP error - %s" errorMsg
 
+let getLanguagesCachePath () =
+    let home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+    Path.Combine(home, ".unsandbox", "languages.json")
+
+let loadLanguagesCache () =
+    let cachePath = getLanguagesCachePath ()
+    if File.Exists(cachePath) then
+        try
+            let content = File.ReadAllText(cachePath)
+            let timestamp = extractJsonValue content "timestamp"
+            match timestamp with
+            | Some ts ->
+                let cacheTime = int64 ts
+                let now = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                if now - cacheTime < int64 languagesCacheTtl then
+                    Some content
+                else
+                    None
+            | None -> None
+        with _ -> None
+    else
+        None
+
+let saveLanguagesCache (languages: string) =
+    let cachePath = getLanguagesCachePath ()
+    let cacheDir = Path.GetDirectoryName(cachePath)
+    if not (Directory.Exists(cacheDir)) then
+        Directory.CreateDirectory(cacheDir) |> ignore
+    let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+    let cacheContent = sprintf "{\"languages\":%s,\"timestamp\":%d}" languages timestamp
+    File.WriteAllText(cachePath, cacheContent)
+
 let readEnvFile (path: string) =
     if not (File.Exists(path)) then
         failwithf "Env file not found: %s" path
@@ -735,33 +769,57 @@ let cmdKey (args: Args) =
 let cmdLanguages (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey
 
-    let result = apiRequest "/languages" "GET" None publicKey secretKey
+    // Try to load from cache first
+    let cachedResponse = loadLanguagesCache ()
+    let response =
+        match cachedResponse with
+        | Some cached -> cached
+        | None ->
+            // Fetch from API and cache the result
+            let result = apiRequest "/languages" "GET" None publicKey secretKey
+            // Extract the languages array as a string for caching
+            match result.TryFind "languages" with
+            | Some langs ->
+                let langStr = langs.ToString()
+                let languagesJson =
+                    if langStr.StartsWith("[") && langStr.EndsWith("]") then
+                        langStr
+                    else
+                        sprintf "[\"%s\"]" langStr
+                saveLanguagesCache languagesJson
+            | None -> ()
+            // Return the result as a formatted string
+            sprintf "{\"languages\":%s}" (match result.TryFind "languages" with | Some l -> l.ToString() | None -> "[]")
 
-    // Extract languages array from the response
-    match result.TryFind "languages" with
-    | Some langs ->
-        // Parse the languages - they come as a string representation
-        let langStr = langs.ToString()
-        // Simple parsing for array of strings like: python, javascript, ...
-        let languages =
-            if langStr.StartsWith("[") && langStr.EndsWith("]") then
-                langStr.Substring(1, langStr.Length - 2).Split(',')
-                |> Array.map (fun s -> s.Trim().Trim('"'))
-                |> Array.filter (fun s -> not (String.IsNullOrEmpty(s)))
+    // Parse the response (either from cache or fresh)
+    let langStr =
+        match extractJsonValue response "languages" with
+        | Some l -> l
+        | None ->
+            // Try to find the array directly
+            let start = response.IndexOf("[")
+            let endIdx = response.LastIndexOf("]")
+            if start >= 0 && endIdx > start then
+                response.Substring(start, endIdx - start + 1)
             else
-                [| langStr |]
+                "[]"
 
-        if args.LanguagesJson then
-            // Output as JSON array
-            let jsonArray = sprintf "[%s]" (languages |> Array.map (sprintf "\"%s\"") |> String.concat ",")
-            printfn "%s" jsonArray
+    let languages =
+        if langStr.StartsWith("[") && langStr.EndsWith("]") then
+            langStr.Substring(1, langStr.Length - 2).Split(',')
+            |> Array.map (fun s -> s.Trim().Trim('"'))
+            |> Array.filter (fun s -> not (String.IsNullOrEmpty(s)))
         else
-            // Output one language per line
-            for lang in languages do
-                printfn "%s" lang
-    | None ->
-        // Fallback: try to extract from raw JSON using regex
-        ()
+            [| langStr |]
+
+    if args.LanguagesJson then
+        // Output as JSON array
+        let jsonArray = sprintf "[%s]" (languages |> Array.map (sprintf "\"%s\"") |> String.concat ",")
+        printfn "%s" jsonArray
+    else
+        // Output one language per line
+        for lang in languages do
+            printfn "%s" lang
 
 let cmdImage (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey

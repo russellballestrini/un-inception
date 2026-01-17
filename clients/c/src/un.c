@@ -47,6 +47,7 @@
 #define LARGE_UPLOAD_WARN_SIZE (1024L * 1024 * 1024) // Warn if total > 1GB
 #define MAX_ENV_VARS 256  // LXC limit is typically higher
 #define MAX_ENV_CONTENT_SIZE (64 * 1024)  // 64KB max env vault size
+#define LANGUAGES_CACHE_TTL 3600  // 1 hour cache for languages list
 
 // ============================================================================
 // SHA-256 Implementation (for HMAC-SHA256)
@@ -1834,8 +1835,155 @@ static int list_sessions(const UnsandboxCredentials *creds) {
     return 0;
 }
 
+// Get path to languages cache file (~/.unsandbox/languages.json)
+static char* get_languages_cache_path(void) {
+    const char *home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) home = pw->pw_dir;
+    }
+    if (!home) return NULL;
+
+    char *path = malloc(strlen(home) + 32);
+    if (!path) return NULL;
+    sprintf(path, "%s/.unsandbox/languages.json", home);
+    return path;
+}
+
+// Load languages from cache if valid (< 1 hour old)
+// Returns JSON string with languages array, or NULL if cache invalid/missing
+static char* load_languages_cache(void) {
+    char *cache_path = get_languages_cache_path();
+    if (!cache_path) return NULL;
+
+    struct stat st;
+    if (stat(cache_path, &st) != 0) {
+        free(cache_path);
+        return NULL;
+    }
+
+    // Check if cache is fresh (< 1 hour old)
+    time_t now = time(NULL);
+    if (now - st.st_mtime >= LANGUAGES_CACHE_TTL) {
+        free(cache_path);
+        return NULL;
+    }
+
+    FILE *f = fopen(cache_path, "r");
+    free(cache_path);
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (size <= 0 || size > 1024 * 1024) {  // Sanity check: max 1MB
+        fclose(f);
+        return NULL;
+    }
+
+    char *data = malloc(size + 1);
+    if (!data) {
+        fclose(f);
+        return NULL;
+    }
+
+    size_t read = fread(data, 1, size, f);
+    fclose(f);
+    data[read] = '\0';
+
+    // Verify it contains languages array
+    if (!strstr(data, "\"languages\"")) {
+        free(data);
+        return NULL;
+    }
+
+    return data;
+}
+
+// Save languages to cache
+static void save_languages_cache(const char *json_response) {
+    if (!json_response) return;
+
+    char *cache_path = get_languages_cache_path();
+    if (!cache_path) return;
+
+    // Ensure ~/.unsandbox directory exists
+    char *dir = strdup(cache_path);
+    if (dir) {
+        char *last_slash = strrchr(dir, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            mkdir(dir, 0700);
+        }
+        free(dir);
+    }
+
+    FILE *f = fopen(cache_path, "w");
+    free(cache_path);
+    if (!f) return;
+
+    // Extract just the languages array if present, wrap in standard format
+    const char *langs_start = strstr(json_response, "\"languages\":[");
+    if (langs_start) {
+        const char *arr_start = strchr(langs_start, '[');
+        const char *arr_end = strchr(arr_start, ']');
+        if (arr_start && arr_end) {
+            fprintf(f, "{\"languages\":%.*s,\"timestamp\":%ld}",
+                    (int)(arr_end - arr_start + 1), arr_start, (long)time(NULL));
+        }
+    } else {
+        // Try to find raw array
+        const char *arr_start = strchr(json_response, '[');
+        const char *arr_end = arr_start ? strchr(arr_start, ']') : NULL;
+        if (arr_start && arr_end) {
+            fprintf(f, "{\"languages\":%.*s,\"timestamp\":%ld}",
+                    (int)(arr_end - arr_start + 1), arr_start, (long)time(NULL));
+        }
+    }
+
+    fclose(f);
+}
+
 // List supported languages (CLI helper)
 static int list_languages_cli(const UnsandboxCredentials *creds, int json_output) {
+    // Try cache first
+    char *cached = load_languages_cache();
+    if (cached) {
+        const char *langs_start = strstr(cached, "\"languages\":[");
+        if (!langs_start) langs_start = strchr(cached, '[');
+
+        if (langs_start) {
+            const char *arr_start = strchr(langs_start, '[');
+            if (arr_start) {
+                if (json_output) {
+                    const char *arr_end = strchr(arr_start, ']');
+                    if (arr_end) {
+                        printf("%.*s\n", (int)(arr_end - arr_start + 1), arr_start);
+                    }
+                } else {
+                    const char *p = arr_start + 1;
+                    while (*p && *p != ']') {
+                        if (*p == '"') {
+                            p++;
+                            const char *end = strchr(p, '"');
+                            if (end) {
+                                printf("%.*s\n", (int)(end - p), p);
+                                p = end + 1;
+                            }
+                        } else {
+                            p++;
+                        }
+                    }
+                }
+                free(cached);
+                return 0;
+            }
+        }
+        free(cached);
+    }
+
+    // Cache miss or invalid - fetch from API
     CURL *curl = curl_easy_init();
     if (!curl) return 1;
 
@@ -1910,6 +2058,9 @@ static int list_languages_cli(const UnsandboxCredentials *creds, int json_output
             }
         }
     }
+
+    // Save to cache for future use
+    save_languages_cache(response.data);
 
     free(response.data);
     return 0;

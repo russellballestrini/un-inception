@@ -58,6 +58,7 @@ import * as crypto from 'crypto';
 
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
+const LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";
@@ -405,6 +406,43 @@ function readEnvFile(filepath: string): string {
   } catch (e) {
     console.error(`${RED}Error: Env file not found: ${filepath}${RESET}`);
     process.exit(1);
+  }
+}
+
+function getLanguagesCachePath(): string {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+  return path.join(homeDir, '.unsandbox', 'languages.json');
+}
+
+function loadLanguagesCache(): string[] | null {
+  try {
+    const cachePath = getLanguagesCachePath();
+    if (!fs.existsSync(cachePath)) {
+      return null;
+    }
+    const stat = fs.statSync(cachePath);
+    const ageSeconds = (Date.now() - stat.mtimeMs) / 1000;
+    if (ageSeconds >= LANGUAGES_CACHE_TTL) {
+      return null;
+    }
+    const data = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+    return data.languages || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveLanguagesCache(languages: string[]): void {
+  try {
+    const cachePath = getLanguagesCachePath();
+    const cacheDir = path.dirname(cachePath);
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    }
+    const data = { languages: languages, timestamp: Math.floor(Date.now() / 1000) };
+    fs.writeFileSync(cachePath, JSON.stringify(data));
+  } catch (e) {
+    // Cache failures are non-fatal
   }
 }
 
@@ -803,8 +841,15 @@ async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> 
 
 async function cmdLanguages(args: Args): Promise<void> {
   const keys = getApiKeys(args.apiKey);
-  const result = await apiRequest("/languages", "GET", null, keys);
-  const langs = result.languages || [];
+
+  // Try cache first
+  let langs = loadLanguagesCache();
+  if (!langs) {
+    const result = await apiRequest("/languages", "GET", null, keys);
+    langs = result.languages || [];
+    // Save to cache
+    saveLanguagesCache(langs);
+  }
 
   if (args.jsonOutput) {
     // JSON array output

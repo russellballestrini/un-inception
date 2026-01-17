@@ -65,6 +65,8 @@
 
 (def portal-base "https://unsandbox.com")
 
+(def languages-cache-ttl 3600) ;; 1 hour in seconds
+
 (def ext-map
   {".hs" "haskell" ".ml" "ocaml" ".clj" "clojure" ".scm" "scheme"
    ".lisp" "commonlisp" ".erl" "erlang" ".ex" "elixir" ".exs" "elixir"
@@ -518,9 +520,42 @@
   (let [api-key (get-api-key)]
     (validate-key api-key extend?)))
 
+(defn get-languages-cache-path []
+  (let [home (System/getenv "HOME")]
+    (str home "/.unsandbox/languages.json")))
+
+(defn load-languages-cache []
+  (let [cache-path (get-languages-cache-path)]
+    (when (.exists (io/file cache-path))
+      (try
+        (let [content (slurp cache-path)
+              timestamp (extract-field "timestamp" content)]
+          (when timestamp
+            (let [cache-time (Long/parseLong timestamp)
+                  now (quot (System/currentTimeMillis) 1000)]
+              (when (< (- now cache-time) languages-cache-ttl)
+                content))))
+        (catch Exception _ nil)))))
+
+(defn save-languages-cache [languages-json]
+  (let [cache-path (get-languages-cache-path)
+        cache-dir (.getParent (io/file cache-path))]
+    (.mkdirs (io/file cache-dir))
+    (let [timestamp (quot (System/currentTimeMillis) 1000)
+          cache-content (str "{\"languages\":" languages-json ",\"timestamp\":" timestamp "}")]
+      (spit cache-path cache-content))))
+
 (defn languages-command [json-output?]
   (let [api-key (get-api-key)
-        response (curl-get api-key "/languages")]
+        ;; Try cache first
+        cached (load-languages-cache)
+        response (if cached
+                   cached
+                   (let [resp (curl-get api-key "/languages")]
+                     ;; Extract and cache the languages array
+                     (when-let [match (re-find #"\"languages\":\s*\[([^\]]*)\]" resp)]
+                       (save-languages-cache (str "[" (second match) "]")))
+                     resp))]
     (if json-output?
       ;; Extract language names and output as JSON array
       (let [langs (re-seq #"\"name\":\"([^\"]+)\"" response)

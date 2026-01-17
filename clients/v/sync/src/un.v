@@ -48,6 +48,7 @@ import os
 const api_base = 'https://api.unsandbox.com'
 const portal_base = 'https://unsandbox.com'
 const max_env_content_size = 65536
+const languages_cache_ttl = 3600  // 1 hour in seconds
 const blue = '\x1b[34m'
 const red = '\x1b[31m'
 const green = '\x1b[32m'
@@ -687,55 +688,163 @@ fn cmd_image(list bool, info string, delete string, lock string, unlock string, 
 	exit(1)
 }
 
+fn get_languages_cache_path() string {
+	home := os.getenv('HOME')
+	cache_dir := '${home}/.unsandbox'
+	if !os.exists(cache_dir) {
+		os.mkdir(cache_dir) or {}
+	}
+	return '${cache_dir}/languages.json'
+}
+
+fn get_cached_languages() ?[]string {
+	cache_path := get_languages_cache_path()
+	if !os.exists(cache_path) {
+		return none
+	}
+
+	content := os.read_file(cache_path) or { return none }
+
+	// Extract timestamp
+	timestamp_str := extract_json_string(content, 'timestamp')
+	if timestamp_str == '' {
+		return none
+	}
+
+	// Parse timestamp (it's stored as a number, not a string)
+	// Look for "timestamp": followed by digits
+	ts_search := '"timestamp":'
+	ts_idx := content.index(ts_search) or { return none }
+	ts_start := ts_idx + ts_search.len
+	mut ts_end := ts_start
+	for ts_end < content.len && (content[ts_end].is_digit() || content[ts_end] == ` `) {
+		ts_end++
+	}
+	timestamp_num := content[ts_start..ts_end].trim_space()
+	cache_time := timestamp_num.i64()
+
+	// Get current time
+	current_time_cmd := 'date +%s'
+	current_time_result := os.execute(current_time_cmd)
+	current_time := current_time_result.output.trim_space().i64()
+
+	// Check if cache is still valid
+	if current_time - cache_time >= languages_cache_ttl {
+		return none
+	}
+
+	// Extract languages array
+	start_idx := content.index('"languages":[') or { return none }
+	arr_start := content.index_after('[', start_idx)
+	if arr_start < 0 {
+		return none
+	}
+	arr_end := content.index_after(']', arr_start)
+	if arr_end < 0 {
+		return none
+	}
+
+	arr_content := content[arr_start + 1..arr_end]
+	mut languages := []string{}
+	for item in arr_content.split(',') {
+		lang := item.trim_space().trim('"')
+		if lang.len > 0 {
+			languages << lang
+		}
+	}
+
+	return languages
+}
+
+fn save_languages_cache(languages []string) {
+	cache_path := get_languages_cache_path()
+
+	// Get current timestamp
+	timestamp_cmd := 'date +%s'
+	timestamp_result := os.execute(timestamp_cmd)
+	timestamp := timestamp_result.output.trim_space()
+
+	// Build JSON array
+	mut lang_json := '['
+	for i, lang in languages {
+		if i > 0 {
+			lang_json += ','
+		}
+		lang_json += '"${lang}"'
+	}
+	lang_json += ']'
+
+	cache_content := '{"languages":${lang_json},"timestamp":${timestamp}}'
+	os.write_file(cache_path, cache_content) or {}
+}
+
 fn cmd_languages(json_output bool, api_key string) {
+	// Check cache first
+	cached := get_cached_languages()
+
+	if cached != none {
+		languages := cached or { []string{} }
+		if json_output {
+			mut lang_json := '['
+			for i, lang in languages {
+				if i > 0 {
+					lang_json += ','
+				}
+				lang_json += '"${lang}"'
+			}
+			lang_json += ']'
+			println(lang_json)
+		} else {
+			for lang in languages {
+				println(lang)
+			}
+		}
+		return
+	}
+
+	// Fetch from API
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
 	cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/languages:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/languages' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
 	result := exec_curl(cmd)
 
+	// Parse and cache the languages
+	start_idx := result.index('"languages":[') or {
+		println(result)
+		return
+	}
+	arr_start := result.index_after('[', start_idx)
+	if arr_start < 0 {
+		println(result)
+		return
+	}
+	arr_end := result.index_after(']', arr_start)
+	if arr_end < 0 {
+		println(result)
+		return
+	}
+
+	// Extract languages for caching
+	arr_content := result[arr_start + 1..arr_end]
+	mut languages := []string{}
+	for item in arr_content.split(',') {
+		lang := item.trim_space().trim('"')
+		if lang.len > 0 {
+			languages << lang
+		}
+	}
+
+	// Save to cache
+	if languages.len > 0 {
+		save_languages_cache(languages)
+	}
+
 	if json_output {
-		// Extract languages array and print as JSON
-		// Find the languages array in the response
-		start_idx := result.index('"languages":[') or {
-			println(result)
-			return
-		}
-		arr_start := result.index_after('[', start_idx)
-		if arr_start < 0 {
-			println(result)
-			return
-		}
-		arr_end := result.index_after(']', arr_start)
-		if arr_end < 0 {
-			println(result)
-			return
-		}
 		println(result[arr_start..arr_end + 1])
 	} else {
-		// Parse languages array and print one per line
-		start_idx := result.index('"languages":[') or {
-			println(result)
-			return
-		}
-		arr_start := result.index_after('[', start_idx)
-		if arr_start < 0 {
-			println(result)
-			return
-		}
-		arr_end := result.index_after(']', arr_start)
-		if arr_end < 0 {
-			println(result)
-			return
-		}
-		// Extract array content and parse
-		arr_content := result[arr_start + 1..arr_end]
-		// Split by comma and extract language names
-		for item in arr_content.split(',') {
-			lang := item.trim_space().trim('"')
-			if lang.len > 0 {
-				println(lang)
-			}
+		for lang in languages {
+			println(lang)
 		}
 	}
 }

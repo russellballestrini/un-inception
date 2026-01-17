@@ -73,6 +73,7 @@ const time = std.time;
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
 const MAX_ENV_CONTENT_SIZE: usize = 65536;
+const LANGUAGES_CACHE_TTL: i64 = 3600; // 1 hour in seconds
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const YELLOW = "\x1b[33m";
@@ -733,22 +734,90 @@ pub fn main() !u8 {
             }
         }
 
-        // Fetch languages from API
-        const json_file = "/tmp/unsandbox_languages.json";
-        const auth_headers = try buildAuthCmd(allocator, "GET", "/languages", "", public_key, secret_key);
-        defer allocator.free(auth_headers);
-        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/languages' {s} -o {s}", .{ API_BASE, auth_headers, json_file });
-        defer allocator.free(cmd);
-        _ = std.c.system(cmd.ptr);
+        // Get cache path (~/.unsandbox/languages.json)
+        const home_env = std.process.getEnvVarOwned(allocator, "HOME") catch try allocator.dupe(u8, "/tmp");
+        defer allocator.free(home_env);
+        const cache_dir = try std.fmt.allocPrint(allocator, "{s}/.unsandbox", .{home_env});
+        defer allocator.free(cache_dir);
+        const cache_file = try std.fmt.allocPrint(allocator, "{s}/languages.json", .{cache_dir});
+        defer allocator.free(cache_file);
 
-        // Read the JSON response
-        const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
-            std.debug.print("{s}Error reading languages response: {}{s}\n", .{ RED, err, RESET });
-            std.fs.cwd().deleteFile(json_file) catch {};
-            return 1;
+        // Ensure cache directory exists
+        fs.cwd().makeDir(cache_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => {},
         };
-        defer allocator.free(json_content);
-        std.fs.cwd().deleteFile(json_file) catch {};
+
+        // Check cache first
+        var use_cache = false;
+        const cache_content = fs.cwd().readFileAlloc(allocator, cache_file, 1024 * 1024) catch null;
+        defer if (cache_content) |cc| allocator.free(cc);
+
+        if (cache_content) |cc| {
+            // Check timestamp
+            const ts_prefix = "\"timestamp\":";
+            if (mem.indexOf(u8, cc, ts_prefix)) |ts_start_idx| {
+                const ts_value_start = ts_start_idx + ts_prefix.len;
+                var ts_value_end = ts_value_start;
+                while (ts_value_end < cc.len and (cc[ts_value_end] >= '0' and cc[ts_value_end] <= '9')) {
+                    ts_value_end += 1;
+                }
+                if (ts_value_end > ts_value_start) {
+                    const ts_str = cc[ts_value_start..ts_value_end];
+                    const cache_timestamp = std.fmt.parseInt(i64, ts_str, 10) catch 0;
+                    const current_timestamp = std.time.timestamp();
+                    if (current_timestamp - cache_timestamp < LANGUAGES_CACHE_TTL) {
+                        use_cache = true;
+                    }
+                }
+            }
+        }
+
+        var json_content: []const u8 = undefined;
+        var json_content_owned = false;
+
+        if (use_cache) {
+            json_content = cache_content.?;
+        } else {
+            // Fetch languages from API
+            const json_file = "/tmp/unsandbox_languages_tmp.json";
+            const auth_headers = try buildAuthCmd(allocator, "GET", "/languages", "", public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/languages' {s} -o {s}", .{ API_BASE, auth_headers, json_file });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+
+            // Read the JSON response
+            const api_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
+                std.debug.print("{s}Error reading languages response: {}{s}\n", .{ RED, err, RESET });
+                std.fs.cwd().deleteFile(json_file) catch {};
+                return 1;
+            };
+            json_content = api_content;
+            json_content_owned = true;
+            std.fs.cwd().deleteFile(json_file) catch {};
+
+            // Save to cache with timestamp
+            const arr_prefix = "\"languages\":[";
+            if (mem.indexOf(u8, api_content, arr_prefix)) |start_idx| {
+                const arr_start = start_idx + arr_prefix.len - 1; // Include the '['
+                if (mem.indexOfPos(u8, api_content, arr_start, "]")) |end_idx| {
+                    const languages_array = api_content[arr_start .. end_idx + 1];
+                    const current_ts = std.time.timestamp();
+                    const cache_data = try std.fmt.allocPrint(allocator, "{{\"languages\":{s},\"timestamp\":{d}}}", .{ languages_array, current_ts });
+                    defer allocator.free(cache_data);
+
+                    // Write cache file
+                    const cache_file_handle = fs.cwd().createFile(cache_file, .{}) catch null;
+                    if (cache_file_handle) |fh| {
+                        fh.writeAll(cache_data) catch {};
+                        fh.close();
+                    }
+                }
+            }
+        }
+
+        defer if (json_content_owned) allocator.free(json_content);
 
         if (json_output) {
             // Find and print just the languages array

@@ -44,6 +44,7 @@
 
 $API_BASE = "https://api.unsandbox.com"
 $PORTAL_BASE = "https://unsandbox.com"
+$LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
 
 $EXT_MAP = @{
     ".ps1" = "powershell"; ".py" = "python"; ".js" = "javascript"
@@ -398,13 +399,69 @@ function Invoke-Session {
     $result | ConvertTo-Json -Depth 5
 }
 
+function Get-LanguagesCachePath {
+    $cacheDir = Join-Path $env:HOME ".unsandbox"
+    if (-not (Test-Path $cacheDir)) {
+        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+    }
+    return Join-Path $cacheDir "languages.json"
+}
+
+function Get-CachedLanguages {
+    $cachePath = Get-LanguagesCachePath
+    if (-not (Test-Path $cachePath)) {
+        return $null
+    }
+
+    try {
+        $cacheContent = Get-Content -Raw $cachePath | ConvertFrom-Json
+        $currentTime = [int][double]::Parse((Get-Date -UFormat %s))
+
+        if ($cacheContent.timestamp -and ($currentTime - $cacheContent.timestamp) -lt $LANGUAGES_CACHE_TTL) {
+            return $cacheContent.languages
+        }
+    } catch {
+        # Cache is invalid, return null
+    }
+    return $null
+}
+
+function Save-LanguagesCache {
+    param($Languages)
+
+    $cachePath = Get-LanguagesCachePath
+    $timestamp = [int][double]::Parse((Get-Date -UFormat %s))
+
+    $cacheData = @{
+        languages = $Languages
+        timestamp = $timestamp
+    }
+
+    try {
+        $cacheData | ConvertTo-Json -Compress | Set-Content -Path $cachePath
+    } catch {
+        # Silently fail if we can't write cache
+    }
+}
+
 function Invoke-Languages {
     param($Args)
 
     $jsonOutput = $Args -contains "--json"
 
-    $result = Invoke-Api -Endpoint "/languages"
-    $languages = $result.languages
+    # Check cache first
+    $languages = Get-CachedLanguages
+
+    if (-not $languages) {
+        # Fetch from API
+        $result = Invoke-Api -Endpoint "/languages"
+        $languages = $result.languages
+
+        # Save to cache
+        if ($languages) {
+            Save-LanguagesCache -Languages $languages
+        }
+    }
 
     if ($jsonOutput) {
         # Output as JSON array

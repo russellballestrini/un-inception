@@ -65,12 +65,16 @@ import Data.List (isPrefixOf, intercalate)
 import Data.Char (isDigit, ord)
 import Text.Printf (printf)
 import Control.Monad (when, unless, forM_)
+import Control.Exception (try, catch, IOError)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Base64 as B64
 import Crypto.Hash.SHA256 (hmac)
 import Numeric (showHex)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime)
+import Data.Time.Clock (diffUTCTime)
+import qualified Data.Time.Clock
+import qualified System.Posix.Files
 
 -- API constants
 apiBase :: String
@@ -78,6 +82,9 @@ apiBase = "https://api.unsandbox.com"
 
 portalBase :: String
 portalBase = "https://unsandbox.com"
+
+languagesCacheTtl :: Int
+languagesCacheTtl = 3600  -- 1 hour in seconds
 
 -- ANSI colors
 blue, red, green, yellow, reset :: String
@@ -986,23 +993,79 @@ imageCommand opts = do
       putStrLn $ green ++ "Image cloned" ++ reset
       putStrLn stdout
 
+-- Languages cache functions
+getLanguagesCachePath :: IO FilePath
+getLanguagesCachePath = do
+  home <- lookupEnv "HOME"
+  let homeDir = maybe "." id home
+  return $ homeDir ++ "/.unsandbox/languages.json"
+
+loadLanguagesCache :: IO (Maybe [String])
+loadLanguagesCache = do
+  cachePath <- getLanguagesCachePath
+  exists <- doesFileExist cachePath
+  if not exists
+    then return Nothing
+    else do
+      -- Check if cache is fresh (< 1 hour old)
+      modTime <- getModificationTime cachePath
+      now <- getCurrentTime
+      let ageSeconds = floor $ diffUTCTime now modTime
+      if ageSeconds >= languagesCacheTtl
+        then return Nothing
+        else do
+          content <- readFile cachePath
+          return $ extractJsonArray content "languages"
+  where
+    doesFileExist path = do
+      result <- try (readFile path) :: IO (Either IOError String)
+      case result of
+        Left _ -> return False
+        Right _ -> return True
+    getModificationTime path = do
+      status <- System.Posix.Files.getFileStatus path
+      return $ posixSecondsToUTCTime $ realToFrac $ modificationTime status
+    getCurrentTime = Data.Time.Clock.getCurrentTime
+
+saveLanguagesCache :: [String] -> IO ()
+saveLanguagesCache languages = do
+  cachePath <- getLanguagesCachePath
+  let cacheDir = takeDirectory cachePath
+  -- Create directory if needed
+  createDirectoryIfMissing True cacheDir
+  now <- getPOSIXTime
+  let timestamp = show (floor now :: Integer)
+  let langsJson = "[" ++ intercalate "," (map (\l -> "\"" ++ l ++ "\"") languages) ++ "]"
+  let content = "{\"languages\":" ++ langsJson ++ ",\"timestamp\":" ++ timestamp ++ "}"
+  writeFile cachePath content
+  `catch` (\(_ :: IOError) -> return ())  -- Cache failures are non-fatal
+  where
+    takeDirectory path = reverse $ dropWhile (/= '/') $ reverse path
+
 -- Languages command
 languagesCommand :: LanguagesOpts -> IO ()
 languagesCommand opts = do
   apiKey <- getApiKey
-  (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/languages"
+
+  -- Try cache first
+  cached <- loadLanguagesCache
+  langs <- case cached of
+    Just languages -> return languages
+    Nothing -> do
+      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/languages"
+      let languages = maybe [] id (extractJsonArray stdout "languages")
+      -- Save to cache
+      when (not (null languages)) $ saveLanguagesCache languages
+      return languages
+
   let jsonOutput = langJson opts
   if jsonOutput
     then do
       -- Extract languages array and print as JSON
-      case extractJsonArray stdout "languages" of
-        Just langs -> putStrLn $ "[" ++ intercalate "," (map (\l -> "\"" ++ l ++ "\"") langs) ++ "]"
-        Nothing -> putStrLn stdout
+      putStrLn $ "[" ++ intercalate "," (map (\l -> "\"" ++ l ++ "\"") langs) ++ "]"
     else do
       -- Print each language on its own line
-      case extractJsonArray stdout "languages" of
-        Just langs -> mapM_ putStrLn langs
-        Nothing -> putStrLn stdout
+      mapM_ putStrLn langs
 
 -- Extract JSON array of strings from response
 extractJsonArray :: String -> String -> Maybe [String]

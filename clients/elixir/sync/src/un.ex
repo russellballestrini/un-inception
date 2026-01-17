@@ -59,6 +59,7 @@ defmodule Un do
   @reset "\e[0m"
 
   @portal_base "https://unsandbox.com"
+  @languages_cache_ttl 3600
 
   @ext_map %{
     ".ex" => "elixir", ".exs" => "elixir", ".erl" => "erlang",
@@ -567,13 +568,103 @@ defmodule Un do
     System.halt(1)
   end
 
+  # Languages cache functions
+  defp get_languages_cache_path do
+    home = System.get_env("HOME") || "."
+    Path.join([home, ".unsandbox", "languages.json"])
+  end
+
+  defp load_languages_cache do
+    cache_path = get_languages_cache_path()
+
+    case File.read(cache_path) do
+      {:ok, content} ->
+        case Jason.decode(content) do
+          {:ok, data} ->
+            timestamp = Map.get(data, "timestamp", 0)
+            now = System.system_time(:second)
+
+            if now - timestamp < @languages_cache_ttl do
+              Map.get(data, "languages", [])
+            else
+              nil
+            end
+
+          {:error, _} ->
+            # Fallback to manual JSON parsing for environments without Jason
+            timestamp = extract_json_number(content, "timestamp")
+            now = System.system_time(:second)
+
+            if timestamp != 0 and now - timestamp < @languages_cache_ttl do
+              extract_json_array(content, "languages")
+            else
+              nil
+            end
+        end
+
+      {:error, _} ->
+        nil
+    end
+  rescue
+    UndefinedFunctionError ->
+      # Jason not available, use manual parsing
+      cache_path = get_languages_cache_path()
+
+      case File.read(cache_path) do
+        {:ok, content} ->
+          timestamp = extract_json_number(content, "timestamp")
+          now = System.system_time(:second)
+
+          if timestamp != 0 and now - timestamp < @languages_cache_ttl do
+            extract_json_array(content, "languages")
+          else
+            nil
+          end
+
+        {:error, _} ->
+          nil
+      end
+  end
+
+  defp save_languages_cache(languages) do
+    cache_path = get_languages_cache_path()
+    cache_dir = Path.dirname(cache_path)
+
+    # Ensure directory exists
+    File.mkdir_p(cache_dir)
+
+    timestamp = System.system_time(:second)
+    languages_json = "[" <> Enum.map_join(languages, ",", &("\"#{&1}\"")) <> "]"
+    json = "{\"languages\":#{languages_json},\"timestamp\":#{timestamp}}"
+
+    File.write(cache_path, json)
+  end
+
+  defp extract_json_number(json_str, key) do
+    case Regex.run(~r/"#{key}"\s*:\s*(\d+)/, json_str) do
+      [_, value] -> String.to_integer(value)
+      _ -> 0
+    end
+  end
+
   # Languages command
   defp languages_command(args) do
-    api_key = get_api_key()
     json_output = "--json" in args
 
-    response = curl_get(api_key, "/languages")
-    languages = extract_json_array(response, "languages")
+    # Try to load from cache first
+    languages =
+      case load_languages_cache() do
+        nil ->
+          # Cache miss or expired, fetch from API
+          api_key = get_api_key()
+          response = curl_get(api_key, "/languages")
+          langs = extract_json_array(response, "languages")
+          save_languages_cache(langs)
+          langs
+
+        cached_languages ->
+          cached_languages
+      end
 
     if json_output do
       # Output as JSON array

@@ -70,6 +70,7 @@ const RESET = "\033[0m"
 
 const API_BASE = "https://api.unsandbox.com"
 const PORTAL_BASE = "https://unsandbox.com"
+const LANGUAGES_CACHE_TTL = 3600
 
 function detect_language(filename::String)::String
     ext = lowercase(match(r"\.[^.]+$", filename).match)
@@ -762,11 +763,65 @@ function validate_key(api_key::String)
     end
 end
 
-function cmd_languages(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+function get_languages_cache_path()::String
+    home = get(ENV, "HOME", ".")
+    return joinpath(home, ".unsandbox", "languages.json")
+end
 
-    result = api_request("/languages", public_key, secret_key)
-    langs = get(result, "languages", [])
+function load_languages_cache()::Union{Vector{String}, Nothing}
+    cache_path = get_languages_cache_path()
+
+    if !isfile(cache_path)
+        return nothing
+    end
+
+    try
+        content = read(cache_path, String)
+        data = JSON.parse(content)
+        timestamp = get(data, "timestamp", 0)
+        now = Int64(floor(time()))
+
+        if now - timestamp < LANGUAGES_CACHE_TTL
+            langs = get(data, "languages", [])
+            return [string(l) for l in langs]
+        else
+            return nothing
+        end
+    catch
+        return nothing
+    end
+end
+
+function save_languages_cache(languages::Vector)
+    cache_path = get_languages_cache_path()
+    cache_dir = dirname(cache_path)
+
+    # Ensure directory exists
+    mkpath(cache_dir)
+
+    timestamp = Int64(floor(time()))
+    data = Dict("languages" => languages, "timestamp" => timestamp)
+
+    try
+        open(cache_path, "w") do f
+            write(f, JSON.json(data))
+        end
+    catch
+        # Ignore write errors
+    end
+end
+
+function cmd_languages(args)
+    # Try to load from cache first
+    langs = load_languages_cache()
+
+    if langs === nothing
+        # Cache miss or expired, fetch from API
+        (public_key, secret_key) = get_api_keys(args["api-key"])
+        result = api_request("/languages", public_key, secret_key)
+        langs = get(result, "languages", [])
+        save_languages_cache(langs)
+    end
 
     if args["json"]
         println(JSON.json(langs))

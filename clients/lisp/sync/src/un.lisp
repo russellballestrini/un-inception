@@ -55,6 +55,8 @@
 
 (defparameter *portal-base* "https://unsandbox.com")
 
+(defparameter *languages-cache-ttl* 3600) ;; 1 hour in seconds
+
 (defparameter *ext-map*
   '((".hs" . "haskell") (".ml" . "ocaml") (".clj" . "clojure")
     (".scm" . "scheme") (".lisp" . "commonlisp") (".erl" . "erlang")
@@ -555,10 +557,52 @@
                        (uiop:quit 1))))))
     (nreverse files)))
 
+(defun get-languages-cache-path ()
+  "Get the path to the languages cache file"
+  (let ((home (uiop:getenv "HOME")))
+    (format nil "~a/.unsandbox/languages.json" home)))
+
+(defun load-languages-cache ()
+  "Load languages from cache if valid"
+  (let ((cache-path (get-languages-cache-path)))
+    (when (probe-file cache-path)
+      (handler-case
+          (let* ((content (read-file cache-path))
+                 (timestamp-str (parse-json-field content "timestamp")))
+            (when timestamp-str
+              (let* ((cache-time (parse-integer timestamp-str))
+                     (now (get-universal-time)))
+                (when (< (- now cache-time) *languages-cache-ttl*)
+                  content))))
+        (error () nil)))))
+
+(defun save-languages-cache (languages-json)
+  "Save languages to cache"
+  (let* ((cache-path (get-languages-cache-path))
+         (cache-dir (directory-namestring cache-path)))
+    (ensure-directories-exist cache-path)
+    (let* ((timestamp (get-universal-time))
+           (cache-content (format nil "{\"languages\":~a,\"timestamp\":~a}" languages-json timestamp)))
+      (with-open-file (stream cache-path :direction :output :if-exists :supersede)
+        (write-string cache-content stream)))))
+
 (defun languages-cmd (json-output)
   "List available programming languages"
   (let* ((api-key (get-api-key))
-         (response (curl-get api-key "/languages"))
+         ;; Try cache first
+         (cached (load-languages-cache))
+         (response (if cached
+                       cached
+                       (let ((resp (curl-get api-key "/languages")))
+                         ;; Extract and cache the languages array
+                         (let ((start (search "\"languages\":[" resp)))
+                           (when start
+                             (let* ((array-start (+ start (length "\"languages\":")))
+                                    (array-end (position #\] resp :start array-start)))
+                               (when array-end
+                                 (let ((languages-json (subseq resp array-start (1+ array-end))))
+                                   (save-languages-cache languages-json))))))
+                         resp)))
          (languages-start (search "\"languages\":[" response)))
     (if json-output
         ;; JSON output - extract and print the languages array

@@ -561,23 +561,102 @@ build_spawn_json(Name, Ports) ->
     end,
     "{" ++ string:join(lists:reverse(Parts2), ",") ++ "}".
 
+%% Languages cache TTL (1 hour in seconds)
+-define(LANGUAGES_CACHE_TTL, 3600).
+
+%% Get languages cache path
+get_languages_cache_path() ->
+    Home = os:getenv("HOME"),
+    case Home of
+        false -> "/tmp/.unsandbox/languages.json";
+        _ -> Home ++ "/.unsandbox/languages.json"
+    end.
+
+%% Load languages from cache
+load_languages_cache() ->
+    CachePath = get_languages_cache_path(),
+    case file:read_file(CachePath) of
+        {ok, Bin} ->
+            Content = binary_to_list(Bin),
+            Timestamp = extract_json_number(Content, "timestamp"),
+            Now = erlang:system_time(second),
+            if
+                Timestamp > 0 andalso (Now - Timestamp) < ?LANGUAGES_CACHE_TTL ->
+                    extract_json_array(Content, "languages");
+                true ->
+                    undefined
+            end;
+        {error, _} ->
+            undefined
+    end.
+
+%% Save languages to cache
+save_languages_cache(Languages) ->
+    CachePath = get_languages_cache_path(),
+    CacheDir = filename:dirname(CachePath),
+    filelib:ensure_dir(CachePath),
+    file:make_dir(CacheDir),
+    Timestamp = erlang:system_time(second),
+    LanguagesJson = "[" ++ string:join(["\"" ++ L ++ "\"" || L <- Languages], ",") ++ "]",
+    Json = "{\"languages\":" ++ LanguagesJson ++ ",\"timestamp\":" ++ integer_to_list(Timestamp) ++ "}",
+    file:write_file(CachePath, Json).
+
+%% Extract JSON number field
+extract_json_number(Json, Field) ->
+    Pattern = "\"" ++ Field ++ "\":",
+    case string:str(Json, Pattern) of
+        0 -> 0;
+        Pos ->
+            Start = Pos + length(Pattern),
+            Rest = lists:nthtail(Start - 1, Json),
+            extract_number(Rest)
+    end.
+
+extract_number(Str) ->
+    extract_number(Str, []).
+
+extract_number([], Acc) ->
+    case Acc of
+        [] -> 0;
+        _ -> list_to_integer(lists:reverse(Acc))
+    end;
+extract_number([C | Rest], Acc) when C >= $0, C =< $9 ->
+    extract_number(Rest, [C | Acc]);
+extract_number(_, Acc) ->
+    case Acc of
+        [] -> 0;
+        _ -> list_to_integer(lists:reverse(Acc))
+    end.
+
 %% Languages command
 languages_command(Args) ->
-    ApiKey = get_api_key(),
-    Response = curl_get(ApiKey, "/languages"),
     JsonOutput = lists:member("--json", Args),
+
+    %% Try to load from cache first
+    Languages = case load_languages_cache() of
+        undefined ->
+            %% Cache miss or expired, fetch from API
+            ApiKey = get_api_key(),
+            Response = curl_get(ApiKey, "/languages"),
+            Langs = extract_json_array(Response, "languages"),
+            save_languages_cache(Langs),
+            Langs;
+        CachedLanguages ->
+            CachedLanguages
+    end,
+
     if
         JsonOutput ->
             %% Output raw JSON array
-            case extract_json_array(Response, "languages") of
+            case Languages of
                 [] -> io:format("[]~n");
-                Languages -> io:format("[~s]~n", [string:join(["\"" ++ L ++ "\"" || L <- Languages], ",")])
+                _ -> io:format("[~s]~n", [string:join(["\"" ++ L ++ "\"" || L <- Languages], ",")])
             end;
         true ->
             %% Output one language per line
-            case extract_json_array(Response, "languages") of
+            case Languages of
                 [] -> ok;
-                Languages -> [io:format("~s~n", [L]) || L <- Languages]
+                _ -> [io:format("~s~n", [L]) || L <- Languages]
             end
     end.
 

@@ -45,6 +45,8 @@
 BEGIN {
     API_BASE = "https://api.unsandbox.com"
     PORTAL_BASE = "https://unsandbox.com"
+    LANGUAGES_CACHE_TTL = 3600  # 1 hour cache TTL
+    LANGUAGES_CACHE_FILE = ENVIRON["HOME"] "/.unsandbox/languages.json"
 
     # Extension to language map
     split("py:python js:javascript ts:typescript rb:ruby php:php pl:perl lua:lua sh:bash go:go rs:rust c:c cpp:cpp java:java kt:kotlin cs:csharp fs:fsharp hs:haskell ml:ocaml clj:clojure scm:scheme lisp:commonlisp erl:erlang ex:elixir jl:julia r:r cr:crystal d:d nim:nim zig:zig v:v dart:dart groovy:groovy f90:fortran cob:cobol pro:prolog forth:forth tcl:tcl raku:raku m:objc awk:awk ps1:powershell", pairs, " ")
@@ -637,7 +639,66 @@ function cmd_key(do_extend) {
     validate_key(do_extend)
 }
 
-function languages_list(json_output    , timestamp, sig_headers, signature, sig_input, sig_cmd, line, response, i, lang) {
+function read_languages_cache(    cmd, line, cache_content, cache_timestamp, current_time) {
+    # Check if cache file exists and is valid
+    cmd = "cat '" LANGUAGES_CACHE_FILE "' 2>/dev/null"
+    cache_content = ""
+    while ((cmd | getline line) > 0) {
+        cache_content = cache_content line
+    }
+    close(cmd)
+
+    if (cache_content == "") return ""
+
+    # Extract timestamp from cache
+    if (match(cache_content, /"timestamp":([0-9]+)/, arr)) {
+        cache_timestamp = arr[1]
+        current_time = systime()
+        # Check if cache is still valid (within TTL)
+        if ((current_time - cache_timestamp) < LANGUAGES_CACHE_TTL) {
+            return cache_content
+        }
+    }
+    return ""
+}
+
+function write_languages_cache(languages_array    , cmd, cache_json, current_time) {
+    current_time = systime()
+    # Build cache JSON: {"languages": [...], "timestamp": unix_seconds}
+    cache_json = "{\"languages\":" languages_array ",\"timestamp\":" current_time "}"
+
+    # Ensure ~/.unsandbox directory exists
+    system("mkdir -p \"" ENVIRON["HOME"] "/.unsandbox\"")
+
+    # Write cache file
+    cmd = "cat > '" LANGUAGES_CACHE_FILE "'"
+    print cache_json | cmd
+    close(cmd)
+}
+
+function languages_list(json_output    , timestamp, sig_headers, signature, sig_input, sig_cmd, line, response, i, lang, cache_content, languages_array, content, first, m) {
+    # Try to read from cache first
+    cache_content = read_languages_cache()
+    if (cache_content != "") {
+        # Extract languages array from cache
+        if (match(cache_content, /"languages":(\[[^\]]*\])/, arr)) {
+            languages_array = arr[1]
+            if (json_output) {
+                print languages_array
+            } else {
+                # Parse and print one per line
+                content = languages_array
+                gsub(/[\[\]"]/, "", content)
+                n = split(content, langs, ",")
+                for (i = 1; i <= n; i++) {
+                    if (langs[i] != "") print langs[i]
+                }
+            }
+            return
+        }
+    }
+
+    # No valid cache, fetch from API
     get_api_keys()
     timestamp = systime()
     sig_headers = ""
@@ -655,32 +716,41 @@ function languages_list(json_output    , timestamp, sig_headers, signature, sig_
     }
     close(cmd)
 
+    # Build languages array for caching
+    languages_array = ""
+    if (match(response, /"languages":\[([^\]]*)\]/, arr)) {
+        # Parse out language names from the array
+        content = arr[1]
+        languages_array = "["
+        first = 1
+        while (match(content, /"name":"([^"]*)"/, m)) {
+            if (!first) languages_array = languages_array ","
+            languages_array = languages_array "\"" m[1] "\""
+            first = 0
+            content = substr(content, RSTART + RLENGTH)
+        }
+        languages_array = languages_array "]"
+
+        # Save to cache
+        write_languages_cache(languages_array)
+    }
+
     if (json_output) {
         # Output raw JSON array of language names
-        # Extract languages array and convert to simple array
-        if (match(response, /"languages":\[([^\]]*)\]/, arr)) {
-            # Parse out language names from the array
-            content = arr[1]
-            printf "["
-            first = 1
-            while (match(content, /"name":"([^"]*)"/, m)) {
-                if (!first) printf ","
-                printf "\"%s\"", m[1]
-                first = 0
-                content = substr(content, RSTART + RLENGTH)
-            }
-            printf "]\n"
+        if (languages_array != "") {
+            print languages_array
         } else {
             # Fallback: just print raw response
             print response
         }
     } else {
         # Output one language per line
-        if (match(response, /"languages":\[([^\]]*)\]/, arr)) {
-            content = arr[1]
-            while (match(content, /"name":"([^"]*)"/, m)) {
-                print m[1]
-                content = substr(content, RSTART + RLENGTH)
+        if (languages_array != "") {
+            content = languages_array
+            gsub(/[\[\]"]/, "", content)
+            n = split(content, langs, ",")
+            for (i = 1; i <= n; i++) {
+                if (langs[i] != "") print langs[i]
             }
         }
     }

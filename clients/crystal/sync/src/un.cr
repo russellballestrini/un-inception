@@ -70,10 +70,66 @@ RESET = "\033[0m"
 API_BASE = "https://api.unsandbox.com"
 PORTAL_BASE = "https://unsandbox.com"
 MAX_ENV_CONTENT_SIZE = 65536
+LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
 
 def detect_language(filename : String) : String
   ext = File.extname(filename).downcase
   EXT_MAP.fetch(ext, "unknown")
+end
+
+def get_languages_cache_path : String?
+  home = ENV["HOME"]?
+  return nil if home.nil? || home.empty?
+  File.join(home, ".unsandbox", "languages.json")
+end
+
+def load_languages_cache : String?
+  cache_path = get_languages_cache_path
+  return nil if cache_path.nil? || !File.exists?(cache_path)
+
+  begin
+    content = File.read(cache_path)
+    # Parse timestamp from JSON
+    parsed = JSON.parse(content)
+    cached_time = parsed["timestamp"]?.try(&.as_i64?)
+    return nil if cached_time.nil?
+
+    current_time = Time.utc.to_unix
+
+    # Check if cache is still valid (within TTL)
+    if current_time - cached_time < LANGUAGES_CACHE_TTL
+      return content
+    end
+  rescue
+    # Cache read failed, return nil to fetch fresh
+  end
+
+  nil
+end
+
+def save_languages_cache(response : JSON::Any)
+  cache_path = get_languages_cache_path
+  return if cache_path.nil?
+
+  begin
+    # Ensure directory exists
+    cache_dir = File.dirname(cache_path)
+    Dir.mkdir_p(cache_dir) unless Dir.exists?(cache_dir)
+
+    # Extract languages array from response
+    languages = response["languages"]?
+    return if languages.nil?
+
+    # Build cache JSON with timestamp
+    timestamp = Time.utc.to_unix
+    cache_data = {
+      "languages" => languages,
+      "timestamp" => timestamp
+    }
+    File.write(cache_path, cache_data.to_json)
+  rescue
+    # Cache write failed, ignore
+  end
 end
 
 def get_api_keys(args_key : String?) : {String, String?}
@@ -417,7 +473,20 @@ end
 def cmd_languages(args)
   public_key, secret_key = get_api_keys(args[:api_key]?)
 
-  result = api_request("/languages", public_key, secret_key)
+  # Try to load from cache first
+  cached_response = load_languages_cache
+  result : JSON::Any
+
+  if cached_response
+    result = JSON.parse(cached_response)
+  else
+    # Fetch from API
+    result = api_request("/languages", public_key, secret_key)
+
+    # Save to cache
+    save_languages_cache(result)
+  end
+
   languages = result["languages"]?.try(&.as_a?) || [] of JSON::Any
 
   if args[:json]?.as?(Bool)

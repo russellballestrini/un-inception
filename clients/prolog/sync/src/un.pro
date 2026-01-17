@@ -41,6 +41,12 @@
 
 % Constants
 portal_base('https://unsandbox.com').
+languages_cache_ttl(3600).  % 1 hour cache TTL
+
+% Get languages cache file path
+languages_cache_file(Path) :-
+    getenv('HOME', Home),
+    atomic_list_concat([Home, '/.unsandbox/languages.json'], Path).
 
 % Extension to language mapping
 ext_lang('.jl', 'julia').
@@ -342,21 +348,63 @@ validate_key(Extend) :-
     ),
     shell(Cmd, 0).
 
-% Languages command
-languages_command(JsonOutput) :-
-    get_public_key(PublicKey),
-    get_secret_key(SecretKey),
-    (   JsonOutput = true
-    ->  % Output as JSON array
-        format(atom(Cmd),
-            'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -c ".languages // []"',
-            [SecretKey, PublicKey])
-    ;   % Output one language per line
-        format(atom(Cmd),
-            'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".languages[]"',
-            [SecretKey, PublicKey])
+% Read languages cache
+read_languages_cache(Languages) :-
+    languages_cache_file(CacheFile),
+    exists_file(CacheFile),
+    languages_cache_ttl(TTL),
+    % Read cache file and check timestamp
+    format(atom(Cmd),
+        'CACHE=$(cat "~w" 2>/dev/null); if [ -n "$CACHE" ]; then TIMESTAMP=$(echo "$CACHE" | jq -r ".timestamp // 0"); CURRENT=$(date +%s); AGE=$((CURRENT - TIMESTAMP)); if [ $AGE -lt ~w ]; then echo "$CACHE" | jq -c ".languages // []"; fi; fi',
+        [CacheFile, TTL]),
+    setup_call_cleanup(
+        process_create(path(sh), ['-c', Cmd], [stdout(pipe(Out))]),
+        read_string(Out, _, Output),
+        close(Out)
     ),
+    Output \= '',
+    Output \= '\n',
+    Languages = Output.
+
+% Write languages cache
+write_languages_cache(LanguagesJson) :-
+    languages_cache_file(CacheFile),
+    getenv('HOME', Home),
+    atomic_list_concat([Home, '/.unsandbox'], CacheDir),
+    format(atom(MkdirCmd), 'mkdir -p "~w"', [CacheDir]),
+    shell(MkdirCmd, 0),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); echo \'\'\'\'{"languages":~w,"timestamp":\'\'\'\'$TIMESTAMP\'\'\'\'}\'\'\'\'> "~w"',
+        [LanguagesJson, CacheFile]),
     shell(Cmd, 0).
+
+% Languages command with caching
+languages_command(JsonOutput) :-
+    % Try to read from cache first
+    (   read_languages_cache(CachedLangs),
+        CachedLangs \= ''
+    ->  % Use cached data
+        (   JsonOutput = true
+        ->  format('~w~n', [CachedLangs])
+        ;   % Parse and print one per line
+            format(atom(Cmd), 'echo \'\'~w\'\' | jq -r ".[]"', [CachedLangs]),
+            shell(Cmd, 0)
+        )
+    ;   % No valid cache, fetch from API
+        get_public_key(PublicKey),
+        get_secret_key(SecretKey),
+        (   JsonOutput = true
+        ->  % Output as JSON array and cache
+            format(atom(Cmd),
+                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$LANGS"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
+                [SecretKey, PublicKey])
+        ;   % Output one language per line and cache
+            format(atom(Cmd),
+                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$RESP" | jq -r ".languages[]"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
+                [SecretKey, PublicKey])
+        ),
+        shell(Cmd, 0)
+    ).
 
 % Handle languages subcommand
 handle_languages(['--json'|_]) :- languages_command(true).

@@ -73,6 +73,7 @@ using namespace std;
 
 const string API_BASE = "https://api.unsandbox.com";
 const string PORTAL_BASE = "https://unsandbox.com";
+const int LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
 const string BLUE = "\033[34m";
 const string RED = "\033[31m";
 const string GREEN = "\033[32m";
@@ -207,6 +208,79 @@ string build_env_content(const vector<string>& envs, const string& env_file) {
         }
     }
     return parts.str();
+}
+
+string get_languages_cache_path() {
+    const char* home = getenv("HOME");
+    if (!home) home = ".";
+    return string(home) + "/.unsandbox/languages.json";
+}
+
+vector<string> load_languages_cache() {
+    vector<string> empty;
+    string cache_path = get_languages_cache_path();
+
+    struct stat st;
+    if (stat(cache_path.c_str(), &st) != 0) {
+        return empty;  // File doesn't exist
+    }
+
+    // Check if cache is fresh (< 1 hour old)
+    time_t now = time(nullptr);
+    if (now - st.st_mtime >= LANGUAGES_CACHE_TTL) {
+        return empty;  // Cache expired
+    }
+
+    string content = read_file(cache_path);
+    if (content.empty()) {
+        return empty;
+    }
+
+    // Parse languages from JSON {"languages": [...], "timestamp": ...}
+    vector<string> languages;
+    size_t pos = content.find("\"languages\":");
+    if (pos == string::npos) return empty;
+
+    pos = content.find('[', pos);
+    if (pos == string::npos) return empty;
+    pos++;
+
+    while (pos < content.length()) {
+        // Skip whitespace
+        while (pos < content.length() && (content[pos] == ' ' || content[pos] == '\n' || content[pos] == '\t')) pos++;
+        if (content[pos] == ']') break;
+        if (content[pos] == '"') {
+            pos++;
+            size_t end = content.find('"', pos);
+            if (end != string::npos) {
+                languages.push_back(content.substr(pos, end - pos));
+                pos = end + 1;
+            }
+        }
+        // Skip comma
+        while (pos < content.length() && (content[pos] == ',' || content[pos] == ' ' || content[pos] == '\n' || content[pos] == '\t')) pos++;
+    }
+
+    return languages;
+}
+
+void save_languages_cache(const vector<string>& languages) {
+    string cache_path = get_languages_cache_path();
+
+    // Create directory if needed
+    string dir = cache_path.substr(0, cache_path.rfind('/'));
+    mkdir(dir.c_str(), 0755);
+
+    ofstream f(cache_path);
+    if (!f) return;
+
+    f << "{\"languages\":[";
+    for (size_t i = 0; i < languages.size(); i++) {
+        if (i > 0) f << ",";
+        f << "\"" << languages[i] << "\"";
+    }
+    f << "],\"timestamp\":" << time(nullptr) << "}";
+    f.close();
 }
 
 string service_env_status(const string& service_id, const string& public_key, const string& secret_key) {
@@ -695,13 +769,16 @@ void cmd_service(const string& name, const string& ports, const string& type, co
 }
 
 void cmd_languages(bool json_output, const string& public_key, const string& secret_key) {
-    string auth_headers = build_auth_headers("GET", "/languages", "", public_key, secret_key);
-    string cmd = "curl -s -X GET '" + API_BASE + "/languages' " + auth_headers;
-    string result = exec_curl(cmd);
+    // Try cache first
+    vector<string> names = load_languages_cache();
 
-    if (json_output) {
-        // Extract language names and output as JSON array
-        vector<string> names;
+    if (names.empty()) {
+        // Fetch from API
+        string auth_headers = build_auth_headers("GET", "/languages", "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/languages' " + auth_headers;
+        string result = exec_curl(cmd);
+
+        // Extract language names from response
         size_t pos = 0;
         string search = "\"name\":\"";
         while ((pos = result.find(search, pos)) != string::npos) {
@@ -712,6 +789,14 @@ void cmd_languages(bool json_output, const string& public_key, const string& sec
                 pos = end;
             }
         }
+
+        // Save to cache
+        if (!names.empty()) {
+            save_languages_cache(names);
+        }
+    }
+
+    if (json_output) {
         cout << "[";
         for (size_t i = 0; i < names.size(); i++) {
             if (i > 0) cout << ",";
@@ -720,15 +805,8 @@ void cmd_languages(bool json_output, const string& public_key, const string& sec
         cout << "]" << endl;
     } else {
         // Output one language per line
-        size_t pos = 0;
-        string search = "\"name\":\"";
-        while ((pos = result.find(search, pos)) != string::npos) {
-            pos += search.length();
-            size_t end = result.find("\"", pos);
-            if (end != string::npos) {
-                cout << result.substr(pos, end - pos) << endl;
-                pos = end;
-            }
+        for (const auto& name : names) {
+            cout << name << endl;
         }
     }
 }

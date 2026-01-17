@@ -61,6 +61,7 @@ immutable string GREEN = "\033[32m";
 immutable string YELLOW = "\033[33m";
 immutable string RESET = "\033[0m";
 immutable size_t MAX_ENV_CONTENT_SIZE = 65536;
+immutable int LANGUAGES_CACHE_TTL = 3600; // 1 hour in seconds
 
 string detectLanguage(string filename) {
     string[string] langMap = [
@@ -128,6 +129,88 @@ string computeHmac(string secretKey, string message) {
 string getTimestamp() {
     import std.datetime.systime : Clock;
     return format("%d", Clock.currTime.toUnixTime());
+}
+
+string getLanguagesCachePath() {
+    string home = environment.get("HOME", "");
+    if (home.empty) return "";
+    return buildPath(home, ".unsandbox", "languages.json");
+}
+
+string loadLanguagesCache() {
+    import std.datetime.systime : Clock;
+    string cachePath = getLanguagesCachePath();
+    if (cachePath.empty || !exists(cachePath)) return "";
+
+    try {
+        string content = readText(cachePath);
+        // Parse timestamp from JSON
+        import std.algorithm : findSplitAfter;
+        auto tsSearch = content.findSplitAfter(`"timestamp":`);
+        if (tsSearch[0].length == 0) return "";
+
+        // Find the end of the number
+        string remaining = tsSearch[1];
+        size_t numEnd = 0;
+        while (numEnd < remaining.length && (remaining[numEnd] >= '0' && remaining[numEnd] <= '9')) {
+            numEnd++;
+        }
+        if (numEnd == 0) return "";
+
+        long cachedTime = to!long(remaining[0..numEnd]);
+        long currentTime = Clock.currTime.toUnixTime();
+
+        // Check if cache is still valid (within TTL)
+        if (currentTime - cachedTime < LANGUAGES_CACHE_TTL) {
+            return content;
+        }
+    } catch (Exception e) {
+        // Cache read failed, return empty to fetch fresh
+    }
+    return "";
+}
+
+void saveLanguagesCache(string response) {
+    import std.datetime.systime : Clock;
+    string cachePath = getLanguagesCachePath();
+    if (cachePath.empty) return;
+
+    try {
+        // Ensure directory exists
+        string cacheDir = dirName(cachePath);
+        if (!exists(cacheDir)) {
+            mkdirRecurse(cacheDir);
+        }
+
+        // Extract languages array from response
+        import std.algorithm : findSplitAfter;
+
+        // Find the languages array
+        auto langSearch = response.findSplitAfter(`"languages":`);
+        if (langSearch[0].length == 0) return;
+
+        // Find the array brackets
+        auto bracketStart = langSearch[1].findSplitAfter("[");
+        if (bracketStart[0].length == 0) return;
+
+        // Find matching closing bracket
+        string rest = "[" ~ bracketStart[1];
+        int depth = 1;
+        size_t endPos = 1;
+        while (endPos < rest.length && depth > 0) {
+            if (rest[endPos] == '[') depth++;
+            else if (rest[endPos] == ']') depth--;
+            endPos++;
+        }
+        string languagesArray = rest[0..endPos];
+
+        // Build cache JSON with timestamp
+        long timestamp = Clock.currTime.toUnixTime();
+        string cacheJson = format(`{"languages":%s,"timestamp":%d}`, languagesArray, timestamp);
+        std.file.write(cachePath, cacheJson);
+    } catch (Exception e) {
+        // Cache write failed, ignore
+    }
 }
 
 string buildAuthHeaders(string method, string path, string body, string publicKey, string secretKey) {
@@ -695,9 +778,21 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
 }
 
 void cmdLanguages(bool jsonOutput, string publicKey, string secretKey) {
-    string authHeaders = buildAuthHeaders("GET", "/languages", "", publicKey, secretKey);
-    string cmd = format(`curl -s -X GET '%s/languages' %s`, API_BASE, authHeaders);
-    string result = execCurl(cmd);
+    // Try to load from cache first
+    string cachedResponse = loadLanguagesCache();
+    string result;
+
+    if (!cachedResponse.empty) {
+        result = cachedResponse;
+    } else {
+        // Fetch from API
+        string authHeaders = buildAuthHeaders("GET", "/languages", "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/languages' %s`, API_BASE, authHeaders);
+        result = execCurl(cmd);
+
+        // Save to cache
+        saveLanguagesCache(result);
+    }
 
     if (jsonOutput) {
         // Extract language names and output as JSON array

@@ -50,6 +50,7 @@ import javax.crypto.spec.SecretKeySpec
 
 val API_BASE = "https://api.unsandbox.com"
 val PORTAL_BASE = "https://unsandbox.com"
+val LANGUAGES_CACHE_TTL = 3600L  // 1 hour in seconds
 val BLUE = "\u001B[34m"
 val RED = "\u001B[31m"
 val GREEN = "\u001B[32m"
@@ -475,12 +476,56 @@ fun cmdService(args: Args) {
     exitProcess(1)
 }
 
+fun getLanguagesCachePath(): String {
+    val home = System.getenv("HOME") ?: System.getProperty("user.home") ?: "."
+    return "$home/.unsandbox/languages.json"
+}
+
+fun loadLanguagesCache(): List<String>? {
+    try {
+        val cacheFile = File(getLanguagesCachePath())
+        if (!cacheFile.exists()) return null
+
+        // Check if cache is fresh (< 1 hour old)
+        val ageSeconds = (System.currentTimeMillis() - cacheFile.lastModified()) / 1000
+        if (ageSeconds >= LANGUAGES_CACHE_TTL) return null
+
+        val content = cacheFile.readText()
+        val parsed = parseJson(content)
+        @Suppress("UNCHECKED_CAST")
+        return parsed["languages"] as? List<String>
+    } catch (e: Exception) {
+        return null
+    }
+}
+
+fun saveLanguagesCache(languages: List<String>) {
+    try {
+        val cachePath = getLanguagesCachePath()
+        val cacheDir = File(cachePath).parentFile
+        if (!cacheDir.exists()) {
+            cacheDir.mkdirs()
+        }
+        val timestamp = System.currentTimeMillis() / 1000
+        val data = mapOf("languages" to languages, "timestamp" to timestamp)
+        File(cachePath).writeText(toJson(data))
+    } catch (e: Exception) {
+        // Cache failures are non-fatal
+    }
+}
+
 fun cmdLanguages(args: Args) {
     val (publicKey, secretKey) = getApiKeys(args.apiKey)
 
-    val result = apiRequest("/languages", "GET", null, publicKey, secretKey)
-    @Suppress("UNCHECKED_CAST")
-    val languages = result["languages"] as? List<String> ?: emptyList()
+    // Try cache first
+    var languages = loadLanguagesCache()
+    if (languages == null) {
+        val result = apiRequest("/languages", "GET", null, publicKey, secretKey)
+        @Suppress("UNCHECKED_CAST")
+        languages = result["languages"] as? List<String> ?: emptyList()
+        // Save to cache
+        saveLanguagesCache(languages)
+    }
 
     if (args.jsonOutput) {
         println(toJson(languages))

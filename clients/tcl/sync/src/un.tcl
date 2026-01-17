@@ -49,6 +49,8 @@ package require sha256
 
 set API_BASE "https://api.unsandbox.com"
 set PORTAL_BASE "https://unsandbox.com"
+set LANGUAGES_CACHE_TTL 3600
+set LANGUAGES_CACHE_FILE [file join $::env(HOME) ".unsandbox" "languages.json"]
 set BLUE "\033\[34m"
 set RED "\033\[31m"
 set GREEN "\033\[32m"
@@ -573,8 +575,57 @@ proc cmd_session {args} {
     puts "${::YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${::RESET}"
 }
 
+proc read_languages_cache {} {
+    if {![file exists $::LANGUAGES_CACHE_FILE]} {
+        return {}
+    }
+
+    if {[catch {open $::LANGUAGES_CACHE_FILE r} fp]} {
+        return {}
+    }
+    set content [read $fp]
+    close $fp
+
+    if {[catch {::json::json2dict $content} cache_data]} {
+        return {}
+    }
+
+    # Check if cache is valid (within TTL)
+    if {[dict exists $cache_data timestamp]} {
+        set cache_time [dict get $cache_data timestamp]
+        set current_time [clock seconds]
+        if {($current_time - $cache_time) < $::LANGUAGES_CACHE_TTL} {
+            if {[dict exists $cache_data languages]} {
+                return [dict get $cache_data languages]
+            }
+        }
+    }
+    return {}
+}
+
+proc write_languages_cache {languages} {
+    # Ensure ~/.unsandbox directory exists
+    set cache_dir [file dirname $::LANGUAGES_CACHE_FILE]
+    if {![file exists $cache_dir]} {
+        file mkdir $cache_dir
+    }
+
+    # Build cache JSON
+    set json_langs [list]
+    foreach lang $languages {
+        lappend json_langs [::json::write string $lang]
+    }
+    set langs_array [::json::write array {*}$json_langs]
+    set timestamp [clock seconds]
+    set cache_json [::json::write object languages $langs_array timestamp $timestamp]
+
+    # Write cache file
+    set fp [open $::LANGUAGES_CACHE_FILE w]
+    puts -nonewline $fp $cache_json
+    close $fp
+}
+
 proc cmd_languages {args} {
-    lassign [get_api_keys] public_key secret_key
     set json_output 0
 
     # Parse arguments
@@ -585,8 +636,30 @@ proc cmd_languages {args} {
         }
     }
 
+    # Try to read from cache first
+    set cached_langs [read_languages_cache]
+    if {[llength $cached_langs] > 0} {
+        if {$json_output} {
+            set json_langs [list]
+            foreach lang $cached_langs {
+                lappend json_langs [::json::write string $lang]
+            }
+            puts [::json::write array {*}$json_langs]
+        } else {
+            foreach lang $cached_langs {
+                puts $lang
+            }
+        }
+        return
+    }
+
+    # No valid cache, fetch from API
+    lassign [get_api_keys] public_key secret_key
     set result [api_request "/languages" "GET" {} $public_key $secret_key]
     set langs [dict get $result languages]
+
+    # Save to cache
+    write_languages_cache $langs
 
     if {$json_output} {
         # JSON array output

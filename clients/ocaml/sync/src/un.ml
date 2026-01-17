@@ -89,6 +89,9 @@ let default_timeout = 300
 (** Default TTL for code execution *)
 let default_ttl = 60
 
+(** Languages cache TTL in seconds (1 hour) *)
+let languages_cache_ttl = 3600
+
 (* ANSI colors *)
 let blue = "\x1b[34m"
 let red = "\x1b[31m"
@@ -198,6 +201,41 @@ let get_extension filename =
     let dot_pos = String.rindex filename '.' in
     String.sub filename dot_pos (String.length filename - dot_pos)
   with Not_found -> ""
+
+(** Get languages cache file path *)
+let get_languages_cache_path () =
+  let home = try Sys.getenv "HOME" with Not_found -> "." in
+  Filename.concat home ".unsandbox/languages.json"
+
+(** Load languages from cache if valid *)
+let load_languages_cache () =
+  let cache_path = get_languages_cache_path () in
+  if Sys.file_exists cache_path then
+    try
+      let content = read_file cache_path in
+      let timestamp = extract_json_int content "timestamp" in
+      match timestamp with
+      | Some ts ->
+        let now = int_of_float (Unix.time ()) in
+        if now - ts < languages_cache_ttl then
+          Some content
+        else
+          None
+      | None -> None
+    with _ -> None
+  else
+    None
+
+(** Save languages to cache *)
+let save_languages_cache languages_json =
+  let cache_path = get_languages_cache_path () in
+  let cache_dir = Filename.dirname cache_path in
+  (try Unix.mkdir cache_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let timestamp = int_of_float (Unix.time ()) in
+  let cache_content = Printf.sprintf "{\"languages\":%s,\"timestamp\":%d}" languages_json timestamp in
+  let oc = open_out cache_path in
+  output_string oc cache_content;
+  close_out oc
 
 (** Escape JSON string *)
 let escape_json s =
@@ -717,13 +755,27 @@ let image ?public_key ?secret_key ?(model="") ?(size="1024x1024") ?(quality="sta
 
 (**
    Get list of supported programming languages.
+   Uses cached data if available and not expired (1 hour TTL).
 
    @param public_key API public key (optional)
    @param secret_key API secret key (optional)
    @return JSON response with languages list
 *)
 let languages ?public_key ?secret_key () =
-  api_get ?public_key ?secret_key "/languages"
+  match load_languages_cache () with
+  | Some cached -> cached
+  | None ->
+    let response = api_get ?public_key ?secret_key "/languages" in
+    (* Extract and cache the languages array *)
+    let langs_pattern = "\"languages\":\\s*\\[\\([^]]*\\)\\]" in
+    let langs_regex = Str.regexp langs_pattern in
+    (try
+      let _ = Str.search_forward langs_regex response 0 in
+      let langs_str = Str.matched_group 1 response in
+      let languages_json = "[" ^ langs_str ^ "]" in
+      save_languages_cache languages_json
+    with Not_found -> ());
+    response
 
 (* ============================================================================
    Client Module

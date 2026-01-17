@@ -116,6 +116,7 @@ module unsandbox_sdk
     character(len=*), parameter, public :: PORTAL_BASE = 'https://unsandbox.com'
     integer, parameter, public :: DEFAULT_TTL = 60
     integer, parameter, public :: DEFAULT_TIMEOUT = 300
+    integer, parameter, public :: LANGUAGES_CACHE_TTL = 3600  ! 1 hour cache TTL
 
     !--------------------------------------------------------------------------
     ! Type: execution_result
@@ -1821,7 +1822,7 @@ contains
     end subroutine handle_key
 
     subroutine handle_languages()
-        character(len=4096) :: full_cmd
+        character(len=8192) :: full_cmd
         character(len=256) :: arg
         character(len=1024) :: public_key, secret_key
         integer :: i, stat
@@ -1845,23 +1846,47 @@ contains
         end if
 
         if (json_mode) then
-            ! Output as JSON array
-            write(full_cmd, '(20A)') &
+            ! Output as JSON array with caching
+            write(full_cmd, '(40A)') &
+                'CACHE_TTL=3600; ', &
+                'CACHE_FILE="$HOME/.unsandbox/languages.json"; ', &
+                'if [ -f "$CACHE_FILE" ]; then ', &
+                'CACHE_TS=$(jq -r ".timestamp // 0" "$CACHE_FILE" 2>/dev/null); ', &
+                'CURRENT_TS=$(date +%s); ', &
+                'AGE=$((CURRENT_TS - CACHE_TS)); ', &
+                'if [ $AGE -lt $CACHE_TTL ]; then ', &
+                'jq -c ".languages" "$CACHE_FILE"; exit 0; fi; fi; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/languages ', &
+                'RESP=$(curl -s -X GET https://api.unsandbox.com/languages ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
-                '-H "X-Signature: $SIG" | jq -c ".languages"'
+                '-H "X-Signature: $SIG"); ', &
+                'LANGS=$(echo "$RESP" | jq -c ".languages // []"); ', &
+                'mkdir -p "$HOME/.unsandbox"; ', &
+                'echo "{\"languages\":$LANGS,\"timestamp\":$(date +%s)}" > "$CACHE_FILE"; ', &
+                'echo "$LANGS"'
         else
-            ! Output one language per line
-            write(full_cmd, '(20A)') &
+            ! Output one language per line with caching
+            write(full_cmd, '(40A)') &
+                'CACHE_TTL=3600; ', &
+                'CACHE_FILE="$HOME/.unsandbox/languages.json"; ', &
+                'if [ -f "$CACHE_FILE" ]; then ', &
+                'CACHE_TS=$(jq -r ".timestamp // 0" "$CACHE_FILE" 2>/dev/null); ', &
+                'CURRENT_TS=$(date +%s); ', &
+                'AGE=$((CURRENT_TS - CACHE_TS)); ', &
+                'if [ $AGE -lt $CACHE_TTL ]; then ', &
+                'jq -r ".languages[]" "$CACHE_FILE"; exit 0; fi; fi; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/languages ', &
+                'RESP=$(curl -s -X GET https://api.unsandbox.com/languages ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
-                '-H "X-Signature: $SIG" | jq -r ".languages[]"'
+                '-H "X-Signature: $SIG"); ', &
+                'LANGS=$(echo "$RESP" | jq -c ".languages // []"); ', &
+                'mkdir -p "$HOME/.unsandbox"; ', &
+                'echo "{\"languages\":$LANGS,\"timestamp\":$(date +%s)}" > "$CACHE_FILE"; ', &
+                'echo "$RESP" | jq -r ".languages[]"'
         end if
 
         call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)

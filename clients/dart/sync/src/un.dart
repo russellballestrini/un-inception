@@ -51,6 +51,7 @@ const String red = '\x1B[31m';
 const String green = '\x1B[32m';
 const String yellow = '\x1B[33m';
 const String reset = '\x1B[0m';
+const int languagesCacheTtl = 3600; // 1 hour in seconds
 
 const Map<String, String> extMap = {
   '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
@@ -148,6 +149,69 @@ String detectLanguage(String filename) {
     throw Exception('Unsupported file extension: $ext');
   }
   return lang;
+}
+
+String? getLanguagesCachePath() {
+  final home = Platform.environment['HOME'];
+  if (home == null || home.isEmpty) return null;
+  return '$home/.unsandbox/languages.json';
+}
+
+Future<Map<String, dynamic>?> loadLanguagesCache() async {
+  final cachePath = getLanguagesCachePath();
+  if (cachePath == null) return null;
+
+  final cacheFile = File(cachePath);
+  if (!await cacheFile.exists()) return null;
+
+  try {
+    final content = await cacheFile.readAsString();
+    final data = jsonDecode(content) as Map<String, dynamic>;
+
+    final cachedTime = data['timestamp'] as int?;
+    if (cachedTime == null) return null;
+
+    final currentTime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    // Check if cache is still valid (within TTL)
+    if (currentTime - cachedTime < languagesCacheTtl) {
+      return data;
+    }
+  } catch (e) {
+    // Cache read failed, return null to fetch fresh
+  }
+
+  return null;
+}
+
+Future<void> saveLanguagesCache(Map<String, dynamic> response) async {
+  final cachePath = getLanguagesCachePath();
+  if (cachePath == null) return;
+
+  try {
+    final cacheFile = File(cachePath);
+
+    // Ensure directory exists
+    final cacheDir = cacheFile.parent;
+    if (!await cacheDir.exists()) {
+      await cacheDir.create(recursive: true);
+    }
+
+    // Extract languages from response
+    final languages = response['languages'];
+    if (languages == null) return;
+
+    // Build cache JSON with timestamp
+    final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final cacheData = {
+      'languages': languages,
+      'timestamp': timestamp,
+    };
+
+    await cacheFile.writeAsString(jsonEncode(cacheData));
+  } catch (e) {
+    // Cache write failed, ignore
+  }
 }
 
 Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, String? jsonData, String publicKey, String? secretKey, {String? baseUrl}) async {
@@ -722,7 +786,20 @@ Future<void> cmdLanguages(Args args) async {
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
-  final result = await apiRequestCurl('/languages', 'GET', null, publicKey, secretKey);
+  // Try to load from cache first
+  var cachedData = await loadLanguagesCache();
+  Map<String, dynamic> result;
+
+  if (cachedData != null) {
+    result = cachedData;
+  } else {
+    // Fetch from API
+    result = await apiRequestCurl('/languages', 'GET', null, publicKey, secretKey);
+
+    // Save to cache
+    await saveLanguagesCache(result);
+  }
+
   final languages = result['languages'] as List? ?? [];
 
   if (args.languagesJson) {

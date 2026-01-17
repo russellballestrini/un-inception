@@ -55,6 +55,8 @@
 
 (define portal-base "https://unsandbox.com")
 
+(define languages-cache-ttl 3600) ;; 1 hour in seconds
+
 (define ext-map
   '((".hs" . "haskell") (".ml" . "ocaml") (".clj" . "clojure")
     (".scm" . "scheme") (".lisp" . "commonlisp") (".erl" . "erlang")
@@ -396,9 +398,55 @@
     (close-pipe port)
     (filter (lambda (s) (> (string-length s) 0)) result)))
 
+(define (get-languages-cache-path)
+  "Get the path to the languages cache file"
+  (let ((home (getenv "HOME")))
+    (string-append home "/.unsandbox/languages.json")))
+
+(define (load-languages-cache)
+  "Load languages from cache if valid"
+  (let ((cache-path (get-languages-cache-path)))
+    (if (file-exists? cache-path)
+        (catch #t
+          (lambda ()
+            (let* ((content (read-file cache-path))
+                   (timestamp-str (json-extract-string content "timestamp")))
+              (if timestamp-str
+                  (let* ((cache-time (string->number timestamp-str))
+                         (now (current-time)))
+                    (if (< (- now cache-time) languages-cache-ttl)
+                        content
+                        #f))
+                  #f)))
+          (lambda args #f))
+        #f)))
+
+(define (save-languages-cache languages-json)
+  "Save languages to cache"
+  (let* ((cache-path (get-languages-cache-path))
+         (cache-dir (dirname cache-path)))
+    ;; Create directory if it doesn't exist
+    (catch #t
+      (lambda () (mkdir cache-dir))
+      (lambda args #f))
+    (let* ((timestamp (current-time))
+           (cache-content (format #f "{\"languages\":~a,\"timestamp\":~a}" languages-json timestamp)))
+      (call-with-output-file cache-path
+        (lambda (port) (display cache-content port))))))
+
 (define (languages-cmd json-output)
   (let* ((api-key (get-api-key))
-         (response (curl-get api-key "/languages"))
+         ;; Try cache first
+         (cached (load-languages-cache))
+         (response (if cached
+                       cached
+                       (let ((resp (curl-get api-key "/languages")))
+                         ;; Extract and cache the languages array
+                         (let ((langs (json-extract-array resp "languages")))
+                           (when (not (null? langs))
+                             (let ((languages-json (string-append "[" (string-join (map (lambda (l) (format #f "\"~a\"" l)) langs) ",") "]")))
+                               (save-languages-cache languages-json))))
+                         resp)))
          (langs (json-extract-array response "languages")))
     (if json-output
         ;; JSON array output

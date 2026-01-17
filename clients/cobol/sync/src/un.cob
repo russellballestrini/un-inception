@@ -79,6 +79,7 @@
        01  WS-INPUT-FILES      PIC X(1024).
        01  WS-PORTAL-BASE      PIC X(256) VALUE
            "https://unsandbox.com".
+       01  WS-LANGUAGES-CACHE-TTL PIC 9(8) VALUE 3600.
        01  WS-EXTEND-FLAG      PIC X(8).
        01  WS-SVC-ENVS         PIC X(2048).
        01  WS-SVC-ENV-FILE     PIC X(256).
@@ -1038,9 +1039,18 @@
            PERFORM LANGUAGES-LIST.
 
        LANGUAGES-LIST.
+      * Languages list with 1-hour cache
            IF WS-JSON-OUTPUT = "true"
-      * JSON output: extract language names as array
-               STRING "TS=$(date +%s); "
+      * JSON output: extract language names as array with caching
+               STRING "CACHE_TTL=3600; "
+                   "CACHE_FILE=\"$HOME/.unsandbox/languages.json\"; "
+                   "if [ -f \"$CACHE_FILE\" ]; then "
+                   "CACHE_TS=$(jq -r '.timestamp // 0' \"$CACHE_FILE\" 2>/dev/null); "
+                   "CURRENT_TS=$(date +%s); "
+                   "AGE=$((CURRENT_TS - CACHE_TS)); "
+                   "if [ $AGE -lt $CACHE_TTL ]; then "
+                   "jq -c '.languages' \"$CACHE_FILE\"; exit 0; fi; fi; "
+                   "TS=$(date +%s); "
                    "SIG=$(echo -n \"$TS:GET:/languages:\" | "
                    "openssl dgst -sha256 -hmac '"
                    FUNCTION TRIM(WS-SECRET-KEY)
@@ -1051,12 +1061,24 @@
                    "' "
                    "-H 'X-Timestamp: '$TS "
                    "-H 'X-Signature: '$SIG); "
-                   "echo \"$RESP\" | jq -c '[.languages[].name]'"
+                   "LANGS=$(echo \"$RESP\" | jq -c '[.languages[].name]'); "
+                   "mkdir -p \"$HOME/.unsandbox\"; "
+                   "echo \"{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}\" "
+                   "> \"$CACHE_FILE\"; "
+                   "echo \"$LANGS\""
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            ELSE
-      * Plain output: one language per line
-               STRING "TS=$(date +%s); "
+      * Plain output: one language per line with caching
+               STRING "CACHE_TTL=3600; "
+                   "CACHE_FILE=\"$HOME/.unsandbox/languages.json\"; "
+                   "if [ -f \"$CACHE_FILE\" ]; then "
+                   "CACHE_TS=$(jq -r '.timestamp // 0' \"$CACHE_FILE\" 2>/dev/null); "
+                   "CURRENT_TS=$(date +%s); "
+                   "AGE=$((CURRENT_TS - CACHE_TS)); "
+                   "if [ $AGE -lt $CACHE_TTL ]; then "
+                   "jq -r '.languages[]' \"$CACHE_FILE\"; exit 0; fi; fi; "
+                   "TS=$(date +%s); "
                    "SIG=$(echo -n \"$TS:GET:/languages:\" | "
                    "openssl dgst -sha256 -hmac '"
                    FUNCTION TRIM(WS-SECRET-KEY)
@@ -1067,6 +1089,10 @@
                    "' "
                    "-H 'X-Timestamp: '$TS "
                    "-H 'X-Signature: '$SIG); "
+                   "LANGS=$(echo \"$RESP\" | jq -c '[.languages[].name]'); "
+                   "mkdir -p \"$HOME/.unsandbox\"; "
+                   "echo \"{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}\" "
+                   "> \"$CACHE_FILE\"; "
                    "echo \"$RESP\" | jq -r '.languages[].name'"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
