@@ -5710,6 +5710,11 @@ int unsandbox_health_check(void) {
     return (http_code == 200) ? 1 : 0;
 }
 
+#ifdef UNSANDBOX_LIBRARY
+/* ============================================================================
+ * Library API - Only compiled when UNSANDBOX_LIBRARY is defined
+ * ============================================================================ */
+
 /* Memory management */
 void unsandbox_free_result(unsandbox_result_t *result) {
     if (!result) return;
@@ -8177,6 +8182,7 @@ void unsandbox_free_trusted_keys(char **keys, size_t count) {
 const char *unsandbox_last_error(void) {
     return unsandbox_error_buffer[0] ? unsandbox_error_buffer : NULL;
 }
+#endif /* UNSANDBOX_LIBRARY - end of library API */
 
 #ifndef UNSANDBOX_LIBRARY
 int main(int argc, char *argv[]) {
