@@ -55,7 +55,7 @@ get_sdk_file() {
         java)        echo "clients/java/sync/src/Un.java" ;;
         kotlin)      echo "clients/kotlin/sync/src/un.kt" ;;
         swift)       echo "clients/swift/sync/src/un.swift" ;;
-        csharp)      echo "clients/csharp/sync/src/un.cs" ;;
+        csharp)      echo "clients/csharp/sync/src/Un.cs" ;;
         fsharp)      echo "clients/fsharp/sync/src/un.fs" ;;
         haskell)     echo "clients/haskell/sync/src/un.hs" ;;
         ocaml)       echo "clients/ocaml/sync/src/un.ml" ;;
