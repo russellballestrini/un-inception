@@ -7,6 +7,10 @@ stages:
   - document
   - report
 
+default:
+  tags:
+    - build
+
 variables:
   UNSANDBOX_API_KEY: $UNSANDBOX_API_KEY
   UNSANDBOX_PUBLIC_KEY: $UNSANDBOX_PUBLIC_KEY
