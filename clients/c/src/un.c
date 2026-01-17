@@ -5524,12 +5524,16 @@ void print_usage(const char *prog) {
     fprintf(stderr, "       %s session [options]\n", prog);
     fprintf(stderr, "       %s service [options]\n", prog);
     fprintf(stderr, "       %s snapshot [options]\n", prog);
+    fprintf(stderr, "       %s image [options]\n", prog);
+    fprintf(stderr, "       %s languages [--json]\n", prog);
     fprintf(stderr, "       %s key\n\n", prog);
     fprintf(stderr, "Commands:\n");
     fprintf(stderr, "  (default)        Execute source file in sandbox\n");
     fprintf(stderr, "  session          Open interactive shell/REPL session\n");
     fprintf(stderr, "  service          Manage persistent services\n");
     fprintf(stderr, "  snapshot         Manage container snapshots\n");
+    fprintf(stderr, "  image            Manage images (publish, spawn, clone)\n");
+    fprintf(stderr, "  languages        List available languages (--json for JSON output)\n");
     fprintf(stderr, "  key              Check API key validity and expiration\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -s, --shell LANG Specify language (default: bash if arg is not a file)\n");
@@ -5602,6 +5606,19 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --name NAME        Name for cloned service (for --clone)\n");
     fprintf(stderr, "  --shell SHELL      Shell for cloned session (for --clone)\n");
     fprintf(stderr, "  --ports PORTS      Ports for cloned service (for --clone)\n");
+    fprintf(stderr, "\nImage options:\n");
+    fprintf(stderr, "  -l, --list         List all images\n");
+    fprintf(stderr, "  --info ID          Get image details\n");
+    fprintf(stderr, "  --delete ID        Delete an image\n");
+    fprintf(stderr, "  --lock ID          Lock an image to prevent deletion\n");
+    fprintf(stderr, "  --unlock ID        Unlock an image to allow deletion\n");
+    fprintf(stderr, "  --publish ID       Publish image from service/snapshot (requires --source-type)\n");
+    fprintf(stderr, "  --source-type TYPE Source type: service or snapshot (for --publish)\n");
+    fprintf(stderr, "  --visibility ID V  Set visibility: private, unlisted, or public\n");
+    fprintf(stderr, "  --spawn ID         Spawn new service from image\n");
+    fprintf(stderr, "  --clone ID         Clone an image\n");
+    fprintf(stderr, "  --name NAME        Name for spawned service or cloned image\n");
+    fprintf(stderr, "  --ports PORTS      Ports for spawned service\n");
     fprintf(stderr, "\nAvailable shells/REPLs:\n");
     fprintf(stderr, "  Shells: bash, dash, sh, zsh, fish, ksh, tcsh, csh, elvish, xonsh, ash\n");
     fprintf(stderr, "  REPLs:  python3, bpython, ipython, node, ruby, irb, lua, php, perl\n");
@@ -8277,6 +8294,77 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
+    // Check for languages command
+    if (argc >= 2 && strcmp(argv[1], "languages") == 0) {
+        int json_output = 0;
+
+        // Parse options
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+                i++;
+                cli_public_key = argv[i];
+            } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
+                i++;
+                cli_secret_key = argv[i];
+            } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
+                i++;
+                cli_account_index = atoi(argv[i]);
+            } else if (strcmp(argv[i], "--json") == 0) {
+                json_output = 1;
+            } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                fprintf(stderr, "Usage: %s languages [options]\n\n", argv[0]);
+                fprintf(stderr, "List all available languages for code execution.\n\n");
+                fprintf(stderr, "Options:\n");
+                fprintf(stderr, "  --json    Output as JSON array (for scripts)\n");
+                fprintf(stderr, "  -p KEY    Public key\n");
+                fprintf(stderr, "  -k KEY    Secret key\n");
+                fprintf(stderr, "  -h        Show this help\n");
+                return 0;
+            }
+        }
+
+        // Get credentials
+        UnsandboxCredentials *creds = get_credentials(cli_public_key, cli_secret_key, cli_account_index);
+
+        if (!creds || !creds->public_key || strlen(creds->public_key) == 0) {
+            fprintf(stderr, "Error: API credentials required.\n");
+            fprintf(stderr, "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n");
+            fprintf(stderr, "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n");
+            fprintf(stderr, "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n");
+            free_credentials(creds);
+            return 1;
+        }
+
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        unsandbox_languages_t *langs = unsandbox_get_languages(creds->public_key, creds->secret_key);
+        curl_global_cleanup();
+
+        if (!langs) {
+            fprintf(stderr, "Error: Failed to fetch languages list\n");
+            free_credentials(creds);
+            return 1;
+        }
+
+        if (json_output) {
+            // Output as JSON array
+            printf("[");
+            for (int i = 0; i < langs->count; i++) {
+                printf("\"%s\"", langs->languages[i]);
+                if (i < langs->count - 1) printf(",");
+            }
+            printf("]\n");
+        } else {
+            // Output one per line (pipe-friendly)
+            for (int i = 0; i < langs->count; i++) {
+                printf("%s\n", langs->languages[i]);
+            }
+        }
+
+        unsandbox_free_languages(langs);
+        free_credentials(creds);
+        return 0;
+    }
+
     // Check for snapshot command
     if (argc >= 2 && strcmp(argv[1], "snapshot") == 0) {
         const char *snapshot_id = NULL;
@@ -8395,6 +8483,215 @@ int main(int argc, char *argv[]) {
             curl_global_cleanup();
             free_credentials(creds);
             return 1;
+        }
+
+        curl_global_cleanup();
+        free_credentials(creds);
+        return ret;
+    }
+
+    // Check for image command
+    if (argc >= 2 && strcmp(argv[1], "image") == 0) {
+        const char *image_id = NULL;
+        const char *visibility = NULL;
+        const char *spawn_name = NULL;
+        const char *spawn_ports = NULL;
+        const char *source_type = NULL;
+        int do_list = 0;
+        int do_info = 0;
+        int do_delete = 0;
+        int do_lock = 0;
+        int do_unlock = 0;
+        int do_publish = 0;
+        int do_visibility = 0;
+        int do_spawn = 0;
+        int do_clone = 0;
+        int show_help = 0;
+
+        // Parse image-specific args
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+                i++;
+                cli_public_key = argv[i];
+            } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
+                i++;
+                cli_secret_key = argv[i];
+            } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
+                i++;
+                cli_account_index = atoi(argv[i]);
+            } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
+                do_list = 1;
+            } else if (strcmp(argv[i], "--info") == 0 && i + 1 < argc) {
+                do_info = 1;
+                i++;
+                image_id = argv[i];
+            } else if (strcmp(argv[i], "--delete") == 0 && i + 1 < argc) {
+                do_delete = 1;
+                i++;
+                image_id = argv[i];
+            } else if (strcmp(argv[i], "--lock") == 0 && i + 1 < argc) {
+                do_lock = 1;
+                i++;
+                image_id = argv[i];
+            } else if (strcmp(argv[i], "--unlock") == 0 && i + 1 < argc) {
+                do_unlock = 1;
+                i++;
+                image_id = argv[i];
+            } else if (strcmp(argv[i], "--publish") == 0 && i + 1 < argc) {
+                do_publish = 1;
+                i++;
+                image_id = argv[i];  // This is actually the source ID (service/snapshot)
+            } else if (strcmp(argv[i], "--visibility") == 0 && i + 2 < argc) {
+                do_visibility = 1;
+                i++;
+                image_id = argv[i];
+                i++;
+                visibility = argv[i];
+            } else if (strcmp(argv[i], "--spawn") == 0 && i + 1 < argc) {
+                do_spawn = 1;
+                i++;
+                image_id = argv[i];
+            } else if (strcmp(argv[i], "--clone") == 0 && i + 1 < argc) {
+                do_clone = 1;
+                i++;
+                image_id = argv[i];
+            } else if (strcmp(argv[i], "--name") == 0 && i + 1 < argc) {
+                i++;
+                spawn_name = argv[i];
+            } else if (strcmp(argv[i], "--ports") == 0 && i + 1 < argc) {
+                i++;
+                spawn_ports = argv[i];
+            } else if (strcmp(argv[i], "--source-type") == 0 && i + 1 < argc) {
+                i++;
+                source_type = argv[i];
+            } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                show_help = 1;
+            } else if (argv[i][0] == '-') {
+                fprintf(stderr, "Unknown option: %s\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+        }
+
+        if (show_help) {
+            print_usage(argv[0]);
+            return 0;
+        }
+
+        // Get credentials
+        UnsandboxCredentials *creds = get_credentials(cli_public_key, cli_secret_key, cli_account_index);
+        if (!creds || !creds->public_key || strlen(creds->public_key) == 0) {
+            fprintf(stderr, "Error: API credentials required.\n");
+            fprintf(stderr, "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n");
+            fprintf(stderr, "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n");
+            fprintf(stderr, "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n");
+            free_credentials(creds);
+            return 1;
+        }
+
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        int ret = 0;
+
+        if (do_list) {
+            char *response = list_images(creds, NULL);
+            if (response) {
+                // Parse and display image list
+                unsandbox_image_list_t *images = unsandbox_image_list(creds->public_key, creds->secret_key);
+                if (images && images->count > 0) {
+                    printf("%-40s %-20s %-10s %-8s %-10s\n", "ID", "NAME", "VISIBILITY", "LOCKED", "SOURCE");
+                    printf("%-40s %-20s %-10s %-8s %-10s\n", "----------------------------------------",
+                           "--------------------", "----------", "--------", "----------");
+                    for (size_t i = 0; i < images->count; i++) {
+                        unsandbox_image_t *img = &images->images[i];
+                        printf("%-40s %-20s %-10s %-8s %-10s\n",
+                               img->id ? img->id : "",
+                               img->name ? img->name : "",
+                               img->visibility ? img->visibility : "",
+                               img->locked ? "yes" : "no",
+                               img->source_type ? img->source_type : "");
+                    }
+                    unsandbox_free_image_list(images);
+                } else {
+                    printf("No images found.\n");
+                }
+                free(response);
+            } else {
+                fprintf(stderr, "Error: Failed to list images\n");
+                ret = 1;
+            }
+        } else if (do_info) {
+            char *response = get_image(creds, image_id);
+            if (response) {
+                printf("%s\n", response);
+                free(response);
+            } else {
+                fprintf(stderr, "Error: Failed to get image info\n");
+                ret = 1;
+            }
+        } else if (do_delete) {
+            ret = delete_image(creds, image_id);
+            if (ret == 0) {
+                printf("Image deleted: %s\n", image_id);
+            }
+        } else if (do_lock) {
+            ret = lock_image(creds, image_id);
+            if (ret == 0) {
+                printf("Image locked: %s\n", image_id);
+            }
+        } else if (do_unlock) {
+            ret = unlock_image(creds, image_id);
+            if (ret == 0) {
+                printf("Image unlocked: %s\n", image_id);
+            }
+        } else if (do_visibility) {
+            if (!visibility || (strcmp(visibility, "private") != 0 &&
+                               strcmp(visibility, "unlisted") != 0 &&
+                               strcmp(visibility, "public") != 0)) {
+                fprintf(stderr, "Error: visibility must be 'private', 'unlisted', or 'public'\n");
+                ret = 1;
+            } else {
+                ret = set_image_visibility(creds, image_id, visibility);
+                if (ret == 0) {
+                    printf("Image visibility set to %s: %s\n", visibility, image_id);
+                }
+            }
+        } else if (do_spawn) {
+            char *result = spawn_from_image(creds, image_id, spawn_name, spawn_ports);
+            if (result) {
+                printf("%s\n", result);
+                free(result);
+            } else {
+                fprintf(stderr, "Error: Failed to spawn from image\n");
+                ret = 1;
+            }
+        } else if (do_publish) {
+            if (!source_type) {
+                fprintf(stderr, "Error: --source-type required for --publish (service or snapshot)\n");
+                ret = 1;
+            } else {
+                char *result = unsandbox_image_publish(creds->public_key, creds->secret_key,
+                                                       source_type, image_id, spawn_name, NULL);
+                if (result) {
+                    printf("Image published: %s\n", result);
+                    free(result);
+                } else {
+                    fprintf(stderr, "Error: Failed to publish image\n");
+                    ret = 1;
+                }
+            }
+        } else if (do_clone) {
+            char *result = unsandbox_image_clone(creds->public_key, creds->secret_key, image_id, spawn_name);
+            if (result) {
+                printf("Image cloned: %s\n", result);
+                free(result);
+            } else {
+                fprintf(stderr, "Error: Failed to clone image\n");
+                ret = 1;
+            }
+        } else {
+            fprintf(stderr, "Error: No image action specified. Use --list, --info, --delete, --lock, --unlock, --visibility, --spawn, --publish, or --clone\n");
+            print_usage(argv[0]);
+            ret = 1;
         }
 
         curl_global_cleanup();

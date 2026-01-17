@@ -2288,6 +2288,24 @@ struct CliOptions {
     clone_name: Option<String>,
     clone_shell: Option<String>,
     clone_ports: Option<String>,
+
+    // Image options
+    image_list: bool,
+    image_info: Option<String>,
+    image_delete: Option<String>,
+    image_lock: Option<String>,
+    image_unlock: Option<String>,
+    image_publish: Option<String>,
+    image_source_type: Option<String>,
+    image_visibility_id: Option<String>,
+    image_visibility_mode: Option<String>,
+    image_spawn: Option<String>,
+    image_clone: Option<String>,
+    image_name: Option<String>,
+    image_ports: Option<String>,
+
+    // Languages options
+    languages_json: bool,
 }
 
 fn print_help() {
@@ -2299,7 +2317,9 @@ USAGE:
     un session [OPTIONS]                 Interactive session
     un service [OPTIONS]                 Manage services
     un snapshot [OPTIONS]                Manage snapshots
+    un image [OPTIONS]                   Manage images
     un key                               Check API key
+    un languages [--json]                List supported languages
 
 GLOBAL OPTIONS:
     -s, --shell LANG       Language for inline code execution
@@ -2355,6 +2375,21 @@ SNAPSHOT COMMANDS:
     un snapshot --lock ID          Prevent deletion
     un snapshot --unlock ID        Allow deletion
     un snapshot --clone ID         Clone snapshot
+
+IMAGE COMMANDS:
+    un image --list                        List all images
+    un image --info ID                     Get image details
+    un image --delete ID                   Delete an image
+    un image --lock ID                     Lock image to prevent deletion
+    un image --unlock ID                   Unlock image
+    un image --publish ID --source-type T  Publish from service/snapshot
+    un image --visibility ID MODE          Set visibility (private/unlisted/public)
+    un image --spawn ID --name NAME        Spawn service from image
+    un image --clone ID --name NAME        Clone an image
+
+LANGUAGES COMMAND:
+    un languages                   List supported languages (one per line)
+    un languages --json            List as JSON array
 
 EXAMPLES:
     un script.py                   Execute Python script
@@ -2463,10 +2498,11 @@ fn parse_args(args: &[String]) -> CliOptions {
                 i += 1;
             }
             "-l" | "--list" => {
-                // Used by session, service, snapshot
+                // Used by session, service, snapshot, image
                 opts.session_list = true;
                 opts.service_list = true;
                 opts.snapshot_list = true;
+                opts.image_list = true;
                 i += 1;
             }
             "--attach" => {
@@ -2557,6 +2593,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 if i + 1 < args.len() {
                     opts.service_name = Some(args[i + 1].clone());
                     opts.clone_name = Some(args[i + 1].clone());
+                    opts.image_name = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2566,6 +2603,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 if i + 1 < args.len() {
                     opts.service_ports = Some(args[i + 1].clone());
                     opts.clone_ports = Some(args[i + 1].clone());
+                    opts.image_ports = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2616,6 +2654,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 if i + 1 < args.len() {
                     opts.service_info = Some(args[i + 1].clone());
                     opts.snapshot_info = Some(args[i + 1].clone());
+                    opts.image_info = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2649,6 +2688,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 if i + 1 < args.len() {
                     opts.service_lock = Some(args[i + 1].clone());
                     opts.snapshot_lock = Some(args[i + 1].clone());
+                    opts.image_lock = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2658,6 +2698,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 if i + 1 < args.len() {
                     opts.service_unlock = Some(args[i + 1].clone());
                     opts.snapshot_unlock = Some(args[i + 1].clone());
+                    opts.image_unlock = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2695,6 +2736,7 @@ fn parse_args(args: &[String]) -> CliOptions {
             "--delete" => {
                 if i + 1 < args.len() {
                     opts.snapshot_delete = Some(args[i + 1].clone());
+                    opts.image_delete = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2703,6 +2745,47 @@ fn parse_args(args: &[String]) -> CliOptions {
             "--clone" => {
                 if i + 1 < args.len() {
                     opts.snapshot_clone = Some(args[i + 1].clone());
+                    opts.image_clone = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--json" => {
+                opts.languages_json = true;
+                i += 1;
+            }
+            "--publish" => {
+                if i + 1 < args.len() {
+                    opts.image_publish = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--source-type" => {
+                if i + 1 < args.len() {
+                    opts.image_source_type = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--visibility" => {
+                if i + 2 < args.len() {
+                    opts.image_visibility_id = Some(args[i + 1].clone());
+                    opts.image_visibility_mode = Some(args[i + 2].clone());
+                    i += 3;
+                } else if i + 1 < args.len() {
+                    opts.image_visibility_id = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--spawn" => {
+                if i + 1 < args.len() {
+                    opts.image_spawn = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -2712,7 +2795,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 // Positional argument or subcommand
                 if opts.command.is_none() && !arg.starts_with('-') {
                     match arg.as_str() {
-                        "session" | "service" | "snapshot" | "key" | "env" => {
+                        "session" | "service" | "snapshot" | "image" | "key" | "env" | "languages" => {
                             if opts.command.is_some() {
                                 opts.subcommand = Some(arg.clone());
                             } else {
@@ -3486,6 +3569,201 @@ fn cmd_snapshot(opts: &CliOptions) -> i32 {
     }
 }
 
+fn format_image_list(images: &[LxdImage]) {
+    if images.is_empty() {
+        println!("No images.");
+        return;
+    }
+    println!("{:<40} {:<20} {:<10} {}", "ID", "NAME", "VISIBILITY", "CREATED");
+    for img in images {
+        println!(
+            "{:<40} {:<20} {:<10} {}",
+            img.image_id, img.name, img.visibility, img.created_at
+        );
+    }
+}
+
+fn cmd_image(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    // Handle --list
+    if opts.image_list || opts.service_list {
+        match list_images(None, &creds) {
+            Ok(images) => {
+                format_image_list(&images);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --info
+    if let Some(ref id) = opts.image_info {
+        match get_image(id, &creds) {
+            Ok(img) => {
+                println!("Image ID: {}", img.image_id);
+                println!("Name: {}", img.name);
+                println!("Description: {}", img.description);
+                println!("Source Type: {}", img.source_type);
+                println!("Source ID: {}", img.source_id);
+                println!("Visibility: {}", img.visibility);
+                println!("Locked: {}", img.locked);
+                println!("Size: {} bytes", img.size_bytes);
+                println!("Created: {}", img.created_at);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --delete
+    if let Some(ref id) = opts.image_delete {
+        match delete_image(id, &creds) {
+            Ok(()) => {
+                println!("Image {} deleted.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --lock
+    if let Some(ref id) = opts.image_lock {
+        match lock_image(id, &creds) {
+            Ok(()) => {
+                println!("Image {} locked.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --unlock
+    if let Some(ref id) = opts.image_unlock {
+        match unlock_image(id, &creds) {
+            Ok(()) => {
+                println!("Image {} unlocked.", id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --publish
+    if let Some(ref source_id) = opts.image_publish {
+        let source_type = match &opts.image_source_type {
+            Some(t) => t.as_str(),
+            None => {
+                eprintln!("Error: --publish requires --source-type (service or snapshot)");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let name = opts.image_name.clone().unwrap_or_else(|| "".to_string());
+        match image_publish(source_type, source_id, &name, None, &creds) {
+            Ok(img) => {
+                println!("Image published: {}", img.image_id);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --visibility
+    if let Some(ref id) = opts.image_visibility_id {
+        let mode = match &opts.image_visibility_mode {
+            Some(m) => m.as_str(),
+            None => {
+                eprintln!("Error: --visibility requires a mode (private, unlisted, or public)");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        match set_image_visibility(id, mode, &creds) {
+            Ok(()) => {
+                println!("Image {} visibility set to {}.", id, mode);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --spawn
+    if let Some(ref id) = opts.image_spawn {
+        let name = opts.image_name.clone().unwrap_or_else(|| "spawned-service".to_string());
+        let ports_str = opts.image_ports.clone().unwrap_or_else(|| "".to_string());
+        let ports: Vec<u16> = ports_str
+            .split(',')
+            .filter_map(|p| p.trim().parse().ok())
+            .collect();
+        match spawn_from_image(id, &name, &ports, None, &creds) {
+            Ok(result) => {
+                println!("Service spawned: {}", result.service_id);
+                println!("Name: {}", result.name);
+                println!("URL: {}", result.url);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Handle --clone
+    if let Some(ref id) = opts.image_clone {
+        let name = opts.image_name.clone().unwrap_or_else(|| format!("{}-clone", id));
+        match clone_image(id, &name, None, &creds) {
+            Ok(img) => {
+                println!("Image cloned: {}", img.image_id);
+                println!("Name: {}", img.name);
+                return EXIT_SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                return EXIT_API_ERROR;
+            }
+        }
+    }
+
+    // Default: list images
+    match list_images(None, &creds) {
+        Ok(images) => {
+            format_image_list(&images);
+            EXIT_SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            EXIT_API_ERROR
+        }
+    }
+}
+
 fn cmd_key(opts: &CliOptions) -> i32 {
     let creds = match get_credentials(opts) {
         Ok(c) => c,
@@ -3522,6 +3800,36 @@ fn cmd_key(opts: &CliOptions) -> i32 {
     }
 }
 
+fn cmd_languages(opts: &CliOptions) -> i32 {
+    let creds = match get_credentials(opts) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_AUTH_ERROR;
+        }
+    };
+
+    match get_languages(&creds) {
+        Ok(languages) => {
+            if opts.languages_json {
+                // Output as JSON array
+                let json = serde_json::to_string(&languages).unwrap_or_else(|_| "[]".to_string());
+                println!("{}", json);
+            } else {
+                // Output one language per line
+                for lang in &languages {
+                    println!("{}", lang);
+                }
+            }
+            EXIT_SUCCESS
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            EXIT_API_ERROR
+        }
+    }
+}
+
 /// CLI entry point. Call this from main() to run the CLI.
 ///
 /// # Examples
@@ -3544,7 +3852,9 @@ pub fn cli_main() -> i32 {
         Some("session") => cmd_session(&opts),
         Some("service") => cmd_service(&opts),
         Some("snapshot") => cmd_snapshot(&opts),
+        Some("image") => cmd_image(&opts),
         Some("key") => cmd_key(&opts),
+        Some("languages") => cmd_languages(&opts),
         None => {
             // Default: execute code
             if opts.positional.is_empty() && opts.shell.is_none() {

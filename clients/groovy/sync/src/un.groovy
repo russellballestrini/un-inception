@@ -1020,10 +1020,24 @@ class Args {
     String snapshotShell = null
     String snapshotPorts = null
     Boolean keyExtend = false
+    Boolean imageList = false
+    String imageInfo = null
+    String imageDelete = null
+    String imageLock = null
+    String imageUnlock = null
+    String imagePublish = null
+    String imageSourceType = null
+    String imageVisibility = null
+    String imageVisibilityMode = null
+    String imageSpawn = null
+    String imageClone = null
+    String imageName = null
+    String imagePorts = null
     List<String> svcEnvs = []
     String svcEnvFile = null
     String envAction = null
     String envTarget = null
+    Boolean jsonOutput = false
 }
 
 def readEnvFile(filename) {
@@ -1293,6 +1307,101 @@ def cmdSnapshot(args) {
     System.exit(1)
 }
 
+def cmdImage(args) {
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    if (args.imageList) {
+        def output = apiRequest('/images', 'GET', null, publicKey, secretKey)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
+        return
+    }
+
+    if (args.imageInfo) {
+        def output = apiRequest("/images/${args.imageInfo}", 'GET', null, publicKey, secretKey)
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
+        return
+    }
+
+    if (args.imageDelete) {
+        apiRequest("/images/${args.imageDelete}", 'DELETE', null, publicKey, secretKey)
+        println("${GREEN}Image deleted: ${args.imageDelete}${RESET}")
+        return
+    }
+
+    if (args.imageLock) {
+        apiRequest("/images/${args.imageLock}/lock", 'POST', null, publicKey, secretKey)
+        println("${GREEN}Image locked: ${args.imageLock}${RESET}")
+        return
+    }
+
+    if (args.imageUnlock) {
+        apiRequest("/images/${args.imageUnlock}/unlock", 'POST', null, publicKey, secretKey)
+        println("${GREEN}Image unlocked: ${args.imageUnlock}${RESET}")
+        return
+    }
+
+    if (args.imagePublish) {
+        if (!args.imageSourceType) {
+            System.err.println("${RED}Error: --source-type required (service or snapshot)${RESET}")
+            System.exit(1)
+        }
+        def payload = [source_type: args.imageSourceType, source_id: args.imagePublish]
+        if (args.imageName) payload.name = args.imageName
+        def output = apiRequest("/images/publish", 'POST', payload, publicKey, secretKey)
+        println("${GREEN}Image published${RESET}")
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
+        return
+    }
+
+    if (args.imageVisibility) {
+        if (!args.imageVisibilityMode) {
+            System.err.println("${RED}Error: --visibility requires MODE (private, unlisted, or public)${RESET}")
+            System.exit(1)
+        }
+        def payload = [visibility: args.imageVisibilityMode]
+        apiRequest("/images/${args.imageVisibility}/visibility", 'POST', payload, publicKey, secretKey)
+        println("${GREEN}Image visibility set to ${args.imageVisibilityMode}: ${args.imageVisibility}${RESET}")
+        return
+    }
+
+    if (args.imageSpawn) {
+        def payload = [:]
+        if (args.imageName) payload.name = args.imageName
+        if (args.imagePorts) payload.ports = args.imagePorts.split(',').collect { it.trim().toInteger() }
+        def output = apiRequest("/images/${args.imageSpawn}/spawn", 'POST', payload, publicKey, secretKey)
+        println("${GREEN}Service spawned from image${RESET}")
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
+        return
+    }
+
+    if (args.imageClone) {
+        def payload = [:]
+        if (args.imageName) payload.name = args.imageName
+        def output = apiRequest("/images/${args.imageClone}/clone", 'POST', payload, publicKey, secretKey)
+        println("${GREEN}Image cloned${RESET}")
+        println(JsonOutput.prettyPrint(JsonOutput.toJson(output)))
+        return
+    }
+
+    System.err.println("${RED}Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID${RESET}")
+    System.exit(1)
+}
+
+def cmdLanguages(args) {
+    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    def result = languages([publicKey: publicKey, secretKey: secretKey, forceRefresh: true])
+    def langList = result.languages ?: []
+
+    if (args.jsonOutput) {
+        println(JsonOutput.toJson(langList))
+    } else {
+        langList.each { lang ->
+            println(lang)
+        }
+    }
+}
+
 def cmdKey(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey)
 
@@ -1540,6 +1649,9 @@ def parseArgs(argv) {
     def i = 0
     while (i < argv.size()) {
         switch (argv[i]) {
+            case 'languages':
+                args.command = 'languages'
+                break
             case 'session':
                 args.command = 'session'
                 break
@@ -1554,6 +1666,9 @@ def parseArgs(argv) {
                 break
             case 'snapshot':
                 args.command = 'snapshot'
+                break
+            case 'image':
+                args.command = 'image'
                 break
             case 'key':
                 args.command = 'key'
@@ -1605,6 +1720,7 @@ def parseArgs(argv) {
                 if (args.command == 'session') args.sessionList = true
                 else if (args.command == 'service') args.serviceList = true
                 else if (args.command == 'snapshot') args.snapshotList = true
+                else if (args.command == 'image') args.imageList = true
                 break
             case '--shell':
                 if (args.command == 'snapshot') args.snapshotShell = argv[++i]
@@ -1635,13 +1751,39 @@ def parseArgs(argv) {
                 break
             case '--info':
                 if (args.command == 'snapshot') args.snapshotInfo = argv[++i]
+                else if (args.command == 'image') args.imageInfo = argv[++i]
                 else args.serviceInfo = argv[++i]
                 break
             case '--delete':
                 if (args.command == 'snapshot') args.snapshotDelete = argv[++i]
+                else if (args.command == 'image') args.imageDelete = argv[++i]
                 break
             case '--clone':
-                args.snapshotClone = argv[++i]
+                if (args.command == 'image') args.imageClone = argv[++i]
+                else args.snapshotClone = argv[++i]
+                break
+            case '--lock':
+                if (args.command == 'image') args.imageLock = argv[++i]
+                break
+            case '--unlock':
+                if (args.command == 'image') args.imageUnlock = argv[++i]
+                break
+            case '--publish':
+                if (args.command == 'image') args.imagePublish = argv[++i]
+                break
+            case '--source-type':
+                args.imageSourceType = argv[++i]
+                break
+            case '--visibility':
+                if (args.command == 'image') {
+                    args.imageVisibility = argv[++i]
+                    if (i + 1 < argv.size() && !argv[i + 1].startsWith('-')) {
+                        args.imageVisibilityMode = argv[++i]
+                    }
+                }
+                break
+            case '--spawn':
+                if (args.command == 'image') args.imageSpawn = argv[++i]
                 break
             case '--type':
                 if (args.command == 'snapshot') args.snapshotType = argv[++i]
@@ -1649,10 +1791,12 @@ def parseArgs(argv) {
                 break
             case '--name':
                 if (args.command == 'snapshot') args.snapshotName = argv[++i]
+                else if (args.command == 'image') args.imageName = argv[++i]
                 else args.serviceName = argv[++i]
                 break
             case '--ports':
                 if (args.command == 'snapshot') args.snapshotPorts = argv[++i]
+                else if (args.command == 'image') args.imagePorts = argv[++i]
                 else args.servicePorts = argv[++i]
                 break
             case '--bootstrap':
@@ -1694,6 +1838,9 @@ def parseArgs(argv) {
             case '--extend':
                 args.keyExtend = true
                 break
+            case '--json':
+                args.jsonOutput = true
+                break
             default:
                 if (argv[i].startsWith('-')) {
                     System.err.println("${RED}Unknown option: ${argv[i]}${RESET}")
@@ -1716,6 +1863,8 @@ Usage: groovy un.groovy [options] <source_file>
        groovy un.groovy session [options]
        groovy un.groovy service [options]
        groovy un.groovy service env <action> <service_id> [options]
+       groovy un.groovy image [options]
+       groovy un.groovy languages [--json]
        groovy un.groovy key [options]
 
 Execute options:
@@ -1765,6 +1914,23 @@ Vault commands:
 Key options:
   --extend            Open browser to extend key
 
+Image options:
+  --list              List images
+  --info ID           Get image details
+  --delete ID         Delete an image
+  --lock ID           Lock image to prevent deletion
+  --unlock ID         Unlock image
+  --publish ID        Publish image from service/snapshot (requires --source-type)
+  --source-type TYPE  Source type: service or snapshot
+  --visibility ID MODE  Set visibility: private, unlisted, or public
+  --spawn ID          Spawn new service from image
+  --clone ID          Clone an image
+  --name NAME         Name for spawned service or cloned image
+  --ports PORTS       Ports for spawned service
+
+Languages options:
+  --json              Output as JSON array
+
 Library Usage:
   import un
   def result = un.execute("python", 'print("Hello")')
@@ -1779,7 +1945,9 @@ Library Usage:
 try {
     def args = parseArgs(this.args as List)
 
-    if (args.command == 'session') {
+    if (args.command == 'languages') {
+        cmdLanguages(args)
+    } else if (args.command == 'session') {
         cmdSession(args)
     } else if (args.command == 'service') {
         if (args.envAction && args.envTarget) {
@@ -1789,6 +1957,8 @@ try {
         }
     } else if (args.command == 'snapshot') {
         cmdSnapshot(args)
+    } else if (args.command == 'image') {
+        cmdImage(args)
     } else if (args.command == 'key') {
         cmdKey(args)
     } else if (args.sourceFile || args.inlineLang) {

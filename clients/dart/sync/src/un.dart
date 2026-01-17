@@ -82,6 +82,7 @@ class Args {
   String? sessionShell;
   String? sessionKill;
   bool serviceList = false;
+  bool languagesJson = false;
   String? serviceName;
   String? servicePorts;
   String? serviceType;
@@ -103,6 +104,20 @@ class Args {
   String? envFile;
   String? envAction;
   String? envTarget;
+  // Image command options
+  bool imageList = false;
+  String? imageInfo;
+  String? imageDelete;
+  String? imageLock;
+  String? imageUnlock;
+  String? imagePublish;
+  String? imageSourceType;
+  String? imageVisibility;
+  String? imageVisibilityMode;
+  String? imageSpawn;
+  String? imageClone;
+  String? imageName;
+  String? imagePorts;
 }
 
 List<String?> getApiKeys(String? argsKey) {
@@ -702,6 +717,118 @@ Future<void> cmdService(Args args) async {
   exit(1);
 }
 
+Future<void> cmdLanguages(Args args) async {
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
+
+  final result = await apiRequestCurl('/languages', 'GET', null, publicKey, secretKey);
+  final languages = result['languages'] as List? ?? [];
+
+  if (args.languagesJson) {
+    // JSON output: print as array
+    print(jsonEncode(languages));
+  } else {
+    // Default: one language per line
+    for (final lang in languages) {
+      print(lang.toString());
+    }
+  }
+}
+
+Future<void> cmdImage(Args args) async {
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
+
+  if (args.imageList) {
+    final result = await apiRequestCurl('/images', 'GET', null, publicKey, secretKey);
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.imageInfo != null) {
+    final result = await apiRequestCurl('/images/${args.imageInfo}', 'GET', null, publicKey, secretKey);
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.imageDelete != null) {
+    await apiRequestCurl('/images/${args.imageDelete}', 'DELETE', null, publicKey, secretKey);
+    print('${green}Image deleted: ${args.imageDelete}$reset');
+    return;
+  }
+
+  if (args.imageLock != null) {
+    await apiRequestCurl('/images/${args.imageLock}/lock', 'POST', null, publicKey, secretKey);
+    print('${green}Image locked: ${args.imageLock}$reset');
+    return;
+  }
+
+  if (args.imageUnlock != null) {
+    await apiRequestCurl('/images/${args.imageUnlock}/unlock', 'POST', null, publicKey, secretKey);
+    print('${green}Image unlocked: ${args.imageUnlock}$reset');
+    return;
+  }
+
+  if (args.imagePublish != null) {
+    if (args.imageSourceType == null) {
+      stderr.writeln('${red}Error: --source-type required (service or snapshot)$reset');
+      exit(1);
+    }
+    final payload = <String, dynamic>{
+      'source_type': args.imageSourceType,
+      'source_id': args.imagePublish,
+    };
+    if (args.imageName != null) {
+      payload['name'] = args.imageName;
+    }
+    final result = await apiRequestCurl('/images/publish', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Image published$reset');
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.imageVisibility != null) {
+    if (args.imageVisibilityMode == null) {
+      stderr.writeln('${red}Error: --visibility requires MODE (private, unlisted, or public)$reset');
+      exit(1);
+    }
+    final payload = {'visibility': args.imageVisibilityMode};
+    await apiRequestCurl('/images/${args.imageVisibility}/visibility', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Image visibility set to ${args.imageVisibilityMode}$reset');
+    return;
+  }
+
+  if (args.imageSpawn != null) {
+    final payload = <String, dynamic>{};
+    if (args.imageName != null) {
+      payload['name'] = args.imageName;
+    }
+    if (args.imagePorts != null) {
+      payload['ports'] = args.imagePorts!.split(',').map((p) => int.parse(p.trim())).toList();
+    }
+    final result = await apiRequestCurl('/images/${args.imageSpawn}/spawn', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Service spawned from image$reset');
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.imageClone != null) {
+    final payload = <String, dynamic>{};
+    if (args.imageName != null) {
+      payload['name'] = args.imageName;
+    }
+    final result = await apiRequestCurl('/images/${args.imageClone}/clone', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Image cloned$reset');
+    print(jsonEncode(result));
+    return;
+  }
+
+  stderr.writeln('${red}Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID$reset');
+  exit(1);
+}
+
 Future<void> cmdKey(Args args) async {
   final keys = getApiKeys(args.apiKey);
   final publicKey = keys[0]!;
@@ -771,8 +898,19 @@ Args parseArgs(List<String> argv) {
       case 'service':
         args.command = 'service';
         break;
+      case 'image':
+        args.command = 'image';
+        break;
       case 'key':
         args.command = 'key';
+        break;
+      case 'languages':
+        args.command = 'languages';
+        break;
+      case '--json':
+        if (args.command == 'languages') {
+          args.languagesJson = true;
+        }
         break;
       case '-k':
       case '--api-key':
@@ -808,6 +946,8 @@ Args parseArgs(List<String> argv) {
           args.sessionList = true;
         } else if (args.command == 'service') {
           args.serviceList = true;
+        } else if (args.command == 'image') {
+          args.imageList = true;
         }
         break;
       case '-s':
@@ -818,10 +958,18 @@ Args parseArgs(List<String> argv) {
         args.sessionKill = argv[++i];
         break;
       case '--name':
-        args.serviceName = argv[++i];
+        if (args.command == 'image') {
+          args.imageName = argv[++i];
+        } else {
+          args.serviceName = argv[++i];
+        }
         break;
       case '--ports':
-        args.servicePorts = argv[++i];
+        if (args.command == 'image') {
+          args.imagePorts = argv[++i];
+        } else {
+          args.servicePorts = argv[++i];
+        }
         break;
       case '--type':
         args.serviceType = argv[++i];
@@ -832,9 +980,7 @@ Args parseArgs(List<String> argv) {
       case '--bootstrap-file':
         args.serviceBootstrapFile = argv[++i];
         break;
-      case '--info':
-        args.serviceInfo = argv[++i];
-        break;
+      // --info handled below in the image command section
       case '--logs':
         args.serviceLogs = argv[++i];
         break;
@@ -874,6 +1020,54 @@ Args parseArgs(List<String> argv) {
       case '--env-file':
         args.envFile = argv[++i];
         break;
+      case '--info':
+        if (args.command == 'service') {
+          args.serviceInfo = argv[++i];
+        } else if (args.command == 'image') {
+          args.imageInfo = argv[++i];
+        }
+        break;
+      case '--delete':
+        if (args.command == 'image') {
+          args.imageDelete = argv[++i];
+        }
+        break;
+      case '--lock':
+        if (args.command == 'image') {
+          args.imageLock = argv[++i];
+        }
+        break;
+      case '--unlock':
+        if (args.command == 'image') {
+          args.imageUnlock = argv[++i];
+        }
+        break;
+      case '--publish':
+        if (args.command == 'image') {
+          args.imagePublish = argv[++i];
+        }
+        break;
+      case '--source-type':
+        args.imageSourceType = argv[++i];
+        break;
+      case '--visibility':
+        if (args.command == 'image') {
+          args.imageVisibility = argv[++i];
+          if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+            args.imageVisibilityMode = argv[++i];
+          }
+        }
+        break;
+      case '--spawn':
+        if (args.command == 'image') {
+          args.imageSpawn = argv[++i];
+        }
+        break;
+      case '--clone':
+        if (args.command == 'image') {
+          args.imageClone = argv[++i];
+        }
+        break;
       case 'env':
         if (args.command == 'service' && i + 1 < argv.length) {
           args.envAction = argv[++i];
@@ -900,7 +1094,9 @@ void printHelp() {
 Usage: dart un.dart [options] <source_file>
        dart un.dart session [options]
        dart un.dart service [options]
+       dart un.dart image [options]
        dart un.dart key [options]
+       dart un.dart languages [--json]
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -941,8 +1137,25 @@ Service env commands:
   env export ID     Export vault contents
   env delete ID     Delete vault
 
+Image options:
+  -l, --list        List all images
+  --info ID         Get image details
+  --delete ID       Delete an image
+  --lock ID         Lock image to prevent deletion
+  --unlock ID       Unlock image
+  --publish ID      Publish image from service/snapshot (requires --source-type)
+  --source-type TYPE    Source type: service or snapshot
+  --visibility ID MODE  Set visibility: private, unlisted, or public
+  --spawn ID        Spawn new service from image
+  --clone ID        Clone an image
+  --name NAME       Name for spawned service or cloned image
+  --ports PORTS     Ports for spawned service
+
 Key options:
   --extend          Open browser to extend key
+
+Languages options:
+  --json            Output as JSON array
 ''');
 }
 
@@ -954,8 +1167,12 @@ void main(List<String> arguments) async {
       await cmdSession(args);
     } else if (args.command == 'service') {
       await cmdService(args);
+    } else if (args.command == 'image') {
+      await cmdImage(args);
     } else if (args.command == 'key') {
       await cmdKey(args);
+    } else if (args.command == 'languages') {
+      await cmdLanguages(args);
     } else if (args.sourceFile != null) {
       await cmdExecute(args);
     } else {

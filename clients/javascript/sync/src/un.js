@@ -1410,6 +1410,7 @@ USAGE:
   node un.js service [options]           Service management
   node un.js snapshot [options]          Snapshot management
   node un.js key                         Check API key validity
+  node un.js languages [--json]          List available languages
 
 GLOBAL OPTIONS:
   -s, --shell <lang>      Language for inline code execution
@@ -1534,6 +1535,14 @@ function parseArgs(args) {
     // Snapshot options
     delete: null,
     clone: null,
+    // Image options
+    publish: null,
+    sourceType: null,
+    visibility: null,
+    visibilityMode: null,
+    spawn: null,
+    // Languages options
+    json: false,
   };
 
   let i = 0;
@@ -1560,6 +1569,16 @@ function parseArgs(args) {
     }
     if (arg === 'key' && result.command === null) {
       result.command = 'key';
+      i++;
+      continue;
+    }
+    if (arg === 'languages' && result.command === null) {
+      result.command = 'languages';
+      i++;
+      continue;
+    }
+    if (arg === 'image' && result.command === null) {
+      result.command = 'image';
       i++;
       continue;
     }
@@ -1614,6 +1633,9 @@ function parseArgs(args) {
       i++;
     } else if (arg === '-y' || arg === '--yes') {
       result.yes = true;
+      i++;
+    } else if (arg === '--json') {
+      result.json = true;
       i++;
     } else if (arg === '-l' || arg === '--list') {
       result.list = true;
@@ -1711,6 +1733,22 @@ function parseArgs(args) {
       i++;
     } else if (arg === '--clone') {
       result.clone = args[++i];
+      i++;
+    } else if (arg === '--publish') {
+      result.publish = args[++i];
+      i++;
+    } else if (arg === '--source-type') {
+      result.sourceType = args[++i];
+      i++;
+    } else if (arg === '--visibility') {
+      result.visibility = args[++i];
+      // Next arg might be the mode
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        result.visibilityMode = args[++i];
+      }
+      i++;
+    } else if (arg === '--spawn') {
+      result.spawn = args[++i];
       i++;
     } else if (arg.startsWith('-')) {
       console.error(`Error: Unknown option: ${arg}`);
@@ -2137,6 +2175,110 @@ async function handleSnapshot(opts) {
 }
 
 /**
+ * Handle image command.
+ */
+async function handleImage(opts) {
+  const pk = opts.publicKey;
+  const sk = opts.secretKey;
+
+  // List images
+  if (opts.list) {
+    const images = await listImages(null, pk, sk);
+    formatTable(images, [
+      { key: 'image_id', label: 'ID' },
+      { key: 'name', label: 'NAME' },
+      { key: 'visibility', label: 'VISIBILITY' },
+      { key: 'source_type', label: 'SOURCE' },
+      { key: 'created_at', label: 'CREATED', getter: (s) => formatTimestamp(s.created_at) },
+    ]);
+    return;
+  }
+
+  // Get image info
+  if (opts.info) {
+    const image = await getImage(opts.info, pk, sk);
+    console.log(JSON.stringify(image, null, 2));
+    return;
+  }
+
+  // Delete image
+  if (opts.delete) {
+    await deleteImage(opts.delete, pk, sk);
+    console.log(`Image ${opts.delete} deleted.`);
+    return;
+  }
+
+  // Lock image
+  if (opts.lock) {
+    await lockImage(opts.lock, pk, sk);
+    console.log(`Image ${opts.lock} locked.`);
+    return;
+  }
+
+  // Unlock image
+  if (opts.unlock) {
+    await unlockImage(opts.unlock, pk, sk);
+    console.log(`Image ${opts.unlock} unlocked.`);
+    return;
+  }
+
+  // Publish image
+  if (opts.publish) {
+    if (!opts.sourceType) {
+      console.error('Error: --source-type required for --publish');
+      process.exit(2);
+    }
+    const pubOpts = { publicKey: pk, secretKey: sk };
+    if (opts.name) pubOpts.name = opts.name;
+    const result = await imagePublish(opts.sourceType, opts.publish, pubOpts);
+    const imageId = result.image_id || result.id;
+    console.log(`Image published: ${imageId}`);
+    return;
+  }
+
+  // Set visibility
+  if (opts.visibility && opts.visibilityMode) {
+    if (!['private', 'unlisted', 'public'].includes(opts.visibilityMode)) {
+      console.error('Error: visibility must be private, unlisted, or public');
+      process.exit(2);
+    }
+    await setImageVisibility(opts.visibility, opts.visibilityMode, pk, sk);
+    console.log(`Image ${opts.visibility} visibility set to ${opts.visibilityMode}.`);
+    return;
+  }
+
+  // Spawn from image
+  if (opts.spawn) {
+    if (!opts.name) {
+      console.error('Error: --name required for --spawn');
+      process.exit(2);
+    }
+    const spawnOpts = { publicKey: pk, secretKey: sk, name: opts.name };
+    if (opts.ports) {
+      spawnOpts.ports = opts.ports.split(',').map((p) => parseInt(p.trim(), 10));
+    }
+    const result = await spawnFromImage(opts.spawn, spawnOpts);
+    const serviceId = result.service_id || result.id;
+    console.log(`Service spawned: ${serviceId}`);
+    return;
+  }
+
+  // Clone image
+  if (opts.clone) {
+    const cloneOpts = { publicKey: pk, secretKey: sk };
+    if (opts.name) cloneOpts.name = opts.name;
+    const result = await cloneImage(opts.clone, cloneOpts);
+    const imageId = result.image_id || result.id;
+    console.log(`Image cloned: ${imageId}`);
+    return;
+  }
+
+  // No action specified
+  console.error('Error: No image action specified. Use --list, --info, --delete, --publish, --spawn, --clone, etc.');
+  process.exit(2);
+}
+
+/**
  * Handle key command.
  */
 async function handleKey(opts) {
@@ -2149,6 +2291,23 @@ async function handleKey(opts) {
     const [pk] = resolveCredentials(opts.publicKey, opts.secretKey);
     console.log(`Public Key: ${pk}`);
     console.log('Key validation endpoint returned error - key may still be valid.');
+  }
+}
+
+/**
+ * Handle languages command.
+ */
+async function handleLanguages(opts) {
+  const languages = await getLanguages(opts.publicKey, opts.secretKey);
+
+  if (opts.json) {
+    // Output as JSON array
+    console.log(JSON.stringify(languages));
+  } else {
+    // Output one language per line (pipe-friendly)
+    for (const lang of languages) {
+      console.log(lang);
+    }
   }
 }
 
@@ -2269,8 +2428,14 @@ async function cliMain() {
       case 'snapshot':
         await handleSnapshot(opts);
         break;
+      case 'image':
+        await handleImage(opts);
+        break;
       case 'key':
         await handleKey(opts);
+        break;
+      case 'languages':
+        await handleLanguages(opts);
         break;
       default:
         await handleExecute(opts);

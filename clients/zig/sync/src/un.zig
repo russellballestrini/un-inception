@@ -316,12 +316,24 @@ pub fn main() !u8 {
         std.debug.print("       {s} session [options]\n", .{args[0]});
         std.debug.print("       {s} service [options]\n", .{args[0]});
         std.debug.print("       {s} service env <action> <service_id> [options]\n", .{args[0]});
+        std.debug.print("       {s} image [options]\n", .{args[0]});
         std.debug.print("       {s} key [--extend]\n", .{args[0]});
+        std.debug.print("       {s} languages [--json]\n", .{args[0]});
         std.debug.print("\nVault commands:\n", .{});
         std.debug.print("  service env status <id>   Check vault status\n", .{});
         std.debug.print("  service env set <id>      Set vault (-e KEY=VAL or --env-file FILE)\n", .{});
         std.debug.print("  service env export <id>   Export vault contents\n", .{});
         std.debug.print("  service env delete <id>   Delete vault\n", .{});
+        std.debug.print("\nImage commands:\n", .{});
+        std.debug.print("  image --list              List all images\n", .{});
+        std.debug.print("  image --info ID           Get image details\n", .{});
+        std.debug.print("  image --delete ID         Delete an image\n", .{});
+        std.debug.print("  image --lock ID           Lock image to prevent deletion\n", .{});
+        std.debug.print("  image --unlock ID         Unlock image\n", .{});
+        std.debug.print("  image --publish ID --source-type TYPE  Publish from service/snapshot\n", .{});
+        std.debug.print("  image --visibility ID MODE  Set visibility (private/unlisted/public)\n", .{});
+        std.debug.print("  image --spawn ID --name NAME  Spawn service from image\n", .{});
+        std.debug.print("  image --clone ID --name NAME  Clone an image\n", .{});
         return 1;
     }
 
@@ -703,6 +715,243 @@ pub fn main() !u8 {
                 _ = std.c.system(cmd.ptr);
                 std.debug.print("\n", .{});
             }
+        }
+        return 0;
+    }
+
+    // Handle languages command
+    if (mem.eql(u8, args[1], "languages")) {
+        var json_output = false;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            if (mem.eql(u8, args[i], "--json")) {
+                json_output = true;
+            } else if (mem.eql(u8, args[i], "-k") and i + 1 < args.len) {
+                i += 1;
+                allocator.free(public_key);
+                public_key = try allocator.dupe(u8, args[i]);
+            }
+        }
+
+        // Fetch languages from API
+        const json_file = "/tmp/unsandbox_languages.json";
+        const auth_headers = try buildAuthCmd(allocator, "GET", "/languages", "", public_key, secret_key);
+        defer allocator.free(auth_headers);
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/languages' {s} -o {s}", .{ API_BASE, auth_headers, json_file });
+        defer allocator.free(cmd);
+        _ = std.c.system(cmd.ptr);
+
+        // Read the JSON response
+        const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
+            std.debug.print("{s}Error reading languages response: {}{s}\n", .{ RED, err, RESET });
+            std.fs.cwd().deleteFile(json_file) catch {};
+            return 1;
+        };
+        defer allocator.free(json_content);
+        std.fs.cwd().deleteFile(json_file) catch {};
+
+        if (json_output) {
+            // Find and print just the languages array
+            const arr_prefix = "\"languages\":[";
+            if (mem.indexOf(u8, json_content, arr_prefix)) |start_idx| {
+                const arr_start = start_idx + arr_prefix.len - 1; // Include the '['
+                if (mem.indexOfPos(u8, json_content, arr_start, "]")) |end_idx| {
+                    std.debug.print("{s}\n", .{json_content[arr_start .. end_idx + 1]});
+                } else {
+                    std.debug.print("{s}\n", .{json_content});
+                }
+            } else {
+                std.debug.print("{s}\n", .{json_content});
+            }
+        } else {
+            // Parse and print one language per line
+            const arr_prefix = "\"languages\":[";
+            if (mem.indexOf(u8, json_content, arr_prefix)) |start_idx| {
+                const arr_start = start_idx + arr_prefix.len;
+                if (mem.indexOfPos(u8, json_content, arr_start, "]")) |end_idx| {
+                    const arr_content = json_content[arr_start..end_idx];
+                    // Split by comma and extract language names
+                    var it = mem.splitSequence(u8, arr_content, ",");
+                    while (it.next()) |item| {
+                        // Trim whitespace and quotes
+                        const trimmed = mem.trim(u8, item, &std.ascii.whitespace);
+                        if (trimmed.len > 2 and trimmed[0] == '"') {
+                            // Remove quotes
+                            const lang = trimmed[1 .. trimmed.len - 1];
+                            std.debug.print("{s}\n", .{lang});
+                        }
+                    }
+                } else {
+                    std.debug.print("{s}\n", .{json_content});
+                }
+            } else {
+                std.debug.print("{s}\n", .{json_content});
+            }
+        }
+        return 0;
+    }
+
+    // Handle image command
+    if (mem.eql(u8, args[1], "image")) {
+        var list = false;
+        var info: ?[]const u8 = null;
+        var delete: ?[]const u8 = null;
+        var lock: ?[]const u8 = null;
+        var unlock: ?[]const u8 = null;
+        var publish: ?[]const u8 = null;
+        var source_type: ?[]const u8 = null;
+        var visibility_id: ?[]const u8 = null;
+        var visibility_mode: ?[]const u8 = null;
+        var spawn: ?[]const u8 = null;
+        var clone: ?[]const u8 = null;
+        var name: ?[]const u8 = null;
+        var ports: ?[]const u8 = null;
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            if (mem.eql(u8, args[i], "--list") or mem.eql(u8, args[i], "-l")) {
+                list = true;
+            } else if (mem.eql(u8, args[i], "--info") and i + 1 < args.len) {
+                i += 1;
+                info = args[i];
+            } else if (mem.eql(u8, args[i], "--delete") and i + 1 < args.len) {
+                i += 1;
+                delete = args[i];
+            } else if (mem.eql(u8, args[i], "--lock") and i + 1 < args.len) {
+                i += 1;
+                lock = args[i];
+            } else if (mem.eql(u8, args[i], "--unlock") and i + 1 < args.len) {
+                i += 1;
+                unlock = args[i];
+            } else if (mem.eql(u8, args[i], "--publish") and i + 1 < args.len) {
+                i += 1;
+                publish = args[i];
+            } else if (mem.eql(u8, args[i], "--source-type") and i + 1 < args.len) {
+                i += 1;
+                source_type = args[i];
+            } else if (mem.eql(u8, args[i], "--visibility") and i + 2 < args.len) {
+                i += 1;
+                visibility_id = args[i];
+                i += 1;
+                visibility_mode = args[i];
+            } else if (mem.eql(u8, args[i], "--spawn") and i + 1 < args.len) {
+                i += 1;
+                spawn = args[i];
+            } else if (mem.eql(u8, args[i], "--clone") and i + 1 < args.len) {
+                i += 1;
+                clone = args[i];
+            } else if (mem.eql(u8, args[i], "--name") and i + 1 < args.len) {
+                i += 1;
+                name = args[i];
+            } else if (mem.eql(u8, args[i], "--ports") and i + 1 < args.len) {
+                i += 1;
+                ports = args[i];
+            } else if (mem.eql(u8, args[i], "-k") and i + 1 < args.len) {
+                i += 1;
+                allocator.free(public_key);
+                public_key = try allocator.dupe(u8, args[i]);
+            }
+        }
+
+        if (list) {
+            const auth_headers = try buildAuthCmd(allocator, "GET", "/images", "", public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/images' {s}", .{ API_BASE, auth_headers });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n", .{});
+        } else if (info) |inf| {
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{inf});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "GET", path, "", public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/images/{s}' {s}", .{ API_BASE, inf, auth_headers });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n", .{});
+        } else if (delete) |del_id| {
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{del_id});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "DELETE", path, "", public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}/images/{s}' {s}", .{ API_BASE, del_id, auth_headers });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n{s}Image deleted: {s}{s}\n", .{ GREEN, del_id, RESET });
+        } else if (lock) |lock_id| {
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}/lock", .{lock_id});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "POST", path, "", public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/lock' {s}", .{ API_BASE, lock_id, auth_headers });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n{s}Image locked: {s}{s}\n", .{ GREEN, lock_id, RESET });
+        } else if (unlock) |unlock_id| {
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}/unlock", .{unlock_id});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "POST", path, "", public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/unlock' {s}", .{ API_BASE, unlock_id, auth_headers });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n{s}Image unlocked: {s}{s}\n", .{ GREEN, unlock_id, RESET });
+        } else if (publish) |pub_id| {
+            if (source_type == null) {
+                std.debug.print("{s}Error: --publish requires --source-type (service or snapshot){s}\n", .{ RED, RESET });
+                return 1;
+            }
+            const nm = name orelse "";
+            const json = try std.fmt.allocPrint(allocator, "{{\"source_type\":\"{s}\",\"source_id\":\"{s}\",\"name\":\"{s}\"}}", .{ source_type.?, pub_id, nm });
+            defer allocator.free(json);
+            const auth_headers = try buildAuthCmd(allocator, "POST", "/images/publish", json, public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/publish' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, auth_headers, json });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n", .{});
+        } else if (visibility_id) |vis_id| {
+            if (visibility_mode == null) {
+                std.debug.print("{s}Error: --visibility requires a mode (private, unlisted, or public){s}\n", .{ RED, RESET });
+                return 1;
+            }
+            const json = try std.fmt.allocPrint(allocator, "{{\"visibility\":\"{s}\"}}", .{visibility_mode.?});
+            defer allocator.free(json);
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}/visibility", .{vis_id});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/visibility' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, vis_id, auth_headers, json });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n{s}Image visibility set to {s}: {s}{s}\n", .{ GREEN, visibility_mode.?, vis_id, RESET });
+        } else if (spawn) |spawn_id| {
+            const nm = name orelse "";
+            const pt = ports orelse "";
+            const json = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"ports\":[{s}]}}", .{ nm, pt });
+            defer allocator.free(json);
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}/spawn", .{spawn_id});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/spawn' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, spawn_id, auth_headers, json });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n", .{});
+        } else if (clone) |clone_id| {
+            const nm = name orelse "";
+            const json = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\"}}", .{nm});
+            defer allocator.free(json);
+            const path = try std.fmt.allocPrint(allocator, "/images/{s}/clone", .{clone_id});
+            defer allocator.free(path);
+            const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
+            defer allocator.free(auth_headers);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/clone' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, clone_id, auth_headers, json });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+            std.debug.print("\n", .{});
+        } else {
+            std.debug.print("{s}Error: No image action specified. Use --list, --info, --delete, --publish, etc.{s}\n", .{ RED, RESET });
+            return 1;
         }
         return 0;
     }

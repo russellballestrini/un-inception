@@ -1578,9 +1578,15 @@ module Un
       when 'snapshot'
         ARGV.shift
         cli_snapshot(options)
+      when 'image'
+        ARGV.shift
+        cli_image(options)
       when 'key'
         ARGV.shift
         cli_key(options)
+      when 'languages'
+        ARGV.shift
+        cli_languages(options)
       when '-h', '--help', 'help'
         cli_show_help
         exit(EXIT_SUCCESS)
@@ -1615,6 +1621,7 @@ module Un
           ruby un.rb service [options]            Manage services
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
+          ruby un.rb languages [--json]           List available languages
 
         Global Options:
           -s, --shell LANG       Language for inline code
@@ -2387,6 +2394,196 @@ module Un
       HELP
     end
 
+    # Image subcommand
+    def cli_image(options)
+      image_opts = {
+        list: false,
+        info: nil,
+        delete: nil,
+        lock: nil,
+        unlock: nil,
+        publish: nil,
+        source_type: nil,
+        visibility: nil,
+        visibility_mode: nil,
+        spawn: nil,
+        clone: nil,
+        name: nil,
+        ports: nil
+      }
+
+      parser = parse_global_options(options) do
+        cli_image_help
+      end
+
+      parser.on('-l', '--list', 'List all images') do
+        image_opts[:list] = true
+      end
+      parser.on('--info ID', 'Get image details') do |v|
+        image_opts[:info] = v
+      end
+      parser.on('--delete ID', 'Delete image') do |v|
+        image_opts[:delete] = v
+      end
+      parser.on('--lock ID', 'Prevent deletion') do |v|
+        image_opts[:lock] = v
+      end
+      parser.on('--unlock ID', 'Allow deletion') do |v|
+        image_opts[:unlock] = v
+      end
+      parser.on('--publish ID', 'Publish image from service/snapshot') do |v|
+        image_opts[:publish] = v
+      end
+      parser.on('--source-type TYPE', 'Source type: service or snapshot') do |v|
+        image_opts[:source_type] = v
+      end
+      parser.on('--visibility ID MODE', 'Set visibility (private, unlisted, public)') do |v|
+        image_opts[:visibility] = v
+      end
+      parser.on('--spawn ID', 'Spawn new service from image') do |v|
+        image_opts[:spawn] = v
+      end
+      parser.on('--clone ID', 'Clone an image') do |v|
+        image_opts[:clone] = v
+      end
+      parser.on('--name NAME', 'Name for spawned service or cloned image') do |v|
+        image_opts[:name] = v
+      end
+      parser.on('--ports PORTS', 'Ports for spawned service') do |v|
+        image_opts[:ports] = v.split(',').map(&:to_i)
+      end
+
+      parser.parse!(ARGV)
+
+      # Get visibility mode from remaining args if --visibility was used
+      if image_opts[:visibility] && ARGV.length > 0 && !ARGV[0].start_with?('-')
+        image_opts[:visibility_mode] = ARGV.shift
+      end
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+
+      if image_opts[:list]
+        images = list_images(**creds)
+        cli_print_images_table(images)
+      elsif image_opts[:info]
+        image = get_image(image_opts[:info], **creds)
+        cli_print_image_info(image)
+      elsif image_opts[:delete]
+        delete_image(image_opts[:delete], **creds)
+        puts "Image #{image_opts[:delete]} deleted"
+      elsif image_opts[:lock]
+        lock_image(image_opts[:lock], **creds)
+        puts "Image #{image_opts[:lock]} locked"
+      elsif image_opts[:unlock]
+        unlock_image(image_opts[:unlock], **creds)
+        puts "Image #{image_opts[:unlock]} unlocked"
+      elsif image_opts[:publish]
+        unless image_opts[:source_type]
+          $stderr.puts 'Error: --source-type required for --publish'
+          exit(EXIT_INVALID_ARGS)
+        end
+        result = image_publish(
+          image_opts[:source_type],
+          image_opts[:publish],
+          name: image_opts[:name],
+          **creds
+        )
+        image_id = result['image_id'] || result['id']
+        puts "Image published: #{image_id}"
+      elsif image_opts[:visibility] && image_opts[:visibility_mode]
+        unless %w[private unlisted public].include?(image_opts[:visibility_mode])
+          $stderr.puts 'Error: visibility must be private, unlisted, or public'
+          exit(EXIT_INVALID_ARGS)
+        end
+        set_image_visibility(image_opts[:visibility], image_opts[:visibility_mode], **creds)
+        puts "Image #{image_opts[:visibility]} visibility set to #{image_opts[:visibility_mode]}"
+      elsif image_opts[:spawn]
+        unless image_opts[:name]
+          $stderr.puts 'Error: --name required for --spawn'
+          exit(EXIT_INVALID_ARGS)
+        end
+        result = spawn_from_image(
+          image_opts[:spawn],
+          name: image_opts[:name],
+          ports: image_opts[:ports],
+          **creds
+        )
+        service_id = result['service_id'] || result['id']
+        puts "Service spawned: #{service_id}"
+      elsif image_opts[:clone]
+        result = clone_image(
+          image_opts[:clone],
+          name: image_opts[:name],
+          **creds
+        )
+        image_id = result['image_id'] || result['id']
+        puts "Image cloned: #{image_id}"
+      else
+        cli_image_help
+        exit(EXIT_INVALID_ARGS)
+      end
+    end
+
+    # Print images table
+    def cli_print_images_table(images)
+      if images.empty?
+        puts 'No images'
+        return
+      end
+
+      puts format('%-38s %-20s %-10s %-10s %-20s', 'ID', 'NAME', 'VISIBILITY', 'SOURCE', 'CREATED')
+      images.each do |img|
+        puts format('%-38s %-20s %-10s %-10s %-20s',
+                    img['image_id'] || img['id'] || '-',
+                    (img['name'] || '-')[0..19],
+                    img['visibility'] || 'private',
+                    (img['source_type'] || '-')[0..9],
+                    img['created_at'] || '-')
+      end
+    end
+
+    # Print image info
+    def cli_print_image_info(image)
+      puts "ID: #{image['image_id'] || image['id']}"
+      puts "Name: #{image['name']}" if image['name']
+      puts "Visibility: #{image['visibility']}" if image['visibility']
+      puts "Source Type: #{image['source_type']}" if image['source_type']
+      puts "Source ID: #{image['source_id']}" if image['source_id']
+      puts "Size: #{image['size']}" if image['size']
+      puts "Locked: #{image['locked']}" if image.key?('locked')
+      puts "Created: #{image['created_at']}" if image['created_at']
+    end
+
+    # Image help
+    def cli_image_help
+      puts <<~HELP
+        Image Management
+
+        Usage:
+          ruby un.rb image [options]
+
+        Options:
+          -l, --list             List all images
+          --info ID              Get image details
+          --delete ID            Delete image
+          --lock ID              Prevent deletion
+          --unlock ID            Allow deletion
+          --publish ID           Publish image (requires --source-type)
+          --source-type TYPE     Source type: service or snapshot
+          --visibility ID MODE   Set visibility (private, unlisted, public)
+          --spawn ID             Spawn new service from image
+          --clone ID             Clone an image
+          --name NAME            Name for spawned service or cloned image
+          --ports PORTS          Ports for spawned service
+
+        Examples:
+          ruby un.rb image --list
+          ruby un.rb image --publish svc123 --source-type service --name myimage
+          ruby un.rb image --spawn img123 --name myservice --ports 80,443
+          ruby un.rb image --visibility img123 public
+      HELP
+    end
+
     # Key command
     def cli_key(options)
       parser = parse_global_options(options) do
@@ -2412,6 +2609,32 @@ module Un
           exit(EXIT_AUTH_ERROR)
         end
         raise
+      end
+    end
+
+    # Languages command - list available languages
+    def cli_languages(options)
+      json_output = false
+      parser = parse_global_options(options) do
+        puts 'Usage: ruby un.rb languages [--json]'
+        puts
+        puts 'List available programming languages'
+      end
+      parser.on('--json', 'Output as JSON array') do
+        json_output = true
+      end
+      parser.parse!(ARGV)
+
+      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
+      languages = get_languages(**creds)
+
+      if json_output
+        # Output as JSON array
+        require 'json'
+        puts JSON.generate(languages)
+      else
+        # Output one language per line (pipe-friendly)
+        languages.each { |lang| puts lang }
       end
     end
   end

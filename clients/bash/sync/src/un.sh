@@ -164,13 +164,219 @@ detect_language() {
     esac
 }
 
+# Languages command
+cmd_languages() {
+    local json_output=0
+
+    # Parse arguments
+    for arg in "$@"; do
+        if [ "$arg" = "--json" ]; then
+            json_output=1
+        fi
+    done
+
+    local result=$(languages)
+
+    if [ "$json_output" -eq 1 ]; then
+        # JSON array output
+        echo "$result" | jq -c '.'
+    else
+        # One language per line (default)
+        echo "$result" | jq -r '.[]'
+    fi
+}
+
+# Image command
+cmd_image() {
+    local action=""
+    local id=""
+    local source_type=""
+    local visibility_mode=""
+    local name=""
+    local ports=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --list|-l)
+                action="list"
+                shift
+                ;;
+            --info)
+                action="info"
+                id="$2"
+                shift 2
+                ;;
+            --delete)
+                action="delete"
+                id="$2"
+                shift 2
+                ;;
+            --lock)
+                action="lock"
+                id="$2"
+                shift 2
+                ;;
+            --unlock)
+                action="unlock"
+                id="$2"
+                shift 2
+                ;;
+            --publish)
+                action="publish"
+                id="$2"
+                shift 2
+                ;;
+            --source-type)
+                source_type="$2"
+                shift 2
+                ;;
+            --visibility)
+                action="visibility"
+                id="$2"
+                visibility_mode="$3"
+                shift 3
+                ;;
+            --spawn)
+                action="spawn"
+                id="$2"
+                shift 2
+                ;;
+            --clone)
+                action="clone"
+                id="$2"
+                shift 2
+                ;;
+            --name)
+                name="$2"
+                shift 2
+                ;;
+            --ports)
+                ports="$2"
+                shift 2
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    case "$action" in
+        list)
+            result=$(api_request "GET" "/images" "")
+            echo "$result" | jq -r '.images[] | "\(.id)\t\(.name // "-")\t\(.visibility)\t\(.created_at)"' 2>/dev/null || echo "No images found"
+            ;;
+        info)
+            result=$(api_request "GET" "/images/$id" "")
+            echo "$result" | jq .
+            ;;
+        delete)
+            api_request "DELETE" "/images/$id" ""
+            echo "Image deleted successfully"
+            ;;
+        lock)
+            api_request "POST" "/images/$id/lock" "{}"
+            echo "Image locked successfully"
+            ;;
+        unlock)
+            api_request "POST" "/images/$id/unlock" "{}"
+            echo "Image unlocked successfully"
+            ;;
+        publish)
+            if [ -z "$source_type" ]; then
+                echo "Error: --source-type required for --publish" >&2
+                exit 1
+            fi
+            local body="{\"source_type\":\"$source_type\",\"source_id\":\"$id\""
+            if [ -n "$name" ]; then
+                body="$body,\"name\":\"$name\""
+            fi
+            body="$body}"
+            result=$(api_request "POST" "/images/publish" "$body")
+            echo "Image published successfully"
+            echo "$result" | jq -r '"Image ID: \(.id)"'
+            ;;
+        visibility)
+            if [ -z "$visibility_mode" ]; then
+                echo "Error: visibility mode required" >&2
+                exit 1
+            fi
+            api_request "POST" "/images/$id/visibility" "{\"visibility\":\"$visibility_mode\"}"
+            echo "Image visibility set to $visibility_mode"
+            ;;
+        spawn)
+            local body="{"
+            local first=1
+            if [ -n "$name" ]; then
+                body="$body\"name\":\"$name\""
+                first=0
+            fi
+            if [ -n "$ports" ]; then
+                if [ "$first" -eq 0 ]; then
+                    body="$body,"
+                fi
+                body="$body\"ports\":[$ports]"
+            fi
+            body="$body}"
+            result=$(api_request "POST" "/images/$id/spawn" "$body")
+            echo "Service spawned from image"
+            echo "$result" | jq -r '"Service ID: \(.id)"'
+            ;;
+        clone)
+            local body="{"
+            if [ -n "$name" ]; then
+                body="$body\"name\":\"$name\""
+            fi
+            body="$body}"
+            result=$(api_request "POST" "/images/$id/clone" "$body")
+            echo "Image cloned successfully"
+            echo "$result" | jq -r '"Image ID: \(.id)"'
+            ;;
+        *)
+            echo "Error: Specify --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID" >&2
+            exit 1
+            ;;
+    esac
+}
+
 # CLI
 if [ $# -gt 0 ]; then
-    result=$(run "$1")
-    echo "$result" | jq -r '.stdout // empty'
-    echo "$result" | jq -r '.stderr // empty' >&2
-    exit "$(echo "$result" | jq -r '.exit_code // 0')"
+    case "$1" in
+        languages)
+            shift
+            cmd_languages "$@"
+            ;;
+        image)
+            shift
+            cmd_image "$@"
+            ;;
+        *)
+            result=$(run "$1")
+            echo "$result" | jq -r '.stdout // empty'
+            echo "$result" | jq -r '.stderr // empty' >&2
+            exit "$(echo "$result" | jq -r '.exit_code // 0')"
+            ;;
+    esac
 else
     echo "Usage: bash un.sh <file>" >&2
+    echo "       bash un.sh languages [--json]" >&2
+    echo "       bash un.sh image [options]" >&2
+    echo "" >&2
+    echo "Languages options:" >&2
+    echo "  --json              Output as JSON array" >&2
+    echo "" >&2
+    echo "Image options:" >&2
+    echo "  --list              List all images" >&2
+    echo "  --info ID           Get image details" >&2
+    echo "  --delete ID         Delete an image" >&2
+    echo "  --lock ID           Lock image to prevent deletion" >&2
+    echo "  --unlock ID         Unlock image" >&2
+    echo "  --publish ID        Publish image from service/snapshot" >&2
+    echo "  --source-type TYPE  Source type: service or snapshot" >&2
+    echo "  --visibility ID MODE  Set visibility: private, unlisted, public" >&2
+    echo "  --spawn ID          Spawn new service from image" >&2
+    echo "  --clone ID          Clone an image" >&2
+    echo "  --name NAME         Name for spawned service or cloned image" >&2
+    echo "  --ports PORTS       Ports for spawned service" >&2
     exit 1
 fi

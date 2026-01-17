@@ -913,6 +913,113 @@ sub cmd_key {
     validate_key($public_key, $secret_key, $options->{extend});
 }
 
+sub cmd_languages {
+    my ($options) = @_;
+    my ($public_key, $secret_key) = get_api_key($options->{api_key});
+
+    my $result = api_request('/languages', 'GET', undef, $public_key, $secret_key);
+    my $languages_list = $result->{languages} || [];
+
+    if ($options->{json}) {
+        # Output as JSON array
+        print encode_json($languages_list);
+        print "\n";
+    } else {
+        # Output one language per line
+        foreach my $lang (@$languages_list) {
+            print "$lang\n";
+        }
+    }
+}
+
+sub cmd_image {
+    my ($options) = @_;
+    my ($public_key, $secret_key) = get_api_key($options->{api_key});
+
+    if ($options->{list}) {
+        my $result = api_request('/images', 'GET', undef, $public_key, $secret_key);
+        print encode_json($result);
+        print "\n";
+        return;
+    }
+
+    if ($options->{info}) {
+        my $result = api_request("/images/$options->{info}", 'GET', undef, $public_key, $secret_key);
+        print encode_json($result);
+        print "\n";
+        return;
+    }
+
+    if ($options->{delete}) {
+        api_request("/images/$options->{delete}", 'DELETE', undef, $public_key, $secret_key);
+        print "${GREEN}Image deleted: $options->{delete}${RESET}\n";
+        return;
+    }
+
+    if ($options->{lock}) {
+        api_request("/images/$options->{lock}/lock", 'POST', undef, $public_key, $secret_key);
+        print "${GREEN}Image locked: $options->{lock}${RESET}\n";
+        return;
+    }
+
+    if ($options->{unlock}) {
+        api_request("/images/$options->{unlock}/unlock", 'POST', undef, $public_key, $secret_key);
+        print "${GREEN}Image unlocked: $options->{unlock}${RESET}\n";
+        return;
+    }
+
+    if ($options->{publish}) {
+        unless ($options->{source_type}) {
+            print STDERR "${RED}Error: --publish requires --source-type (service or snapshot)${RESET}\n";
+            exit 1;
+        }
+        my $payload = {
+            source_type => $options->{source_type},
+            source_id => $options->{publish}
+        };
+        $payload->{name} = $options->{name} if $options->{name};
+        my $result = api_request('/images/publish', 'POST', $payload, $public_key, $secret_key);
+        print "${GREEN}Image published${RESET}\n";
+        print encode_json($result);
+        print "\n";
+        return;
+    }
+
+    if ($options->{visibility_id} && $options->{visibility_mode}) {
+        my $payload = { visibility => $options->{visibility_mode} };
+        api_request("/images/$options->{visibility_id}/visibility", 'POST', $payload, $public_key, $secret_key);
+        print "${GREEN}Image visibility set to $options->{visibility_mode}: $options->{visibility_id}${RESET}\n";
+        return;
+    }
+
+    if ($options->{spawn}) {
+        my $payload = {};
+        $payload->{name} = $options->{name} if $options->{name};
+        if ($options->{ports}) {
+            my @ports = map { int($_) } split(',', $options->{ports});
+            $payload->{ports} = \@ports;
+        }
+        my $result = api_request("/images/$options->{spawn}/spawn", 'POST', $payload, $public_key, $secret_key);
+        print "${GREEN}Service spawned from image${RESET}\n";
+        print encode_json($result);
+        print "\n";
+        return;
+    }
+
+    if ($options->{clone}) {
+        my $payload = {};
+        $payload->{name} = $options->{name} if $options->{name};
+        my $result = api_request("/images/$options->{clone}/clone", 'POST', $payload, $public_key, $secret_key);
+        print "${GREEN}Image cloned${RESET}\n";
+        print encode_json($result);
+        print "\n";
+        return;
+    }
+
+    print STDERR "${RED}Error: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone${RESET}\n";
+    exit 1;
+}
+
 sub main {
     my %options = (
         command => undef,
@@ -951,13 +1058,24 @@ sub main {
         extend => 0,
         env_file => undef,
         env_action => undef,
-        env_target => undef
+        env_target => undef,
+        json => 0,
+        # Image options
+        delete => undef,
+        lock => undef,
+        unlock => undef,
+        publish => undef,
+        source_type => undef,
+        visibility_id => undef,
+        visibility_mode => undef,
+        spawn => undef,
+        clone => undef
     );
 
     for (my $i = 0; $i < @ARGV; $i++) {
         my $arg = $ARGV[$i];
 
-        if ($arg eq 'session' || $arg eq 'service' || $arg eq 'key') {
+        if ($arg eq 'session' || $arg eq 'service' || $arg eq 'key' || $arg eq 'languages' || $arg eq 'image') {
             $options{command} = $arg;
         } elsif ($arg eq '-e') {
             push @{$options{env}}, $ARGV[++$i];
@@ -1033,6 +1151,25 @@ sub main {
             $options{dump_file} = $ARGV[++$i];
         } elsif ($arg eq '--extend') {
             $options{extend} = 1;
+        } elsif ($arg eq '--json') {
+            $options{json} = 1;
+        } elsif ($arg eq '--delete') {
+            $options{delete} = $ARGV[++$i];
+        } elsif ($arg eq '--lock') {
+            $options{lock} = $ARGV[++$i];
+        } elsif ($arg eq '--unlock') {
+            $options{unlock} = $ARGV[++$i];
+        } elsif ($arg eq '--publish') {
+            $options{publish} = $ARGV[++$i];
+        } elsif ($arg eq '--source-type') {
+            $options{source_type} = $ARGV[++$i];
+        } elsif ($arg eq '--visibility') {
+            $options{visibility_id} = $ARGV[++$i];
+            $options{visibility_mode} = $ARGV[++$i] if defined $ARGV[$i + 1];
+        } elsif ($arg eq '--spawn') {
+            $options{spawn} = $ARGV[++$i];
+        } elsif ($arg eq '--clone') {
+            $options{clone} = $ARGV[++$i];
         } elsif ($arg =~ /^-/) {
             print STDERR "${RED}Unknown option: $arg${RESET}\n";
             exit 1;
@@ -1051,6 +1188,10 @@ sub main {
         } else {
             cmd_service(\%options);
         }
+    } elsif ($options{command} && $options{command} eq 'languages') {
+        cmd_languages(\%options);
+    } elsif ($options{command} && $options{command} eq 'image') {
+        cmd_image(\%options);
     } elsif ($options{command} && $options{command} eq 'key') {
         cmd_key(\%options);
     } elsif ($options{source_file}) {
@@ -1063,7 +1204,26 @@ Usage:
   $0 [options] <source_file>
   $0 session [options]
   $0 service [options]
+  $0 image [options]
+  $0 languages [--json]
   $0 key [options]
+
+Languages options:
+  --json           Output as JSON array
+
+Image options:
+  --list, -l           List all images
+  --info ID            Get image details
+  --delete ID          Delete an image
+  --lock ID            Lock image to prevent deletion
+  --unlock ID          Unlock image
+  --publish ID         Publish image from service/snapshot
+  --source-type TYPE   Source type: service or snapshot
+  --visibility ID MODE Set visibility: private, unlisted, or public
+  --spawn ID           Spawn new service from image
+  --clone ID           Clone an image
+  --name NAME          Name for spawned service or cloned image
+  --ports PORTS        Ports for spawned service
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)

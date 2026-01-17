@@ -518,6 +518,96 @@
   (let [api-key (get-api-key)]
     (validate-key api-key extend?)))
 
+(defn languages-command [json-output?]
+  (let [api-key (get-api-key)
+        response (curl-get api-key "/languages")]
+    (if json-output?
+      ;; Extract language names and output as JSON array
+      (let [langs (re-seq #"\"name\":\"([^\"]+)\"" response)
+            names (map second langs)]
+        (println (str "[" (str/join "," (map #(str "\"" % "\"") names)) "]")))
+      ;; Output one language per line
+      (let [langs (re-seq #"\"name\":\"([^\"]+)\"" response)
+            names (map second langs)]
+        (doseq [name names]
+          (println name))))))
+
+;; Image command functions
+(defn image-list []
+  (let [api-key (get-api-key)]
+    (println (curl-get api-key "/images"))))
+
+(defn image-info [id]
+  (let [api-key (get-api-key)]
+    (println (curl-get api-key (str "/images/" id)))))
+
+(defn image-delete [id]
+  (let [api-key (get-api-key)]
+    (curl-delete api-key (str "/images/" id))
+    (println (str green "Image deleted: " id reset))))
+
+(defn image-lock [id]
+  (let [api-key (get-api-key)]
+    (curl-post api-key (str "/images/" id "/lock") "{}")
+    (println (str green "Image locked: " id reset))))
+
+(defn image-unlock [id]
+  (let [api-key (get-api-key)]
+    (curl-post api-key (str "/images/" id "/unlock") "{}")
+    (println (str green "Image unlocked: " id reset))))
+
+(defn image-publish [source-id source-type name]
+  (let [api-key (get-api-key)
+        json (str "{\"source_type\":\"" source-type "\",\"source_id\":\"" source-id "\""
+                  (if name (str ",\"name\":\"" (escape-json name) "\"") "")
+                  "}")]
+    (println (str green "Image published" reset))
+    (println (curl-post api-key "/images/publish" json))))
+
+(defn image-visibility [id visibility]
+  (let [api-key (get-api-key)
+        json (str "{\"visibility\":\"" visibility "\"}")]
+    (curl-post api-key (str "/images/" id "/visibility") json)
+    (println (str green "Image visibility set to: " visibility reset))))
+
+(defn image-spawn [id name ports]
+  (let [api-key (get-api-key)
+        json (str "{"
+                  (if name (str "\"name\":\"" (escape-json name) "\"") "")
+                  (if (and name ports) "," "")
+                  (if ports (str "\"ports\":[" ports "]") "")
+                  "}")]
+    (println (str green "Service spawned from image" reset))
+    (println (curl-post api-key (str "/images/" id "/spawn") json))))
+
+(defn image-clone [id name]
+  (let [api-key (get-api-key)
+        json (str "{" (if name (str "\"name\":\"" (escape-json name) "\"") "") "}")]
+    (println (str green "Image cloned" reset))
+    (println (curl-post api-key (str "/images/" id "/clone") json))))
+
+(defn image-command [action id source-type visibility name ports]
+  (case action
+    :list (image-list)
+    :info (image-info id)
+    :delete (image-delete id)
+    :lock (image-lock id)
+    :unlock (image-unlock id)
+    :publish (if source-type
+               (image-publish id source-type name)
+               (do
+                 (binding [*out* *err*]
+                   (println (str red "Error: --publish requires --source-type (service or snapshot)" reset)))
+                 (System/exit 1)))
+    :visibility (if visibility
+                  (image-visibility id visibility)
+                  (do
+                    (binding [*out* *err*]
+                      (println (str red "Error: --visibility requires visibility mode (private, unlisted, public)" reset)))
+                    (System/exit 1)))
+    :spawn (image-spawn id name ports)
+    :clone (image-clone id name)))
+
 (defn parse-args [args]
   (loop [args args
          file nil
@@ -541,6 +631,12 @@
          service-envs []
          service-env-file nil
          key-extend false
+         image-action nil
+         image-id nil
+         image-source-type nil
+         image-visibility nil
+         image-name nil
+         image-ports nil
          mode :execute]
     (cond
       (empty? args)
@@ -548,155 +644,222 @@
         :session (session-command (or session-action :create) session-id session-shell network vcpu session-input-files)
         :service (service-command (or service-action :create) service-id service-name service-ports service-bootstrap service-bootstrap-file service-type network vcpu service-input-files service-envs service-env-file)
         :key (key-command key-extend)
+        :languages (languages-command false)
+        :image (image-command (or image-action :list) image-id image-source-type image-visibility image-name image-ports)
         :execute (if file
                    (execute-command file env-vars artifacts out-dir network vcpu)
                    (do (println "Usage: un.clj [options] <source_file>")
+                       (println "       un.clj languages [--json]")
                        (println "       un.clj session [options]")
                        (println "       un.clj service [options]")
                        (println "       un.clj service env <action> <service_id>")
+                       (println "       un.clj image [options]")
                        (println "       un.clj key [options]")
                        (System/exit 1))))
 
       (= (first args) "session")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :session)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports :session)
 
       (= (first args) "service")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :service)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports :service)
 
       (= (first args) "key")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :key)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports :key)
+
+      (= (first args) "languages")
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports :languages)
+
+      (= (first args) "image")
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports :image)
+
+      ;; Image options
+      (and (= mode :image) (or (= (first args) "--list") (= (first args) "-l")))
+      (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :list image-id image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--info"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :info (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--delete"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :delete (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--lock"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :lock (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--unlock"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :unlock (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--publish"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :publish (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--source-type"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id (second args) image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--visibility"))
+      (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :visibility (second args) image-source-type (nth args 2) image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--spawn"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :spawn (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--clone"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend :clone (second args) image-source-type image-visibility image-name image-ports mode)
+
+      (and (= mode :image) (= (first args) "--name"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility (second args) image-ports mode)
+
+      (and (= mode :image) (= (first args) "--ports"))
+      (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name (second args) mode)
 
       ;; Key options
       (and (= mode :key) (= (first args) "--extend"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files true mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file true image-action image-id image-source-type image-visibility image-name image-ports mode)
+
+      ;; Languages options
+      (and (= mode :languages) (= (first args) "--json"))
+      (do
+        (languages-command true)
+        (System/exit 0))
 
       ;; Session options
       (and (= mode :session) (= (first args) "--list"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu :list session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :session) (= (first args) "--kill"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu :kill (second args) session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :session) (or (= (first args) "--shell") (= (first args) "-s")))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id (second args) session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :session) (= (first args) "-f"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell (conj session-input-files (second args))
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Service options
       (and (= mode :service) (= (first args) "--list"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :list service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :list service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--info"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :info (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :info (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--logs"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :logs (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :logs (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--freeze"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :sleep (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :sleep (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--unfreeze"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :wake (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :wake (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--destroy"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :destroy (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :destroy (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--resize"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :resize (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :resize (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--execute"))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :execute (second args) service-name service-ports (nth args 2) service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :execute (second args) service-name service-ports (nth args 2) service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--dump-bootstrap") (>= (count args) 3) (not (.startsWith (nth args 2) "-")))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) service-type service-input-files service-envs service-env-file key-extend mode)
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--dump-bootstrap"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--name"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :create service-id (second args) service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             :create service-id (second args) service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--ports"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name (second args) service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name (second args) service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--bootstrap"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports (second args) service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports (second args) service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--bootstrap-file"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap (second args) service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap (second args) service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--type"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file (second args) service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file (second args) service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "-f"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type (conj service-input-files (second args)) service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type (conj service-input-files (second args)) service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "env") (>= (count args) 2))
       (let [env-action (second args)
             env-target (when (and (>= (count args) 3) (not (.startsWith (nth args 2) "-"))) (nth args 2))
             rest-args (if env-target (drop 3 args) (drop 2 args))]
         (recur rest-args file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-               :env env-action env-target service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode))
+               :env env-action env-target service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))
 
       (and (= mode :service) (= (first args) "-e"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files (conj service-envs (second args)) service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files (conj service-envs (second args)) service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--env-file"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs (second args) key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs (second args) key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Execute options
       (= (first args) "-e")
       (let [[k v] (str/split (second args) #"=" 2)]
         (recur (rest (rest args)) file (conj env-vars [k v]) artifacts out-dir network vcpu
-               session-action session-id session-shell session-input-files service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode))
+               session-action session-id session-shell session-input-files service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))
 
       (= (first args) "-a")
       (recur (rest args) file env-vars true out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (= (first args) "-o")
       (recur (rest (rest args)) file env-vars artifacts (second args) network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (= (first args) "-n")
       (recur (rest (rest args)) file env-vars artifacts out-dir (second args) vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (= (first args) "-v")
       (recur (rest (rest args)) file env-vars artifacts out-dir network (Integer/parseInt (second args)) session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Source file
       (and (= mode :execute) (not (.startsWith (first args) "-")) (nil? file))
       (recur (rest args) (first args) env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Unknown option check
       (and (= mode :session) (.startsWith (first args) "-"))
@@ -708,6 +871,6 @@
 
       :else
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend mode))))
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))))
 
 (parse-args *command-line-args*)

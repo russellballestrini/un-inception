@@ -762,6 +762,21 @@ function validate_key(api_key::String)
     end
 end
 
+function cmd_languages(args)
+    (public_key, secret_key) = get_api_keys(args["api-key"])
+
+    result = api_request("/languages", public_key, secret_key)
+    langs = get(result, "languages", [])
+
+    if args["json"]
+        println(JSON.json(langs))
+    else
+        for lang in langs
+            println(lang)
+        end
+    end
+end
+
 function cmd_key(args)
     (public_key, secret_key) = get_api_keys(args["api-key"])
     # For portal validation, we still use public_key as bearer token
@@ -850,8 +865,14 @@ function main()
         "service"
             help = "Manage persistent services"
             action = :command
+        "languages"
+            help = "List available programming languages"
+            action = :command
         "key"
             help = "Check API key validity and expiration"
+            action = :command
+        "image"
+            help = "Manage images"
             action = :command
     end
 
@@ -956,6 +977,46 @@ function main()
             help = "API key"
     end
 
+    @add_arg_table! s["languages"] begin
+        "--json"
+            help = "Output as JSON array"
+            action = :store_true
+        "--api-key", "-k"
+            help = "API key"
+    end
+
+    @add_arg_table! s["image"] begin
+        "--list", "-l"
+            help = "List all images"
+            action = :store_true
+        "--info"
+            help = "Get image details"
+        "--delete"
+            help = "Delete an image"
+        "--lock"
+            help = "Lock image to prevent deletion"
+        "--unlock"
+            help = "Unlock image"
+        "--publish"
+            help = "Publish image from service/snapshot (requires --source-type)"
+        "--source-type"
+            help = "Source type: service or snapshot"
+        "--visibility"
+            help = "Image ID to set visibility for"
+        "--visibility-mode"
+            help = "Visibility mode: private, unlisted, or public"
+        "--spawn"
+            help = "Spawn new service from image"
+        "--clone"
+            help = "Clone an image"
+        "--name"
+            help = "Name for spawned service or cloned image"
+        "--ports"
+            help = "Comma-separated ports for spawned service"
+        "--api-key", "-k"
+            help = "API key"
+    end
+
     args = parse_args(ARGS, s)
 
     if args["%COMMAND%"] == "session"
@@ -973,14 +1034,109 @@ function main()
             service_args["api-key"] = get(env_args, "api-key", nothing)
         end
         cmd_service(service_args)
+    elseif args["%COMMAND%"] == "languages"
+        cmd_languages(args["languages"])
     elseif args["%COMMAND%"] == "key"
         cmd_key(args["key"])
+    elseif args["%COMMAND%"] == "image"
+        cmd_image(args["image"])
     elseif args["source_file"] !== nothing
         cmd_execute(args)
     else
-        println(stderr, "$(RED)Error: Provide source_file or use 'session'/'service'/'key' subcommand$(RESET)")
+        println(stderr, "$(RED)Error: Provide source_file or use 'session'/'service'/'languages'/'key'/'image' subcommand$(RESET)")
         exit(1)
     end
+end
+
+function cmd_image(args)
+    (public_key, secret_key) = get_api_keys(args["api-key"])
+
+    if args["list"]
+        result = api_request("/images", public_key, secret_key)
+        println(JSON.json(result, 2))
+        return
+    end
+
+    if args["info"] !== nothing
+        result = api_request("/images/$(args["info"])", public_key, secret_key)
+        println(JSON.json(result, 2))
+        return
+    end
+
+    if args["delete"] !== nothing
+        api_request("/images/$(args["delete"])", public_key, secret_key, method="DELETE")
+        println("$(GREEN)Image deleted: $(args["delete"])$(RESET)")
+        return
+    end
+
+    if args["lock"] !== nothing
+        api_request("/images/$(args["lock"])/lock", public_key, secret_key, method="POST")
+        println("$(GREEN)Image locked: $(args["lock"])$(RESET)")
+        return
+    end
+
+    if args["unlock"] !== nothing
+        api_request("/images/$(args["unlock"])/unlock", public_key, secret_key, method="POST")
+        println("$(GREEN)Image unlocked: $(args["unlock"])$(RESET)")
+        return
+    end
+
+    if args["publish"] !== nothing
+        source_type = args["source-type"]
+        if source_type === nothing
+            println(stderr, "$(RED)Error: --source-type required (service or snapshot)$(RESET)")
+            exit(1)
+        end
+        payload = Dict("source_type" => source_type, "source_id" => args["publish"])
+        if args["name"] !== nothing
+            payload["name"] = args["name"]
+        end
+        result = api_request("/images/publish", public_key, secret_key, method="POST", data=payload)
+        println("$(GREEN)Image published$(RESET)")
+        println(JSON.json(result, 2))
+        return
+    end
+
+    if args["visibility"] !== nothing
+        mode = args["visibility-mode"]
+        if mode === nothing
+            println(stderr, "$(RED)Error: --visibility requires MODE (private, unlisted, or public)$(RESET)")
+            exit(1)
+        end
+        payload = Dict("visibility" => mode)
+        api_request("/images/$(args["visibility"])/visibility", public_key, secret_key, method="POST", data=payload)
+        println("$(GREEN)Image visibility set to $(mode): $(args["visibility"])$(RESET)")
+        return
+    end
+
+    if args["spawn"] !== nothing
+        payload = Dict()
+        if args["name"] !== nothing
+            payload["name"] = args["name"]
+        end
+        if args["ports"] !== nothing
+            ports = [parse(Int, strip(p)) for p in split(args["ports"], ',')]
+            payload["ports"] = ports
+        end
+        result = api_request("/images/$(args["spawn"])/spawn", public_key, secret_key, method="POST", data=payload)
+        println("$(GREEN)Service spawned from image$(RESET)")
+        println(JSON.json(result, 2))
+        return
+    end
+
+    if args["clone"] !== nothing
+        payload = Dict()
+        if args["name"] !== nothing
+            payload["name"] = args["name"]
+        end
+        result = api_request("/images/$(args["clone"])/clone", public_key, secret_key, method="POST", data=payload)
+        println("$(GREEN)Image cloned$(RESET)")
+        println(JSON.json(result, 2))
+        return
+    end
+
+    println(stderr, "$(RED)Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID, --spawn ID, or --clone ID$(RESET)")
+    exit(1)
 end
 
 main()

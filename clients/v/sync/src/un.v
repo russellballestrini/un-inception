@@ -594,6 +594,152 @@ fn get_secret_key() string {
 	return ''
 }
 
+fn cmd_image(list bool, info string, delete string, lock string, unlock string, publish string, source_type string, visibility_id string, visibility_mode string, spawn string, clone string, name string, ports string, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
+	if list {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/images:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/images' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+		return
+	}
+
+	if info != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/images/${info}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/images/${info}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+		return
+	}
+
+	if delete != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:/images/${delete}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/images/${delete}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		exec_curl(cmd)
+		println('${green}Image deleted: ${delete}${reset}')
+		return
+	}
+
+	if lock != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${lock}/lock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${lock}/lock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		exec_curl(cmd)
+		println('${green}Image locked: ${lock}${reset}')
+		return
+	}
+
+	if unlock != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${unlock}/unlock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${unlock}/unlock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		exec_curl(cmd)
+		println('${green}Image unlocked: ${unlock}${reset}')
+		return
+	}
+
+	if publish != '' {
+		if source_type == '' {
+			eprintln('${red}Error: --publish requires --source-type (service or snapshot)${reset}')
+			exit(1)
+		}
+		mut json := '{"source_type":"${source_type}","source_id":"${publish}"'
+		if name != '' {
+			json += ',"name":"${name}"'
+		}
+		json += '}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/publish:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/publish' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		result := exec_curl(cmd)
+		println(result)
+		return
+	}
+
+	if visibility_id != '' {
+		if visibility_mode == '' {
+			eprintln('${red}Error: --visibility requires a mode (private, unlisted, or public)${reset}')
+			exit(1)
+		}
+		json := '{"visibility":"${visibility_mode}"}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${visibility_id}/visibility:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${visibility_id}/visibility' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		exec_curl(cmd)
+		println('${green}Image visibility set to ${visibility_mode}: ${visibility_id}${reset}')
+		return
+	}
+
+	if spawn != '' {
+		mut json := '{"name":"${name}"'
+		if ports != '' {
+			json += ',"ports":[${ports}]'
+		}
+		json += '}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${spawn}/spawn:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${spawn}/spawn' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		result := exec_curl(cmd)
+		println(result)
+		return
+	}
+
+	if clone != '' {
+		mut json := '{'
+		if name != '' {
+			json += '"name":"${name}"'
+		}
+		json += '}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${clone}/clone:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${clone}/clone' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		result := exec_curl(cmd)
+		println(result)
+		return
+	}
+
+	eprintln('${red}Error: No image action specified. Use --list, --info, --delete, --publish, etc.${reset}')
+	exit(1)
+}
+
+fn cmd_languages(json_output bool, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
+	cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/languages:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/languages' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+	result := exec_curl(cmd)
+
+	if json_output {
+		// Extract languages array and print as JSON
+		// Find the languages array in the response
+		start_idx := result.index('"languages":[') or {
+			println(result)
+			return
+		}
+		arr_start := result.index_after('[', start_idx)
+		if arr_start < 0 {
+			println(result)
+			return
+		}
+		arr_end := result.index_after(']', arr_start)
+		if arr_end < 0 {
+			println(result)
+			return
+		}
+		println(result[arr_start..arr_end + 1])
+	} else {
+		// Parse languages array and print one per line
+		start_idx := result.index('"languages":[') or {
+			println(result)
+			return
+		}
+		arr_start := result.index_after('[', start_idx)
+		if arr_start < 0 {
+			println(result)
+			return
+		}
+		arr_end := result.index_after(']', arr_start)
+		if arr_end < 0 {
+			println(result)
+			return
+		}
+		// Extract array content and parse
+		arr_content := result[arr_start + 1..arr_end]
+		// Split by comma and extract language names
+		for item in arr_content.split(',') {
+			lang := item.trim_space().trim('"')
+			if lang.len > 0 {
+				println(lang)
+			}
+		}
+	}
+}
+
 fn main() {
 	mut api_key := get_public_key()
 
@@ -602,13 +748,26 @@ fn main() {
 		eprintln('       ${os.args[0]} session [options]')
 		eprintln('       ${os.args[0]} service [options]')
 		eprintln('       ${os.args[0]} service env <action> <service_id> [options]')
+		eprintln('       ${os.args[0]} image [options]')
 		eprintln('       ${os.args[0]} key [--extend]')
+		eprintln('       ${os.args[0]} languages [--json]')
 		eprintln('')
 		eprintln('Vault commands:')
 		eprintln('  service env status <id>   Check vault status')
 		eprintln('  service env set <id>      Set vault (-e KEY=VAL or --env-file FILE)')
 		eprintln('  service env export <id>   Export vault contents')
 		eprintln('  service env delete <id>   Delete vault')
+		eprintln('')
+		eprintln('Image commands:')
+		eprintln('  image --list              List all images')
+		eprintln('  image --info ID           Get image details')
+		eprintln('  image --delete ID         Delete an image')
+		eprintln('  image --lock ID           Lock image to prevent deletion')
+		eprintln('  image --unlock ID         Unlock image')
+		eprintln('  image --publish ID --source-type TYPE  Publish from service/snapshot')
+		eprintln('  image --visibility ID MODE  Set visibility (private/unlisted/public)')
+		eprintln('  image --spawn ID --name NAME  Spawn service from image')
+		eprintln('  image --clone ID --name NAME  Clone an image')
 		exit(1)
 	}
 
@@ -833,6 +992,106 @@ fn main() {
 		}
 
 		cmd_key(extend, api_key)
+		return
+	}
+
+	if os.args[1] == 'languages' {
+		mut json_output := false
+
+		mut i := 2
+		for i < os.args.len {
+			match os.args[i] {
+				'--json' { json_output = true }
+				'-k' {
+					i++
+					api_key = os.args[i]
+				}
+				else {}
+			}
+			i++
+		}
+
+		cmd_languages(json_output, api_key)
+		return
+	}
+
+	if os.args[1] == 'image' {
+		mut list := false
+		mut info := ''
+		mut delete := ''
+		mut lock := ''
+		mut unlock := ''
+		mut publish := ''
+		mut source_type := ''
+		mut visibility_id := ''
+		mut visibility_mode := ''
+		mut spawn := ''
+		mut clone := ''
+		mut name := ''
+		mut ports := ''
+
+		mut i := 2
+		for i < os.args.len {
+			match os.args[i] {
+				'--list', '-l' { list = true }
+				'--info' {
+					i++
+					info = os.args[i]
+				}
+				'--delete' {
+					i++
+					delete = os.args[i]
+				}
+				'--lock' {
+					i++
+					lock = os.args[i]
+				}
+				'--unlock' {
+					i++
+					unlock = os.args[i]
+				}
+				'--publish' {
+					i++
+					publish = os.args[i]
+				}
+				'--source-type' {
+					i++
+					source_type = os.args[i]
+				}
+				'--visibility' {
+					i++
+					visibility_id = os.args[i]
+					i++
+					if i < os.args.len {
+						visibility_mode = os.args[i]
+					}
+				}
+				'--spawn' {
+					i++
+					spawn = os.args[i]
+				}
+				'--clone' {
+					i++
+					clone = os.args[i]
+				}
+				'--name' {
+					i++
+					name = os.args[i]
+				}
+				'--ports' {
+					i++
+					ports = os.args[i]
+				}
+				'-k' {
+					i++
+					api_key = os.args[i]
+				}
+				else {}
+			}
+			i++
+		}
+
+		cmd_image(list, info, delete, lock, unlock, publish, source_type, visibility_id, visibility_mode, spawn, clone, name, ports, api_key)
 		return
 	}
 

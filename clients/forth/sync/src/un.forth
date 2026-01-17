@@ -986,6 +986,395 @@
     1 (bye)
 ;
 
+\ Languages list
+: languages-list ( json-flag -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/languages:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    if
+        \ JSON output
+        s" curl -s -X GET https://api.unsandbox.com/languages -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -c '.languages'" r@ write-line throw
+    else
+        \ One per line
+        s" curl -s -X GET https://api.unsandbox.com/languages -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.languages[]'" r@ write-line throw
+    then
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Handle languages subcommand
+: handle-languages ( -- )
+    argc @ 3 < if
+        0 languages-list
+        0 (bye)
+    then
+
+    2 arg 2dup s" --json" compare 0= if
+        2drop
+        1 languages-list
+        0 (bye)
+    then
+
+    2drop
+    0 languages-list
+    0 (bye)
+;
+
+\ Image list
+: image-list ( -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/images:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X GET https://api.unsandbox.com/images -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image info
+: image-info ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/images/$IMAGE_ID:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X GET https://api.unsandbox.com/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image delete
+: image-delete ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:DELETE:/images/$IMAGE_ID:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X DELETE https://api.unsandbox.com/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mImage deleted: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image lock
+: image-lock ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/lock:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/lock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mImage locked: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image unlock
+: image-unlock ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/unlock:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mImage unlocked: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image visibility
+: image-visibility ( image-id-addr image-id-len mode-addr mode-len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2over r@ write-file throw
+    s" '" r@ write-line throw
+    s" MODE='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" BODY='{\"visibility\":\"'$MODE'\"}'" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/visibility:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/visibility -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mImage visibility set to $MODE\\x1b[0m\"" r@ write-line throw
+    r> close-file throw
+    2drop 2drop \ clean up the stack
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image spawn
+: image-spawn ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" NAME=''; PORTS=''" r@ write-line throw
+    s" i=4" r@ write-line throw
+    s" while [ $i -le $# ]; do" r@ write-line throw
+    s"   arg=${!i}" r@ write-line throw
+    s"   case \"$arg\" in" r@ write-line throw
+    s"     --name) ((i++)); NAME=${!i} ;;" r@ write-line throw
+    s"     --ports) ((i++)); PORTS=${!i} ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s"   ((i++))" r@ write-line throw
+    s" done" r@ write-line throw
+    s" BODY='{}'" r@ write-line throw
+    s" [ -n \"$NAME\" ] && BODY=$(echo $BODY | jq --arg n \"$NAME\" '. + {name: $n}')" r@ write-line throw
+    s" [ -n \"$PORTS\" ] && BODY=$(echo $BODY | jq --arg p \"$PORTS\" '. + {ports: ($p | split(\",\") | map(tonumber))}')" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/spawn:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/spawn -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
+    s" echo -e '\\x1b[32mService spawned from image\\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image clone
+: image-clone ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" NAME=''" r@ write-line throw
+    s" i=4" r@ write-line throw
+    s" while [ $i -le $# ]; do" r@ write-line throw
+    s"   arg=${!i}" r@ write-line throw
+    s"   case \"$arg\" in" r@ write-line throw
+    s"     --name) ((i++)); NAME=${!i} ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s"   ((i++))" r@ write-line throw
+    s" done" r@ write-line throw
+    s" BODY='{}'" r@ write-line throw
+    s" [ -n \"$NAME\" ] && BODY=$(echo $BODY | jq --arg n \"$NAME\" '. + {name: $n}')" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/clone:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/clone -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
+    s" echo -e '\\x1b[32mImage cloned\\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image publish
+: image-publish ( -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SOURCE_ID=''; SOURCE_TYPE=''; NAME=''" r@ write-line throw
+    s" i=3" r@ write-line throw
+    s" while [ $i -le $# ]; do" r@ write-line throw
+    s"   arg=${!i}" r@ write-line throw
+    s"   case \"$arg\" in" r@ write-line throw
+    s"     --publish) ((i++)); SOURCE_ID=${!i} ;;" r@ write-line throw
+    s"     --source-type) ((i++)); SOURCE_TYPE=${!i} ;;" r@ write-line throw
+    s"     --name) ((i++)); NAME=${!i} ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s"   ((i++))" r@ write-line throw
+    s" done" r@ write-line throw
+    s" [ -z \"$SOURCE_TYPE\" ] && echo -e '\\x1b[31mError: --source-type required (service or snapshot)\\x1b[0m' >&2 && exit 1" r@ write-line throw
+    s" BODY='{\"source_type\":\"'$SOURCE_TYPE'\",\"source_id\":\"'$SOURCE_ID'\"}'" r@ write-line throw
+    s" [ -n \"$NAME\" ] && BODY=$(echo $BODY | jq --arg n \"$NAME\" '. + {name: $n}')" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/publish:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/publish -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
+    s" echo -e '\\x1b[32mImage published\\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Handle image subcommand
+: handle-image ( -- )
+    argc @ 3 < if
+        s" Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID" type cr
+        1 (bye)
+    then
+
+    2 arg 2dup s" --list" compare 0= if
+        2drop image-list
+        0 (bye)
+    then
+
+    2dup s" -l" compare 0= if
+        2drop image-list
+        0 (bye)
+    then
+
+    2dup s" --info" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --info requires image ID" type cr
+            1 (bye)
+        then
+        3 arg image-info
+        0 (bye)
+    then
+
+    2dup s" --delete" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --delete requires image ID" type cr
+            1 (bye)
+        then
+        3 arg image-delete
+        0 (bye)
+    then
+
+    2dup s" --lock" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --lock requires image ID" type cr
+            1 (bye)
+        then
+        3 arg image-lock
+        0 (bye)
+    then
+
+    2dup s" --unlock" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --unlock requires image ID" type cr
+            1 (bye)
+        then
+        3 arg image-unlock
+        0 (bye)
+    then
+
+    2dup s" --publish" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --publish requires source ID" type cr
+            1 (bye)
+        then
+        image-publish
+        0 (bye)
+    then
+
+    2dup s" --visibility" compare 0= if
+        2drop
+        argc @ 5 < if
+            s" Error: --visibility requires image ID and mode" type cr
+            1 (bye)
+        then
+        3 arg 4 arg image-visibility
+        0 (bye)
+    then
+
+    2dup s" --spawn" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --spawn requires image ID" type cr
+            1 (bye)
+        then
+        3 arg image-spawn
+        0 (bye)
+    then
+
+    2dup s" --clone" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --clone requires image ID" type cr
+            1 (bye)
+        then
+        3 arg image-clone
+        0 (bye)
+    then
+
+    2drop
+    s" Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID" type cr
+    1 (bye)
+;
+
 \ Main program
 : main
     \ Get command line argument count
@@ -993,7 +1382,9 @@
         s" Usage: gforth un.forth <source_file>" type cr
         s"        gforth un.forth session [options]" type cr
         s"        gforth un.forth service [options]" type cr
+        s"        gforth un.forth image [options]" type cr
         s"        gforth un.forth key [options]" type cr
+        s"        gforth un.forth languages [--json]" type cr
         1 (bye)
     then
 
@@ -1011,8 +1402,18 @@
         0 (bye)
     then
 
+    2dup s" image" compare 0= if
+        2drop handle-image
+        0 (bye)
+    then
+
     2dup s" key" compare 0= if
         2drop handle-key
+        0 (bye)
+    then
+
+    2dup s" languages" compare 0= if
+        2drop handle-languages
         0 (bye)
     then
 

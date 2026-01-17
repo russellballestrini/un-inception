@@ -1491,12 +1491,190 @@ void cmdKey(NSArray* args) {
     printf("Public Key: %s\n", [publicKey UTF8String]);
 }
 
+void cmdImage(NSArray* args) {
+    NSString* publicKey, *secretKey;
+    UNGetApiKeysCLI(&publicKey, &secretKey);
+
+    BOOL listMode = NO;
+    NSString* infoId = nil;
+    NSString* deleteId = nil;
+    NSString* lockId = nil;
+    NSString* unlockId = nil;
+    NSString* publishId = nil;
+    NSString* sourceType = nil;
+    NSString* visibilityId = nil;
+    NSString* visibilityMode = nil;
+    NSString* spawnId = nil;
+    NSString* cloneId = nil;
+    NSString* name = nil;
+    NSString* ports = nil;
+
+    for (NSUInteger i = 0; i < [args count]; i++) {
+        NSString* arg = args[i];
+        if ([arg isEqualToString:@"--list"] || [arg isEqualToString:@"-l"]) {
+            listMode = YES;
+        } else if ([arg isEqualToString:@"--info"] && i + 1 < [args count]) {
+            infoId = args[++i];
+        } else if ([arg isEqualToString:@"--delete"] && i + 1 < [args count]) {
+            deleteId = args[++i];
+        } else if ([arg isEqualToString:@"--lock"] && i + 1 < [args count]) {
+            lockId = args[++i];
+        } else if ([arg isEqualToString:@"--unlock"] && i + 1 < [args count]) {
+            unlockId = args[++i];
+        } else if ([arg isEqualToString:@"--publish"] && i + 1 < [args count]) {
+            publishId = args[++i];
+        } else if ([arg isEqualToString:@"--source-type"] && i + 1 < [args count]) {
+            sourceType = args[++i];
+        } else if ([arg isEqualToString:@"--visibility"] && i + 2 < [args count]) {
+            visibilityId = args[++i];
+            visibilityMode = args[++i];
+        } else if ([arg isEqualToString:@"--spawn"] && i + 1 < [args count]) {
+            spawnId = args[++i];
+        } else if ([arg isEqualToString:@"--clone"] && i + 1 < [args count]) {
+            cloneId = args[++i];
+        } else if ([arg isEqualToString:@"--name"] && i + 1 < [args count]) {
+            name = args[++i];
+        } else if ([arg isEqualToString:@"--ports"] && i + 1 < [args count]) {
+            ports = args[++i];
+        }
+    }
+
+    if (listMode) {
+        NSDictionary* result = apiRequestCLI(@"/images", @"GET", nil, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (infoId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@", infoId];
+        NSDictionary* result = apiRequestCLI(endpoint, @"GET", nil, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (deleteId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@", deleteId];
+        apiRequestCLI(endpoint, @"DELETE", nil, publicKey, secretKey);
+        printf("%sImage deleted: %s%s\n", [GREEN UTF8String], [deleteId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (lockId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/lock", lockId];
+        apiRequestCLI(endpoint, @"POST", nil, publicKey, secretKey);
+        printf("%sImage locked: %s%s\n", [GREEN UTF8String], [lockId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (unlockId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/unlock", unlockId];
+        apiRequestCLI(endpoint, @"POST", nil, publicKey, secretKey);
+        printf("%sImage unlocked: %s%s\n", [GREEN UTF8String], [unlockId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (publishId) {
+        if (!sourceType) {
+            fprintf(stderr, "%sError: --publish requires --source-type (service or snapshot)%s\n",
+                    [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"source_type": sourceType,
+            @"source_id": publishId
+        }];
+        if (name) payload[@"name"] = name;
+
+        NSDictionary* result = apiRequestCLI(@"/images/publish", @"POST", payload, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sImage published%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (visibilityId && visibilityMode) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/visibility", visibilityId];
+        NSDictionary* payload = @{@"visibility": visibilityMode};
+        apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        printf("%sImage visibility set to %s: %s%s\n", [GREEN UTF8String], [visibilityMode UTF8String], [visibilityId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (spawnId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/spawn", spawnId];
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        if (name) payload[@"name"] = name;
+        if (ports) {
+            NSArray* portStrings = [ports componentsSeparatedByString:@","];
+            NSMutableArray* portNumbers = [NSMutableArray array];
+            for (NSString* p in portStrings) {
+                [portNumbers addObject:@([p intValue])];
+            }
+            payload[@"ports"] = portNumbers;
+        }
+
+        NSDictionary* result = apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sService spawned from image%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (cloneId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/clone", cloneId];
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        if (name) payload[@"name"] = name;
+
+        NSDictionary* result = apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sImage cloned%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    fprintf(stderr, "%sError: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone%s\n",
+            [RED UTF8String], [RESET UTF8String]);
+    exit(1);
+}
+
+void cmdLanguages(BOOL jsonOutput) {
+    NSString* publicKey, *secretKey;
+    UNGetApiKeysCLI(&publicKey, &secretKey);
+
+    NSDictionary* result = apiRequestCLI(@"/languages", @"GET", nil, publicKey, secretKey);
+    NSArray* languages = result[@"languages"];
+
+    if (jsonOutput) {
+        // Output as JSON array
+        NSError* error = nil;
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:languages options:0 error:&error];
+        if (!error && jsonData) {
+            NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            printf("%s\n", [jsonString UTF8String]);
+        }
+    } else {
+        // Output one language per line
+        for (NSString* lang in languages) {
+            printf("%s\n", [lang UTF8String]);
+        }
+    }
+}
+
 void showHelp(void) {
     printf("unsandbox - Execute code in secure sandboxes\n\n");
     printf("Usage:\n");
     printf("  un.m [options] <source_file>\n");
     printf("  un.m session [options]\n");
     printf("  un.m service [options]\n");
+    printf("  un.m image [options]\n");
+    printf("  un.m languages [--json]\n");
     printf("  un.m key [options]\n\n");
     printf("Execute options:\n");
     printf("  -e KEY=VALUE    Environment variable (multiple allowed)\n");
@@ -1519,6 +1697,21 @@ void showHelp(void) {
     printf("  --name NAME     Create service with name\n");
     printf("  --ports PORTS   Comma-separated ports\n");
     printf("  --bootstrap CMD Bootstrap command\n\n");
+    printf("Image options:\n");
+    printf("  --list, -l          List all images\n");
+    printf("  --info ID           Get image details\n");
+    printf("  --delete ID         Delete an image\n");
+    printf("  --lock ID           Lock image to prevent deletion\n");
+    printf("  --unlock ID         Unlock image\n");
+    printf("  --publish ID        Publish image from service/snapshot\n");
+    printf("  --source-type TYPE  Source type: service or snapshot\n");
+    printf("  --visibility ID MODE  Set visibility: private, unlisted, or public\n");
+    printf("  --spawn ID          Spawn new service from image\n");
+    printf("  --clone ID          Clone an image\n");
+    printf("  --name NAME         Name for spawned service or cloned image\n");
+    printf("  --ports PORTS       Ports for spawned service\n\n");
+    printf("Languages options:\n");
+    printf("  --json          Output as JSON array\n\n");
     printf("Library Usage:\n");
     printf("  #import \"un.m\"\n");
     printf("  UNClient *client = [[UNClient alloc] init];\n");
@@ -1554,6 +1747,16 @@ int main(int argc, const char* argv[]) {
             cmdSession([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else if ([firstArg isEqualToString:@"service"]) {
             cmdService([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"image"]) {
+            cmdImage([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"languages"]) {
+            BOOL jsonOutput = NO;
+            for (NSUInteger i = 1; i < [args count]; i++) {
+                if ([args[i] isEqualToString:@"--json"]) {
+                    jsonOutput = YES;
+                }
+            }
+            cmdLanguages(jsonOutput);
         } else if ([firstArg isEqualToString:@"key"]) {
             cmdKey([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else {

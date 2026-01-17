@@ -573,6 +573,36 @@ proc cmd_session {args} {
     puts "${::YELLOW}(Interactive sessions require WebSocket - use un2 for full support)${::RESET}"
 }
 
+proc cmd_languages {args} {
+    lassign [get_api_keys] public_key secret_key
+    set json_output 0
+
+    # Parse arguments
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set arg [lindex $args $i]
+        if {$arg eq "--json"} {
+            set json_output 1
+        }
+    }
+
+    set result [api_request "/languages" "GET" {} $public_key $secret_key]
+    set langs [dict get $result languages]
+
+    if {$json_output} {
+        # JSON array output
+        set json_langs [list]
+        foreach lang $langs {
+            lappend json_langs [::json::write string $lang]
+        }
+        puts [::json::write array {*}$json_langs]
+    } else {
+        # One language per line (default)
+        foreach lang $langs {
+            puts $lang
+        }
+    }
+}
+
 proc cmd_key {args} {
     lassign [get_api_keys] public_key secret_key
     set extend_mode 0
@@ -665,6 +695,192 @@ proc cmd_key {args} {
         puts "Status: Unknown key status"
         exit 1
     }
+}
+
+proc cmd_image {args} {
+    lassign [get_api_keys] public_key secret_key
+    set list_mode 0
+    set info_id ""
+    set delete_id ""
+    set lock_id ""
+    set unlock_id ""
+    set publish_id ""
+    set source_type ""
+    set visibility_id ""
+    set visibility_mode ""
+    set spawn_id ""
+    set clone_id ""
+    set name ""
+    set ports ""
+
+    # Parse arguments
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set arg [lindex $args $i]
+        switch -exact -- $arg {
+            --list {
+                set list_mode 1
+            }
+            -l {
+                set list_mode 1
+            }
+            --info {
+                incr i
+                set info_id [lindex $args $i]
+            }
+            --delete {
+                incr i
+                set delete_id [lindex $args $i]
+            }
+            --lock {
+                incr i
+                set lock_id [lindex $args $i]
+            }
+            --unlock {
+                incr i
+                set unlock_id [lindex $args $i]
+            }
+            --publish {
+                incr i
+                set publish_id [lindex $args $i]
+            }
+            --source-type {
+                incr i
+                set source_type [lindex $args $i]
+            }
+            --visibility {
+                incr i
+                set visibility_id [lindex $args $i]
+                incr i
+                if {$i < [llength $args] && [string index [lindex $args $i] 0] ne "-"} {
+                    set visibility_mode [lindex $args $i]
+                } else {
+                    incr i -1
+                }
+            }
+            --spawn {
+                incr i
+                set spawn_id [lindex $args $i]
+            }
+            --clone {
+                incr i
+                set clone_id [lindex $args $i]
+            }
+            --name {
+                incr i
+                set name [lindex $args $i]
+            }
+            --ports {
+                incr i
+                set ports [lindex $args $i]
+            }
+        }
+    }
+
+    if {$list_mode} {
+        set result [api_request "/images" "GET" {} $public_key $secret_key]
+        set images [dict get $result images]
+        if {[llength $images] == 0} {
+            puts "No images found"
+        } else {
+            puts [format "%-40s %-20s %-12s %s" "ID" "Name" "Visibility" "Created"]
+            foreach img $images {
+                puts [format "%-40s %-20s %-12s %s" \
+                    [dict get $img id] \
+                    [expr {[dict exists $img name] ? [dict get $img name] : "-"}] \
+                    [dict get $img visibility] \
+                    [dict get $img created_at]]
+            }
+        }
+        return
+    }
+
+    if {$info_id ne ""} {
+        set result [api_request "/images/$info_id" "GET" {} $public_key $secret_key]
+        puts "${::BLUE}Image Details${::RESET}"
+        puts ""
+        puts "Image ID: [dict get $result id]"
+        puts "Name: [expr {[dict exists $result name] ? [dict get $result name] : \"-\"}]"
+        puts "Visibility: [dict get $result visibility]"
+        puts "Created: [dict get $result created_at]"
+        return
+    }
+
+    if {$delete_id ne ""} {
+        api_request "/images/$delete_id" "DELETE" {} $public_key $secret_key
+        puts "${::GREEN}Image deleted successfully${::RESET}"
+        return
+    }
+
+    if {$lock_id ne ""} {
+        api_request "/images/$lock_id/lock" "POST" {} $public_key $secret_key
+        puts "${::GREEN}Image locked successfully${::RESET}"
+        return
+    }
+
+    if {$unlock_id ne ""} {
+        api_request "/images/$unlock_id/unlock" "POST" {} $public_key $secret_key
+        puts "${::GREEN}Image unlocked successfully${::RESET}"
+        return
+    }
+
+    if {$publish_id ne ""} {
+        if {$source_type eq ""} {
+            puts stderr "${::RED}Error: --source-type required for --publish (service or snapshot)${::RESET}"
+            exit 1
+        }
+        set payload [list source_type [::json::write string $source_type] source_id [::json::write string $publish_id]]
+        if {$name ne ""} {
+            lappend payload name [::json::write string $name]
+        }
+        set result [api_request "/images/publish" "POST" $payload $public_key $secret_key]
+        puts "${::GREEN}Image published successfully${::RESET}"
+        puts "Image ID: [dict get $result id]"
+        return
+    }
+
+    if {$visibility_id ne ""} {
+        if {$visibility_mode eq ""} {
+            puts stderr "${::RED}Error: visibility mode required (private, unlisted, or public)${::RESET}"
+            exit 1
+        }
+        set payload [list visibility [::json::write string $visibility_mode]]
+        api_request "/images/$visibility_id/visibility" "POST" $payload $public_key $secret_key
+        puts "${::GREEN}Image visibility set to $visibility_mode${::RESET}"
+        return
+    }
+
+    if {$spawn_id ne ""} {
+        set payload [list]
+        if {$name ne ""} {
+            lappend payload name [::json::write string $name]
+        }
+        if {$ports ne ""} {
+            set port_list [split $ports ","]
+            set port_json [list]
+            foreach p $port_list {
+                lappend port_json $p
+            }
+            lappend payload ports [::json::write array {*}$port_json]
+        }
+        set result [api_request "/images/$spawn_id/spawn" "POST" $payload $public_key $secret_key]
+        puts "${::GREEN}Service spawned from image${::RESET}"
+        puts "Service ID: [dict get $result id]"
+        return
+    }
+
+    if {$clone_id ne ""} {
+        set payload [list]
+        if {$name ne ""} {
+            lappend payload name [::json::write string $name]
+        }
+        set result [api_request "/images/$clone_id/clone" "POST" $payload $public_key $secret_key]
+        puts "${::GREEN}Image cloned successfully${::RESET}"
+        puts "Image ID: [dict get $result id]"
+        return
+    }
+
+    puts stderr "${::RED}Error: Specify --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID${::RESET}"
+    exit 1
 }
 
 proc cmd_service {args} {
@@ -975,7 +1191,12 @@ proc main {argv} {
         puts stderr "       un.tcl session \[options\]"
         puts stderr "       un.tcl service \[options\]"
         puts stderr "       un.tcl service env <action> <service_id> \[options\]"
+        puts stderr "       un.tcl image \[options\]"
         puts stderr "       un.tcl key \[--extend\]"
+        puts stderr "       un.tcl languages \[--json\]"
+        puts stderr ""
+        puts stderr "Languages options:"
+        puts stderr "  --json            Output as JSON array"
         puts stderr ""
         puts stderr "Service env commands:"
         puts stderr "  env status ID     Check vault status"
@@ -986,6 +1207,20 @@ proc main {argv} {
         puts stderr "Service vault options:"
         puts stderr "  -e KEY=VALUE      Set vault env var (with --name or env set)"
         puts stderr "  --env-file FILE   Load vault vars from file"
+        puts stderr ""
+        puts stderr "Image options:"
+        puts stderr "  --list            List all images"
+        puts stderr "  --info ID         Get image details"
+        puts stderr "  --delete ID       Delete an image"
+        puts stderr "  --lock ID         Lock image to prevent deletion"
+        puts stderr "  --unlock ID       Unlock image"
+        puts stderr "  --publish ID      Publish image from service/snapshot"
+        puts stderr "  --source-type TYPE  Source type: service or snapshot"
+        puts stderr "  --visibility ID MODE  Set visibility: private, unlisted, public"
+        puts stderr "  --spawn ID        Spawn new service from image"
+        puts stderr "  --clone ID        Clone an image"
+        puts stderr "  --name NAME       Name for spawned service or cloned image"
+        puts stderr "  --ports PORTS     Ports for spawned service"
         exit 1
     }
 
@@ -995,8 +1230,12 @@ proc main {argv} {
         cmd_session [lrange $argv 1 end]
     } elseif {$first_arg eq "service"} {
         cmd_service [lrange $argv 1 end]
+    } elseif {$first_arg eq "image"} {
+        cmd_image [lrange $argv 1 end]
     } elseif {$first_arg eq "key"} {
         cmd_key [lrange $argv 1 end]
+    } elseif {$first_arg eq "languages"} {
+        cmd_languages [lrange $argv 1 end]
     } else {
         cmd_execute $argv
     }

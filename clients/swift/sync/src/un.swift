@@ -1176,6 +1176,7 @@ func printHelp() {
         un service-env <action> <id>      Manage service environment
         un snapshot [options]             Manage snapshots
         un key                            Check API key
+        un languages [--json]             List available languages
 
     GLOBAL OPTIONS:
         -s, --shell LANG      Language for inline code
@@ -1305,9 +1306,19 @@ class CLIArgs {
     var clone: String?
     var cloneType: String?
 
+    // Image options
+    var publish: String?
+    var sourceType: String?
+    var visibility: String?
+    var visibilityMode: String?
+    var spawn: String?
+
     // Service-env
     var serviceEnvAction: String?
     var serviceEnvId: String?
+
+    // Languages options
+    var jsonOutput: Bool = false
 
     func parse(_ args: [String]) {
         var i = 0
@@ -1351,6 +1362,8 @@ class CLIArgs {
                 if i < args.count { vcpu = Int(args[i]) ?? 1 }
             case "-y", "--yes":
                 yes = true
+            case "--json":
+                jsonOutput = true
             case "-l", "--list":
                 listFlag = true
             case "--attach":
@@ -1448,7 +1461,24 @@ class CLIArgs {
             case "--clone":
                 i += 1
                 if i < args.count { clone = args[i] }
-            case "session", "service", "snapshot", "key":
+            case "--publish":
+                i += 1
+                if i < args.count { publish = args[i] }
+            case "--source-type":
+                i += 1
+                if i < args.count { sourceType = args[i] }
+            case "--visibility":
+                i += 1
+                if i < args.count { visibility = args[i] }
+                // Check if next arg is the mode (not a flag)
+                if i + 1 < args.count && !args[i + 1].hasPrefix("-") {
+                    i += 1
+                    visibilityMode = args[i]
+                }
+            case "--spawn":
+                i += 1
+                if i < args.count { spawn = args[i] }
+            case "session", "service", "snapshot", "image", "key", "languages":
                 command = arg
             case "service-env":
                 command = "service-env"
@@ -1460,7 +1490,7 @@ class CLIArgs {
                 if arg.hasPrefix("-") {
                     fputs("Error: Unknown option \(arg)\n", stderr)
                     exit(2)
-                } else if command == nil && (arg == "session" || arg == "service" || arg == "snapshot" || arg == "key" || arg == "service-env") {
+                } else if command == nil && (arg == "session" || arg == "service" || arg == "snapshot" || arg == "image" || arg == "key" || arg == "service-env" || arg == "languages") {
                     command = arg
                 } else if source == nil {
                     source = arg
@@ -1809,6 +1839,96 @@ func handleSnapshotCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
     }
 }
 
+/// Handle image command
+func handleImageCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
+    if args.listFlag {
+        let response = try listImages(publicKey: pk, secretKey: sk)
+        // Extract images array from response
+        let images = response["images"] as? [[String: Any]] ?? []
+        print(formatImageListOutput(images))
+    } else if let infoId = args.info {
+        let image = try getImage(infoId, publicKey: pk, secretKey: sk)
+        let jsonData = try JSONSerialization.data(withJSONObject: image, options: .prettyPrinted)
+        print(String(data: jsonData, encoding: .utf8) ?? "{}")
+    } else if let deleteId = args.delete {
+        _ = try deleteImage(deleteId, publicKey: pk, secretKey: sk)
+        print("Image \(deleteId) deleted")
+    } else if let lockId = args.lock {
+        _ = try lockImage(lockId, publicKey: pk, secretKey: sk)
+        print("Image \(lockId) locked")
+    } else if let unlockId = args.unlock {
+        _ = try unlockImage(unlockId, publicKey: pk, secretKey: sk)
+        print("Image \(unlockId) unlocked")
+    } else if let publishId = args.publish {
+        guard let sourceType = args.sourceType else {
+            fputs("Error: --source-type required for --publish\n", stderr)
+            exit(2)
+        }
+        let result = try imagePublish(
+            sourceType: sourceType,
+            sourceId: publishId,
+            name: args.name,
+            publicKey: pk,
+            secretKey: sk
+        )
+        let imageId = result["image_id"] as? String ?? result["id"] as? String ?? ""
+        print("Image published: \(imageId)")
+    } else if let visId = args.visibility, let mode = args.visibilityMode {
+        if mode != "private" && mode != "unlisted" && mode != "public" {
+            fputs("Error: visibility must be private, unlisted, or public\n", stderr)
+            exit(2)
+        }
+        _ = try setImageVisibility(visId, visibility: mode, publicKey: pk, secretKey: sk)
+        print("Image \(visId) visibility set to \(mode)")
+    } else if let spawnId = args.spawn {
+        guard let name = args.name else {
+            fputs("Error: --name required for --spawn\n", stderr)
+            exit(2)
+        }
+        var ports: [Int]? = nil
+        if let portsStr = args.ports {
+            ports = portsStr.components(separatedBy: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        }
+        let result = try spawnFromImage(
+            spawnId,
+            name: name,
+            ports: ports,
+            publicKey: pk,
+            secretKey: sk
+        )
+        let serviceId = result["service_id"] as? String ?? result["id"] as? String ?? ""
+        print("Service spawned: \(serviceId)")
+    } else if let cloneId = args.clone {
+        let result = try cloneImage(cloneId, name: args.name, publicKey: pk, secretKey: sk)
+        let imageId = result["image_id"] as? String ?? result["id"] as? String ?? ""
+        print("Image cloned: \(imageId)")
+    } else {
+        fputs("Error: No action specified for image command\n", stderr)
+        exit(2)
+    }
+}
+
+/// Format image list output
+func formatImageListOutput(_ images: [[String: Any]]) -> String {
+    if images.isEmpty {
+        return "No images found."
+    }
+
+    var lines: [String] = []
+    lines.append(String(format: "%-38s  %-20s  %-10s  %-10s  %s", "ID", "NAME", "VISIBILITY", "SOURCE", "CREATED"))
+
+    for image in images {
+        let id = (image["image_id"] as? String ?? image["id"] as? String ?? "-").prefix(38)
+        let name = (image["name"] as? String ?? "-").prefix(20)
+        let visibility = (image["visibility"] as? String ?? "private").prefix(10)
+        let sourceType = (image["source_type"] as? String ?? "-").prefix(10)
+        let createdAt = (image["created_at"] as? String ?? "-").prefix(19)
+        lines.append(String(format: "%-38s  %-20s  %-10s  %-10s  %s", String(id), String(name), String(visibility), String(sourceType), String(createdAt)))
+    }
+
+    return lines.joined(separator: "\n")
+}
+
 /// Handle key command
 func handleKeyCommand(_ pk: String, _ sk: String) throws {
     let result = try validateKeys(publicKey: pk, secretKey: sk)
@@ -1823,6 +1943,24 @@ func handleKeyCommand(_ pk: String, _ sk: String) throws {
     }
     if let reason = result["reason"] as? String {
         print("Reason: \(reason)")
+    }
+}
+
+/// Handle languages command
+func handleLanguagesCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
+    let languages = try getLanguages(publicKey: pk, secretKey: sk)
+
+    if args.jsonOutput {
+        // Output as JSON array
+        if let jsonData = try? JSONSerialization.data(withJSONObject: languages),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            print(jsonString)
+        }
+    } else {
+        // Output one language per line (pipe-friendly)
+        for lang in languages {
+            print(lang)
+        }
     }
 }
 
@@ -1854,8 +1992,12 @@ struct UnCLI {
                 try handleServiceEnvCommand(args, pk, sk)
             case "snapshot":
                 try handleSnapshotCommand(args, pk, sk)
+            case "image":
+                try handleImageCommand(args, pk, sk)
             case "key":
                 try handleKeyCommand(pk, sk)
+            case "languages":
+                try handleLanguagesCommand(args, pk, sk)
             default:
                 if args.source != nil || args.shell != nil {
                     try handleExecuteCommand(args, pk, sk)

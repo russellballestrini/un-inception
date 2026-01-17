@@ -129,6 +129,17 @@ interface Args {
   envFile: string | null;
   envAction: string | null;
   envTarget: string | null;
+  jsonOutput: boolean;
+  imageInfo: string | null;
+  imageDelete: string | null;
+  imageLock: string | null;
+  imageUnlock: string | null;
+  imagePublish: string | null;
+  sourceType: string | null;
+  imageVisibility: string | null;
+  visibilityMode: string | null;
+  imageSpawn: string | null;
+  imageClone: string | null;
 }
 
 interface ApiKeys {
@@ -790,6 +801,115 @@ async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> 
   }
 }
 
+async function cmdLanguages(args: Args): Promise<void> {
+  const keys = getApiKeys(args.apiKey);
+  const result = await apiRequest("/languages", "GET", null, keys);
+  const langs = result.languages || [];
+
+  if (args.jsonOutput) {
+    // JSON array output
+    console.log(JSON.stringify(langs));
+  } else {
+    // One language per line (default)
+    langs.forEach((lang: string) => {
+      console.log(lang);
+    });
+  }
+}
+
+async function cmdImage(args: Args): Promise<void> {
+  const keys = getApiKeys(args.apiKey);
+
+  if (args.list) {
+    const result = await apiRequest("/images", "GET", null, keys);
+    const images = result.images || [];
+    if (images.length === 0) {
+      console.log("No images found");
+    } else {
+      console.log(`${'ID'.padEnd(40)} ${'Name'.padEnd(20)} ${'Visibility'.padEnd(12)} Created`);
+      images.forEach((img: any) => {
+        console.log(`${(img.id || 'N/A').padEnd(40)} ${(img.name || '-').padEnd(20)} ${(img.visibility || 'N/A').padEnd(12)} ${img.created_at || 'N/A'}`);
+      });
+    }
+    return;
+  }
+
+  if (args.imageInfo) {
+    const result = await apiRequest(`/images/${args.imageInfo}`, "GET", null, keys);
+    console.log(`${BLUE}Image Details${RESET}`);
+    console.log("");
+    console.log(`Image ID: ${result.id || 'N/A'}`);
+    console.log(`Name: ${result.name || '-'}`);
+    console.log(`Visibility: ${result.visibility || 'N/A'}`);
+    console.log(`Created: ${result.created_at || 'N/A'}`);
+    return;
+  }
+
+  if (args.imageDelete) {
+    await apiRequest(`/images/${args.imageDelete}`, "DELETE", null, keys);
+    console.log(`${GREEN}Image deleted successfully${RESET}`);
+    return;
+  }
+
+  if (args.imageLock) {
+    await apiRequest(`/images/${args.imageLock}/lock`, "POST", {}, keys);
+    console.log(`${GREEN}Image locked successfully${RESET}`);
+    return;
+  }
+
+  if (args.imageUnlock) {
+    await apiRequest(`/images/${args.imageUnlock}/unlock`, "POST", {}, keys);
+    console.log(`${GREEN}Image unlocked successfully${RESET}`);
+    return;
+  }
+
+  if (args.imagePublish) {
+    if (!args.sourceType) {
+      console.error(`${RED}Error: --source-type required for --publish (service or snapshot)${RESET}`);
+      process.exit(1);
+    }
+    const payload: any = { source_type: args.sourceType, source_id: args.imagePublish };
+    if (args.name) payload.name = args.name;
+    const result = await apiRequest("/images/publish", "POST", payload, keys);
+    console.log(`${GREEN}Image published successfully${RESET}`);
+    console.log(`Image ID: ${result.id || 'N/A'}`);
+    return;
+  }
+
+  if (args.imageVisibility) {
+    if (!args.visibilityMode) {
+      console.error(`${RED}Error: visibility mode required (private, unlisted, or public)${RESET}`);
+      process.exit(1);
+    }
+    const payload = { visibility: args.visibilityMode };
+    await apiRequest(`/images/${args.imageVisibility}/visibility`, "POST", payload, keys);
+    console.log(`${GREEN}Image visibility set to ${args.visibilityMode}${RESET}`);
+    return;
+  }
+
+  if (args.imageSpawn) {
+    const payload: any = {};
+    if (args.name) payload.name = args.name;
+    if (args.ports) payload.ports = args.ports.split(',').map(p => parseInt(p.trim()));
+    const result = await apiRequest(`/images/${args.imageSpawn}/spawn`, "POST", payload, keys);
+    console.log(`${GREEN}Service spawned from image${RESET}`);
+    console.log(`Service ID: ${result.id || 'N/A'}`);
+    return;
+  }
+
+  if (args.imageClone) {
+    const payload: any = {};
+    if (args.name) payload.name = args.name;
+    const result = await apiRequest(`/images/${args.imageClone}/clone`, "POST", payload, keys);
+    console.log(`${GREEN}Image cloned successfully${RESET}`);
+    console.log(`Image ID: ${result.id || 'N/A'}`);
+    return;
+  }
+
+  console.error(`${RED}Error: Specify --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID${RESET}`);
+  process.exit(1);
+}
+
 async function cmdKey(args: Args): Promise<void> {
   const keys = getApiKeys(args.apiKey);
   await validateKey(keys, args.extend);
@@ -834,14 +954,28 @@ function parseArgs(argv: string[]): Args {
     envFile: null,
     envAction: null,
     envTarget: null,
+    jsonOutput: false,
+    imageInfo: null,
+    imageDelete: null,
+    imageLock: null,
+    imageUnlock: null,
+    imagePublish: null,
+    sourceType: null,
+    imageVisibility: null,
+    visibilityMode: null,
+    imageSpawn: null,
+    imageClone: null,
   };
 
   let i = 2;
   while (i < argv.length) {
     const arg = argv[i];
 
-    if (arg === 'session' || arg === 'service' || arg === 'key') {
+    if (arg === 'session' || arg === 'service' || arg === 'key' || arg === 'languages' || arg === 'image') {
       args.command = arg;
+      i++;
+    } else if (arg === '--json') {
+      args.jsonOutput = true;
       i++;
     } else if (arg === '-e' && i + 1 < argv.length) {
       args.env.push(argv[++i]);
@@ -918,7 +1052,38 @@ function parseArgs(argv: string[]): Args {
       }
       i++;
     } else if (arg === '--info' && i + 1 < argv.length) {
-      args.info = argv[++i];
+      if (args.command === 'image') {
+        args.imageInfo = argv[++i];
+      } else {
+        args.info = argv[++i];
+      }
+      i++;
+    } else if (arg === '--delete' && i + 1 < argv.length) {
+      if (args.command === 'image') {
+        args.imageDelete = argv[++i];
+      }
+      i++;
+    } else if (arg === '--lock' && i + 1 < argv.length) {
+      args.imageLock = argv[++i];
+      i++;
+    } else if (arg === '--unlock' && i + 1 < argv.length) {
+      args.imageUnlock = argv[++i];
+      i++;
+    } else if (arg === '--publish' && i + 1 < argv.length) {
+      args.imagePublish = argv[++i];
+      i++;
+    } else if (arg === '--source-type' && i + 1 < argv.length) {
+      args.sourceType = argv[++i];
+      i++;
+    } else if (arg === '--visibility' && i + 1 < argv.length) {
+      args.imageVisibility = argv[++i];
+      i++;
+      if (i < argv.length && !argv[i].startsWith('-')) {
+        args.visibilityMode = argv[i];
+        i++;
+      }
+    } else if (arg === '--spawn' && i + 1 < argv.length) {
+      args.imageSpawn = argv[++i];
       i++;
     } else if (arg === '--logs' && i + 1 < argv.length) {
       args.logs = argv[++i];
@@ -953,6 +1118,13 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--extend') {
       args.extend = true;
       i++;
+    } else if (arg === '--clone' && i + 1 < argv.length) {
+      if (args.command === 'image') {
+        args.imageClone = argv[++i];
+      } else {
+        args.clone = argv[++i];
+      }
+      i++;
     } else if (!arg.startsWith('-')) {
       args.sourceFile = arg;
       i++;
@@ -978,8 +1150,12 @@ async function main(): Promise<void> {
     } else {
       await cmdService(args);
     }
+  } else if (args.command === 'image') {
+    await cmdImage(args);
   } else if (args.command === 'key') {
     await cmdKey(args);
+  } else if (args.command === 'languages') {
+    await cmdLanguages(args);
   } else if (args.sourceFile) {
     await cmdExecute(args);
   } else {
@@ -989,7 +1165,9 @@ Usage:
   ${process.argv[1]} [options] <source_file>
   ${process.argv[1]} session [options]
   ${process.argv[1]} service [options]
+  ${process.argv[1]} image [options]
   ${process.argv[1]} key [options]
+  ${process.argv[1]} languages [--json]
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -1029,8 +1207,25 @@ Service options:
   --dump-bootstrap ID  Dump bootstrap script
   --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
 
+Image options:
+  --list           List all images
+  --info ID        Get image details
+  --delete ID      Delete an image
+  --lock ID        Lock image to prevent deletion
+  --unlock ID      Unlock image
+  --publish ID     Publish image from service/snapshot
+  --source-type TYPE  Source type: service or snapshot
+  --visibility ID MODE  Set visibility: private, unlisted, public
+  --spawn ID       Spawn new service from image
+  --clone ID       Clone an image
+  --name NAME      Name for spawned service or cloned image
+  --ports PORTS    Ports for spawned service
+
 Key options:
   --extend         Open browser to extend key expiration
+
+Languages options:
+  --json           Output as JSON array
 `);
     process.exit(1);
   }

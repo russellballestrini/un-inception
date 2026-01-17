@@ -116,7 +116,11 @@ escapeJSON = concatMap escape
     escape c = [c]
 
 -- Parse command line arguments
-data Command = Execute ExecuteOpts | Session SessionOpts | Service ServiceOpts | Key KeyOpts | Snapshot SnapshotOpts | Help
+data Command = Execute ExecuteOpts | Session SessionOpts | Service ServiceOpts | Key KeyOpts | Snapshot SnapshotOpts | Image ImageOpts | Languages LanguagesOpts | Help
+
+data LanguagesOpts = LanguagesOpts
+  { langJson :: Bool
+  }
 
 data ExecuteOpts = ExecuteOpts
   { exFile :: String
@@ -175,6 +179,18 @@ data SnapshotOpts = SnapshotOpts
 data SnapshotAction = SnapshotList | SnapshotInfo String | SnapshotDelete String
                     | SnapshotClone String
 
+data ImageOpts = ImageOpts
+  { imgAction :: ImageAction
+  , imgName :: Maybe String
+  , imgPorts :: Maybe String
+  , imgSourceType :: Maybe String
+  , imgVisibilityMode :: Maybe String
+  }
+
+data ImageAction = ImageList | ImageInfo String | ImageDelete String
+                 | ImageLock String | ImageUnlock String | ImagePublish String
+                 | ImageVisibility String | ImageSpawn String | ImageClone String
+
 data KeyOpts = KeyOpts
   { keyExtend :: Bool
   }
@@ -185,7 +201,17 @@ parseArgs ("session":rest) = Session <$> parseSession rest
 parseArgs ("service":rest) = Service <$> parseService rest
 parseArgs ("key":rest) = Key <$> parseKey rest
 parseArgs ("snapshot":rest) = Snapshot <$> parseSnapshot rest
+parseArgs ("image":rest) = Image <$> parseImage rest
+parseArgs ("languages":rest) = Languages <$> parseLanguages rest
 parseArgs args = parseExecute args
+
+parseLanguages :: [String] -> IO LanguagesOpts
+parseLanguages args = return $ parseLanguagesArgs args defaultLanguagesOpts
+  where
+    defaultLanguagesOpts = LanguagesOpts False
+    parseLanguagesArgs [] opts = opts
+    parseLanguagesArgs ("--json":rest) opts = parseLanguagesArgs rest opts { langJson = True }
+    parseLanguagesArgs (_:rest) opts = parseLanguagesArgs rest opts
 
 parseKey :: [String] -> IO KeyOpts
 parseKey args = return $ parseKeyArgs args defaultKeyOpts
@@ -209,6 +235,26 @@ parseSnapshot args = return $ parseSnapshotArgs args defaultSnapshotOpts
     parseSnapshotArgs ("--name":n:rest) opts = parseSnapshotArgs rest opts { snapCloneName = Just n }
     parseSnapshotArgs ("--ports":p:rest) opts = parseSnapshotArgs rest opts { snapClonePorts = Just p }
     parseSnapshotArgs (_:rest) opts = parseSnapshotArgs rest opts
+
+parseImage :: [String] -> IO ImageOpts
+parseImage args = return $ parseImageArgs args defaultImageOpts
+  where
+    defaultImageOpts = ImageOpts ImageList Nothing Nothing Nothing Nothing
+    parseImageArgs [] opts = opts
+    parseImageArgs ("--list":rest) opts = parseImageArgs rest opts { imgAction = ImageList }
+    parseImageArgs ("-l":rest) opts = parseImageArgs rest opts { imgAction = ImageList }
+    parseImageArgs ("--info":id:rest) opts = parseImageArgs rest opts { imgAction = ImageInfo id }
+    parseImageArgs ("--delete":id:rest) opts = parseImageArgs rest opts { imgAction = ImageDelete id }
+    parseImageArgs ("--lock":id:rest) opts = parseImageArgs rest opts { imgAction = ImageLock id }
+    parseImageArgs ("--unlock":id:rest) opts = parseImageArgs rest opts { imgAction = ImageUnlock id }
+    parseImageArgs ("--publish":id:rest) opts = parseImageArgs rest opts { imgAction = ImagePublish id }
+    parseImageArgs ("--source-type":t:rest) opts = parseImageArgs rest opts { imgSourceType = Just t }
+    parseImageArgs ("--visibility":id:mode:rest) opts = parseImageArgs rest opts { imgAction = ImageVisibility id, imgVisibilityMode = Just mode }
+    parseImageArgs ("--spawn":id:rest) opts = parseImageArgs rest opts { imgAction = ImageSpawn id }
+    parseImageArgs ("--clone":id:rest) opts = parseImageArgs rest opts { imgAction = ImageClone id }
+    parseImageArgs ("--name":n:rest) opts = parseImageArgs rest opts { imgName = Just n }
+    parseImageArgs ("--ports":p:rest) opts = parseImageArgs rest opts { imgPorts = Just p }
+    parseImageArgs (_:rest) opts = parseImageArgs rest opts
 
 parseSession :: [String] -> IO SessionOpts
 parseSession args = return $ parseSessionArgs args defaultSessionOpts
@@ -300,6 +346,8 @@ main = do
     Service opts -> serviceCommand opts
     Key opts -> keyCommand opts
     Snapshot opts -> snapshotCommand opts
+    Image opts -> imageCommand opts
+    Languages opts -> languagesCommand opts
     Help -> printHelp
 
 printHelp :: IO ()
@@ -310,6 +358,8 @@ printHelp = do
   putStrLn "  un.hs service [options]                Manage services"
   putStrLn "  un.hs service env <action> <id>        Manage service vault"
   putStrLn "  un.hs snapshot [options]               Manage snapshots"
+  putStrLn "  un.hs image [options]                  Manage images"
+  putStrLn "  un.hs languages [--json]               List available languages"
   putStrLn "  un.hs key [options]                    Validate/extend API key"
   putStrLn ""
   putStrLn "Execute options:"
@@ -359,6 +409,23 @@ printHelp = do
   putStrLn ""
   putStrLn "Key options:"
   putStrLn "  --extend        Open browser to extend/renew key"
+  putStrLn ""
+  putStrLn "Image options:"
+  putStrLn "  -l, --list           List all images"
+  putStrLn "  --info ID            Get image details"
+  putStrLn "  --delete ID          Delete an image"
+  putStrLn "  --lock ID            Lock image to prevent deletion"
+  putStrLn "  --unlock ID          Unlock image"
+  putStrLn "  --publish ID         Publish image from service/snapshot (requires --source-type)"
+  putStrLn "  --source-type TYPE   Source type: service or snapshot"
+  putStrLn "  --visibility ID MODE Set visibility: private, unlisted, or public"
+  putStrLn "  --spawn ID           Spawn new service from image"
+  putStrLn "  --clone ID           Clone an image"
+  putStrLn "  --name NAME          Name for spawned service or cloned image"
+  putStrLn "  --ports PORTS        Ports for spawned service"
+  putStrLn ""
+  putStrLn "Languages options:"
+  putStrLn "  --json          Output as JSON array"
   exitFailure
 
 -- Execute command
@@ -863,6 +930,101 @@ snapshotCommand opts = do
           (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ sid ++ "/clone") json
           putStrLn $ green ++ "Snapshot cloned" ++ reset
           putStrLn stdout
+
+-- Image command
+imageCommand :: ImageOpts -> IO ()
+imageCommand opts = do
+  apiKey <- getApiKey
+  case imgAction opts of
+    ImageList -> do
+      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/images"
+      putStrLn stdout
+    ImageInfo iid -> do
+      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/images/" ++ iid)
+      putStrLn stdout
+    ImageDelete iid -> do
+      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/images/" ++ iid)
+      putStrLn $ green ++ "Image deleted: " ++ iid ++ reset
+    ImageLock iid -> do
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/lock") "{}"
+      putStrLn $ green ++ "Image locked: " ++ iid ++ reset
+    ImageUnlock iid -> do
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/unlock") "{}"
+      putStrLn $ green ++ "Image unlocked: " ++ iid ++ reset
+    ImagePublish sourceId -> do
+      case imgSourceType opts of
+        Nothing -> do
+          hPutStrLn stderr $ red ++ "Error: --source-type required (service or snapshot)" ++ reset
+          exitFailure
+        Just sourceType -> do
+          let nameJSON = maybe "" (\n -> ",\"name\":\"" ++ escapeJSON n ++ "\"") (imgName opts)
+          let json = "{\"source_type\":\"" ++ sourceType ++ "\",\"source_id\":\"" ++ sourceId ++ "\"" ++ nameJSON ++ "}"
+          (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/images/publish" json
+          putStrLn $ green ++ "Image published" ++ reset
+          putStrLn stdout
+    ImageVisibility iid -> do
+      case imgVisibilityMode opts of
+        Nothing -> do
+          hPutStrLn stderr $ red ++ "Error: --visibility requires MODE (private, unlisted, or public)" ++ reset
+          exitFailure
+        Just mode -> do
+          let json = "{\"visibility\":\"" ++ mode ++ "\"}"
+          (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/visibility") json
+          putStrLn $ green ++ "Image visibility set to " ++ mode ++ ": " ++ iid ++ reset
+    ImageSpawn iid -> do
+      let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\"") (imgName opts)
+      let portsJSON = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") (imgPorts opts)
+      let json = if null nameJSON then "{" ++ (if null portsJSON then "" else drop 1 portsJSON) ++ "}"
+                 else "{" ++ nameJSON ++ portsJSON ++ "}"
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/spawn") json
+      putStrLn $ green ++ "Service spawned from image" ++ reset
+      putStrLn stdout
+    ImageClone iid -> do
+      let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\"") (imgName opts)
+      let json = "{" ++ nameJSON ++ "}"
+      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/clone") json
+      putStrLn $ green ++ "Image cloned" ++ reset
+      putStrLn stdout
+
+-- Languages command
+languagesCommand :: LanguagesOpts -> IO ()
+languagesCommand opts = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/languages"
+  let jsonOutput = langJson opts
+  if jsonOutput
+    then do
+      -- Extract languages array and print as JSON
+      case extractJsonArray stdout "languages" of
+        Just langs -> putStrLn $ "[" ++ intercalate "," (map (\l -> "\"" ++ l ++ "\"") langs) ++ "]"
+        Nothing -> putStrLn stdout
+    else do
+      -- Print each language on its own line
+      case extractJsonArray stdout "languages" of
+        Just langs -> mapM_ putStrLn langs
+        Nothing -> putStrLn stdout
+
+-- Extract JSON array of strings from response
+extractJsonArray :: String -> String -> Maybe [String]
+extractJsonArray json field =
+  let needle = "\"" ++ field ++ "\":["
+      rest = dropWhile (not . isPrefixOf needle) (tails json)
+  in case rest of
+       (x:_) -> Just $ parseArrayItems $ drop (length needle) x
+       _ -> Nothing
+  where
+    tails [] = [[]]
+    tails s@(_:xs) = s : tails xs
+
+    parseArrayItems :: String -> [String]
+    parseArrayItems s = go (dropWhile (`elem` " \t\n") s) []
+      where
+        go (']':_) acc = reverse acc
+        go ('"':rest) acc =
+          let (item, remaining) = span (/= '"') rest
+          in go (dropWhile (`elem` ",] \t\n") (drop 1 remaining)) (item : acc)
+        go (_:rest) acc = go rest acc
+        go [] acc = reverse acc
 
 -- Key command
 keyCommand :: KeyOpts -> IO ()

@@ -47,7 +47,9 @@ main([]) ->
     io:format("       un.erl session [options]~n"),
     io:format("       un.erl service [options]~n"),
     io:format("       un.erl snapshot [options]~n"),
+    io:format("       un.erl image [options]~n"),
     io:format("       un.erl key [options]~n"),
+    io:format("       un.erl languages [--json]~n"),
     halt(1);
 
 main(["session" | Rest]) ->
@@ -59,8 +61,14 @@ main(["service" | Rest]) ->
 main(["snapshot" | Rest]) ->
     snapshot_command(Rest);
 
+main(["image" | Rest]) ->
+    image_command(Rest);
+
 main(["key" | Rest]) ->
     key_command(Rest);
+
+main(["languages" | Rest]) ->
+    languages_command(Rest);
 
 main(Args) ->
     execute_command(Args).
@@ -438,6 +446,140 @@ build_clone_json(Type, Name, Shell, Ports) ->
         P -> ",\"ports\":[" ++ P ++ "]"
     end,
     TypeJson ++ NameJson ++ ShellJson ++ PortsJson ++ "}".
+
+%% Image command
+image_command(["--list" | _]) ->
+    image_command(["-l"]);
+image_command(["-l" | _]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    Result = api_request("/images", "GET", "", PublicKey, SecretKey),
+    io:format("~s~n", [Result]),
+    halt(0);
+
+image_command(["--info", ImageId | _]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    Result = api_request("/images/" ++ ImageId, "GET", "", PublicKey, SecretKey),
+    io:format("~s~n", [Result]),
+    halt(0);
+
+image_command(["--delete", ImageId | _]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    api_request("/images/" ++ ImageId, "DELETE", "", PublicKey, SecretKey),
+    io:format("\033[32mImage deleted: ~s\033[0m~n", [ImageId]),
+    halt(0);
+
+image_command(["--lock", ImageId | _]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    api_request("/images/" ++ ImageId ++ "/lock", "POST", "", PublicKey, SecretKey),
+    io:format("\033[32mImage locked: ~s\033[0m~n", [ImageId]),
+    halt(0);
+
+image_command(["--unlock", ImageId | _]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    api_request("/images/" ++ ImageId ++ "/unlock", "POST", "", PublicKey, SecretKey),
+    io:format("\033[32mImage unlocked: ~s\033[0m~n", [ImageId]),
+    halt(0);
+
+image_command(["--publish", SourceId | Rest]) ->
+    SourceType = get_image_source_type(Rest),
+    case SourceType of
+        undefined ->
+            io:format(standard_error, "\033[31mError: --source-type required (service or snapshot)\033[0m~n", []),
+            halt(1);
+        _ ->
+            {PublicKey, SecretKey} = get_api_keys(),
+            Name = get_image_name(Rest),
+            Payload = build_publish_json(SourceType, SourceId, Name),
+            Result = api_request("/images/publish", "POST", Payload, PublicKey, SecretKey),
+            io:format("\033[32mImage published\033[0m~n"),
+            io:format("~s~n", [Result]),
+            halt(0)
+    end;
+
+image_command(["--visibility", ImageId, Mode | _]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    Payload = "{\"visibility\":\"" ++ Mode ++ "\"}",
+    api_request("/images/" ++ ImageId ++ "/visibility", "POST", Payload, PublicKey, SecretKey),
+    io:format("\033[32mImage visibility set to ~s\033[0m~n", [Mode]),
+    halt(0);
+
+image_command(["--spawn", ImageId | Rest]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    Name = get_image_name(Rest),
+    Ports = get_image_ports(Rest),
+    Payload = build_spawn_json(Name, Ports),
+    Result = api_request("/images/" ++ ImageId ++ "/spawn", "POST", Payload, PublicKey, SecretKey),
+    io:format("\033[32mService spawned from image\033[0m~n"),
+    io:format("~s~n", [Result]),
+    halt(0);
+
+image_command(["--clone", ImageId | Rest]) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    Name = get_image_name(Rest),
+    Payload = case Name of
+        undefined -> "{}";
+        N -> "{\"name\":\"" ++ escape_json(N) ++ "\"}"
+    end,
+    Result = api_request("/images/" ++ ImageId ++ "/clone", "POST", Payload, PublicKey, SecretKey),
+    io:format("\033[32mImage cloned\033[0m~n"),
+    io:format("~s~n", [Result]),
+    halt(0);
+
+image_command(_) ->
+    io:format(standard_error, "Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID~n", []),
+    halt(1).
+
+get_image_source_type([]) -> undefined;
+get_image_source_type(["--source-type", Type | _]) -> Type;
+get_image_source_type([_ | Rest]) -> get_image_source_type(Rest).
+
+get_image_name([]) -> undefined;
+get_image_name(["--name", Name | _]) -> Name;
+get_image_name([_ | Rest]) -> get_image_name(Rest).
+
+get_image_ports([]) -> undefined;
+get_image_ports(["--ports", Ports | _]) -> Ports;
+get_image_ports([_ | Rest]) -> get_image_ports(Rest).
+
+build_publish_json(SourceType, SourceId, Name) ->
+    Base = "{\"source_type\":\"" ++ SourceType ++ "\",\"source_id\":\"" ++ SourceId ++ "\"",
+    NameJson = case Name of
+        undefined -> "";
+        N -> ",\"name\":\"" ++ escape_json(N) ++ "\""
+    end,
+    Base ++ NameJson ++ "}".
+
+build_spawn_json(Name, Ports) ->
+    Parts = [],
+    Parts1 = case Name of
+        undefined -> Parts;
+        N -> ["\"name\":\"" ++ escape_json(N) ++ "\"" | Parts]
+    end,
+    Parts2 = case Ports of
+        undefined -> Parts1;
+        P -> ["\"ports\":[" ++ P ++ "]" | Parts1]
+    end,
+    "{" ++ string:join(lists:reverse(Parts2), ",") ++ "}".
+
+%% Languages command
+languages_command(Args) ->
+    ApiKey = get_api_key(),
+    Response = curl_get(ApiKey, "/languages"),
+    JsonOutput = lists:member("--json", Args),
+    if
+        JsonOutput ->
+            %% Output raw JSON array
+            case extract_json_array(Response, "languages") of
+                [] -> io:format("[]~n");
+                Languages -> io:format("[~s]~n", [string:join(["\"" ++ L ++ "\"" || L <- Languages], ",")])
+            end;
+        true ->
+            %% Output one language per line
+            case extract_json_array(Response, "languages") of
+                [] -> ok;
+                Languages -> [io:format("~s~n", [L]) || L <- Languages]
+            end
+    end.
 
 %% Key command
 key_command(Args) ->
@@ -857,3 +999,36 @@ extract_until_quote([$\\, $\" | Rest], Acc) ->
     extract_until_quote(Rest, [$\" | Acc]);
 extract_until_quote([C | Rest], Acc) ->
     extract_until_quote(Rest, [C | Acc]).
+
+%% Extract JSON array of strings from a field like "languages":["python","javascript",...]
+extract_json_array(Json, Field) ->
+    Pattern = "\"" ++ Field ++ "\":[",
+    case string:str(Json, Pattern) of
+        0 -> [];
+        Pos ->
+            Start = Pos + length(Pattern),
+            Rest = lists:nthtail(Start - 1, Json),
+            extract_array_elements(Rest, [])
+    end.
+
+extract_array_elements([], Acc) ->
+    lists:reverse(Acc);
+extract_array_elements([$] | _], Acc) ->
+    lists:reverse(Acc);
+extract_array_elements([$\" | Rest], Acc) ->
+    {Elem, Remainder} = extract_until_quote_with_rest(Rest),
+    extract_array_elements(Remainder, [Elem | Acc]);
+extract_array_elements([_ | Rest], Acc) ->
+    extract_array_elements(Rest, Acc).
+
+extract_until_quote_with_rest(Str) ->
+    extract_until_quote_with_rest(Str, []).
+
+extract_until_quote_with_rest([], Acc) ->
+    {lists:reverse(Acc), []};
+extract_until_quote_with_rest([$\" | Rest], Acc) ->
+    {lists:reverse(Acc), Rest};
+extract_until_quote_with_rest([$\\, $\" | Rest], Acc) ->
+    extract_until_quote_with_rest(Rest, [$\" | Acc]);
+extract_until_quote_with_rest([C | Rest], Acc) ->
+    extract_until_quote_with_rest(Rest, [C | Acc]).

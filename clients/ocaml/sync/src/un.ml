@@ -1300,6 +1300,117 @@ let rec parse_input_files acc = function
    CLI Entry Point
    ============================================================================ *)
 
+(* Languages command *)
+let languages_command json_output =
+  let response = languages () in
+  if json_output then begin
+    (* Extract languages array and output as JSON *)
+    let pattern = "\"languages\":\\s*\\[\\([^]]*\\)\\]" in
+    let regex = Str.regexp pattern in
+    try
+      let _ = Str.search_forward regex response 0 in
+      let langs_str = Str.matched_group 1 response in
+      Printf.printf "[%s]\n" langs_str
+    with Not_found ->
+      Printf.printf "[]\n"
+  end else begin
+    (* Extract each language and print one per line *)
+    let pattern = "\"\\([a-zA-Z0-9_+-]+\\)\"" in
+    let regex = Str.regexp pattern in
+    (* Find the languages array first *)
+    let langs_pattern = "\"languages\":\\s*\\[\\([^]]*\\)\\]" in
+    let langs_regex = Str.regexp langs_pattern in
+    try
+      let _ = Str.search_forward langs_regex response 0 in
+      let langs_str = Str.matched_group 1 response in
+      let rec extract_langs pos =
+        try
+          let _ = Str.search_forward regex langs_str pos in
+          let lang = Str.matched_group 1 langs_str in
+          Printf.printf "%s\n" lang;
+          extract_langs (Str.match_end ())
+        with Not_found -> ()
+      in
+      extract_langs 0
+    with Not_found -> ()
+  end
+
+(* Image command *)
+let image_command args =
+  let api_key = get_api_key () in
+  let rec parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports = function
+    | [] ->
+      if list_mode then begin
+        let response = curl_get api_key "/images" in
+        Printf.printf "%s\n" response
+      end
+      else if info_id <> "" then begin
+        let response = curl_get api_key (Printf.sprintf "/images/%s" info_id) in
+        Printf.printf "%s\n" response
+      end
+      else if delete_id <> "" then begin
+        let _ = curl_delete api_key (Printf.sprintf "/images/%s" delete_id) in
+        Printf.printf "%sImage deleted: %s%s\n" green delete_id reset
+      end
+      else if lock_id <> "" then begin
+        let _ = curl_post api_key (Printf.sprintf "/images/%s/lock" lock_id) "{}" in
+        Printf.printf "%sImage locked: %s%s\n" green lock_id reset
+      end
+      else if unlock_id <> "" then begin
+        let _ = curl_post api_key (Printf.sprintf "/images/%s/unlock" unlock_id) "{}" in
+        Printf.printf "%sImage unlocked: %s%s\n" green unlock_id reset
+      end
+      else if publish_id <> "" then begin
+        if source_type = "" then begin
+          Printf.fprintf stderr "%sError: --publish requires --source-type (service or snapshot)%s\n" red reset;
+          exit 1
+        end;
+        let name_json = if name <> "" then Printf.sprintf ",\"name\":\"%s\"" name else "" in
+        let json = Printf.sprintf "{\"source_type\":\"%s\",\"source_id\":\"%s\"%s}" source_type publish_id name_json in
+        let response = curl_post api_key "/images/publish" json in
+        Printf.printf "%sImage published%s\n" green reset;
+        Printf.printf "%s\n" response
+      end
+      else if visibility_id <> "" && visibility_mode <> "" then begin
+        let json = Printf.sprintf "{\"visibility\":\"%s\"}" visibility_mode in
+        let _ = curl_post api_key (Printf.sprintf "/images/%s/visibility" visibility_id) json in
+        Printf.printf "%sImage visibility set to %s: %s%s\n" green visibility_mode visibility_id reset
+      end
+      else if spawn_id <> "" then begin
+        let name_json = if name <> "" then Printf.sprintf "\"name\":\"%s\"" name else "" in
+        let ports_json = if ports <> "" then Printf.sprintf "%s\"ports\":[%s]" (if name <> "" then "," else "") ports else "" in
+        let json = Printf.sprintf "{%s%s}" name_json ports_json in
+        let response = curl_post api_key (Printf.sprintf "/images/%s/spawn" spawn_id) json in
+        Printf.printf "%sService spawned from image%s\n" green reset;
+        Printf.printf "%s\n" response
+      end
+      else if clone_id <> "" then begin
+        let name_json = if name <> "" then Printf.sprintf "{\"name\":\"%s\"}" name else "{}" in
+        let response = curl_post api_key (Printf.sprintf "/images/%s/clone" clone_id) name_json in
+        Printf.printf "%sImage cloned%s\n" green reset;
+        Printf.printf "%s\n" response
+      end
+      else begin
+        Printf.fprintf stderr "%sError: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone%s\n" red reset;
+        exit 1
+      end
+    | "--list" :: rest -> parse_args true info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "-l" :: rest -> parse_args true info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--info" :: id :: rest -> parse_args list_mode id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--delete" :: id :: rest -> parse_args list_mode info_id id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--lock" :: id :: rest -> parse_args list_mode info_id delete_id id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--unlock" :: id :: rest -> parse_args list_mode info_id delete_id lock_id id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--publish" :: id :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--source-type" :: t :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id t visibility_id visibility_mode spawn_id clone_id name ports rest
+    | "--visibility" :: id :: mode :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type id mode spawn_id clone_id name ports rest
+    | "--spawn" :: id :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode id clone_id name ports rest
+    | "--clone" :: id :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id id name ports rest
+    | "--name" :: n :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id n ports rest
+    | "--ports" :: p :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name p rest
+    | _ :: rest -> parse_args list_mode info_id delete_id lock_id unlock_id publish_id source_type visibility_id visibility_mode spawn_id clone_id name ports rest
+  in
+  parse_args false "" "" "" "" "" "" "" "" "" "" "" "" args
+
 let () =
   Random.self_init ();
   let args = Array.to_list Sys.argv in
@@ -1308,11 +1419,22 @@ let () =
     Printf.printf "Usage: un.ml [options] <source_file>\n";
     Printf.printf "       un.ml session [options]\n";
     Printf.printf "       un.ml service [options]\n";
+    Printf.printf "       un.ml image [options]\n";
     Printf.printf "       un.ml service env <action> <service_id>\n";
+    Printf.printf "       un.ml languages [--json]\n";
     Printf.printf "       un.ml key [--extend]\n\n";
     Printf.printf "Service options: --name, --ports, --bootstrap, --bootstrap-file, -e KEY=VALUE, --env-file FILE\n";
     Printf.printf "Service env commands: status, set, export, delete\n";
+    Printf.printf "Image options: --list, --info ID, --delete ID, --lock ID, --unlock ID,\n";
+    Printf.printf "               --publish ID --source-type TYPE, --visibility ID MODE,\n";
+    Printf.printf "               --spawn ID, --clone ID, --name NAME, --ports PORTS\n";
+    Printf.printf "Languages options: --json (output as JSON array)\n";
     exit 1
+  | "languages" :: rest ->
+    let json_output = List.mem "--json" rest in
+    languages_command json_output
+  | "image" :: rest ->
+    image_command rest
   | "key" :: rest ->
     let extend = List.mem "--extend" rest in
     key_command extend

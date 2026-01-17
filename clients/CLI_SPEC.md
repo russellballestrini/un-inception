@@ -58,6 +58,8 @@ un [options] <source_file>        # Execute code file
 un session [options]              # Interactive session
 un service [options]              # Manage services
 un snapshot [options]             # Manage snapshots
+un image [options]                # Manage images
+un languages [options]            # List available languages
 un key                            # Check API key
 ```
 
@@ -203,6 +205,66 @@ un snapshot --clone ID --type service --name myapp --ports 80
 | `--name NAME` | Name for cloned service |
 | `--shell SHELL` | Shell for cloned session |
 | `--ports PORTS` | Ports for cloned service |
+
+## Image Command
+
+```bash
+un image --list                   # List all images
+un image --info ID                # Get image details
+un image --delete ID              # Delete image
+un image --lock ID                # Prevent deletion
+un image --unlock ID              # Allow deletion
+un image --publish ID             # Publish from service/snapshot
+un image --visibility ID public   # Set visibility (private/unlisted/public)
+un image --spawn ID               # Spawn new service from image
+un image --clone ID               # Clone image
+```
+
+### Image Options
+
+| Option | Description |
+|--------|-------------|
+| `--list`, `-l` | List all images |
+| `--info ID` | Get image details |
+| `--delete ID` | Delete image |
+| `--lock ID` | Prevent deletion |
+| `--unlock ID` | Allow deletion |
+| `--publish ID` | Publish image from service or snapshot |
+| `--visibility ID MODE` | Set visibility: private, unlisted, or public |
+| `--spawn ID` | Spawn new service from image |
+| `--clone ID` | Clone image |
+| `--name NAME` | Name for spawned/cloned resource |
+| `--ports PORTS` | Ports for spawned service |
+| `--source-type TYPE` | Source type: service or snapshot (for publish) |
+
+## Languages Command
+
+```bash
+un languages                      # List all available languages (one per line)
+un languages --json               # Output as JSON array for scripts
+```
+
+### Languages Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON array instead of one per line |
+
+The languages command fetches the list from the API and caches it in `~/.unsandbox/languages.json` for 1 hour.
+
+**Default output** (one language per line, suitable for piping):
+```
+python
+javascript
+go
+rust
+...
+```
+
+**JSON output** (`--json`):
+```json
+["python", "javascript", "go", "rust", ...]
+```
 
 ## Key Command
 

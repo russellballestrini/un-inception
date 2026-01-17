@@ -1896,6 +1896,36 @@ public class Un {
     }
 
     /**
+     * Publish an image from a service or snapshot.
+     *
+     * @param sourceType Source type: "service" or "snapshot"
+     * @param sourceId Source ID (service_id or snapshot_id)
+     * @param name Name for the new image (optional)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing new image_id
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> publishImage(
+        String sourceType,
+        String sourceId,
+        String name,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("source_type", sourceType);
+        data.put("source_id", sourceId);
+        if (name != null && !name.isEmpty()) {
+            data.put("name", name);
+        }
+        return makeRequest("POST", "/images/publish", creds[0], creds[1], data);
+    }
+
+    /**
      * Grant access to an image for another API key (for shared images).
      *
      * @param imageId Image ID to grant access to
@@ -2335,8 +2365,14 @@ public class Un {
             case "snapshot":
                 handleSnapshot(positionalArgs, publicKey, secretKey);
                 break;
+            case "image":
+                handleImage(positionalArgs, publicKey, secretKey);
+                break;
             case "key":
                 handleKey(publicKey, secretKey);
+                break;
+            case "languages":
+                handleLanguages(positionalArgs, publicKey, secretKey);
                 break;
             default:
                 // Default: execute code
@@ -2354,7 +2390,9 @@ public class Un {
         System.out.println("  java Un session [options]              Interactive session");
         System.out.println("  java Un service [options]              Manage services");
         System.out.println("  java Un snapshot [options]             Manage snapshots");
+        System.out.println("  java Un image [options]                Manage images");
         System.out.println("  java Un key                            Check API key");
+        System.out.println("  java Un languages [--json]             List supported languages");
         System.out.println();
         System.out.println("Global Options:");
         System.out.println("  -s, --shell LANG      Language for inline code");
@@ -2408,6 +2446,23 @@ public class Un {
         System.out.println("  --lock ID             Prevent deletion");
         System.out.println("  --unlock ID           Allow deletion");
         System.out.println("  --clone ID            Clone snapshot");
+        System.out.println();
+        System.out.println("Image Options:");
+        System.out.println("  --list, -l            List all images");
+        System.out.println("  --info ID             Get image details");
+        System.out.println("  --delete ID           Delete an image");
+        System.out.println("  --lock ID             Lock image to prevent deletion");
+        System.out.println("  --unlock ID           Unlock image");
+        System.out.println("  --publish ID          Publish from service/snapshot (requires --source-type)");
+        System.out.println("  --source-type TYPE    Source type: service or snapshot");
+        System.out.println("  --visibility ID MODE  Set visibility (private/unlisted/public)");
+        System.out.println("  --spawn ID            Spawn service from image");
+        System.out.println("  --clone ID            Clone an image");
+        System.out.println("  --name NAME           Name for spawned service or cloned image");
+        System.out.println("  --ports PORTS         Ports for spawned service");
+        System.out.println();
+        System.out.println("Languages Options:");
+        System.out.println("  --json                Output as JSON array (for scripts)");
     }
 
     private static void handleExecute(
@@ -2993,9 +3048,208 @@ public class Un {
         }
     }
 
+    private static void handleImage(
+        List<String> args,
+        String publicKey,
+        String secretKey
+    ) throws Exception {
+        // Parse image-specific options
+        boolean list = false;
+        String infoId = null;
+        String deleteId = null;
+        String lockId = null;
+        String unlockId = null;
+        String publishId = null;
+        String sourceType = null;
+        String visibilityId = null;
+        String visibilityMode = null;
+        String spawnId = null;
+        String cloneId = null;
+        String name = null;
+        String ports = null;
+
+        int i = 1; // Skip "image" command
+        while (i < args.size()) {
+            String arg = args.get(i);
+            if (arg.equals("--list") || arg.equals("-l")) {
+                list = true;
+                i++;
+            } else if (arg.equals("--info")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --info requires an ID");
+                    System.exit(2);
+                }
+                infoId = args.get(++i);
+                i++;
+            } else if (arg.equals("--delete")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --delete requires an ID");
+                    System.exit(2);
+                }
+                deleteId = args.get(++i);
+                i++;
+            } else if (arg.equals("--lock")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --lock requires an ID");
+                    System.exit(2);
+                }
+                lockId = args.get(++i);
+                i++;
+            } else if (arg.equals("--unlock")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --unlock requires an ID");
+                    System.exit(2);
+                }
+                unlockId = args.get(++i);
+                i++;
+            } else if (arg.equals("--publish")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --publish requires an ID");
+                    System.exit(2);
+                }
+                publishId = args.get(++i);
+                i++;
+            } else if (arg.equals("--source-type")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --source-type requires a value");
+                    System.exit(2);
+                }
+                sourceType = args.get(++i);
+                i++;
+            } else if (arg.equals("--visibility")) {
+                if (i + 2 >= args.size()) {
+                    System.err.println("Error: --visibility requires ID and MODE");
+                    System.exit(2);
+                }
+                visibilityId = args.get(++i);
+                visibilityMode = args.get(++i);
+                i++;
+            } else if (arg.equals("--spawn")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --spawn requires an ID");
+                    System.exit(2);
+                }
+                spawnId = args.get(++i);
+                i++;
+            } else if (arg.equals("--clone")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --clone requires an ID");
+                    System.exit(2);
+                }
+                cloneId = args.get(++i);
+                i++;
+            } else if (arg.equals("--name")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --name requires a value");
+                    System.exit(2);
+                }
+                name = args.get(++i);
+                i++;
+            } else if (arg.equals("--ports")) {
+                if (i + 1 >= args.size()) {
+                    System.err.println("Error: --ports requires a value");
+                    System.exit(2);
+                }
+                ports = args.get(++i);
+                i++;
+            } else {
+                i++;
+            }
+        }
+
+        if (list) {
+            List<Map<String, Object>> images = listImages(null, publicKey, secretKey);
+            printImageList(images);
+        } else if (infoId != null) {
+            Map<String, Object> image = getImage(infoId, publicKey, secretKey);
+            printMap(image);
+        } else if (deleteId != null) {
+            deleteImage(deleteId, publicKey, secretKey);
+            System.out.println("Image deleted: " + deleteId);
+        } else if (lockId != null) {
+            lockImage(lockId, publicKey, secretKey);
+            System.out.println("Image locked: " + lockId);
+        } else if (unlockId != null) {
+            unlockImage(unlockId, publicKey, secretKey);
+            System.out.println("Image unlocked: " + unlockId);
+        } else if (publishId != null) {
+            if (sourceType == null) {
+                System.err.println("Error: --publish requires --source-type (service or snapshot)");
+                System.exit(2);
+            }
+            Map<String, Object> result = publishImage(sourceType, publishId, name, publicKey, secretKey);
+            System.out.println("Image published:");
+            printMap(result);
+        } else if (visibilityId != null) {
+            if (visibilityMode == null) {
+                System.err.println("Error: --visibility requires a mode (private, unlisted, or public)");
+                System.exit(2);
+            }
+            setImageVisibility(visibilityId, visibilityMode, publicKey, secretKey);
+            System.out.println("Image visibility set to " + visibilityMode + ": " + visibilityId);
+        } else if (spawnId != null) {
+            String svcName = name != null ? name : "spawned-service";
+            Map<String, Object> result = spawnFromImage(spawnId, svcName, ports, null, null, publicKey, secretKey);
+            System.out.println("Service spawned:");
+            printMap(result);
+        } else if (cloneId != null) {
+            String imgName = name != null ? name : cloneId + "-clone";
+            Map<String, Object> result = cloneImage(cloneId, imgName, null, publicKey, secretKey);
+            System.out.println("Image cloned:");
+            printMap(result);
+        } else {
+            System.err.println("Error: No image action specified. Use --list, --info, --delete, --publish, etc.");
+            System.exit(2);
+        }
+    }
+
+    private static void printImageList(List<Map<String, Object>> images) {
+        System.out.printf("%-40s %-20s %-10s %-20s%n", "ID", "NAME", "VISIBILITY", "CREATED");
+        for (Map<String, Object> image : images) {
+            String id = getStr(image, "image_id", "id");
+            String name = getStr(image, "name", "");
+            String visibility = getStr(image, "visibility", "");
+            String created = getStr(image, "created_at", "created");
+            System.out.printf("%-40s %-20s %-10s %-20s%n", id, name, visibility, created);
+        }
+    }
+
     private static void handleKey(String publicKey, String secretKey) throws Exception {
         Map<String, Object> result = validateKeys(publicKey, secretKey);
         printMap(result);
+    }
+
+    private static void handleLanguages(List<String> args, String publicKey, String secretKey) throws Exception {
+        boolean jsonOutput = false;
+
+        // Parse options
+        int i = 1; // Skip "languages" command
+        while (i < args.size()) {
+            String arg = args.get(i);
+            if (arg.equals("--json")) {
+                jsonOutput = true;
+            }
+            i++;
+        }
+
+        List<String> languages = getLanguages(publicKey, secretKey);
+
+        if (jsonOutput) {
+            // Output as JSON array
+            StringBuilder sb = new StringBuilder();
+            sb.append("[");
+            for (int j = 0; j < languages.size(); j++) {
+                if (j > 0) sb.append(",");
+                sb.append("\"").append(escapeJsonString(languages.get(j))).append("\"");
+            }
+            sb.append("]");
+            System.out.println(sb.toString());
+        } else {
+            // Output one language per line
+            for (String lang : languages) {
+                System.out.println(lang);
+            }
+        }
     }
 
     private static void printSessionList(List<Map<String, Object>> sessions) {

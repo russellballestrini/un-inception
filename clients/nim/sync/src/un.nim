@@ -564,6 +564,149 @@ proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
       if errEnd > errStart:
         echo "Error: " & response[errStart..<errEnd]
 
+proc cmdLanguages(jsonOutput: bool, publicKey: string, secretKey: string) =
+  let authHeaders = buildAuthHeaders("GET", "/languages", "", publicKey, secretKey)
+  let cmd = fmt"""curl -s -X GET '{API_BASE}/languages' {authHeaders}"""
+  let response = execCurl(cmd)
+
+  if jsonOutput:
+    # Extract languages array and output as JSON
+    let langStart = response.find("\"languages\":")
+    if langStart >= 0:
+      var bracketStart = response.find("[", langStart)
+      if bracketStart >= 0:
+        var depth = 1
+        var bracketEnd = bracketStart + 1
+        while bracketEnd < response.len and depth > 0:
+          if response[bracketEnd] == '[': inc depth
+          elif response[bracketEnd] == ']': dec depth
+          inc bracketEnd
+        if bracketEnd <= response.len:
+          echo response[bracketStart..<bracketEnd]
+        else:
+          echo "[]"
+      else:
+        echo "[]"
+    else:
+      echo "[]"
+  else:
+    # Extract each language and print one per line
+    let langStart = response.find("\"languages\":")
+    if langStart >= 0:
+      var bracketStart = response.find("[", langStart)
+      if bracketStart >= 0:
+        var pos = bracketStart + 1
+        while pos < response.len:
+          # Skip whitespace
+          while pos < response.len and response[pos] in {' ', '\n', '\r', '\t', ','}: inc pos
+          if pos >= response.len or response[pos] == ']': break
+          # Find quoted string
+          if response[pos] == '"':
+            let start = pos + 1
+            var endPos = start
+            while endPos < response.len and response[endPos] != '"':
+              inc endPos
+            if endPos > start:
+              echo response[start..<endPos]
+            pos = endPos + 1
+          else:
+            inc pos
+
+proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceType, visibilityId, visibilityMode, spawnId, cloneId, name, ports, publicKey, secretKey: string) =
+  if list:
+    let authHeaders = buildAuthHeaders("GET", "/images", "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/images' {authHeaders}"""
+    echo execCurl(cmd)
+    return
+
+  if infoId != "":
+    let path = fmt"/images/{infoId}"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/images/{infoId}' {authHeaders}"""
+    echo execCurl(cmd)
+    return
+
+  if deleteId != "":
+    let path = fmt"/images/{deleteId}"
+    let authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/images/{deleteId}' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Image deleted: " & deleteId & RESET
+    return
+
+  if lockId != "":
+    let path = fmt"/images/{lockId}/lock"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{lockId}/lock' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Image locked: " & lockId & RESET
+    return
+
+  if unlockId != "":
+    let path = fmt"/images/{unlockId}/unlock"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{unlockId}/unlock' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Image unlocked: " & unlockId & RESET
+    return
+
+  if publishId != "":
+    if sourceType == "":
+      stderr.writeLine(RED & "Error: --publish requires --source-type (service or snapshot)" & RESET)
+      quit(1)
+    var json = fmt"""{{"source_type":"{sourceType}","source_id":"{publishId}"""""
+    if name != "": json.add(fmt""","name":"{name}"""")
+    json.add("}")
+    let authHeaders = buildAuthHeaders("POST", "/images/publish", json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/publish' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Image published" & RESET
+    echo response
+    return
+
+  if visibilityId != "" and visibilityMode != "":
+    let json = fmt"""{{"visibility":"{visibilityMode}"}}"""
+    let path = fmt"/images/{visibilityId}/visibility"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{visibilityId}/visibility' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    discard execCurl(cmd)
+    echo GREEN & "Image visibility set to " & visibilityMode & ": " & visibilityId & RESET
+    return
+
+  if spawnId != "":
+    var json = "{"
+    var hasContent = false
+    if name != "":
+      json.add(fmt""""name":"{name}"""")
+      hasContent = true
+    if ports != "":
+      if hasContent: json.add(",")
+      json.add(fmt""""ports":[{ports}]""")
+    json.add("}")
+    let path = fmt"/images/{spawnId}/spawn"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{spawnId}/spawn' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Service spawned from image" & RESET
+    echo response
+    return
+
+  if cloneId != "":
+    var json = "{"
+    if name != "":
+      json.add(fmt""""name":"{name}"""")
+    json.add("}")
+    let path = fmt"/images/{cloneId}/clone"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{cloneId}/clone' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Image cloned" & RESET
+    echo response
+    return
+
+  stderr.writeLine(RED & "Error: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone" & RESET)
+  quit(1)
+
 proc main() =
   var publicKey = getEnv("UNSANDBOX_PUBLIC_KEY", "")
   var secretKey = getEnv("UNSANDBOX_SECRET_KEY", "")
@@ -578,8 +721,27 @@ proc main() =
     stderr.writeLine("Usage: un.nim [options] <source_file>")
     stderr.writeLine("       un.nim session [options]")
     stderr.writeLine("       un.nim service [options]")
+    stderr.writeLine("       un.nim image [options]")
     stderr.writeLine("       un.nim service env <action> <service_id> [options]")
+    stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
+    stderr.writeLine("")
+    stderr.writeLine("Languages options:")
+    stderr.writeLine("  --json              Output as JSON array")
+    stderr.writeLine("")
+    stderr.writeLine("Image options:")
+    stderr.writeLine("  --list, -l          List all images")
+    stderr.writeLine("  --info ID           Get image details")
+    stderr.writeLine("  --delete ID         Delete an image")
+    stderr.writeLine("  --lock ID           Lock image to prevent deletion")
+    stderr.writeLine("  --unlock ID         Unlock image")
+    stderr.writeLine("  --publish ID        Publish image from service/snapshot")
+    stderr.writeLine("  --source-type TYPE  Source type: service or snapshot")
+    stderr.writeLine("  --visibility ID MODE  Set visibility: private, unlisted, or public")
+    stderr.writeLine("  --spawn ID          Spawn new service from image")
+    stderr.writeLine("  --clone ID          Clone an image")
+    stderr.writeLine("  --name NAME         Name for spawned service or cloned image")
+    stderr.writeLine("  --ports PORTS       Ports for spawned service")
     stderr.writeLine("")
     stderr.writeLine("Service env commands:")
     stderr.writeLine("  env status <id>     Show vault status")
@@ -591,6 +753,46 @@ proc main() =
     stderr.writeLine("  -e KEY=VALUE        Set environment variable (for vault)")
     stderr.writeLine("  --env-file FILE     Load env vars from file (for vault)")
     quit(1)
+
+  if args[0] == "languages":
+    var jsonOutput = false
+    var i = 1
+    while i < args.len:
+      case args[i]
+      of "--json": jsonOutput = true
+      of "-k": publicKey = args[i+1]; inc i
+      else: discard
+      inc i
+    cmdLanguages(jsonOutput, publicKey, secretKey)
+    return
+
+  if args[0] == "image":
+    var list = false
+    var infoId, deleteId, lockId, unlockId, publishId, sourceType = ""
+    var visibilityId, visibilityMode, spawnId, cloneId, name, ports = ""
+    var i = 1
+    while i < args.len:
+      case args[i]
+      of "--list", "-l": list = true
+      of "--info": infoId = args[i+1]; inc i
+      of "--delete": deleteId = args[i+1]; inc i
+      of "--lock": lockId = args[i+1]; inc i
+      of "--unlock": unlockId = args[i+1]; inc i
+      of "--publish": publishId = args[i+1]; inc i
+      of "--source-type": sourceType = args[i+1]; inc i
+      of "--visibility":
+        visibilityId = args[i+1]
+        visibilityMode = args[i+2]
+        inc i, 2
+      of "--spawn": spawnId = args[i+1]; inc i
+      of "--clone": cloneId = args[i+1]; inc i
+      of "--name": name = args[i+1]; inc i
+      of "--ports": ports = args[i+1]; inc i
+      of "-k": publicKey = args[i+1]; inc i
+      else: discard
+      inc i
+    cmdImage(list, infoId, deleteId, lockId, unlockId, publishId, sourceType, visibilityId, visibilityMode, spawnId, cloneId, name, ports, publicKey, secretKey)
+    return
 
   if args[0] == "key":
     var extend = false

@@ -105,7 +105,21 @@ data class Args(
     var keyExtend: Boolean = false,
     var envFile: String? = null,
     var envAction: String? = null,
-    var envTarget: String? = null
+    var envTarget: String? = null,
+    var jsonOutput: Boolean = false,
+    var imageList: Boolean = false,
+    var imageInfo: String? = null,
+    var imageDelete: String? = null,
+    var imageLock: String? = null,
+    var imageUnlock: String? = null,
+    var imagePublish: String? = null,
+    var imageSourceType: String? = null,
+    var imageVisibility: String? = null,
+    var imageVisibilityMode: String? = null,
+    var imageSpawn: String? = null,
+    var imageClone: String? = null,
+    var imageName: String? = null,
+    var imagePorts: String? = null
 )
 
 fun main(args: Array<String>) {
@@ -115,7 +129,9 @@ fun main(args: Array<String>) {
         when (parsedArgs.command) {
             "session" -> cmdSession(parsedArgs)
             "service" -> cmdService(parsedArgs)
+            "languages" -> cmdLanguages(parsedArgs)
             "key" -> cmdKey(parsedArgs)
+            "image" -> cmdImage(parsedArgs)
             else -> if (parsedArgs.sourceFile != null) {
                 cmdExecute(parsedArgs)
             } else {
@@ -456,6 +472,113 @@ fun cmdService(args: Args) {
     }
 
     System.err.println("${RED}Error: Specify --name to create a service, or use --list, --info, etc.${RESET}")
+    exitProcess(1)
+}
+
+fun cmdLanguages(args: Args) {
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    val result = apiRequest("/languages", "GET", null, publicKey, secretKey)
+    @Suppress("UNCHECKED_CAST")
+    val languages = result["languages"] as? List<String> ?: emptyList()
+
+    if (args.jsonOutput) {
+        println(toJson(languages))
+    } else {
+        for (lang in languages) {
+            println(lang)
+        }
+    }
+}
+
+fun cmdImage(args: Args) {
+    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+
+    if (args.imageList) {
+        val result = apiRequest("/images", "GET", null, publicKey, secretKey)
+        println(toJson(result))
+        return
+    }
+
+    if (args.imageInfo != null) {
+        val result = apiRequest("/images/${args.imageInfo}", "GET", null, publicKey, secretKey)
+        println(toJson(result))
+        return
+    }
+
+    if (args.imageDelete != null) {
+        apiRequest("/images/${args.imageDelete}", "DELETE", null, publicKey, secretKey)
+        println("${GREEN}Image deleted: ${args.imageDelete}${RESET}")
+        return
+    }
+
+    if (args.imageLock != null) {
+        apiRequest("/images/${args.imageLock}/lock", "POST", null, publicKey, secretKey)
+        println("${GREEN}Image locked: ${args.imageLock}${RESET}")
+        return
+    }
+
+    if (args.imageUnlock != null) {
+        apiRequest("/images/${args.imageUnlock}/unlock", "POST", null, publicKey, secretKey)
+        println("${GREEN}Image unlocked: ${args.imageUnlock}${RESET}")
+        return
+    }
+
+    if (args.imagePublish != null) {
+        if (args.imageSourceType == null) {
+            System.err.println("${RED}Error: --source-type required (service or snapshot)${RESET}")
+            exitProcess(1)
+        }
+        val payload = mutableMapOf<String, Any>(
+            "source_type" to args.imageSourceType!!,
+            "source_id" to args.imagePublish!!
+        )
+        if (args.imageName != null) {
+            payload["name"] = args.imageName!!
+        }
+        val result = apiRequest("/images/publish", "POST", payload, publicKey, secretKey)
+        println("${GREEN}Image published${RESET}")
+        println(toJson(result))
+        return
+    }
+
+    if (args.imageVisibility != null) {
+        if (args.imageVisibilityMode == null) {
+            System.err.println("${RED}Error: --visibility requires MODE (private, unlisted, or public)${RESET}")
+            exitProcess(1)
+        }
+        val payload = mapOf("visibility" to args.imageVisibilityMode!!)
+        apiRequest("/images/${args.imageVisibility}/visibility", "POST", payload, publicKey, secretKey)
+        println("${GREEN}Image visibility set to ${args.imageVisibilityMode}: ${args.imageVisibility}${RESET}")
+        return
+    }
+
+    if (args.imageSpawn != null) {
+        val payload = mutableMapOf<String, Any>()
+        if (args.imageName != null) {
+            payload["name"] = args.imageName!!
+        }
+        if (args.imagePorts != null) {
+            payload["ports"] = args.imagePorts!!.split(",").map { it.trim().toInt() }
+        }
+        val result = apiRequest("/images/${args.imageSpawn}/spawn", "POST", payload, publicKey, secretKey)
+        println("${GREEN}Service spawned from image${RESET}")
+        println(toJson(result))
+        return
+    }
+
+    if (args.imageClone != null) {
+        val payload = mutableMapOf<String, Any>()
+        if (args.imageName != null) {
+            payload["name"] = args.imageName!!
+        }
+        val result = apiRequest("/images/${args.imageClone}/clone", "POST", payload, publicKey, secretKey)
+        println("${GREEN}Image cloned${RESET}")
+        println(toJson(result))
+        return
+    }
+
+    System.err.println("${RED}Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID${RESET}")
     exitProcess(1)
 }
 
@@ -936,7 +1059,10 @@ fun parseArgs(args: Array<String>): Args {
         when (args[i]) {
             "session" -> result.command = "session"
             "service" -> result.command = "service"
+            "languages" -> result.command = "languages"
             "key" -> result.command = "key"
+            "image" -> result.command = "image"
+            "--json" -> result.jsonOutput = true
             "-k", "--api-key" -> result.apiKey = args[++i]
             "-n", "--network" -> result.network = args[++i]
             "-v", "--vcpu" -> result.vcpu = args[++i].toInt()
@@ -948,16 +1074,26 @@ fun parseArgs(args: Array<String>): Args {
                 when (result.command) {
                     "session" -> result.sessionList = true
                     "service" -> result.serviceList = true
+                    "image" -> result.imageList = true
                 }
             }
             "-s", "--shell" -> result.sessionShell = args[++i]
             "--kill" -> result.sessionKill = args[++i]
-            "--name" -> result.serviceName = args[++i]
-            "--ports" -> result.servicePorts = args[++i]
+            "--name" -> {
+                when (result.command) {
+                    "image" -> result.imageName = args[++i]
+                    else -> result.serviceName = args[++i]
+                }
+            }
+            "--ports" -> {
+                when (result.command) {
+                    "image" -> result.imagePorts = args[++i]
+                    else -> result.servicePorts = args[++i]
+                }
+            }
             "--type" -> result.serviceType = args[++i]
             "--bootstrap" -> result.serviceBootstrap = args[++i]
             "--bootstrap-file" -> result.serviceBootstrapFile = args[++i]
-            "--info" -> result.serviceInfo = args[++i]
             "--logs" -> result.serviceLogs = args[++i]
             "--tail" -> result.serviceTail = args[++i]
             "--freeze" -> result.serviceSleep = args[++i]
@@ -970,6 +1106,39 @@ fun parseArgs(args: Array<String>): Args {
             "--dump-file" -> result.serviceDumpFile = args[++i]
             "--extend" -> result.keyExtend = true
             "--env-file" -> result.envFile = args[++i]
+            "--info" -> {
+                when (result.command) {
+                    "service" -> result.serviceInfo = args[++i]
+                    "image" -> result.imageInfo = args[++i]
+                }
+            }
+            "--delete" -> {
+                if (result.command == "image") result.imageDelete = args[++i]
+            }
+            "--lock" -> {
+                if (result.command == "image") result.imageLock = args[++i]
+            }
+            "--unlock" -> {
+                if (result.command == "image") result.imageUnlock = args[++i]
+            }
+            "--publish" -> {
+                if (result.command == "image") result.imagePublish = args[++i]
+            }
+            "--source-type" -> result.imageSourceType = args[++i]
+            "--visibility" -> {
+                if (result.command == "image") {
+                    result.imageVisibility = args[++i]
+                    if (i + 1 < args.size && !args[i + 1].startsWith("-")) {
+                        result.imageVisibilityMode = args[++i]
+                    }
+                }
+            }
+            "--spawn" -> {
+                if (result.command == "image") result.imageSpawn = args[++i]
+            }
+            "--clone" -> {
+                if (result.command == "image") result.imageClone = args[++i]
+            }
             "env" -> {
                 if (result.command == "service" && i + 1 < args.size) {
                     result.envAction = args[++i]
@@ -997,6 +1166,8 @@ fun printHelp() {
 Usage: kotlin UnKt [options] <source_file>
        kotlin UnKt session [options]
        kotlin UnKt service [options]
+       kotlin UnKt image [options]
+       kotlin UnKt languages [--json]
        kotlin UnKt key [options]
 
 Execute options:
@@ -1041,5 +1212,22 @@ Service env commands:
 
 Key options:
   --extend          Open browser to extend key
+
+Image options:
+  --list            List all images
+  --info ID         Get image details
+  --delete ID       Delete an image
+  --lock ID         Lock image to prevent deletion
+  --unlock ID       Unlock image
+  --publish ID      Publish image from service/snapshot (requires --source-type)
+  --source-type TYPE  Source type: service or snapshot
+  --visibility ID MODE  Set visibility: private, unlisted, or public
+  --spawn ID        Spawn new service from image
+  --clone ID        Clone an image
+  --name NAME       Name for spawned service or cloned image
+  --ports PORTS     Ports for spawned service
+
+Languages options:
+  --json            Output as JSON array
     """.trimIndent())
 }

@@ -1760,8 +1760,14 @@ class Unsandbox {
                 case 'snapshot':
                     $this->cliHandleSnapshot(array_slice($args, 1), $opts);
                     break;
+                case 'image':
+                    $this->cliHandleImage(array_slice($args, 1), $opts);
+                    break;
                 case 'key':
                     $this->cliHandleKey($opts);
+                    break;
+                case 'languages':
+                    $this->cliHandleLanguages(array_slice($args, 1), $opts);
                     break;
                 case '-h':
                 case '--help':
@@ -2579,6 +2585,226 @@ class Unsandbox {
     }
 
     /**
+     * Handle image subcommand.
+     *
+     * @param array $args Command arguments
+     * @param array $opts Global options
+     */
+    private function cliHandleImage(array $args, array $opts): void {
+        $imageOpts = $this->cliParseImageOptions($args);
+
+        if ($imageOpts['list']) {
+            $images = $this->listImages();
+            $this->cliPrintImageList($images);
+            return;
+        }
+
+        if ($imageOpts['info']) {
+            $image = $this->getImage($imageOpts['info']);
+            $this->cliPrintImageInfo($image);
+            return;
+        }
+
+        if ($imageOpts['delete']) {
+            if (!$opts['yes']) {
+                fwrite(STDERR, "Warning: This will permanently delete the image. Use -y to confirm.\n");
+                exit(2);
+            }
+            $result = $this->deleteImage($imageOpts['delete']);
+            echo "Image deleted: " . $imageOpts['delete'] . "\n";
+            return;
+        }
+
+        if ($imageOpts['lock']) {
+            $result = $this->lockImage($imageOpts['lock']);
+            echo "Image locked: " . $imageOpts['lock'] . "\n";
+            return;
+        }
+
+        if ($imageOpts['unlock']) {
+            $result = $this->unlockImage($imageOpts['unlock']);
+            echo "Image unlocked: " . $imageOpts['unlock'] . "\n";
+            return;
+        }
+
+        if ($imageOpts['publish']) {
+            if (empty($imageOpts['sourceType'])) {
+                $this->cliError("--source-type required for --publish");
+                exit(2);
+            }
+            $result = $this->imagePublish($imageOpts['sourceType'], $imageOpts['publish'], $imageOpts['name']);
+            $imageId = $result['image_id'] ?? $result['id'] ?? '';
+            echo "Image published: {$imageId}\n";
+            return;
+        }
+
+        if ($imageOpts['visibility'] && $imageOpts['visibilityMode']) {
+            if (!in_array($imageOpts['visibilityMode'], ['private', 'unlisted', 'public'])) {
+                $this->cliError("visibility must be private, unlisted, or public");
+                exit(2);
+            }
+            $result = $this->setImageVisibility($imageOpts['visibility'], $imageOpts['visibilityMode']);
+            echo "Image {$imageOpts['visibility']} visibility set to {$imageOpts['visibilityMode']}\n";
+            return;
+        }
+
+        if ($imageOpts['spawn']) {
+            if (empty($imageOpts['name'])) {
+                $this->cliError("--name required for --spawn");
+                exit(2);
+            }
+            $ports = null;
+            if (!empty($imageOpts['ports'])) {
+                $ports = array_map('intval', explode(',', $imageOpts['ports']));
+            }
+            $result = $this->spawnFromImage($imageOpts['spawn'], $imageOpts['name'], $ports);
+            $serviceId = $result['service_id'] ?? $result['id'] ?? '';
+            echo "Service spawned: {$serviceId}\n";
+            return;
+        }
+
+        if ($imageOpts['clone']) {
+            $result = $this->cloneImage($imageOpts['clone'], $imageOpts['name']);
+            $imageId = $result['image_id'] ?? $result['id'] ?? '';
+            echo "Image cloned: {$imageId}\n";
+            return;
+        }
+
+        $this->cliError("No action specified for image command. Use --list, --info, --delete, --publish, --spawn, --clone, etc.");
+        exit(2);
+    }
+
+    /**
+     * Parse image-specific options.
+     *
+     * @param array $args Arguments to parse
+     * @return array Parsed options
+     */
+    private function cliParseImageOptions(array $args): array {
+        $opts = [
+            'list' => false,
+            'info' => null,
+            'delete' => null,
+            'lock' => null,
+            'unlock' => null,
+            'publish' => null,
+            'sourceType' => null,
+            'visibility' => null,
+            'visibilityMode' => null,
+            'spawn' => null,
+            'clone' => null,
+            'name' => null,
+            'ports' => null,
+        ];
+
+        $i = 0;
+        while ($i < count($args)) {
+            $arg = $args[$i];
+
+            if ($arg === '--list' || $arg === '-l') {
+                $opts['list'] = true;
+            } elseif ($arg === '--info') {
+                $i++;
+                $opts['info'] = $args[$i] ?? null;
+            } elseif ($arg === '--delete') {
+                $i++;
+                $opts['delete'] = $args[$i] ?? null;
+            } elseif ($arg === '--lock') {
+                $i++;
+                $opts['lock'] = $args[$i] ?? null;
+            } elseif ($arg === '--unlock') {
+                $i++;
+                $opts['unlock'] = $args[$i] ?? null;
+            } elseif ($arg === '--publish') {
+                $i++;
+                $opts['publish'] = $args[$i] ?? null;
+            } elseif ($arg === '--source-type') {
+                $i++;
+                $opts['sourceType'] = $args[$i] ?? null;
+            } elseif ($arg === '--visibility') {
+                $i++;
+                $opts['visibility'] = $args[$i] ?? null;
+                // Check if next arg is the mode (not a flag)
+                if (isset($args[$i + 1]) && !str_starts_with($args[$i + 1], '-')) {
+                    $i++;
+                    $opts['visibilityMode'] = $args[$i];
+                }
+            } elseif ($arg === '--spawn') {
+                $i++;
+                $opts['spawn'] = $args[$i] ?? null;
+            } elseif ($arg === '--clone') {
+                $i++;
+                $opts['clone'] = $args[$i] ?? null;
+            } elseif ($arg === '--name') {
+                $i++;
+                $opts['name'] = $args[$i] ?? null;
+            } elseif ($arg === '--ports') {
+                $i++;
+                $opts['ports'] = $args[$i] ?? null;
+            }
+
+            $i++;
+        }
+
+        return $opts;
+    }
+
+    /**
+     * Print images list in tabular format.
+     *
+     * @param array $images Images to print
+     */
+    private function cliPrintImageList(array $images): void {
+        if (empty($images)) {
+            echo "No images found.\n";
+            return;
+        }
+
+        printf("%-38s  %-20s  %-10s  %-10s  %s\n", 'ID', 'NAME', 'VISIBILITY', 'SOURCE', 'CREATED');
+
+        foreach ($images as $image) {
+            printf(
+                "%-38s  %-20s  %-10s  %-10s  %s\n",
+                substr($image['image_id'] ?? $image['id'] ?? '-', 0, 38),
+                substr($image['name'] ?? '-', 0, 20),
+                substr($image['visibility'] ?? 'private', 0, 10),
+                substr($image['source_type'] ?? '-', 0, 10),
+                $image['created_at'] ?? '-'
+            );
+        }
+    }
+
+    /**
+     * Print image info.
+     *
+     * @param array $image Image data
+     */
+    private function cliPrintImageInfo(array $image): void {
+        echo "ID: " . ($image['image_id'] ?? $image['id'] ?? '-') . "\n";
+        if (!empty($image['name'])) {
+            echo "Name: " . $image['name'] . "\n";
+        }
+        if (!empty($image['visibility'])) {
+            echo "Visibility: " . $image['visibility'] . "\n";
+        }
+        if (!empty($image['source_type'])) {
+            echo "Source Type: " . $image['source_type'] . "\n";
+        }
+        if (!empty($image['source_id'])) {
+            echo "Source ID: " . $image['source_id'] . "\n";
+        }
+        if (!empty($image['size'])) {
+            echo "Size: " . $image['size'] . "\n";
+        }
+        if (isset($image['locked'])) {
+            echo "Locked: " . ($image['locked'] ? 'yes' : 'no') . "\n";
+        }
+        if (!empty($image['created_at'])) {
+            echo "Created: " . $image['created_at'] . "\n";
+        }
+    }
+
+    /**
      * Handle key subcommand.
      *
      * @param array $opts Global options
@@ -2591,6 +2817,29 @@ class Unsandbox {
         }
         if (isset($result['email'])) {
             echo "Email: " . $result['email'] . "\n";
+        }
+    }
+
+    /**
+     * Handle languages command.
+     *
+     * @param array $args Command arguments
+     * @param array $opts Global options
+     */
+    private function cliHandleLanguages(array $args, array $opts): void {
+        // Check for --json flag
+        $jsonOutput = in_array('--json', $args);
+
+        $languages = $this->getLanguages();
+
+        if ($jsonOutput) {
+            // Output as JSON array
+            echo json_encode($languages) . "\n";
+        } else {
+            // Output one language per line (pipe-friendly)
+            foreach ($languages as $lang) {
+                echo $lang . "\n";
+            }
         }
     }
 
@@ -2718,6 +2967,7 @@ USAGE:
     php un.php service [options]
     php un.php snapshot [options]
     php un.php key
+    php un.php languages [--json]
 
 GLOBAL OPTIONS:
     -s, --shell LANG        Language for inline code execution
@@ -2739,6 +2989,7 @@ COMMANDS:
     service                 Manage persistent services
     snapshot                Manage snapshots
     key                     Validate API key
+    languages [--json]      List available languages
 
 SESSION OPTIONS:
     --list, -l              List active sessions

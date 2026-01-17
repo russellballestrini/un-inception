@@ -87,6 +87,11 @@
        01  WS-VCPU             PIC 9(2) VALUE 0.
        01  WS-VCPU-STR         PIC X(8).
        01  WS-RAM              PIC 9(4) VALUE 0.
+       01  WS-JSON-OUTPUT      PIC X(8).
+       01  WS-IMAGE-SOURCE-TYPE PIC X(32).
+       01  WS-IMAGE-VISIBILITY PIC X(32).
+       01  WS-ARG4             PIC X(256).
+       01  WS-ARG5             PIC X(256).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -114,6 +119,16 @@
 
            IF WS-ARG1 = "key"
                PERFORM HANDLE-KEY
+               STOP RUN
+           END-IF.
+
+           IF WS-ARG1 = "languages"
+               PERFORM HANDLE-LANGUAGES
+               STOP RUN
+           END-IF.
+
+           IF WS-ARG1 = "image"
+               PERFORM HANDLE-IMAGE
                STOP RUN
            END-IF.
 
@@ -984,6 +999,452 @@
                "-d \"$BODY\" >/dev/null && "
                "echo -e '\x1b[32mService resized to " WS-VCPU
                " vCPU, " WS-RAM " GB RAM\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       HANDLE-LANGUAGES.
+      * Get API keys
+           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
+           IF WS-PUBLIC-KEY NOT = SPACES
+               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
+               IF WS-SECRET-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
+                       UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+           ELSE
+               ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
+               IF WS-API-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
+                       "UNSANDBOX_API_KEY not set" UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+               MOVE WS-API-KEY TO WS-PUBLIC-KEY
+               MOVE WS-API-KEY TO WS-SECRET-KEY
+           END-IF.
+
+      * Parse --json flag
+           MOVE SPACES TO WS-JSON-OUTPUT.
+           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+           IF WS-ARG2 = "--json"
+               MOVE "true" TO WS-JSON-OUTPUT
+           END-IF.
+
+      * Perform languages list
+           PERFORM LANGUAGES-LIST.
+
+       LANGUAGES-LIST.
+           IF WS-JSON-OUTPUT = "true"
+      * JSON output: extract language names as array
+               STRING "TS=$(date +%s); "
+                   "SIG=$(echo -n \"$TS:GET:/languages:\" | "
+                   "openssl dgst -sha256 -hmac '"
+                   FUNCTION TRIM(WS-SECRET-KEY)
+                   "' | cut -d' ' -f2); "
+                   "RESP=$(curl -s -X GET 'https://api.unsandbox.com/languages' "
+                   "-H 'Authorization: Bearer "
+                   FUNCTION TRIM(WS-PUBLIC-KEY)
+                   "' "
+                   "-H 'X-Timestamp: '$TS "
+                   "-H 'X-Signature: '$SIG); "
+                   "echo \"$RESP\" | jq -c '[.languages[].name]'"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           ELSE
+      * Plain output: one language per line
+               STRING "TS=$(date +%s); "
+                   "SIG=$(echo -n \"$TS:GET:/languages:\" | "
+                   "openssl dgst -sha256 -hmac '"
+                   FUNCTION TRIM(WS-SECRET-KEY)
+                   "' | cut -d' ' -f2); "
+                   "RESP=$(curl -s -X GET 'https://api.unsandbox.com/languages' "
+                   "-H 'Authorization: Bearer "
+                   FUNCTION TRIM(WS-PUBLIC-KEY)
+                   "' "
+                   "-H 'X-Timestamp: '$TS "
+                   "-H 'X-Signature: '$SIG); "
+                   "echo \"$RESP\" | jq -r '.languages[].name'"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       HANDLE-IMAGE.
+      * Get API keys (try new format first, fall back to old)
+           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
+           IF WS-PUBLIC-KEY NOT = SPACES
+               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
+               IF WS-SECRET-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
+                       UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+           ELSE
+               ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
+               IF WS-API-KEY = SPACES
+                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
+                       "UNSANDBOX_API_KEY not set" UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+               END-IF
+               MOVE WS-API-KEY TO WS-PUBLIC-KEY
+               MOVE WS-API-KEY TO WS-SECRET-KEY
+           END-IF.
+
+      * Initialize image parameters
+           MOVE SPACES TO WS-ID.
+           MOVE SPACES TO WS-NAME.
+           MOVE SPACES TO WS-PORTS.
+           MOVE SPACES TO WS-IMAGE-SOURCE-TYPE.
+           MOVE SPACES TO WS-IMAGE-VISIBILITY.
+
+      * Parse image arguments
+           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+
+           IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
+               PERFORM IMAGE-LIST
+           ELSE IF WS-ARG2 = "--info"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM IMAGE-INFO
+           ELSE IF WS-ARG2 = "--delete"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM IMAGE-DELETE
+           ELSE IF WS-ARG2 = "--lock"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM IMAGE-LOCK
+           ELSE IF WS-ARG2 = "--unlock"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM IMAGE-UNLOCK
+           ELSE IF WS-ARG2 = "--publish"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM PARSE-IMAGE-PUBLISH-ARGS
+               PERFORM IMAGE-PUBLISH
+           ELSE IF WS-ARG2 = "--visibility"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               ACCEPT WS-IMAGE-VISIBILITY FROM ARGUMENT-VALUE
+               PERFORM IMAGE-VISIBILITY
+           ELSE IF WS-ARG2 = "--spawn"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM PARSE-IMAGE-SPAWN-ARGS
+               PERFORM IMAGE-SPAWN
+           ELSE IF WS-ARG2 = "--clone"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM PARSE-IMAGE-CLONE-ARGS
+               PERFORM IMAGE-CLONE
+           ELSE
+               DISPLAY "Error: Use --list, --info, --delete, "
+                   "--lock, --unlock, --publish, --visibility, "
+                   "--spawn, or --clone" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+           END-IF.
+
+       IMAGE-LIST.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:GET:/images:\" | "
+               "openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X GET 'https://api.unsandbox.com/images' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       IMAGE-INFO.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:GET:/images/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X GET 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       IMAGE-DELETE.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:DELETE:/images/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X DELETE 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG >/dev/null && "
+               "echo -e '\x1b[32mImage deleted: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       IMAGE-LOCK.
+           STRING "TS=$(date +%s); "
+               "BODY='{}'; "
+               "SIG=$(echo -n \"$TS:POST:/images/"
+               FUNCTION TRIM(WS-ID)
+               "/lock:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "/lock' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" >/dev/null && "
+               "echo -e '\x1b[32mImage locked: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       IMAGE-UNLOCK.
+           STRING "TS=$(date +%s); "
+               "BODY='{}'; "
+               "SIG=$(echo -n \"$TS:POST:/images/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" >/dev/null && "
+               "echo -e '\x1b[32mImage unlocked: "
+               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-IMAGE-PUBLISH-ARGS.
+      * Parse --source-type and --name for publish
+           MOVE SPACES TO WS-IMAGE-SOURCE-TYPE.
+           MOVE SPACES TO WS-NAME.
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "--source-type"
+                   ACCEPT WS-IMAGE-SOURCE-TYPE FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--name"
+                   ACCEPT WS-NAME FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       IMAGE-PUBLISH.
+      * Validate source-type
+           IF WS-IMAGE-SOURCE-TYPE = SPACES
+               DISPLAY "Error: --publish requires --source-type "
+                   "(service or snapshot)" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Build publish request
+           STRING "TS=$(date +%s); "
+               "BODY='{\"source_type\":\""
+               FUNCTION TRIM(WS-IMAGE-SOURCE-TYPE)
+               "\",\"source_id\":\""
+               FUNCTION TRIM(WS-ID) "\""
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-NAME NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "}'; "
+               "SIG=$(echo -n \"$TS:POST:/images/publish:$BODY\" | "
+               "openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/images/publish' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" && "
+               "echo -e '\x1b[32mImage published\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       IMAGE-VISIBILITY.
+           STRING "TS=$(date +%s); "
+               "BODY='{\"visibility\":\""
+               FUNCTION TRIM(WS-IMAGE-VISIBILITY)
+               "\"}'; "
+               "SIG=$(echo -n \"$TS:POST:/images/"
+               FUNCTION TRIM(WS-ID)
+               "/visibility:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "/visibility' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" >/dev/null && "
+               "echo -e '\x1b[32mImage visibility set to: "
+               FUNCTION TRIM(WS-IMAGE-VISIBILITY) "\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-IMAGE-SPAWN-ARGS.
+      * Parse --name and --ports for spawn
+           MOVE SPACES TO WS-NAME.
+           MOVE SPACES TO WS-PORTS.
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "--name"
+                   ACCEPT WS-NAME FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--ports"
+                   ACCEPT WS-PORTS FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       IMAGE-SPAWN.
+      * Build spawn request
+           STRING "TS=$(date +%s); "
+               "BODY='{"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-NAME NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           IF WS-PORTS NOT = SPACES
+               IF WS-NAME NOT = SPACES
+                   STRING FUNCTION TRIM(WS-CURL-CMD) ","
+                       DELIMITED BY SIZE INTO WS-CURL-CMD
+                   END-STRING
+               END-IF
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "\"ports\":[" FUNCTION TRIM(WS-PORTS) "]"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "}'; "
+               "SIG=$(echo -n \"$TS:POST:/images/"
+               FUNCTION TRIM(WS-ID)
+               "/spawn:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "/spawn' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" && "
+               "echo -e '\x1b[32mService spawned from image\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-IMAGE-CLONE-ARGS.
+      * Parse --name for clone
+           MOVE SPACES TO WS-NAME.
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "--name"
+                   ACCEPT WS-NAME FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       IMAGE-CLONE.
+      * Build clone request
+           STRING "TS=$(date +%s); "
+               "BODY='{"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-NAME NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   "\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "}'; "
+               "SIG=$(echo -n \"$TS:POST:/images/"
+               FUNCTION TRIM(WS-ID)
+               "/clone:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "/clone' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" && "
+               "echo -e '\x1b[32mImage cloned\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

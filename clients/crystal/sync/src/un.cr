@@ -414,6 +414,26 @@ def cmd_session(args)
   puts "#{YELLOW}(Interactive sessions require WebSocket - use un2 for full support)#{RESET}"
 end
 
+def cmd_languages(args)
+  public_key, secret_key = get_api_keys(args[:api_key]?)
+
+  result = api_request("/languages", public_key, secret_key)
+  languages = result["languages"]?.try(&.as_a?) || [] of JSON::Any
+
+  if args[:json]?.as?(Bool)
+    # Output as JSON array of language names
+    names = languages.map { |l| l["name"]?.try(&.as_s?) || "" }.reject(&.empty?)
+    puts names.to_json
+  else
+    # Output one language per line
+    languages.each do |lang|
+      if name = lang["name"]?.try(&.as_s?)
+        puts name
+      end
+    end
+  end
+end
+
 def cmd_key(args)
   public_key, secret_key = get_api_keys(args[:api_key]?)
 
@@ -506,6 +526,100 @@ def cmd_key(args)
     STDERR.puts "#{RED}Error: Failed to validate key: #{ex.message}#{RESET}"
     exit 1
   end
+end
+
+def cmd_image(args)
+  public_key, secret_key = get_api_keys(args[:api_key]?)
+
+  if args[:list]?.as?(Bool)
+    result = api_request("/images", public_key, secret_key)
+    puts result.to_pretty_json
+    return
+  end
+
+  if info_id = args[:image_info]?.as?(String)
+    result = api_request("/images/#{info_id}", public_key, secret_key)
+    puts result.to_pretty_json
+    return
+  end
+
+  if del_id = args[:image_delete]?.as?(String)
+    api_request("/images/#{del_id}", public_key, secret_key, method: "DELETE")
+    puts "#{GREEN}Image deleted: #{del_id}#{RESET}"
+    return
+  end
+
+  if lock_id = args[:image_lock]?.as?(String)
+    payload = JSON.parse({}.to_json)
+    api_request("/images/#{lock_id}/lock", public_key, secret_key, method: "POST", data: payload)
+    puts "#{GREEN}Image locked: #{lock_id}#{RESET}"
+    return
+  end
+
+  if unlock_id = args[:image_unlock]?.as?(String)
+    payload = JSON.parse({}.to_json)
+    api_request("/images/#{unlock_id}/unlock", public_key, secret_key, method: "POST", data: payload)
+    puts "#{GREEN}Image unlocked: #{unlock_id}#{RESET}"
+    return
+  end
+
+  if publish_id = args[:image_publish]?.as?(String)
+    source_type = args[:image_source_type]?.as?(String)
+    if source_type.nil? || source_type.empty?
+      STDERR.puts "#{RED}Error: --publish requires --source-type (service or snapshot)#{RESET}"
+      exit 1
+    end
+    payload = JSON.parse({source_type: source_type, source_id: publish_id}.to_json)
+    if name = args[:image_name]?.as?(String)
+      payload.as_h["name"] = JSON::Any.new(name)
+    end
+    result = api_request("/images/publish", public_key, secret_key, method: "POST", data: payload)
+    puts "#{GREEN}Image published#{RESET}"
+    puts result.to_pretty_json
+    return
+  end
+
+  if visibility_id = args[:image_visibility_id]?.as?(String)
+    visibility = args[:image_visibility]?.as?(String)
+    if visibility.nil? || visibility.empty?
+      STDERR.puts "#{RED}Error: --visibility requires visibility mode (private, unlisted, public)#{RESET}"
+      exit 1
+    end
+    payload = JSON.parse({visibility: visibility}.to_json)
+    api_request("/images/#{visibility_id}/visibility", public_key, secret_key, method: "POST", data: payload)
+    puts "#{GREEN}Image visibility set to: #{visibility}#{RESET}"
+    return
+  end
+
+  if spawn_id = args[:image_spawn]?.as?(String)
+    payload = JSON.parse({}.to_json)
+    if name = args[:image_name]?.as?(String)
+      payload.as_h["name"] = JSON::Any.new(name)
+    end
+    if ports_str = args[:image_ports]?.as?(String)
+      ports = ports_str.split(',').map(&.to_i)
+      payload.as_h["ports"] = JSON.parse(ports.to_json)
+    end
+    result = api_request("/images/#{spawn_id}/spawn", public_key, secret_key, method: "POST", data: payload)
+    puts "#{GREEN}Service spawned from image#{RESET}"
+    puts result.to_pretty_json
+    return
+  end
+
+  if clone_id = args[:image_clone]?.as?(String)
+    payload = JSON.parse({}.to_json)
+    if name = args[:image_name]?.as?(String)
+      payload.as_h["name"] = JSON::Any.new(name)
+    end
+    result = api_request("/images/#{clone_id}/clone", public_key, secret_key, method: "POST", data: payload)
+    puts "#{GREEN}Image cloned#{RESET}"
+    puts result.to_pretty_json
+    return
+  end
+
+  # Default: list images
+  result = api_request("/images", public_key, secret_key)
+  puts result.to_pretty_json
 end
 
 def cmd_service(args)
@@ -735,11 +849,24 @@ def main
     svc_envs: [] of String,
     svc_env_file: nil,
     env_action: nil,
-    env_target: nil
+    env_target: nil,
+    json: false,
+    image_info: nil,
+    image_delete: nil,
+    image_lock: nil,
+    image_unlock: nil,
+    image_publish: nil,
+    image_source_type: nil,
+    image_visibility_id: nil,
+    image_visibility: nil,
+    image_spawn: nil,
+    image_clone: nil,
+    image_name: nil,
+    image_ports: nil
   } of Symbol => (String | Array(String) | Bool | Nil)
 
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr session [options]\n       un.cr service [options]\n       un.cr service env <action> <service_id> [options]\n       un.cr key [options]\n\nService env commands:\n  env status <id>     Show vault status\n  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n  env export <id>     Export vault contents\n  env delete <id>     Delete vault"
+    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr languages [--json]\n       un.cr session [options]\n       un.cr service [options]\n       un.cr service env <action> <service_id> [options]\n       un.cr key [options]\n\nService env commands:\n  env status <id>     Show vault status\n  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n  env export <id>     Export vault contents\n  env delete <id>     Delete vault"
 
     opts.on("-k API_KEY", "--api-key=API_KEY", "API key") { |k| args[:api_key] = k }
     opts.on("-n NETWORK", "--network=NETWORK", "Network mode") { |n| args[:network] = n }
@@ -771,6 +898,7 @@ def main
     opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
     opts.on("--env-file=FILE", "Load env vars from file (for vault)") { |f| args[:svc_env_file] = f }
     opts.on("--extend", "Open browser to extend/renew key") { args[:extend] = true }
+    opts.on("--json", "Output as JSON array (for languages command)") { args[:json] = true }
 
     opts.unknown_args do |before, after|
       if before.size > 0
@@ -800,6 +928,99 @@ def main
           end
         when "key"
           args[:command] = "key"
+        when "languages"
+          args[:command] = "languages"
+        when "image"
+          args[:command] = "image"
+          # Parse image subcommand options
+          i = 1
+          while i < before.size
+            case before[i]
+            when "--list", "-l"
+              args[:list] = true
+              i += 1
+            when "--info"
+              if i + 1 < before.size
+                args[:image_info] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--delete"
+              if i + 1 < before.size
+                args[:image_delete] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--lock"
+              if i + 1 < before.size
+                args[:image_lock] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--unlock"
+              if i + 1 < before.size
+                args[:image_unlock] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--publish"
+              if i + 1 < before.size
+                args[:image_publish] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--source-type"
+              if i + 1 < before.size
+                args[:image_source_type] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--visibility"
+              if i + 2 < before.size
+                args[:image_visibility_id] = before[i + 1]
+                args[:image_visibility] = before[i + 2]
+                i += 3
+              else
+                i += 1
+              end
+            when "--spawn"
+              if i + 1 < before.size
+                args[:image_spawn] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--clone"
+              if i + 1 < before.size
+                args[:image_clone] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--name"
+              if i + 1 < before.size
+                args[:image_name] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            when "--ports"
+              if i + 1 < before.size
+                args[:image_ports] = before[i + 1]
+                i += 2
+              else
+                i += 1
+              end
+            else
+              i += 1
+            end
+          end
         else
           if before[0].starts_with?("-")
             STDERR.puts "#{RED}Unknown option: #{before[0]}#{RESET}"
@@ -820,6 +1041,10 @@ def main
     cmd_service(args)
   elsif args[:command] == "key"
     cmd_key(args)
+  elsif args[:command] == "languages"
+    cmd_languages(args)
+  elsif args[:command] == "image"
+    cmd_image(args)
   elsif args[:source_file]
     cmd_execute(args)
   else

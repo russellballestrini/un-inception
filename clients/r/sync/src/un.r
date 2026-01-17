@@ -1002,6 +1002,25 @@ cmd_session <- function(args) {
     cat(sprintf("%s(Interactive sessions require WebSocket - use un2 for full support)%s\n", YELLOW, RESET))
 }
 
+cmd_languages <- function(args) {
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
+
+    result <- api_request("/languages", public_key, secret_key)
+    langs <- result$languages
+
+    if (!is.null(args$json_output) && args$json_output) {
+        # JSON output - print as JSON array
+        cat(toJSON(langs, auto_unbox = TRUE), "\n")
+    } else {
+        # Default output - one language per line
+        for (lang in langs) {
+            cat(lang, "\n")
+        }
+    }
+}
+
 cmd_key <- function(args) {
     keys <- get_api_keys(args$api_key)
     public_key <- keys$public_key
@@ -1178,6 +1197,113 @@ cmd_snapshot <- function(args) {
     }
 
     cat(sprintf("%sError: Specify --list, --info ID, --delete ID, or --clone ID --type TYPE%s\n", RED, RESET), file = stderr())
+    quit(status = 1)
+}
+
+cmd_image <- function(args) {
+    keys <- get_api_keys(args$api_key)
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
+
+    if (!is.null(args$list) && args$list) {
+        result <- api_request("/images", public_key, secret_key)
+        images <- if (!is.null(result$images)) result$images else list()
+        if (length(images) == 0) {
+            cat("No images found\n")
+        } else {
+            cat(sprintf("%-40s %-20s %-12s %s\n", "ID", "Name", "Visibility", "Created"))
+            for (img in images) {
+                cat(sprintf("%-40s %-20s %-12s %s\n",
+                    if (!is.null(img$id)) img$id else "N/A",
+                    if (!is.null(img$name)) img$name else "-",
+                    if (!is.null(img$visibility)) img$visibility else "N/A",
+                    if (!is.null(img$created_at)) img$created_at else "N/A"))
+            }
+        }
+        return()
+    }
+
+    if (!is.null(args$image_info)) {
+        result <- api_request(paste0("/images/", args$image_info), public_key, secret_key)
+        cat(sprintf("%sImage Details%s\n\n", BLUE, RESET))
+        cat(sprintf("Image ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        cat(sprintf("Name: %s\n", if (!is.null(result$name)) result$name else "-"))
+        cat(sprintf("Visibility: %s\n", if (!is.null(result$visibility)) result$visibility else "N/A"))
+        cat(sprintf("Created: %s\n", if (!is.null(result$created_at)) result$created_at else "N/A"))
+        return()
+    }
+
+    if (!is.null(args$image_delete)) {
+        result <- api_request(paste0("/images/", args$image_delete), public_key, secret_key, method = "DELETE")
+        cat(sprintf("%sImage deleted successfully%s\n", GREEN, RESET))
+        return()
+    }
+
+    if (!is.null(args$image_lock)) {
+        result <- api_request(paste0("/images/", args$image_lock, "/lock"), public_key, secret_key, method = "POST", data = list())
+        cat(sprintf("%sImage locked successfully%s\n", GREEN, RESET))
+        return()
+    }
+
+    if (!is.null(args$image_unlock)) {
+        result <- api_request(paste0("/images/", args$image_unlock, "/unlock"), public_key, secret_key, method = "POST", data = list())
+        cat(sprintf("%sImage unlocked successfully%s\n", GREEN, RESET))
+        return()
+    }
+
+    if (!is.null(args$image_publish)) {
+        if (is.null(args$source_type)) {
+            cat(sprintf("%sError: --source-type required for --publish (service or snapshot)%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        payload <- list(source_type = args$source_type, source_id = args$image_publish)
+        if (!is.null(args$name)) {
+            payload$name <- args$name
+        }
+        result <- api_request("/images/publish", public_key, secret_key, method = "POST", data = payload)
+        cat(sprintf("%sImage published successfully%s\n", GREEN, RESET))
+        cat(sprintf("Image ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        return()
+    }
+
+    if (!is.null(args$image_visibility)) {
+        if (is.null(args$visibility_mode)) {
+            cat(sprintf("%sError: visibility mode required (private, unlisted, or public)%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        payload <- list(visibility = args$visibility_mode)
+        result <- api_request(paste0("/images/", args$image_visibility, "/visibility"), public_key, secret_key, method = "POST", data = payload)
+        cat(sprintf("%sImage visibility set to %s%s\n", GREEN, args$visibility_mode, RESET))
+        return()
+    }
+
+    if (!is.null(args$image_spawn)) {
+        payload <- list()
+        if (!is.null(args$name)) {
+            payload$name <- args$name
+        }
+        if (!is.null(args$ports)) {
+            ports_vec <- as.integer(strsplit(args$ports, ",")[[1]])
+            payload$ports <- ports_vec
+        }
+        result <- api_request(paste0("/images/", args$image_spawn, "/spawn"), public_key, secret_key, method = "POST", data = payload)
+        cat(sprintf("%sService spawned from image%s\n", GREEN, RESET))
+        cat(sprintf("Service ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        return()
+    }
+
+    if (!is.null(args$image_clone)) {
+        payload <- list()
+        if (!is.null(args$name)) {
+            payload$name <- args$name
+        }
+        result <- api_request(paste0("/images/", args$image_clone, "/clone"), public_key, secret_key, method = "POST", data = payload)
+        cat(sprintf("%sImage cloned successfully%s\n", GREEN, RESET))
+        cat(sprintf("Image ID: %s\n", if (!is.null(result$id)) result$id else "N/A"))
+        return()
+    }
+
+    cat(sprintf("%sError: Specify --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID%s\n", RED, RESET), file = stderr())
     quit(status = 1)
 }
 
@@ -1433,7 +1559,18 @@ parse_args <- function() {
         svc_envs = NULL,
         svc_env_file = NULL,
         env_action = NULL,
-        env_target = NULL
+        env_target = NULL,
+        json_output = FALSE,
+        image_info = NULL,
+        image_delete = NULL,
+        image_lock = NULL,
+        image_unlock = NULL,
+        image_publish = NULL,
+        source_type = NULL,
+        image_visibility = NULL,
+        visibility_mode = NULL,
+        image_spawn = NULL,
+        image_clone = NULL
     )
 
     i <- 1
@@ -1461,8 +1598,17 @@ parse_args <- function() {
         } else if (arg == "key") {
             result$command <- "key"
             i <- i + 1
+        } else if (arg == "languages") {
+            result$command <- "languages"
+            i <- i + 1
+        } else if (arg == "--json") {
+            result$json_output <- TRUE
+            i <- i + 1
         } else if (arg == "snapshot") {
             result$command <- "snapshot"
+            i <- i + 1
+        } else if (arg == "image") {
+            result$command <- "image"
             i <- i + 1
         } else if (arg %in% c("-k", "--api-key")) {
             i <- i + 1
@@ -1504,7 +1650,11 @@ parse_args <- function() {
             i <- i + 1
         } else if (arg == "--info") {
             i <- i + 1
-            result$info <- args[i]
+            if (!is.null(result$command) && result$command == "image") {
+                result$image_info <- args[i]
+            } else {
+                result$info <- args[i]
+            }
             i <- i + 1
         } else if (arg == "--logs") {
             i <- i + 1
@@ -1591,11 +1741,27 @@ parse_args <- function() {
             i <- i + 1
         } else if (arg == "--delete") {
             i <- i + 1
-            result$delete <- args[i]
+            if (!is.null(result$command) && result$command == "image") {
+                result$image_delete <- args[i]
+            } else {
+                result$delete <- args[i]
+            }
+            i <- i + 1
+        } else if (arg == "--lock") {
+            i <- i + 1
+            result$image_lock <- args[i]
+            i <- i + 1
+        } else if (arg == "--unlock") {
+            i <- i + 1
+            result$image_unlock <- args[i]
             i <- i + 1
         } else if (arg == "--clone") {
             i <- i + 1
-            result$clone <- args[i]
+            if (!is.null(result$command) && result$command == "image") {
+                result$image_clone <- args[i]
+            } else {
+                result$clone <- args[i]
+            }
             i <- i + 1
         } else if (arg == "--shell") {
             i <- i + 1
@@ -1603,6 +1769,26 @@ parse_args <- function() {
             i <- i + 1
         } else if (arg == "--extend") {
             result$extend <- TRUE
+            i <- i + 1
+        } else if (arg == "--source-type") {
+            i <- i + 1
+            result$source_type <- args[i]
+            i <- i + 1
+        } else if (arg == "--visibility") {
+            i <- i + 1
+            result$image_visibility <- args[i]
+            i <- i + 1
+            if (i <= length(args) && !startsWith(args[i], "-")) {
+                result$visibility_mode <- args[i]
+                i <- i + 1
+            }
+        } else if (arg == "--publish") {
+            i <- i + 1
+            result$image_publish <- args[i]
+            i <- i + 1
+        } else if (arg == "--spawn") {
+            i <- i + 1
+            result$image_spawn <- args[i]
             i <- i + 1
         } else if (!startsWith(arg, "-")) {
             result$source_file <- arg
@@ -1636,8 +1822,12 @@ main <- function() {
         cmd_service(args)
     } else if (!is.null(args$command) && args$command == "snapshot") {
         cmd_snapshot(args)
+    } else if (!is.null(args$command) && args$command == "image") {
+        cmd_image(args)
     } else if (!is.null(args$command) && args$command == "key") {
         cmd_key(args)
+    } else if (!is.null(args$command) && args$command == "languages") {
+        cmd_languages(args)
     } else if (!is.null(args$source_file)) {
         cmd_execute(args)
     } else {
@@ -1646,12 +1836,29 @@ main <- function() {
         cat("       un.r service [options]\n", file = stderr())
         cat("       un.r service env <action> <service_id> [options]\n", file = stderr())
         cat("       un.r snapshot [options]\n", file = stderr())
+        cat("       un.r image [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
+        cat("       un.r languages [--json]\n", file = stderr())
+        cat("\nLanguages options:\n", file = stderr())
+        cat("  --json              Output as JSON array\n", file = stderr())
         cat("\nService env commands:\n", file = stderr())
         cat("  env status <id>     Show vault status\n", file = stderr())
         cat("  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n", file = stderr())
         cat("  env export <id>     Export vault contents\n", file = stderr())
         cat("  env delete <id>     Delete vault\n", file = stderr())
+        cat("\nImage commands:\n", file = stderr())
+        cat("  --list              List all images\n", file = stderr())
+        cat("  --info ID           Get image details\n", file = stderr())
+        cat("  --delete ID         Delete an image\n", file = stderr())
+        cat("  --lock ID           Lock image to prevent deletion\n", file = stderr())
+        cat("  --unlock ID         Unlock image\n", file = stderr())
+        cat("  --publish ID        Publish image from service/snapshot\n", file = stderr())
+        cat("  --source-type TYPE  Source type: service or snapshot\n", file = stderr())
+        cat("  --visibility ID MODE  Set visibility: private, unlisted, public\n", file = stderr())
+        cat("  --spawn ID          Spawn new service from image\n", file = stderr())
+        cat("  --clone ID          Clone an image\n", file = stderr())
+        cat("  --name NAME         Name for spawned service or cloned image\n", file = stderr())
+        cat("  --ports PORTS       Ports for spawned service\n", file = stderr())
         quit(status = 1)
     }
 }

@@ -2143,6 +2143,17 @@ def _format_list_output(items: List[Dict[str, Any]], resource_type: str) -> str:
                 item.get("size", ""),
                 item.get("created_at", "")[:19] if item.get("created_at") else "",
             ])
+    elif resource_type == "image":
+        headers = ["ID", "NAME", "VISIBILITY", "SOURCE", "CREATED"]
+        rows = []
+        for item in items:
+            rows.append([
+                item.get("id", item.get("image_id", ""))[:36],
+                item.get("name", "")[:20],
+                item.get("visibility", "private"),
+                item.get("source_type", "")[:10],
+                item.get("created_at", "")[:19] if item.get("created_at") else "",
+            ])
     else:
         headers = ["ID", "STATUS"]
         rows = [[str(item.get("id", "")), str(item.get("status", ""))] for item in items]
@@ -2178,6 +2189,8 @@ Examples:
   python un.py service --list               List all services
   python un.py snapshot --list              List all snapshots
   python un.py key                          Check API key
+  python un.py languages                    List available languages
+  python un.py languages --json             List languages as JSON
 """,
     )
 
@@ -2322,8 +2335,42 @@ Examples:
     snapshot_parser.add_argument("--ports", metavar="PORTS",
                                  help="Ports for cloned service")
 
+    # Image subcommand
+    image_parser = subparsers.add_parser("image", help="Manage images")
+    image_group = image_parser.add_mutually_exclusive_group()
+    image_group.add_argument("-l", "--list", action="store_true",
+                             help="List all images")
+    image_group.add_argument("--info", metavar="ID",
+                             help="Get image details")
+    image_group.add_argument("--delete", metavar="ID",
+                             help="Delete image")
+    image_group.add_argument("--lock", metavar="ID",
+                             help="Prevent deletion")
+    image_group.add_argument("--unlock", metavar="ID",
+                             help="Allow deletion")
+    image_group.add_argument("--publish", metavar="ID",
+                             help="Publish image from service/snapshot (requires --source-type)")
+    image_group.add_argument("--visibility", nargs=2, metavar=("ID", "MODE"),
+                             help="Set visibility (private, unlisted, public)")
+    image_group.add_argument("--spawn", metavar="ID",
+                             help="Spawn new service from image")
+    image_group.add_argument("--clone", metavar="ID",
+                             help="Clone an image")
+    image_parser.add_argument("--source-type", metavar="TYPE",
+                              choices=["service", "snapshot"],
+                              help="Source type for publish (service or snapshot)")
+    image_parser.add_argument("--name", metavar="NAME",
+                              help="Name for spawned service or cloned image")
+    image_parser.add_argument("--ports", metavar="PORTS",
+                              help="Ports for spawned service (comma-separated)")
+
     # Key subcommand
     subparsers.add_parser("key", help="Check API key validity")
+
+    # Languages subcommand
+    languages_parser = subparsers.add_parser("languages", help="List available languages")
+    languages_parser.add_argument("--json", action="store_true",
+                                   help="Output as JSON array")
 
     # Positional argument for source file or inline code
     parser.add_argument("source", nargs="?",
@@ -2356,8 +2403,12 @@ def cli_main():
             _handle_service_env_command(args, public_key, secret_key)
         elif args.command == "snapshot":
             _handle_snapshot_command(args, public_key, secret_key)
+        elif args.command == "image":
+            _handle_image_command(args, public_key, secret_key)
         elif args.command == "key":
             _handle_key_command(public_key, secret_key)
+        elif args.command == "languages":
+            _handle_languages_command(args, public_key, secret_key)
         elif args.source or args.shell:
             _handle_execute_command(args, public_key, secret_key)
         else:
@@ -2680,6 +2731,73 @@ def _handle_snapshot_command(args, public_key: str, secret_key: str):
         sys.exit(2)
 
 
+def _handle_image_command(args, public_key: str, secret_key: str):
+    """Handle image subcommand."""
+    if args.list:
+        images = list_images(public_key=public_key, secret_key=secret_key)
+        print(_format_list_output(images, "image"))
+    elif args.info:
+        image = get_image(args.info, public_key=public_key, secret_key=secret_key)
+        print(json.dumps(image, indent=2))
+    elif args.delete:
+        result = delete_image(args.delete, public_key=public_key, secret_key=secret_key)
+        print(f"Image {args.delete} deleted")
+    elif args.lock:
+        result = lock_image(args.lock, public_key=public_key, secret_key=secret_key)
+        print(f"Image {args.lock} locked")
+    elif args.unlock:
+        result = unlock_image(args.unlock, public_key=public_key, secret_key=secret_key)
+        print(f"Image {args.unlock} unlocked")
+    elif args.publish:
+        if not args.source_type:
+            print("Error: --source-type required for --publish", file=sys.stderr)
+            sys.exit(2)
+        result = image_publish(
+            source_type=args.source_type,
+            source_id=args.publish,
+            name=args.name,
+            public_key=public_key,
+            secret_key=secret_key,
+        )
+        image_id = result.get("image_id", result.get("id", ""))
+        print(f"Image published: {image_id}")
+    elif args.visibility:
+        image_id, mode = args.visibility
+        if mode not in ("private", "unlisted", "public"):
+            print(f"Error: Invalid visibility mode '{mode}'. Must be private, unlisted, or public", file=sys.stderr)
+            sys.exit(2)
+        result = set_image_visibility(image_id, mode, public_key=public_key, secret_key=secret_key)
+        print(f"Image {image_id} visibility set to {mode}")
+    elif args.spawn:
+        if not args.name:
+            print("Error: --name required for --spawn", file=sys.stderr)
+            sys.exit(2)
+        ports = None
+        if args.ports:
+            ports = [int(p.strip()) for p in args.ports.split(",")]
+        result = spawn_from_image(
+            args.spawn,
+            name=args.name,
+            ports=ports,
+            public_key=public_key,
+            secret_key=secret_key,
+        )
+        service_id = result.get("service_id", result.get("id", ""))
+        print(f"Service spawned: {service_id}")
+    elif args.clone:
+        result = clone_image(
+            args.clone,
+            name=args.name,
+            public_key=public_key,
+            secret_key=secret_key,
+        )
+        image_id = result.get("image_id", result.get("id", ""))
+        print(f"Image cloned: {image_id}")
+    else:
+        print("Error: No action specified for image command", file=sys.stderr)
+        sys.exit(2)
+
+
 def _handle_key_command(public_key: str, secret_key: str):
     """Handle key validation command."""
     result = validate_keys(public_key, secret_key)
@@ -2692,6 +2810,19 @@ def _handle_key_command(public_key: str, secret_key: str):
         print(f"Expires: {result.get('expires_at')}")
     if result.get('reason'):
         print(f"Reason: {result.get('reason')}")
+
+
+def _handle_languages_command(args, public_key: str, secret_key: str):
+    """Handle languages list command."""
+    languages = get_languages(public_key, secret_key)
+
+    if args.json:
+        # Output as JSON array
+        print(json.dumps(languages))
+    else:
+        # Output one language per line (pipe-friendly)
+        for lang in languages:
+            print(lang)
 
 
 if __name__ == "__main__":

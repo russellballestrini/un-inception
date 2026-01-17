@@ -90,6 +90,7 @@ type Args = {
     mutable SessionSnapshotName: string option
     mutable SessionHot: bool
     mutable ServiceList: bool
+    mutable LanguagesJson: bool
     mutable ServiceName: string option
     mutable ServicePorts: string option
     mutable ServiceType: string option
@@ -123,6 +124,20 @@ type Args = {
     mutable EnvAction: string option
     mutable EnvTarget: string option
     mutable KeyExtend: bool
+    // Image command options
+    mutable ImageList: bool
+    mutable ImageInfo: string option
+    mutable ImageDelete: string option
+    mutable ImageLock: string option
+    mutable ImageUnlock: string option
+    mutable ImagePublish: string option
+    mutable ImageSourceType: string option
+    mutable ImageVisibility: string option
+    mutable ImageVisibilityMode: string option
+    mutable ImageSpawn: string option
+    mutable ImageClone: string option
+    mutable ImageName: string option
+    mutable ImagePorts: string option
 }
 
 let getApiKeys (argsKey: string option) =
@@ -717,6 +732,93 @@ let cmdKey (args: Args) =
         printfn "Reason: %s" errorMsg
         exit 1
 
+let cmdLanguages (args: Args) =
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
+
+    let result = apiRequest "/languages" "GET" None publicKey secretKey
+
+    // Extract languages array from the response
+    match result.TryFind "languages" with
+    | Some langs ->
+        // Parse the languages - they come as a string representation
+        let langStr = langs.ToString()
+        // Simple parsing for array of strings like: python, javascript, ...
+        let languages =
+            if langStr.StartsWith("[") && langStr.EndsWith("]") then
+                langStr.Substring(1, langStr.Length - 2).Split(',')
+                |> Array.map (fun s -> s.Trim().Trim('"'))
+                |> Array.filter (fun s -> not (String.IsNullOrEmpty(s)))
+            else
+                [| langStr |]
+
+        if args.LanguagesJson then
+            // Output as JSON array
+            let jsonArray = sprintf "[%s]" (languages |> Array.map (sprintf "\"%s\"") |> String.concat ",")
+            printfn "%s" jsonArray
+        else
+            // Output one language per line
+            for lang in languages do
+                printfn "%s" lang
+    | None ->
+        // Fallback: try to extract from raw JSON using regex
+        ()
+
+let cmdImage (args: Args) =
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
+
+    if args.ImageList then
+        let result = apiRequest "/images" "GET" None publicKey secretKey
+        printfn "%s" (toJson (box result))
+    elif args.ImageInfo.IsSome then
+        let result = apiRequest (sprintf "/images/%s" args.ImageInfo.Value) "GET" None publicKey secretKey
+        printfn "%s" (toJson (box result))
+    elif args.ImageDelete.IsSome then
+        let result = apiRequest (sprintf "/images/%s" args.ImageDelete.Value) "DELETE" None publicKey secretKey
+        printfn "%sImage deleted: %s%s" green args.ImageDelete.Value reset
+    elif args.ImageLock.IsSome then
+        let result = apiRequest (sprintf "/images/%s/lock" args.ImageLock.Value) "POST" None publicKey secretKey
+        printfn "%sImage locked: %s%s" green args.ImageLock.Value reset
+    elif args.ImageUnlock.IsSome then
+        let result = apiRequest (sprintf "/images/%s/unlock" args.ImageUnlock.Value) "POST" None publicKey secretKey
+        printfn "%sImage unlocked: %s%s" green args.ImageUnlock.Value reset
+    elif args.ImagePublish.IsSome then
+        if args.ImageSourceType.IsNone then
+            eprintfn "%sError: --source-type required (service or snapshot)%s" red reset
+            exit 1
+        let mutable payload = [("source_type", box args.ImageSourceType.Value); ("source_id", box args.ImagePublish.Value)]
+        if args.ImageName.IsSome then
+            payload <- payload @ [("name", box args.ImageName.Value)]
+        let result = apiRequest "/images/publish" "POST" (Some payload) publicKey secretKey
+        printfn "%sImage published%s" green reset
+        printfn "%s" (toJson (box result))
+    elif args.ImageVisibility.IsSome then
+        if args.ImageVisibilityMode.IsNone then
+            eprintfn "%sError: --visibility requires MODE (private, unlisted, or public)%s" red reset
+            exit 1
+        let payload = [("visibility", box args.ImageVisibilityMode.Value)]
+        let result = apiRequest (sprintf "/images/%s/visibility" args.ImageVisibility.Value) "POST" (Some payload) publicKey secretKey
+        printfn "%sImage visibility set to %s%s" green args.ImageVisibilityMode.Value reset
+    elif args.ImageSpawn.IsSome then
+        let mutable payload = []
+        if args.ImageName.IsSome then
+            payload <- payload @ [("name", box args.ImageName.Value)]
+        if args.ImagePorts.IsSome then
+            let ports = args.ImagePorts.Value.Split(',') |> Array.map (fun p -> box (int (p.Trim())))
+            payload <- payload @ [("ports", box ports)]
+        let result = apiRequest (sprintf "/images/%s/spawn" args.ImageSpawn.Value) "POST" (Some payload) publicKey secretKey
+        printfn "%sService spawned from image%s" green reset
+        printfn "%s" (toJson (box result))
+    elif args.ImageClone.IsSome then
+        let mutable payload = []
+        if args.ImageName.IsSome then
+            payload <- payload @ [("name", box args.ImageName.Value)]
+        let result = apiRequest (sprintf "/images/%s/clone" args.ImageClone.Value) "POST" (Some payload) publicKey secretKey
+        printfn "%sImage cloned%s" green reset
+        printfn "%s" (toJson (box result))
+    else
+        eprintfn "%sError: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID%s" red reset
+        exit 1
+
 let cmdSnapshot (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey
 
@@ -906,6 +1008,7 @@ let parseArgs (argv: string[]) =
         SessionSnapshotName = None
         SessionHot = false
         ServiceList = false
+        LanguagesJson = false
         ServiceName = None
         ServicePorts = None
         ServiceType = None
@@ -939,6 +1042,19 @@ let parseArgs (argv: string[]) =
         EnvAction = None
         EnvTarget = None
         KeyExtend = false
+        ImageList = false
+        ImageInfo = None
+        ImageDelete = None
+        ImageLock = None
+        ImageUnlock = None
+        ImagePublish = None
+        ImageSourceType = None
+        ImageVisibility = None
+        ImageVisibilityMode = None
+        ImageSpawn = None
+        ImageClone = None
+        ImageName = None
+        ImagePorts = None
     }
 
     let mutable i = 0
@@ -947,7 +1063,10 @@ let parseArgs (argv: string[]) =
         | "session" -> args.Command <- Some "session"
         | "service" -> args.Command <- Some "service"
         | "snapshot" -> args.Command <- Some "snapshot"
+        | "image" -> args.Command <- Some "image"
         | "key" -> args.Command <- Some "key"
+        | "languages" -> args.Command <- Some "languages"
+        | "--json" when args.Command = Some "languages" -> args.LanguagesJson <- true
         | "env" when args.Command = Some "service" ->
             // Parse: service env <action> <target>
             if i + 1 < argv.Length && not (argv.[i + 1].StartsWith("-")) then
@@ -968,6 +1087,8 @@ let parseArgs (argv: string[]) =
             match args.Command with
             | Some "session" -> args.SessionList <- true
             | Some "service" -> args.ServiceList <- true
+            | Some "image" -> args.ImageList <- true
+            | Some "snapshot" -> args.SnapshotList <- true
             | _ -> ()
         | "-s" | "--shell" ->
             i <- i + 1
@@ -1024,11 +1145,13 @@ let parseArgs (argv: string[]) =
             i <- i + 1
             match args.Command with
             | Some "snapshot" -> args.SnapshotName <- Some argv.[i]
+            | Some "image" -> args.ImageName <- Some argv.[i]
             | _ -> args.ServiceName <- Some argv.[i]
         | "--ports" ->
             i <- i + 1
             match args.Command with
             | Some "snapshot" -> args.SnapshotPorts <- Some argv.[i]
+            | Some "image" -> args.ImagePorts <- Some argv.[i]
             | _ -> args.ServicePorts <- Some argv.[i]
         | "--bootstrap" -> i <- i + 1; args.ServiceBootstrap <- Some argv.[i]
         | "--bootstrap-file" -> i <- i + 1; args.ServiceBootstrapFile <- Some argv.[i]
@@ -1043,6 +1166,49 @@ let parseArgs (argv: string[]) =
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
         | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
         | "--extend" -> args.KeyExtend <- true
+        | "--info" ->
+            i <- i + 1
+            match args.Command with
+            | Some "image" -> args.ImageInfo <- Some argv.[i]
+            | _ -> args.ServiceInfo <- Some argv.[i]
+        | "--delete" ->
+            i <- i + 1
+            match args.Command with
+            | Some "image" -> args.ImageDelete <- Some argv.[i]
+            | Some "snapshot" -> args.SnapshotDelete <- Some argv.[i]
+            | _ -> ()
+        | "--lock" ->
+            i <- i + 1
+            if args.Command = Some "image" then
+                args.ImageLock <- Some argv.[i]
+        | "--unlock" ->
+            i <- i + 1
+            if args.Command = Some "image" then
+                args.ImageUnlock <- Some argv.[i]
+        | "--publish" ->
+            i <- i + 1
+            if args.Command = Some "image" then
+                args.ImagePublish <- Some argv.[i]
+        | "--source-type" ->
+            i <- i + 1
+            args.ImageSourceType <- Some argv.[i]
+        | "--visibility" ->
+            i <- i + 1
+            if args.Command = Some "image" then
+                args.ImageVisibility <- Some argv.[i]
+                if i + 1 < argv.Length && not (argv.[i + 1].StartsWith("-")) then
+                    i <- i + 1
+                    args.ImageVisibilityMode <- Some argv.[i]
+        | "--spawn" ->
+            i <- i + 1
+            if args.Command = Some "image" then
+                args.ImageSpawn <- Some argv.[i]
+        | "--clone" ->
+            i <- i + 1
+            match args.Command with
+            | Some "image" -> args.ImageClone <- Some argv.[i]
+            | Some "snapshot" -> args.SnapshotClone <- Some argv.[i]
+            | _ -> ()
         | arg when not (arg.StartsWith("-")) -> args.SourceFile <- Some arg
         | arg ->
             if arg.StartsWith("-") && args.Command = Some "session" then
@@ -1058,7 +1224,9 @@ let printHelp () =
     printfn "       un session [options]"
     printfn "       un service [options]"
     printfn "       un service env <action> <service_id> [options]"
+    printfn "       un image [options]"
     printfn "       un key [options]"
+    printfn "       un languages [--json]"
     printfn ""
     printfn "Execute options:"
     printfn "  -e KEY=VALUE      Set environment variable"
@@ -1100,9 +1268,26 @@ let printHelp () =
     printfn "  env export ID     Export vault contents"
     printfn "  env delete ID     Delete vault"
     printfn ""
+    printfn "Image options:"
+    printfn "  -l, --list            List all images"
+    printfn "  --info ID             Get image details"
+    printfn "  --delete ID           Delete an image"
+    printfn "  --lock ID             Lock image to prevent deletion"
+    printfn "  --unlock ID           Unlock image"
+    printfn "  --publish ID          Publish image (requires --source-type)"
+    printfn "  --source-type TYPE    Source type: service or snapshot"
+    printfn "  --visibility ID MODE  Set visibility: private, unlisted, or public"
+    printfn "  --spawn ID            Spawn new service from image"
+    printfn "  --clone ID            Clone an image"
+    printfn "  --name NAME           Name for spawned service or cloned image"
+    printfn "  --ports PORTS         Ports for spawned service"
+    printfn ""
     printfn "Key options:"
     printfn "  --extend          Open browser to extend key"
     printfn "  -k KEY            API key to validate"
+    printfn ""
+    printfn "Languages options:"
+    printfn "  --json            Output as JSON array"
 
 [<EntryPoint>]
 let main argv =
@@ -1113,7 +1298,9 @@ let main argv =
         | Some "session" -> cmdSession args; 0
         | Some "service" -> cmdService args; 0
         | Some "snapshot" -> cmdSnapshot args; 0
+        | Some "image" -> cmdImage args; 0
         | Some "key" -> cmdKey args; 0
+        | Some "languages" -> cmdLanguages args; 0
         | _ ->
             match args.SourceFile with
             | Some _ -> cmdExecute args; 0

@@ -79,7 +79,9 @@ defmodule Un do
   def main(["session" | rest]), do: session_command(rest)
   def main(["service" | rest]), do: service_command(rest)
   def main(["snapshot" | rest]), do: snapshot_command(rest)
+  def main(["image" | rest]), do: image_command(rest)
   def main(["key" | rest]), do: key_command(rest)
+  def main(["languages" | rest]), do: languages_command(rest)
   def main(args), do: execute_command(args)
 
   defp print_usage do
@@ -88,10 +90,16 @@ defmodule Un do
     IO.puts("       un.ex service [options]")
     IO.puts("       un.ex service env <action> <service_id>")
     IO.puts("       un.ex snapshot [options]")
+    IO.puts("       un.ex image [options]")
     IO.puts("       un.ex key [--extend]")
+    IO.puts("       un.ex languages [--json]")
     IO.puts("")
     IO.puts("Service options: --name, --ports, --bootstrap, -e KEY=VALUE, --env-file FILE")
     IO.puts("Service env commands: status, set, export, delete")
+    IO.puts("Image options: --list, --info ID, --delete ID, --lock ID, --unlock ID,")
+    IO.puts("               --publish ID --source-type TYPE, --visibility ID MODE,")
+    IO.puts("               --spawn ID, --clone ID, --name NAME, --ports PORTS")
+    IO.puts("Languages options: --json (output as JSON array)")
     System.halt(1)
   end
 
@@ -473,6 +481,117 @@ defmodule Un do
   defp snapshot_command(_) do
     IO.puts(:stderr, "Error: Use --list, --info ID, --delete ID, or --clone ID --type TYPE")
     System.halt(1)
+  end
+
+  # Image command
+  defp image_command(["--list" | _]) do
+    image_command(["-l"])
+  end
+
+  defp image_command(["-l" | _]) do
+    api_key = get_api_key()
+    response = curl_get(api_key, "/images")
+    IO.puts(response)
+  end
+
+  defp image_command(["--info", image_id | _]) do
+    api_key = get_api_key()
+    response = curl_get(api_key, "/images/#{image_id}")
+    IO.puts(response)
+  end
+
+  defp image_command(["--delete", image_id | _]) do
+    api_key = get_api_key()
+    curl_delete(api_key, "/images/#{image_id}")
+    IO.puts("#{@green}Image deleted: #{image_id}#{@reset}")
+  end
+
+  defp image_command(["--lock", image_id | _]) do
+    api_key = get_api_key()
+    curl_post(api_key, "/images/#{image_id}/lock", "{}")
+    IO.puts("#{@green}Image locked: #{image_id}#{@reset}")
+  end
+
+  defp image_command(["--unlock", image_id | _]) do
+    api_key = get_api_key()
+    curl_post(api_key, "/images/#{image_id}/unlock", "{}")
+    IO.puts("#{@green}Image unlocked: #{image_id}#{@reset}")
+  end
+
+  defp image_command(["--publish", source_id | rest]) do
+    source_type = get_opt(rest, "--source-type", nil, nil)
+    if is_nil(source_type) do
+      IO.puts(:stderr, "#{@red}Error: --source-type required (service or snapshot)#{@reset}")
+      System.halt(1)
+    end
+    api_key = get_api_key()
+    name = get_opt(rest, "--name", nil, nil)
+    name_json = if name, do: ",\"name\":\"#{escape_json(name)}\"", else: ""
+    json = "{\"source_type\":\"#{source_type}\",\"source_id\":\"#{source_id}\"#{name_json}}"
+    response = curl_post(api_key, "/images/publish", json)
+    IO.puts("#{@green}Image published#{@reset}")
+    IO.puts(response)
+  end
+
+  defp image_command(["--visibility", image_id, mode | _]) do
+    api_key = get_api_key()
+    json = "{\"visibility\":\"#{mode}\"}"
+    curl_post(api_key, "/images/#{image_id}/visibility", json)
+    IO.puts("#{@green}Image visibility set to #{mode}#{@reset}")
+  end
+
+  defp image_command(["--spawn", image_id | rest]) do
+    api_key = get_api_key()
+    name = get_opt(rest, "--name", nil, nil)
+    ports = get_opt(rest, "--ports", nil, nil)
+    name_json = if name, do: "\"name\":\"#{escape_json(name)}\"", else: ""
+    ports_json = if ports, do: "\"ports\":[#{ports}]", else: ""
+    parts = [name_json, ports_json] |> Enum.filter(&(&1 != "")) |> Enum.join(",")
+    json = "{#{parts}}"
+    response = curl_post(api_key, "/images/#{image_id}/spawn", json)
+    IO.puts("#{@green}Service spawned from image#{@reset}")
+    IO.puts(response)
+  end
+
+  defp image_command(["--clone", image_id | rest]) do
+    api_key = get_api_key()
+    name = get_opt(rest, "--name", nil, nil)
+    json = if name, do: "{\"name\":\"#{escape_json(name)}\"}", else: "{}"
+    response = curl_post(api_key, "/images/#{image_id}/clone", json)
+    IO.puts("#{@green}Image cloned#{@reset}")
+    IO.puts(response)
+  end
+
+  defp image_command(_) do
+    IO.puts(:stderr, "Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID")
+    System.halt(1)
+  end
+
+  # Languages command
+  defp languages_command(args) do
+    api_key = get_api_key()
+    json_output = "--json" in args
+
+    response = curl_get(api_key, "/languages")
+    languages = extract_json_array(response, "languages")
+
+    if json_output do
+      # Output as JSON array
+      json_str = "[" <> Enum.map_join(languages, ",", &("\"#{&1}\"")) <> "]"
+      IO.puts(json_str)
+    else
+      # Output one language per line
+      Enum.each(languages, &IO.puts/1)
+    end
+  end
+
+  defp extract_json_array(json_str, key) do
+    case Regex.run(~r/"#{key}"\s*:\s*\[([^\]]*)\]/, json_str) do
+      [_, array_content] ->
+        Regex.scan(~r/"([^"]*)"/, array_content)
+        |> Enum.map(fn [_, val] -> val end)
+      _ -> []
+    end
   end
 
   # Key command

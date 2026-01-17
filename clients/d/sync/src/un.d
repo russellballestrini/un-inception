@@ -575,6 +575,162 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
     exit(1);
 }
 
+void cmdImage(bool list, string info, string del, string lock, string unlock,
+              string publish, string sourceType, string visibilityId, string visibility,
+              string spawn, string clone, string name, string ports, string publicKey, string secretKey) {
+    if (list) {
+        string authHeaders = buildAuthHeaders("GET", "/images", "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/images' %s`, API_BASE, authHeaders);
+        writeln(execCurl(cmd));
+        return;
+    }
+
+    if (!info.empty) {
+        string path = format("/images/%s", info);
+        string authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X GET '%s/images/%s' %s`, API_BASE, info, authHeaders);
+        writeln(execCurl(cmd));
+        return;
+    }
+
+    if (!del.empty) {
+        string path = format("/images/%s", del);
+        string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
+        string cmd = format(`curl -s -X DELETE '%s/images/%s' %s`, API_BASE, del, authHeaders);
+        execCurl(cmd);
+        writefln("%sImage deleted: %s%s", GREEN, del, RESET);
+        return;
+    }
+
+    if (!lock.empty) {
+        string path = format("/images/%s/lock", lock);
+        string json = "{}";
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/images/%s/lock' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, lock, authHeaders, json);
+        execCurl(cmd);
+        writefln("%sImage locked: %s%s", GREEN, lock, RESET);
+        return;
+    }
+
+    if (!unlock.empty) {
+        string path = format("/images/%s/unlock", unlock);
+        string json = "{}";
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/images/%s/unlock' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, unlock, authHeaders, json);
+        execCurl(cmd);
+        writefln("%sImage unlocked: %s%s", GREEN, unlock, RESET);
+        return;
+    }
+
+    if (!publish.empty) {
+        if (sourceType.empty) {
+            stderr.writefln("%sError: --publish requires --source-type (service or snapshot)%s", RED, RESET);
+            exit(1);
+        }
+        string json = format(`{"source_type":"%s","source_id":"%s"`, sourceType, publish);
+        if (!name.empty) {
+            json ~= format(`,"name":"%s"`, escapeJson(name));
+        }
+        json ~= "}";
+        string path = "/images/publish";
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/images/publish' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
+        writefln("%sImage published%s", GREEN, RESET);
+        writeln(execCurl(cmd));
+        return;
+    }
+
+    if (!visibilityId.empty) {
+        if (visibility.empty) {
+            stderr.writefln("%sError: --visibility requires visibility mode (private, unlisted, public)%s", RED, RESET);
+            exit(1);
+        }
+        string json = format(`{"visibility":"%s"}`, visibility);
+        string path = format("/images/%s/visibility", visibilityId);
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/images/%s/visibility' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, visibilityId, authHeaders, json);
+        execCurl(cmd);
+        writefln("%sImage visibility set to: %s%s", GREEN, visibility, RESET);
+        return;
+    }
+
+    if (!spawn.empty) {
+        string json = "{";
+        bool hasField = false;
+        if (!name.empty) {
+            json ~= format(`"name":"%s"`, escapeJson(name));
+            hasField = true;
+        }
+        if (!ports.empty) {
+            if (hasField) json ~= ",";
+            json ~= format(`"ports":[%s]`, ports);
+        }
+        json ~= "}";
+        string path = format("/images/%s/spawn", spawn);
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/images/%s/spawn' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, spawn, authHeaders, json);
+        writefln("%sService spawned from image%s", GREEN, RESET);
+        writeln(execCurl(cmd));
+        return;
+    }
+
+    if (!clone.empty) {
+        string json = "{";
+        if (!name.empty) {
+            json ~= format(`"name":"%s"`, escapeJson(name));
+        }
+        json ~= "}";
+        string path = format("/images/%s/clone", clone);
+        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X POST '%s/images/%s/clone' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, clone, authHeaders, json);
+        writefln("%sImage cloned%s", GREEN, RESET);
+        writeln(execCurl(cmd));
+        return;
+    }
+
+    // Default: list images
+    string authHeaders = buildAuthHeaders("GET", "/images", "", publicKey, secretKey);
+    string cmd = format(`curl -s -X GET '%s/images' %s`, API_BASE, authHeaders);
+    writeln(execCurl(cmd));
+}
+
+void cmdLanguages(bool jsonOutput, string publicKey, string secretKey) {
+    string authHeaders = buildAuthHeaders("GET", "/languages", "", publicKey, secretKey);
+    string cmd = format(`curl -s -X GET '%s/languages' %s`, API_BASE, authHeaders);
+    string result = execCurl(cmd);
+
+    if (jsonOutput) {
+        // Extract language names and output as JSON array
+        string[] names;
+        import std.algorithm : findSplitAfter;
+        string remaining = result;
+        while (true) {
+            auto search = remaining.findSplitAfter(`"name":"`);
+            if (search[0].length == 0) break;
+            auto endSearch = search[1].findSplitAfter(`"`);
+            if (endSearch[0].length > 1) {
+                names ~= endSearch[0][0..$-1];
+            }
+            remaining = endSearch[1];
+        }
+        import std.array : join;
+        writefln("[%s]", names.map!(n => format(`"%s"`, n)).join(","));
+    } else {
+        // Output one language per line
+        import std.algorithm : findSplitAfter;
+        string remaining = result;
+        while (true) {
+            auto search = remaining.findSplitAfter(`"name":"`);
+            if (search[0].length == 0) break;
+            auto endSearch = search[1].findSplitAfter(`"`);
+            if (endSearch[0].length > 1) {
+                writeln(endSearch[0][0..$-1]);
+            }
+            remaining = endSearch[1];
+        }
+    }
+}
+
 void openBrowser(string url) {
     version(linux) {
         executeShell("xdg-open \"" ~ url ~ "\" 2>/dev/null &");
@@ -707,9 +863,11 @@ int main(string[] args) {
 
     if (args.length < 2) {
         stderr.writefln("Usage: %s [options] <source_file>", args[0]);
+        stderr.writefln("       %s languages [--json]", args[0]);
         stderr.writefln("       %s session [options]", args[0]);
         stderr.writefln("       %s service [options]", args[0]);
         stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
+        stderr.writefln("       %s image [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
         stderr.writeln("");
         stderr.writeln("Service env commands:");
@@ -812,6 +970,56 @@ int main(string[] args) {
         }
 
         validateKey(publicKey, secretKey, extend);
+        return 0;
+    }
+
+    if (args[1] == "languages") {
+        bool jsonOutput = false;
+
+        for (size_t i = 2; i < args.length; i++) {
+            if (args[i] == "--json") jsonOutput = true;
+            else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+        }
+
+        if (publicKey.empty) {
+            stderr.writefln("%sError: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set%s", RED, RESET);
+            return 1;
+        }
+
+        cmdLanguages(jsonOutput, publicKey, secretKey);
+        return 0;
+    }
+
+    if (args[1] == "image") {
+        bool list = false;
+        string info, del, lock, unlock, publish, sourceType, visibilityId, visibility;
+        string spawn, clone, name, ports;
+
+        for (size_t i = 2; i < args.length; i++) {
+            if (args[i] == "--list" || args[i] == "-l") list = true;
+            else if (args[i] == "--info" && i+1 < args.length) info = args[++i];
+            else if (args[i] == "--delete" && i+1 < args.length) del = args[++i];
+            else if (args[i] == "--lock" && i+1 < args.length) lock = args[++i];
+            else if (args[i] == "--unlock" && i+1 < args.length) unlock = args[++i];
+            else if (args[i] == "--publish" && i+1 < args.length) publish = args[++i];
+            else if (args[i] == "--source-type" && i+1 < args.length) sourceType = args[++i];
+            else if (args[i] == "--visibility" && i+2 < args.length) {
+                visibilityId = args[++i];
+                visibility = args[++i];
+            }
+            else if (args[i] == "--spawn" && i+1 < args.length) spawn = args[++i];
+            else if (args[i] == "--clone" && i+1 < args.length) clone = args[++i];
+            else if (args[i] == "--name" && i+1 < args.length) name = args[++i];
+            else if (args[i] == "--ports" && i+1 < args.length) ports = args[++i];
+            else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+        }
+
+        if (publicKey.empty) {
+            stderr.writefln("%sError: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set%s", RED, RESET);
+            return 1;
+        }
+
+        cmdImage(list, info, del, lock, unlock, publish, sourceType, visibilityId, visibility, spawn, clone, name, ports, publicKey, secretKey);
         return 0;
     }
 

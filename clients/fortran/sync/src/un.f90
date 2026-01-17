@@ -884,6 +884,12 @@ program unsandbox_cli
         is_key = .true.
         call handle_key()
         stop 0
+    else if (trim(arg) == 'languages') then
+        call handle_languages()
+        stop 0
+    else if (trim(arg) == 'image') then
+        call handle_image()
+        stop 0
     else
         ! Default execute command
         filename = trim(arg)
@@ -900,7 +906,9 @@ contains
         write(*, '(A)') 'Usage: ./un [options] <source_file>'
         write(*, '(A)') '       ./un session [options]'
         write(*, '(A)') '       ./un service [options]'
+        write(*, '(A)') '       ./un image [options]'
         write(*, '(A)') '       ./un key [--extend]'
+        write(*, '(A)') '       ./un languages [--json]'
         write(*, '(A)') ''
         write(*, '(A)') 'Execute options:'
         write(*, '(A)') '  -e KEY=VALUE    Set environment variable'
@@ -928,8 +936,25 @@ contains
         write(*, '(A)') '  service env export <id>   Export vault'
         write(*, '(A)') '  service env delete <id>   Delete vault'
         write(*, '(A)') ''
+        write(*, '(A)') 'Image options:'
+        write(*, '(A)') '  -l, --list          List all images'
+        write(*, '(A)') '  --info ID           Get image details'
+        write(*, '(A)') '  --delete ID         Delete an image'
+        write(*, '(A)') '  --lock ID           Lock image'
+        write(*, '(A)') '  --unlock ID         Unlock image'
+        write(*, '(A)') '  --publish ID        Publish (requires --source-type)'
+        write(*, '(A)') '  --source-type TYPE  Source: service or snapshot'
+        write(*, '(A)') '  --visibility ID MODE  Set: private/unlisted/public'
+        write(*, '(A)') '  --spawn ID          Spawn service from image'
+        write(*, '(A)') '  --clone ID          Clone an image'
+        write(*, '(A)') '  --name NAME         Name for spawn/clone'
+        write(*, '(A)') '  --ports PORTS       Ports for spawn'
+        write(*, '(A)') ''
         write(*, '(A)') 'Key options:'
         write(*, '(A)') '  --extend        Open browser to extend key'
+        write(*, '(A)') ''
+        write(*, '(A)') 'Languages options:'
+        write(*, '(A)') '  --json          Output as JSON array'
         write(*, '(A)') ''
         write(*, '(A)') 'Library Usage:'
         write(*, '(A)') '  use unsandbox_sdk'
@@ -1459,6 +1484,243 @@ contains
         end if
     end subroutine handle_service
 
+    subroutine handle_image()
+        character(len=8192) :: full_cmd
+        character(len=256) :: arg, image_id, operation, source_type, name, ports, visibility_mode
+        character(len=1024) :: public_key, secret_key
+        integer :: i, stat
+        logical :: list_mode
+
+        image_id = ''
+        operation = ''
+        source_type = ''
+        name = ''
+        ports = ''
+        visibility_mode = ''
+        list_mode = .false.
+
+        ! Get credentials
+        call get_credentials(public_key, secret_key, stat)
+        if (stat /= 0) then
+            write(0, '(A)') 'Error: No credentials found'
+            stop 1
+        end if
+
+        ! Parse image arguments
+        do i = 2, command_argument_count()
+            call get_command_argument(i, arg)
+            if (trim(arg) == '-l' .or. trim(arg) == '--list') then
+                list_mode = .true.
+                operation = 'list'
+            else if (trim(arg) == '--info') then
+                operation = 'info'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--delete') then
+                operation = 'delete'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--lock') then
+                operation = 'lock'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--unlock') then
+                operation = 'unlock'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--publish') then
+                operation = 'publish'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--source-type') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, source_type)
+                end if
+            else if (trim(arg) == '--visibility') then
+                operation = 'visibility'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+                if (i+1 < command_argument_count()) then
+                    call get_command_argument(i+2, visibility_mode)
+                end if
+            else if (trim(arg) == '--spawn') then
+                operation = 'spawn'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--clone') then
+                operation = 'clone'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, image_id)
+                end if
+            else if (trim(arg) == '--name') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, name)
+                end if
+            else if (trim(arg) == '--ports') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i+1, ports)
+                end if
+            end if
+        end do
+
+        if (trim(operation) == 'list') then
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/images:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X GET https://api.unsandbox.com/images ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'info' .and. len_trim(image_id) > 0) then
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X GET https://api.unsandbox.com/images/', trim(image_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'delete' .and. len_trim(image_id) > 0) then
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X DELETE https://api.unsandbox.com/images/', trim(image_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
+                'echo -e "\x1b[32mImage deleted: ', trim(image_id), '\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'lock' .and. len_trim(image_id) > 0) then
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/lock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/lock ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
+                'echo -e "\x1b[32mImage locked: ', trim(image_id), '\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'unlock' .and. len_trim(image_id) > 0) then
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/unlock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/unlock ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
+                'echo -e "\x1b[32mImage unlocked: ', trim(image_id), '\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'publish' .and. len_trim(image_id) > 0) then
+            if (len_trim(source_type) == 0) then
+                write(0, '(A)') 'Error: --source-type required (service or snapshot)'
+                stop 1
+            end if
+            if (len_trim(name) > 0) then
+                write(full_cmd, '(25A)') &
+                    'BODY=''{"source_type":"', trim(source_type), '","source_id":"', trim(image_id), '","name":"', trim(name), '"}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/publish:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/publish ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mImage published\x1b[0m"'
+            else
+                write(full_cmd, '(25A)') &
+                    'BODY=''{"source_type":"', trim(source_type), '","source_id":"', trim(image_id), '"}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/publish:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/publish ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mImage published\x1b[0m"'
+            end if
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'visibility' .and. len_trim(image_id) > 0 .and. len_trim(visibility_mode) > 0) then
+            write(full_cmd, '(25A)') &
+                'BODY=''{"visibility":"', trim(visibility_mode), '"}''; ', &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/visibility:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/visibility ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                '-d "$BODY" >/dev/null; ', &
+                'echo -e "\x1b[32mImage visibility set to ', trim(visibility_mode), '\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'spawn' .and. len_trim(image_id) > 0) then
+            if (len_trim(name) > 0 .and. len_trim(ports) > 0) then
+                write(full_cmd, '(25A)') &
+                    'BODY=''{"name":"', trim(name), '","ports":[', trim(ports), ']}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/spawn ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mService spawned from image\x1b[0m"'
+            else if (len_trim(name) > 0) then
+                write(full_cmd, '(25A)') &
+                    'BODY=''{"name":"', trim(name), '"}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/spawn ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mService spawned from image\x1b[0m"'
+            else
+                write(full_cmd, '(25A)') &
+                    'BODY=''{}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/spawn ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mService spawned from image\x1b[0m"'
+            end if
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'clone' .and. len_trim(image_id) > 0) then
+            if (len_trim(name) > 0) then
+                write(full_cmd, '(25A)') &
+                    'BODY=''{"name":"', trim(name), '"}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/clone ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mImage cloned\x1b[0m"'
+            else
+                write(full_cmd, '(25A)') &
+                    'BODY=''{}''; ', &
+                    'TS=$(date +%s); ', &
+                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/clone ', &
+                    '-H "Content-Type: application/json" ', &
+                    '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                    '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
+                    '-d "$BODY" | jq .; ', &
+                    'echo -e "\x1b[32mImage cloned\x1b[0m"'
+            end if
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else
+            write(0, '(A)') 'Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID'
+            stop 1
+        end if
+    end subroutine handle_image
+
     subroutine handle_key()
         character(len=4096) :: full_cmd
         character(len=256) :: arg
@@ -1557,5 +1819,52 @@ contains
 
         call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
     end subroutine handle_key
+
+    subroutine handle_languages()
+        character(len=4096) :: full_cmd
+        character(len=256) :: arg
+        character(len=1024) :: public_key, secret_key
+        integer :: i, stat
+        logical :: json_mode
+
+        json_mode = .false.
+
+        ! Check for --json flag
+        do i = 2, command_argument_count()
+            call get_command_argument(i, arg)
+            if (trim(arg) == '--json') then
+                json_mode = .true.
+            end if
+        end do
+
+        ! Get API keys
+        call get_credentials(public_key, secret_key, stat)
+        if (stat /= 0) then
+            write(0, '(A)') 'Error: No credentials found'
+            stop 1
+        end if
+
+        if (json_mode) then
+            ! Output as JSON array
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X GET https://api.unsandbox.com/languages ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq -c ".languages"'
+        else
+            ! Output one language per line
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X GET https://api.unsandbox.com/languages ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq -r ".languages[]"'
+        end if
+
+        call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
+    end subroutine handle_languages
 
 end program unsandbox_cli

@@ -637,6 +637,55 @@ function cmd_key(do_extend) {
     validate_key(do_extend)
 }
 
+function languages_list(json_output    , timestamp, sig_headers, signature, sig_input, sig_cmd, line, response, i, lang) {
+    get_api_keys()
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:/languages:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE "/languages' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+
+    if (json_output) {
+        # Output raw JSON array of language names
+        # Extract languages array and convert to simple array
+        if (match(response, /"languages":\[([^\]]*)\]/, arr)) {
+            # Parse out language names from the array
+            content = arr[1]
+            printf "["
+            first = 1
+            while (match(content, /"name":"([^"]*)"/, m)) {
+                if (!first) printf ","
+                printf "\"%s\"", m[1]
+                first = 0
+                content = substr(content, RSTART + RLENGTH)
+            }
+            printf "]\n"
+        } else {
+            # Fallback: just print raw response
+            print response
+        }
+    } else {
+        # Output one language per line
+        if (match(response, /"languages":\[([^\]]*)\]/, arr)) {
+            content = arr[1]
+            while (match(content, /"name":"([^"]*)"/, m)) {
+                print m[1]
+                content = substr(content, RSTART + RLENGTH)
+            }
+        }
+    }
+}
+
 function snapshot_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
     get_api_keys()
     timestamp = systime()
@@ -685,6 +734,244 @@ function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, s
     cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
     system(cmd)
     print GREEN "Snapshot deleted: " id RESET
+}
+
+# Image functions
+function image_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:/images:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE "/images' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function image_info(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/images/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function image_delete(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/images/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    system(cmd)
+    print GREEN "Image deleted: " id RESET
+}
+
+function image_lock(id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    endpoint = "/images/" id "/lock"
+    json = "{}"
+    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    system(cmd " > /dev/null")
+    system("rm -f " tmp)
+    print GREEN "Image locked: " id RESET
+}
+
+function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    endpoint = "/images/" id "/unlock"
+    json = "{}"
+    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    system(cmd " > /dev/null")
+    system("rm -f " tmp)
+    print GREEN "Image unlocked: " id RESET
+}
+
+function image_publish(source_id, source_type, name    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/images/publish"
+    json = "{\"source_type\":\"" source_type "\",\"source_id\":\"" source_id "\""
+    if (name != "") {
+        json = json ",\"name\":\"" escape_json(name) "\""
+    }
+    json = json "}"
+    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+    print GREEN "Image published" RESET
+    print response
+}
+
+function image_visibility(id, visibility    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    endpoint = "/images/" id "/visibility"
+    json = "{\"visibility\":\"" visibility "\"}"
+    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    system(cmd " > /dev/null")
+    system("rm -f " tmp)
+    print GREEN "Image visibility set to: " visibility RESET
+}
+
+function image_spawn(id, name, ports    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/images/" id "/spawn"
+    json = "{"
+    if (name != "") {
+        json = json "\"name\":\"" escape_json(name) "\""
+    }
+    if (ports != "") {
+        if (name != "") json = json ","
+        json = json "\"ports\":[" ports "]"
+    }
+    json = json "}"
+    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+    print GREEN "Service spawned from image" RESET
+    print response
+}
+
+function image_clone(id, name    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    endpoint = "/images/" id "/clone"
+    json = "{"
+    if (name != "") {
+        json = json "\"name\":\"" escape_json(name) "\""
+    }
+    json = json "}"
+    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+    print GREEN "Image cloned" RESET
+    print response
 }
 
 function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
@@ -1010,6 +1297,7 @@ function service_env_delete(id    , endpoint, timestamp, sig_headers, signature,
 
 function show_help() {
     print "Usage: awk -f un.awk <source_file>"
+    print "       awk -f un.awk languages [--json]"
     print "       awk -f un.awk session --list"
     print "       awk -f un.awk session --kill ID"
     print "       awk -f un.awk session [-s SHELL] [-f FILE]..."
@@ -1030,6 +1318,15 @@ function show_help() {
     print "       awk -f un.awk snapshot --list"
     print "       awk -f un.awk snapshot --info ID"
     print "       awk -f un.awk snapshot --delete ID"
+    print "       awk -f un.awk image --list"
+    print "       awk -f un.awk image --info ID"
+    print "       awk -f un.awk image --delete ID"
+    print "       awk -f un.awk image --lock ID"
+    print "       awk -f un.awk image --unlock ID"
+    print "       awk -f un.awk image --publish ID --source-type TYPE [--name NAME]"
+    print "       awk -f un.awk image --visibility ID MODE"
+    print "       awk -f un.awk image --spawn ID [--name NAME] [--ports PORTS]"
+    print "       awk -f un.awk image --clone ID [--name NAME]"
     print ""
     print "Session options:"
     print "  -s, --shell SHELL      Shell to use (default: bash)"
@@ -1063,10 +1360,27 @@ function show_help() {
     print "  export ID          Export vault contents"
     print "  delete ID          Delete vault"
     print ""
+    print "Languages options:"
+    print "  --json             Output as JSON array (for scripts)"
+    print ""
     print "Snapshot options:"
     print "  -l, --list         List all snapshots"
     print "  --info ID          Get snapshot details"
     print "  --delete ID        Delete a snapshot"
+    print ""
+    print "Image options:"
+    print "  -l, --list         List all images"
+    print "  --info ID          Get image details"
+    print "  --delete ID        Delete an image"
+    print "  --lock ID          Lock image to prevent deletion"
+    print "  --unlock ID        Unlock image"
+    print "  --publish ID       Publish image from service/snapshot (requires --source-type)"
+    print "  --source-type TYPE Source type: service or snapshot"
+    print "  --visibility ID MODE  Set visibility: private, unlisted, or public"
+    print "  --spawn ID         Spawn new service from image"
+    print "  --clone ID         Clone an image"
+    print "  --name NAME        Name for spawned service or cloned image"
+    print "  --ports PORTS      Ports for spawned service"
     print ""
     print "Requires: UNSANDBOX_API_KEY environment variable"
 }
@@ -1159,6 +1473,15 @@ END {
         exit 0
     }
 
+    if (ARGV[1] == "languages") {
+        json_output = 0
+        if (ARGC >= 3 && ARGV[2] == "--json") {
+            json_output = 1
+        }
+        languages_list(json_output)
+        exit 0
+    }
+
     if (ARGV[1] == "snapshot") {
         if (ARGC >= 3 && (ARGV[2] == "--list" || ARGV[2] == "-l")) {
             snapshot_list()
@@ -1168,6 +1491,83 @@ END {
             snapshot_delete(ARGV[3])
         } else {
             print "Usage: awk -f un.awk snapshot --list|--info ID|--delete ID"
+        }
+        exit 0
+    }
+
+    if (ARGV[1] == "image") {
+        if (ARGC >= 3 && (ARGV[2] == "--list" || ARGV[2] == "-l")) {
+            image_list()
+        } else if (ARGC >= 4 && ARGV[2] == "--info") {
+            image_info(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--delete") {
+            image_delete(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--lock") {
+            image_lock(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--unlock") {
+            image_unlock(ARGV[3])
+        } else if (ARGC >= 4 && ARGV[2] == "--publish") {
+            # Parse --source-type and --name options
+            img_source_id = ARGV[3]
+            img_source_type = ""
+            img_name = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "--source-type" && i + 1 < ARGC) {
+                    img_source_type = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--name" && i + 1 < ARGC) {
+                    img_name = ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+            if (img_source_type == "") {
+                print RED "Error: --publish requires --source-type (service or snapshot)" RESET > "/dev/stderr"
+                exit 1
+            }
+            image_publish(img_source_id, img_source_type, img_name)
+        } else if (ARGC >= 5 && ARGV[2] == "--visibility") {
+            image_visibility(ARGV[3], ARGV[4])
+        } else if (ARGC >= 4 && ARGV[2] == "--spawn") {
+            # Parse --name and --ports options
+            img_id = ARGV[3]
+            img_name = ""
+            img_ports = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "--name" && i + 1 < ARGC) {
+                    img_name = ARGV[i + 1]
+                    i += 2
+                } else if (ARGV[i] == "--ports" && i + 1 < ARGC) {
+                    img_ports = ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+            image_spawn(img_id, img_name, img_ports)
+        } else if (ARGC >= 4 && ARGV[2] == "--clone") {
+            # Parse --name option
+            img_id = ARGV[3]
+            img_name = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "--name" && i + 1 < ARGC) {
+                    img_name = ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+            image_clone(img_id, img_name)
+        } else {
+            print "Usage: awk -f un.awk image --list|--info ID|--delete ID|--lock ID|--unlock ID"
+            print "       awk -f un.awk image --publish ID --source-type TYPE [--name NAME]"
+            print "       awk -f un.awk image --visibility ID MODE"
+            print "       awk -f un.awk image --spawn ID [--name NAME] [--ports PORTS]"
+            print "       awk -f un.awk image --clone ID [--name NAME]"
         }
         exit 0
     }

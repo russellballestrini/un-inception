@@ -342,9 +342,167 @@ validate_key(Extend) :-
     ),
     shell(Cmd, 0).
 
+% Languages command
+languages_command(JsonOutput) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   JsonOutput = true
+    ->  % Output as JSON array
+        format(atom(Cmd),
+            'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -c ".languages // []"',
+            [SecretKey, PublicKey])
+    ;   % Output one language per line
+        format(atom(Cmd),
+            'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".languages[]"',
+            [SecretKey, PublicKey])
+    ),
+    shell(Cmd, 0).
+
+% Handle languages subcommand
+handle_languages(['--json'|_]) :- languages_command(true).
+handle_languages(_) :- languages_command(false).
+
 % Handle key subcommand
 handle_key(['--extend'|_]) :- validate_key(true).
 handle_key(_) :- validate_key(false).
+
+% Image list
+image_list :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/images -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [SecretKey, PublicKey]),
+    shell(Cmd, 0).
+
+% Image info
+image_info(ImageId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [ImageId, SecretKey, ImageId, PublicKey]),
+    shell(Cmd, 0).
+
+% Image delete
+image_delete(ImageId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE https://api.unsandbox.com/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"',
+        [ImageId, SecretKey, ImageId, PublicKey, ImageId]),
+    shell(Cmd, 0).
+
+% Image lock
+image_lock(ImageId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/lock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/lock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage locked: ~w\\x1b[0m"',
+        [ImageId, SecretKey, ImageId, PublicKey, ImageId]),
+    shell(Cmd, 0).
+
+% Image unlock
+image_unlock(ImageId) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/unlock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"',
+        [ImageId, SecretKey, ImageId, PublicKey, ImageId]),
+    shell(Cmd, 0).
+
+% Image publish
+image_publish(SourceId, SourceType, Name) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   Name \= ''
+    ->  format(atom(NameJson), ',\\\"name\\\":\\\"~w\\\"', [Name])
+    ;   NameJson = ''
+    ),
+    format(atom(Cmd),
+        'BODY="{\\\"source_type\\\":\\\"~w\\\",\\\"source_id\\\":\\\"~w\\\"~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/publish:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/publish -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage published\\x1b[0m"',
+        [SourceType, SourceId, NameJson, SecretKey, PublicKey]),
+    shell(Cmd, 0).
+
+% Image visibility
+image_visibility(ImageId, Mode) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    format(atom(Cmd),
+        'BODY="{\\\"visibility\\\":\\\"~w\\\"}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/visibility:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/visibility -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mImage visibility set to ~w: ~w\\x1b[0m"',
+        [Mode, ImageId, SecretKey, ImageId, PublicKey, Mode, ImageId]),
+    shell(Cmd, 0).
+
+% Image spawn
+image_spawn(ImageId, Name, Ports) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   Name \= ''
+    ->  format(atom(NameJson), '\\\"name\\\":\\\"~w\\\"', [Name])
+    ;   NameJson = ''
+    ),
+    (   Ports \= ''
+    ->  (   Name \= ''
+        ->  format(atom(PortsJson), ',\\\"ports\\\":[~w]', [Ports])
+        ;   format(atom(PortsJson), '\\\"ports\\\":[~w]', [Ports])
+        )
+    ;   PortsJson = ''
+    ),
+    format(atom(Cmd),
+        'BODY="{~w~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/spawn:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/spawn -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService spawned from image\\x1b[0m"',
+        [NameJson, PortsJson, ImageId, SecretKey, ImageId, PublicKey]),
+    shell(Cmd, 0).
+
+% Image clone
+image_clone(ImageId, Name) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   Name \= ''
+    ->  format(atom(NameJson), '\\\"name\\\":\\\"~w\\\"', [Name])
+    ;   NameJson = ''
+    ),
+    format(atom(Cmd),
+        'BODY="{~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/clone:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/clone -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage cloned\\x1b[0m"',
+        [NameJson, ImageId, SecretKey, ImageId, PublicKey]),
+    shell(Cmd, 0).
+
+% Handle image subcommand
+handle_image(['--list'|_]) :- !, image_list.
+handle_image(['-l'|_]) :- !, image_list.
+handle_image(['--info', ImageId|_]) :- !, image_info(ImageId).
+handle_image(['--delete', ImageId|_]) :- !, image_delete(ImageId).
+handle_image(['--lock', ImageId|_]) :- !, image_lock(ImageId).
+handle_image(['--unlock', ImageId|_]) :- !, image_unlock(ImageId).
+handle_image(['--publish', SourceId, '--source-type', SourceType|Rest]) :- !,
+    parse_image_name(Rest, '', Name),
+    image_publish(SourceId, SourceType, Name).
+handle_image(['--publish', _|_]) :- !,
+    write(user_error, '\x1b[31mError: --publish requires --source-type (service or snapshot)\x1b[0m\n'),
+    halt(1).
+handle_image(['--visibility', ImageId, Mode|_]) :- !, image_visibility(ImageId, Mode).
+handle_image(['--spawn', ImageId|Rest]) :- !,
+    parse_spawn_args(Rest, '', '', Name, Ports),
+    image_spawn(ImageId, Name, Ports).
+handle_image(['--clone', ImageId|Rest]) :- !,
+    parse_image_name(Rest, '', Name),
+    image_clone(ImageId, Name).
+handle_image(_) :-
+    write(user_error, '\x1b[31mError: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone\x1b[0m\n'),
+    halt(1).
+
+% Parse --name from arguments
+parse_image_name([], Name, Name).
+parse_image_name(['--name', N|_], _, N) :- !.
+parse_image_name([_|Rest], Name, NameOut) :- parse_image_name(Rest, Name, NameOut).
+
+% Parse --name and --ports for spawn
+parse_spawn_args([], Name, Ports, Name, Ports).
+parse_spawn_args(['--name', N|Rest], _, Ports, NameOut, PortsOut) :- !,
+    parse_spawn_args(Rest, N, Ports, NameOut, PortsOut).
+parse_spawn_args(['--ports', P|Rest], Name, _, NameOut, PortsOut) :- !,
+    parse_spawn_args(Rest, Name, P, NameOut, PortsOut).
+parse_spawn_args([_|Rest], Name, Ports, NameOut, PortsOut) :-
+    parse_spawn_args(Rest, Name, Ports, NameOut, PortsOut).
 
 % Handle session subcommand
 handle_session(['--list'|_]) :- session_list.
@@ -520,6 +678,22 @@ main(Argv) :-
     ->  write(user_error, 'Usage: un.pro [options] <source_file>\n'),
         write(user_error, '       un.pro session [options]\n'),
         write(user_error, '       un.pro service [options]\n'),
+        write(user_error, '       un.pro image [options]\n'),
+        write(user_error, '       un.pro languages [--json]\n'),
+        write(user_error, '       un.pro key [options]\n'),
+        write(user_error, '\n'),
+        write(user_error, 'Image options:\n'),
+        write(user_error, '  --list, -l          List all images\n'),
+        write(user_error, '  --info ID           Get image details\n'),
+        write(user_error, '  --delete ID         Delete an image\n'),
+        write(user_error, '  --lock ID           Lock image\n'),
+        write(user_error, '  --unlock ID         Unlock image\n'),
+        write(user_error, '  --publish ID --source-type TYPE  Publish image\n'),
+        write(user_error, '  --visibility ID MODE Set visibility\n'),
+        write(user_error, '  --spawn ID          Spawn service from image\n'),
+        write(user_error, '  --clone ID          Clone an image\n'),
+        write(user_error, '  --name NAME         Name for spawned/cloned\n'),
+        write(user_error, '  --ports PORTS       Ports for spawned service\n'),
         halt(1)
     ;   true
     ),
@@ -529,6 +703,10 @@ main(Argv) :-
     ->  handle_session(Rest)
     ;   Argv = ['service'|Rest]
     ->  handle_service(Rest)
+    ;   Argv = ['image'|Rest]
+    ->  handle_image(Rest)
+    ;   Argv = ['languages'|Rest]
+    ->  handle_languages(Rest)
     ;   Argv = ['key'|Rest]
     ->  handle_key(Rest)
     ;   Argv = [Filename|_]

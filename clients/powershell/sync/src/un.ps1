@@ -398,6 +398,25 @@ function Invoke-Session {
     $result | ConvertTo-Json -Depth 5
 }
 
+function Invoke-Languages {
+    param($Args)
+
+    $jsonOutput = $Args -contains "--json"
+
+    $result = Invoke-Api -Endpoint "/languages"
+    $languages = $result.languages
+
+    if ($jsonOutput) {
+        # Output as JSON array
+        $languages | ConvertTo-Json -Compress
+    } else {
+        # Output one language per line
+        foreach ($lang in $languages) {
+            Write-Output $lang
+        }
+    }
+}
+
 function Invoke-Key {
     param($Args)
 
@@ -453,6 +472,126 @@ function Invoke-Key {
         Write-Host "Reason: $($_.Exception.Message)"
         exit 1
     }
+}
+
+function Invoke-Image {
+    param($Args)
+
+    # Parse arguments
+    $listMode = $Args -contains "--list" -or $Args -contains "-l"
+    $infoId = $null
+    $deleteId = $null
+    $lockId = $null
+    $unlockId = $null
+    $publishId = $null
+    $sourceType = $null
+    $visibilityId = $null
+    $visibilityMode = $null
+    $spawnId = $null
+    $cloneId = $null
+    $name = $null
+    $ports = $null
+
+    for ($i = 0; $i -lt $Args.Count; $i++) {
+        switch ($Args[$i]) {
+            "--info" { $infoId = $Args[$i + 1]; $i++ }
+            "--delete" { $deleteId = $Args[$i + 1]; $i++ }
+            "--lock" { $lockId = $Args[$i + 1]; $i++ }
+            "--unlock" { $unlockId = $Args[$i + 1]; $i++ }
+            "--publish" { $publishId = $Args[$i + 1]; $i++ }
+            "--source-type" { $sourceType = $Args[$i + 1]; $i++ }
+            "--visibility" {
+                $visibilityId = $Args[$i + 1]
+                $visibilityMode = $Args[$i + 2]
+                $i += 2
+            }
+            "--spawn" { $spawnId = $Args[$i + 1]; $i++ }
+            "--clone" { $cloneId = $Args[$i + 1]; $i++ }
+            "--name" { $name = $Args[$i + 1]; $i++ }
+            "--ports" { $ports = $Args[$i + 1]; $i++ }
+        }
+    }
+
+    if ($listMode) {
+        $result = Invoke-Api -Endpoint "/images"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($infoId) {
+        $result = Invoke-Api -Endpoint "/images/$infoId"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($deleteId) {
+        Invoke-Api -Endpoint "/images/$deleteId" -Method "DELETE"
+        Write-Host "`e[32mImage deleted: $deleteId`e[0m"
+        return
+    }
+
+    if ($lockId) {
+        Invoke-Api -Endpoint "/images/$lockId/lock" -Method "POST" -Body "{}"
+        Write-Host "`e[32mImage locked: $lockId`e[0m"
+        return
+    }
+
+    if ($unlockId) {
+        Invoke-Api -Endpoint "/images/$unlockId/unlock" -Method "POST" -Body "{}"
+        Write-Host "`e[32mImage unlocked: $unlockId`e[0m"
+        return
+    }
+
+    if ($publishId) {
+        if (-not $sourceType) {
+            Write-Error "Error: --publish requires --source-type (service or snapshot)"
+            exit 1
+        }
+        $payload = @{
+            source_type = $sourceType
+            source_id = $publishId
+        }
+        if ($name) { $payload["name"] = $name }
+        $body = $payload | ConvertTo-Json
+        $result = Invoke-Api -Endpoint "/images/publish" -Method "POST" -Body $body
+        Write-Host "`e[32mImage published`e[0m"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($visibilityId -and $visibilityMode) {
+        $payload = @{ visibility = $visibilityMode } | ConvertTo-Json
+        Invoke-Api -Endpoint "/images/$visibilityId/visibility" -Method "POST" -Body $payload
+        Write-Host "`e[32mImage visibility set to $visibilityMode`: $visibilityId`e[0m"
+        return
+    }
+
+    if ($spawnId) {
+        $payload = @{}
+        if ($name) { $payload["name"] = $name }
+        if ($ports) {
+            $portList = $ports -split "," | ForEach-Object { [int]$_ }
+            $payload["ports"] = $portList
+        }
+        $body = $payload | ConvertTo-Json
+        $result = Invoke-Api -Endpoint "/images/$spawnId/spawn" -Method "POST" -Body $body
+        Write-Host "`e[32mService spawned from image`e[0m"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($cloneId) {
+        $payload = @{}
+        if ($name) { $payload["name"] = $name }
+        $body = $payload | ConvertTo-Json
+        $result = Invoke-Api -Endpoint "/images/$cloneId/clone" -Method "POST" -Body $body
+        Write-Host "`e[32mImage cloned`e[0m"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    Write-Error "Error: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone"
+    exit 1
 }
 
 function Invoke-Service {
@@ -685,7 +824,26 @@ if ($args.Count -eq 0 -or $args[0] -eq "--help" -or $args[0] -eq "-h") {
 Usage: pwsh un.ps1 [options] <source_file>
        pwsh un.ps1 session [options]
        pwsh un.ps1 service [options]
+       pwsh un.ps1 image [options]
+       pwsh un.ps1 languages [--json]
        pwsh un.ps1 key [options]
+
+Languages options:
+  --json              Output as JSON array
+
+Image options:
+  --list, -l          List all images
+  --info ID           Get image details
+  --delete ID         Delete an image
+  --lock ID           Lock image to prevent deletion
+  --unlock ID         Unlock image
+  --publish ID        Publish image from service/snapshot
+  --source-type TYPE  Source type: service or snapshot
+  --visibility ID MODE  Set visibility: private, unlisted, or public
+  --spawn ID          Spawn new service from image
+  --clone ID          Clone an image
+  --name NAME         Name for spawned service or cloned image
+  --ports PORTS       Ports for spawned service
 
 Execute options:
   -e KEY=VALUE    Environment variable
@@ -731,6 +889,10 @@ if ($args[0] -eq "session") {
     Invoke-Session -Args $args[1..($args.Count-1)]
 } elseif ($args[0] -eq "service") {
     Invoke-Service -Args $args[1..($args.Count-1)]
+} elseif ($args[0] -eq "image") {
+    Invoke-Image -Args $args[1..($args.Count-1)]
+} elseif ($args[0] -eq "languages") {
+    Invoke-Languages -Args $args[1..($args.Count-1)]
 } elseif ($args[0] -eq "key") {
     Invoke-Key -Args $args[1..($args.Count-1)]
 } else {

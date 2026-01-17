@@ -694,6 +694,181 @@ void cmd_service(const string& name, const string& ports, const string& type, co
     exit(1);
 }
 
+void cmd_languages(bool json_output, const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("GET", "/languages", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/languages' " + auth_headers;
+    string result = exec_curl(cmd);
+
+    if (json_output) {
+        // Extract language names and output as JSON array
+        vector<string> names;
+        size_t pos = 0;
+        string search = "\"name\":\"";
+        while ((pos = result.find(search, pos)) != string::npos) {
+            pos += search.length();
+            size_t end = result.find("\"", pos);
+            if (end != string::npos) {
+                names.push_back(result.substr(pos, end - pos));
+                pos = end;
+            }
+        }
+        cout << "[";
+        for (size_t i = 0; i < names.size(); i++) {
+            if (i > 0) cout << ",";
+            cout << "\"" << names[i] << "\"";
+        }
+        cout << "]" << endl;
+    } else {
+        // Output one language per line
+        size_t pos = 0;
+        string search = "\"name\":\"";
+        while ((pos = result.find(search, pos)) != string::npos) {
+            pos += search.length();
+            size_t end = result.find("\"", pos);
+            if (end != string::npos) {
+                cout << result.substr(pos, end - pos) << endl;
+                pos = end;
+            }
+        }
+    }
+}
+
+void cmd_image(bool list, const string& info, const string& del, const string& lock, const string& unlock,
+               const string& publish, const string& source_type, const string& visibility_id, const string& visibility,
+               const string& spawn, const string& clone, const string& name, const string& ports,
+               const string& public_key, const string& secret_key) {
+    if (list) {
+        string auth_headers = build_auth_headers("GET", "/images", "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + "/images' " + auth_headers;
+        cout << exec_curl(cmd) << endl;
+        return;
+    }
+
+    if (!info.empty()) {
+        string path = "/images/" + info;
+        string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+        string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+        cout << exec_curl(cmd) << endl;
+        return;
+    }
+
+    if (!del.empty()) {
+        string path = "/images/" + del;
+        string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
+        string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+        exec_curl(cmd);
+        cout << GREEN << "Image deleted: " << del << RESET << endl;
+        return;
+    }
+
+    if (!lock.empty()) {
+        string path = "/images/" + lock + "/lock";
+        string body = "{}";
+        string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " -d '" + body + "'";
+        exec_curl(cmd);
+        cout << GREEN << "Image locked: " << lock << RESET << endl;
+        return;
+    }
+
+    if (!unlock.empty()) {
+        string path = "/images/" + unlock + "/unlock";
+        string body = "{}";
+        string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " -d '" + body + "'";
+        exec_curl(cmd);
+        cout << GREEN << "Image unlocked: " << unlock << RESET << endl;
+        return;
+    }
+
+    if (!publish.empty()) {
+        if (source_type.empty()) {
+            cerr << RED << "Error: --publish requires --source-type (service or snapshot)" << RESET << endl;
+            exit(1);
+        }
+        ostringstream json;
+        json << "{\"source_type\":\"" << source_type << "\",\"source_id\":\"" << publish << "\"";
+        if (!name.empty()) {
+            json << ",\"name\":\"" << escape_json(name) << "\"";
+        }
+        json << "}";
+        string path = "/images/publish";
+        string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " -d '" + json.str() + "'";
+        cout << GREEN << "Image published" << RESET << endl;
+        cout << exec_curl(cmd) << endl;
+        return;
+    }
+
+    if (!visibility_id.empty()) {
+        if (visibility.empty()) {
+            cerr << RED << "Error: --visibility requires visibility mode (private, unlisted, public)" << RESET << endl;
+            exit(1);
+        }
+        ostringstream json;
+        json << "{\"visibility\":\"" << visibility << "\"}";
+        string path = "/images/" + visibility_id + "/visibility";
+        string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " -d '" + json.str() + "'";
+        exec_curl(cmd);
+        cout << GREEN << "Image visibility set to: " << visibility << RESET << endl;
+        return;
+    }
+
+    if (!spawn.empty()) {
+        ostringstream json;
+        json << "{";
+        bool has_field = false;
+        if (!name.empty()) {
+            json << "\"name\":\"" << escape_json(name) << "\"";
+            has_field = true;
+        }
+        if (!ports.empty()) {
+            if (has_field) json << ",";
+            json << "\"ports\":[" << ports << "]";
+        }
+        json << "}";
+        string path = "/images/" + spawn + "/spawn";
+        string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " -d '" + json.str() + "'";
+        cout << GREEN << "Service spawned from image" << RESET << endl;
+        cout << exec_curl(cmd) << endl;
+        return;
+    }
+
+    if (!clone.empty()) {
+        ostringstream json;
+        json << "{";
+        if (!name.empty()) {
+            json << "\"name\":\"" << escape_json(name) << "\"";
+        }
+        json << "}";
+        string path = "/images/" + clone + "/clone";
+        string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " -d '" + json.str() + "'";
+        cout << GREEN << "Image cloned" << RESET << endl;
+        cout << exec_curl(cmd) << endl;
+        return;
+    }
+
+    // Default: list images
+    string auth_headers = build_auth_headers("GET", "/images", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/images' " + auth_headers;
+    cout << exec_curl(cmd) << endl;
+}
+
 void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
     string auth_headers = build_auth_headers("POST", "/keys/validate", "", public_key, secret_key);
     string cmd = "curl -s -X POST '" + PORTAL_BASE + "/keys/validate' "
@@ -787,13 +962,44 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2) {
         cerr << "Usage: " << argv[0] << " [options] <source_file>" << endl;
+        cerr << "       " << argv[0] << " languages [--json]" << endl;
         cerr << "       " << argv[0] << " session [options]" << endl;
         cerr << "       " << argv[0] << " service [options]" << endl;
+        cerr << "       " << argv[0] << " image [options]" << endl;
         cerr << "       " << argv[0] << " key [options]" << endl;
         return 1;
     }
 
     string cmd_type = argv[1];
+
+    if (cmd_type == "image") {
+        bool list = false;
+        string info, del, lock, unlock, publish, source_type, visibility_id, visibility;
+        string spawn, clone, name, ports;
+
+        for (int i = 2; i < argc; i++) {
+            string arg = argv[i];
+            if (arg == "--list" || arg == "-l") list = true;
+            else if (arg == "--info" && i+1 < argc) info = argv[++i];
+            else if (arg == "--delete" && i+1 < argc) del = argv[++i];
+            else if (arg == "--lock" && i+1 < argc) lock = argv[++i];
+            else if (arg == "--unlock" && i+1 < argc) unlock = argv[++i];
+            else if (arg == "--publish" && i+1 < argc) publish = argv[++i];
+            else if (arg == "--source-type" && i+1 < argc) source_type = argv[++i];
+            else if (arg == "--visibility" && i+2 < argc) {
+                visibility_id = argv[++i];
+                visibility = argv[++i];
+            }
+            else if (arg == "--spawn" && i+1 < argc) spawn = argv[++i];
+            else if (arg == "--clone" && i+1 < argc) clone = argv[++i];
+            else if (arg == "--name" && i+1 < argc) name = argv[++i];
+            else if (arg == "--ports" && i+1 < argc) ports = argv[++i];
+            else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+        }
+
+        cmd_image(list, info, del, lock, unlock, publish, source_type, visibility_id, visibility, spawn, clone, name, ports, public_key, secret_key);
+        return 0;
+    }
 
     if (cmd_type == "session") {
         bool list = false;
@@ -878,6 +1084,19 @@ int main(int argc, char* argv[]) {
         }
 
         cmd_validate_key(extend, public_key, secret_key);
+        return 0;
+    }
+
+    if (cmd_type == "languages") {
+        bool json_output = false;
+
+        for (int i = 2; i < argc; i++) {
+            string arg = argv[i];
+            if (arg == "--json") json_output = true;
+            else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+        }
+
+        cmd_languages(json_output, public_key, secret_key);
         return 0;
     }
 

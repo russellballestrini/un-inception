@@ -1379,6 +1379,7 @@ Usage:
   un service [options]              Manage services
   un snapshot [options]             Manage snapshots
   un key                            Check API key
+  un languages [--json]             List available languages
 
 Global Options:
   -s, --shell LANG       Language for inline code
@@ -1401,6 +1402,8 @@ Examples:
   un -n semitrusted crawler.py      With network access
   un session --tmux                 Persistent interactive session
   un service --list                 List all services
+  un languages                      List available languages
+  un languages --json               List languages as JSON
 `)
 }
 
@@ -1516,6 +1519,39 @@ Examples:
   un snapshot --info abc123
   un snapshot --delete abc123
   un snapshot --clone abc123 --type service --name myapp --ports 80
+`)
+}
+
+// printImageUsage prints image subcommand help
+func printImageUsage() {
+	fmt.Fprintf(os.Stderr, `un image - Image management
+
+Usage:
+  un image --list                 List all images
+  un image --info ID              Get details
+  un image --delete ID            Delete image
+  un image --publish ID           Publish image from service/snapshot
+
+Options:
+  -l, --list             List all images
+  --info ID              Get image details
+  --delete ID            Delete image
+  --lock ID              Prevent deletion
+  --unlock ID            Allow deletion
+  --publish ID           Publish image (requires --source-type)
+  --source-type TYPE     Source type: service or snapshot
+  --visibility ID MODE   Set visibility (private, unlisted, public)
+  --spawn ID             Spawn new service from image
+  --clone ID             Clone an image
+  --name NAME            Name for spawned service or cloned image
+  --ports PORTS          Ports for spawned service
+
+Examples:
+  un image --list
+  un image --info abc123
+  un image --publish svc123 --source-type service --name myimage
+  un image --spawn img123 --name myservice --ports 80,443
+  un image --visibility img123 public
 `)
 }
 
@@ -2506,6 +2542,243 @@ func parseSnapshotFlags(args []string, fs *snapshotFlags) {
 	}
 }
 
+type imageFlags struct {
+	list       bool
+	info       string
+	deleteID   string
+	lock       string
+	unlock     string
+	publish    string
+	sourceType string
+	visibility string
+	visMode    string
+	spawn      string
+	clone      string
+	name       string
+	ports      string
+	help       bool
+}
+
+func parseImageFlags(args []string, fs *imageFlags) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "-l", "--list":
+			fs.list = true
+		case "--info":
+			if i+1 < len(args) {
+				fs.info = args[i+1]
+				i++
+			}
+		case "--delete":
+			if i+1 < len(args) {
+				fs.deleteID = args[i+1]
+				i++
+			}
+		case "--lock":
+			if i+1 < len(args) {
+				fs.lock = args[i+1]
+				i++
+			}
+		case "--unlock":
+			if i+1 < len(args) {
+				fs.unlock = args[i+1]
+				i++
+			}
+		case "--publish":
+			if i+1 < len(args) {
+				fs.publish = args[i+1]
+				i++
+			}
+		case "--source-type":
+			if i+1 < len(args) {
+				fs.sourceType = args[i+1]
+				i++
+			}
+		case "--visibility":
+			if i+1 < len(args) {
+				fs.visibility = args[i+1]
+				i++
+			}
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				fs.visMode = args[i+1]
+				i++
+			}
+		case "--spawn":
+			if i+1 < len(args) {
+				fs.spawn = args[i+1]
+				i++
+			}
+		case "--clone":
+			if i+1 < len(args) {
+				fs.clone = args[i+1]
+				i++
+			}
+		case "--name":
+			if i+1 < len(args) {
+				fs.name = args[i+1]
+				i++
+			}
+		case "--ports":
+			if i+1 < len(args) {
+				fs.ports = args[i+1]
+				i++
+			}
+		case "-h", "--help":
+			fs.help = true
+		}
+	}
+}
+
+func runImage(creds *Credentials, args []string, opts *CLIOptions) int {
+	fs := &imageFlags{}
+	parseImageFlags(args, fs)
+
+	if fs.help {
+		printImageUsage()
+		return ExitSuccess
+	}
+
+	// List images
+	if fs.list {
+		images, err := ListImages(creds, "")
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		formatList(images, []string{"image_id", "name", "visibility", "source_type", "created_at"})
+		return ExitSuccess
+	}
+
+	// Get image info
+	if fs.info != "" {
+		image, err := GetImage(creds, fs.info)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		jsonOut, _ := json.MarshalIndent(image, "", "  ")
+		fmt.Println(string(jsonOut))
+		return ExitSuccess
+	}
+
+	// Delete image
+	if fs.deleteID != "" {
+		_, err := DeleteImage(creds, fs.deleteID)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		fmt.Printf("Image %s deleted\n", fs.deleteID)
+		return ExitSuccess
+	}
+
+	// Lock image
+	if fs.lock != "" {
+		_, err := LockImage(creds, fs.lock)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		fmt.Printf("Image %s locked\n", fs.lock)
+		return ExitSuccess
+	}
+
+	// Unlock image
+	if fs.unlock != "" {
+		_, err := UnlockImage(creds, fs.unlock)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		fmt.Printf("Image %s unlocked\n", fs.unlock)
+		return ExitSuccess
+	}
+
+	// Publish image
+	if fs.publish != "" {
+		if fs.sourceType == "" {
+			return cliError("--source-type required for --publish", ExitInvalidArgs)
+		}
+		pubOpts := &ImagePublishOptions{}
+		if fs.name != "" {
+			pubOpts.Name = fs.name
+		}
+		result, err := ImagePublish(creds, fs.sourceType, fs.publish, pubOpts)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		imageID := ""
+		if id, ok := result["image_id"].(string); ok {
+			imageID = id
+		} else if id, ok := result["id"].(string); ok {
+			imageID = id
+		}
+		fmt.Printf("Image published: %s\n", imageID)
+		return ExitSuccess
+	}
+
+	// Set visibility
+	if fs.visibility != "" && fs.visMode != "" {
+		if fs.visMode != "private" && fs.visMode != "unlisted" && fs.visMode != "public" {
+			return cliError("visibility must be private, unlisted, or public", ExitInvalidArgs)
+		}
+		_, err := SetImageVisibility(creds, fs.visibility, fs.visMode)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		fmt.Printf("Image %s visibility set to %s\n", fs.visibility, fs.visMode)
+		return ExitSuccess
+	}
+
+	// Spawn from image
+	if fs.spawn != "" {
+		if fs.name == "" {
+			return cliError("--name required for --spawn", ExitInvalidArgs)
+		}
+		spawnOpts := &SpawnFromImageOptions{
+			Name: fs.name,
+		}
+		if fs.ports != "" {
+			ports, err := parsePorts(fs.ports)
+			if err != nil {
+				return cliError(err.Error(), ExitInvalidArgs)
+			}
+			spawnOpts.Ports = ports
+		}
+		result, err := SpawnFromImage(creds, fs.spawn, spawnOpts)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		serviceID := ""
+		if id, ok := result["service_id"].(string); ok {
+			serviceID = id
+		} else if id, ok := result["id"].(string); ok {
+			serviceID = id
+		}
+		fmt.Printf("Service spawned: %s\n", serviceID)
+		return ExitSuccess
+	}
+
+	// Clone image
+	if fs.clone != "" {
+		cloneOpts := &CloneImageOptions{}
+		if fs.name != "" {
+			cloneOpts.Name = fs.name
+		}
+		result, err := CloneImage(creds, fs.clone, cloneOpts)
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		imageID := ""
+		if id, ok := result["image_id"].(string); ok {
+			imageID = id
+		} else if id, ok := result["id"].(string); ok {
+			imageID = id
+		}
+		fmt.Printf("Image cloned: %s\n", imageID)
+		return ExitSuccess
+	}
+
+	printImageUsage()
+	return ExitInvalidArgs
+}
+
 // runKey handles the key command
 func runKey(creds *Credentials) int {
 	result, err := ValidateKeys(creds)
@@ -2517,6 +2790,34 @@ func runKey(creds *Credentials) int {
 	if account, ok := result["account"].(map[string]interface{}); ok {
 		jsonOut, _ := json.MarshalIndent(account, "", "  ")
 		fmt.Println(string(jsonOut))
+	}
+	return ExitSuccess
+}
+
+// runLanguages handles the languages command
+func runLanguages(creds *Credentials, args []string) int {
+	// Check for --json flag
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		}
+	}
+
+	languages, err := GetLanguages(creds)
+	if err != nil {
+		return cliError(err.Error(), ExitAPIError)
+	}
+
+	if jsonOutput {
+		// Output as JSON array
+		jsonOut, _ := json.Marshal(languages)
+		fmt.Println(string(jsonOut))
+	} else {
+		// Output one language per line (pipe-friendly)
+		for _, lang := range languages {
+			fmt.Println(lang)
+		}
 	}
 	return ExitSuccess
 }
@@ -2609,7 +2910,7 @@ func CliMain() {
 	cmdArgs := remaining
 	if len(remaining) > 0 {
 		switch remaining[0] {
-		case "session", "service", "snapshot", "key":
+		case "session", "service", "snapshot", "key", "languages":
 			command = remaining[0]
 			cmdArgs = remaining[1:]
 		default:
@@ -2641,8 +2942,12 @@ func CliMain() {
 		exitCode = runService(creds, cmdArgs, opts)
 	case "snapshot":
 		exitCode = runSnapshot(creds, cmdArgs, opts)
+	case "image":
+		exitCode = runImage(creds, cmdArgs, opts)
 	case "key":
 		exitCode = runKey(creds)
+	case "languages":
+		exitCode = runLanguages(creds, cmdArgs)
 	default:
 		printUsage()
 		exitCode = ExitInvalidArgs

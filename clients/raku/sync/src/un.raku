@@ -1115,6 +1115,30 @@ sub cmd-service(@args) {
     exit 1;
 }
 
+sub cmd-languages(@args) {
+    my ($public-key, $secret-key) = get-credentials();
+    my $json-output = False;
+
+    for @args -> $arg {
+        if $arg eq '--json' {
+            $json-output = True;
+        }
+    }
+
+    my %result = languages(:$public-key, :$secret-key);
+    my @langs = %result<languages>.list;
+
+    if $json-output {
+        # JSON array output
+        say to-json(@langs);
+    } else {
+        # One language per line (default)
+        for @langs -> $lang {
+            say $lang;
+        }
+    }
+}
+
 sub cmd-key(@args) {
     my ($public-key, $secret-key) = get-credentials();
     my $extend = False;
@@ -1175,12 +1199,200 @@ sub cmd-key(@args) {
     say "Concurrency: {%result<concurrency> // 'N/A'}";
 }
 
+sub cmd-image(@args) {
+    my ($public-key, $secret-key) = get-credentials();
+    my $list-mode = False;
+    my $info-id = '';
+    my $delete-id = '';
+    my $lock-id = '';
+    my $unlock-id = '';
+    my $publish-id = '';
+    my $source-type = '';
+    my $visibility-id = '';
+    my $visibility-mode = '';
+    my $spawn-id = '';
+    my $clone-id = '';
+    my $name = '';
+    my $ports = '';
+
+    # Parse arguments
+    my $i = 0;
+    while $i < @args.elems {
+        given @args[$i] {
+            when '--list' {
+                $list-mode = True;
+            }
+            when '-l' {
+                $list-mode = True;
+            }
+            when '--info' {
+                $i++;
+                $info-id = @args[$i];
+            }
+            when '--delete' {
+                $i++;
+                $delete-id = @args[$i];
+            }
+            when '--lock' {
+                $i++;
+                $lock-id = @args[$i];
+            }
+            when '--unlock' {
+                $i++;
+                $unlock-id = @args[$i];
+            }
+            when '--publish' {
+                $i++;
+                $publish-id = @args[$i];
+            }
+            when '--source-type' {
+                $i++;
+                $source-type = @args[$i];
+            }
+            when '--visibility' {
+                $i++;
+                $visibility-id = @args[$i];
+                $i++;
+                $visibility-mode = @args[$i] if $i < @args.elems && !@args[$i].starts-with('-');
+            }
+            when '--spawn' {
+                $i++;
+                $spawn-id = @args[$i];
+            }
+            when '--clone' {
+                $i++;
+                $clone-id = @args[$i];
+            }
+            when '--name' {
+                $i++;
+                $name = @args[$i];
+            }
+            when '--ports' {
+                $i++;
+                $ports = @args[$i];
+            }
+        }
+        $i++;
+    }
+
+    if $list-mode {
+        my %result = api-request('/images', 'GET', :$public-key, :$secret-key);
+        my @images = %result<images>.list;
+        unless @images {
+            say "No images found";
+            return;
+        }
+        say sprintf("%-40s %-20s %-12s %s", 'ID', 'Name', 'Visibility', 'Created');
+        for @images -> %img {
+            say sprintf("%-40s %-20s %-12s %s",
+                %img<id> // 'N/A', %img<name> // '-', %img<visibility> // 'N/A', %img<created_at> // 'N/A');
+        }
+        return;
+    }
+
+    if $info-id {
+        my %result = api-request("/images/$info-id", 'GET', :$public-key, :$secret-key);
+        say "{$BLUE}Image Details{$RESET}";
+        say "";
+        say "Image ID: {%result<id> // 'N/A'}";
+        say "Name: {%result<name> // '-'}";
+        say "Visibility: {%result<visibility> // 'N/A'}";
+        say "Created: {%result<created_at> // 'N/A'}";
+        return;
+    }
+
+    if $delete-id {
+        api-request("/images/$delete-id", 'DELETE', :$public-key, :$secret-key);
+        say "{$GREEN}Image deleted successfully{$RESET}";
+        return;
+    }
+
+    if $lock-id {
+        api-request("/images/$lock-id/lock", 'POST', :$public-key, :$secret-key);
+        say "{$GREEN}Image locked successfully{$RESET}";
+        return;
+    }
+
+    if $unlock-id {
+        api-request("/images/$unlock-id/unlock", 'POST', :$public-key, :$secret-key);
+        say "{$GREEN}Image unlocked successfully{$RESET}";
+        return;
+    }
+
+    if $publish-id {
+        unless $source-type {
+            note "{$RED}Error: --source-type required for --publish (service or snapshot){$RESET}";
+            exit 1;
+        }
+        my %payload = source_type => $source-type, source_id => $publish-id;
+        %payload<name> = $name if $name;
+        my %result = api-request('/images/publish', 'POST', %payload, :$public-key, :$secret-key);
+        say "{$GREEN}Image published successfully{$RESET}";
+        say "Image ID: {%result<id> // 'N/A'}";
+        return;
+    }
+
+    if $visibility-id {
+        unless $visibility-mode {
+            note "{$RED}Error: visibility mode required (private, unlisted, or public){$RESET}";
+            exit 1;
+        }
+        my %payload = visibility => $visibility-mode;
+        api-request("/images/$visibility-id/visibility", 'POST', %payload, :$public-key, :$secret-key);
+        say "{$GREEN}Image visibility set to $visibility-mode{$RESET}";
+        return;
+    }
+
+    if $spawn-id {
+        my %payload;
+        %payload<name> = $name if $name;
+        if $ports {
+            %payload<ports> = $ports.split(',')>>.Int;
+        }
+        my %result = api-request("/images/$spawn-id/spawn", 'POST', %payload, :$public-key, :$secret-key);
+        say "{$GREEN}Service spawned from image{$RESET}";
+        say "Service ID: {%result<id> // 'N/A'}";
+        return;
+    }
+
+    if $clone-id {
+        my %payload;
+        %payload<name> = $name if $name;
+        my %result = api-request("/images/$clone-id/clone", 'POST', %payload, :$public-key, :$secret-key);
+        say "{$GREEN}Image cloned successfully{$RESET}";
+        say "Image ID: {%result<id> // 'N/A'}";
+        return;
+    }
+
+    note "{$RED}Error: Specify --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID{$RESET}";
+    exit 1;
+}
+
 sub MAIN(*@args) is export {
     unless @args {
         note "Usage: un.raku [options] <source_file>";
         note "       un.raku session [options]";
         note "       un.raku service [options]";
+        note "       un.raku image [options]";
         note "       un.raku key [options]";
+        note "       un.raku languages [--json]";
+        note "";
+        note "Languages options:";
+        note "  --json              Output as JSON array";
+        note "";
+        note "Image options:";
+        note "  --list              List all images";
+        note "  --info ID           Get image details";
+        note "  --delete ID         Delete an image";
+        note "  --lock ID           Lock image to prevent deletion";
+        note "  --unlock ID         Unlock image";
+        note "  --publish ID        Publish image from service/snapshot";
+        note "  --source-type TYPE  Source type: service or snapshot";
+        note "  --visibility ID MODE  Set visibility: private, unlisted, public";
+        note "  --spawn ID          Spawn new service from image";
+        note "  --clone ID          Clone an image";
+        note "  --name NAME         Name for spawned service or cloned image";
+        note "  --ports PORTS       Ports for spawned service";
         exit 1;
     }
 
@@ -1191,8 +1403,14 @@ sub MAIN(*@args) is export {
         when 'service' {
             cmd-service(@args[1..*]);
         }
+        when 'image' {
+            cmd-image(@args[1..*]);
+        }
         when 'key' {
             cmd-key(@args[1..*]);
+        }
+        when 'languages' {
+            cmd-languages(@args[1..*]);
         }
         default {
             cmd-execute(@args);

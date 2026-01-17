@@ -189,12 +189,214 @@ function Un.detect_language(filename)
     return map[ext] or error("Unknown file type")
 end
 
+-- Image API functions
+function Un.image_list(opts)
+    opts = opts or {}
+    return Un.api_request("GET", "/images", nil, opts)
+end
+
+function Un.image_get(image_id, opts)
+    opts = opts or {}
+    return Un.api_request("GET", "/images/" .. image_id, nil, opts)
+end
+
+function Un.image_delete(image_id, opts)
+    opts = opts or {}
+    return Un.api_request("DELETE", "/images/" .. image_id, nil, opts)
+end
+
+function Un.image_lock(image_id, opts)
+    opts = opts or {}
+    return Un.api_request("POST", "/images/" .. image_id .. "/lock", {}, opts)
+end
+
+function Un.image_unlock(image_id, opts)
+    opts = opts or {}
+    return Un.api_request("POST", "/images/" .. image_id .. "/unlock", {}, opts)
+end
+
+function Un.image_publish(source_id, source_type, name, opts)
+    opts = opts or {}
+    local body = {source_type = source_type, source_id = source_id}
+    if name then body.name = name end
+    return Un.api_request("POST", "/images/publish", body, opts)
+end
+
+function Un.image_visibility(image_id, visibility, opts)
+    opts = opts or {}
+    return Un.api_request("POST", "/images/" .. image_id .. "/visibility", {visibility = visibility}, opts)
+end
+
+function Un.image_spawn(image_id, name, ports, opts)
+    opts = opts or {}
+    local body = {}
+    if name then body.name = name end
+    if ports then body.ports = ports end
+    return Un.api_request("POST", "/images/" .. image_id .. "/spawn", body, opts)
+end
+
+function Un.image_clone(image_id, name, opts)
+    opts = opts or {}
+    local body = {}
+    if name then body.name = name end
+    return Un.api_request("POST", "/images/" .. image_id .. "/clone", body, opts)
+end
+
 -- CLI
 if arg and arg[1] then
-    local result = Un.run(arg[1])
-    if result.stdout then print(result.stdout) end
-    if result.stderr then io.stderr:write(result.stderr) end
-    os.exit(result.exit_code or 0)
+    if arg[1] == "languages" then
+        -- Languages command
+        local json_output = arg[2] == "--json"
+        local langs = Un.languages()
+
+        if json_output then
+            print(json.encode(langs))
+        else
+            for _, lang in ipairs(langs) do
+                print(lang)
+            end
+        end
+        os.exit(0)
+    elseif arg[1] == "image" then
+        -- Image command
+        local i = 2
+        local action = nil
+        local image_id = nil
+        local name = nil
+        local ports = nil
+        local source_type = nil
+        local visibility_mode = nil
+
+        while i <= #arg do
+            if arg[i] == "--list" or arg[i] == "-l" then
+                action = "list"
+            elseif arg[i] == "--info" then
+                action = "info"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--delete" then
+                action = "delete"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--lock" then
+                action = "lock"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--unlock" then
+                action = "unlock"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--publish" then
+                action = "publish"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--source-type" then
+                i = i + 1
+                source_type = arg[i]
+            elseif arg[i] == "--visibility" then
+                action = "visibility"
+                i = i + 1
+                image_id = arg[i]
+                if i + 1 <= #arg and not arg[i + 1]:match("^%-") then
+                    i = i + 1
+                    visibility_mode = arg[i]
+                end
+            elseif arg[i] == "--spawn" then
+                action = "spawn"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--clone" then
+                action = "clone"
+                i = i + 1
+                image_id = arg[i]
+            elseif arg[i] == "--name" then
+                i = i + 1
+                name = arg[i]
+            elseif arg[i] == "--ports" then
+                i = i + 1
+                ports = {}
+                for p in arg[i]:gmatch("[^,]+") do
+                    table.insert(ports, tonumber(p))
+                end
+            end
+            i = i + 1
+        end
+
+        if action == "list" then
+            local result = Un.image_list()
+            print(json.encode(result))
+        elseif action == "info" then
+            local result = Un.image_get(image_id)
+            print(json.encode(result))
+        elseif action == "delete" then
+            Un.image_delete(image_id)
+            print("Image deleted: " .. image_id)
+        elseif action == "lock" then
+            Un.image_lock(image_id)
+            print("Image locked: " .. image_id)
+        elseif action == "unlock" then
+            Un.image_unlock(image_id)
+            print("Image unlocked: " .. image_id)
+        elseif action == "publish" then
+            if not source_type then
+                io.stderr:write("Error: --source-type required (service or snapshot)\n")
+                os.exit(1)
+            end
+            local result = Un.image_publish(image_id, source_type, name)
+            print("Image published")
+            print(json.encode(result))
+        elseif action == "visibility" then
+            if not visibility_mode then
+                io.stderr:write("Error: --visibility requires MODE (private, unlisted, or public)\n")
+                os.exit(1)
+            end
+            Un.image_visibility(image_id, visibility_mode)
+            print("Image visibility set to " .. visibility_mode .. ": " .. image_id)
+        elseif action == "spawn" then
+            local result = Un.image_spawn(image_id, name, ports)
+            print("Service spawned from image")
+            print(json.encode(result))
+        elseif action == "clone" then
+            local result = Un.image_clone(image_id, name)
+            print("Image cloned")
+            print(json.encode(result))
+        else
+            io.stderr:write("Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID MODE, --spawn ID, or --clone ID\n")
+            os.exit(1)
+        end
+        os.exit(0)
+    elseif arg[1] == "--help" or arg[1] == "-h" then
+        print("Usage: lua un.lua [options] <source_file>")
+        print("       lua un.lua languages [--json]")
+        print("       lua un.lua image [options]")
+        print("")
+        print("Commands:")
+        print("  languages [--json]  List available programming languages")
+        print("  image [options]     Manage images")
+        print("")
+        print("Languages options:")
+        print("  --json              Output as JSON array")
+        print("")
+        print("Image options:")
+        print("  --list              List all images")
+        print("  --info ID           Get image details")
+        print("  --delete ID         Delete an image")
+        print("  --lock ID           Lock image to prevent deletion")
+        print("  --unlock ID         Unlock image")
+        print("  --publish ID        Publish image (requires --source-type)")
+        print("  --source-type TYPE  Source type: service or snapshot")
+        print("  --visibility ID MODE  Set visibility: private, unlisted, public")
+        print("  --spawn ID          Spawn service from image")
+        print("  --clone ID          Clone an image")
+        print("  --name NAME         Name for spawned service or cloned image")
+        print("  --ports PORTS       Ports for spawned service")
+        os.exit(0)
+    else
+        local result = Un.run(arg[1])
+        if result.stdout then print(result.stdout) end
+        if result.stderr then io.stderr:write(result.stderr) end
+        os.exit(result.exit_code or 0)
+    end
 end
 
 return Un
