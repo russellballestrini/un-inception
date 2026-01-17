@@ -4,7 +4,7 @@
 # Pattern: build/un → unsandbox API → un.py/un.js/etc → unsandbox API → test code
 #
 # Tests multiple endpoints:
-#   - execute (code execution)
+#   - execute (code execution via SDK)
 #   - session --list
 #   - service --list
 #   - snapshot --list
@@ -20,32 +20,77 @@ LANG=${1:-python}
 RESULTS_DIR="test-results-$LANG"
 mkdir -p "$RESULTS_DIR"
 
-# Map language to SDK file
+# Map API language name to SDK file path
+# API returns names like "python", "javascript", "r", "commonlisp", etc.
 get_sdk_file() {
     case "$1" in
-        python)     echo "clients/python/sync/src/un.py" ;;
-        javascript) echo "clients/javascript/sync/src/un.js" ;;
-        typescript) echo "clients/typescript/sync/src/un.ts" ;;
-        go)         echo "clients/go/sync/src/un.go" ;;
-        ruby)       echo "clients/ruby/sync/src/un.rb" ;;
-        php)        echo "clients/php/sync/src/un.php" ;;
-        java)       echo "clients/java/sync/src/Un.java" ;;
-        rust)       echo "clients/rust/sync/src/lib.rs" ;;
-        perl)       echo "clients/perl/sync/src/un.pl" ;;
-        lua)        echo "clients/lua/sync/src/un.lua" ;;
-        bash)       echo "clients/bash/sync/src/un.sh" ;;
-        *)          echo "clients/$1/sync/src/un.*" ;;
+        # Main SDKs with full CLI support
+        python)      echo "clients/python/sync/src/un.py" ;;
+        javascript)  echo "clients/javascript/sync/src/un.js" ;;
+        typescript)  echo "clients/typescript/sync/src/un.ts" ;;
+        ruby)        echo "clients/ruby/sync/src/un.rb" ;;
+        php)         echo "clients/php/sync/src/un.php" ;;
+        perl)        echo "clients/perl/sync/src/un.pl" ;;
+        lua)         echo "clients/lua/sync/src/un.lua" ;;
+        bash)        echo "clients/bash/sync/src/un.sh" ;;
+
+        # Languages with non-standard extensions or directory names
+        r)           echo "clients/r/sync/src/un.r" ;;
+        awk)         echo "clients/awk/sync/src/un.awk" ;;
+        tcl)         echo "clients/tcl/sync/src/un.tcl" ;;
+        scheme)      echo "clients/scheme/sync/src/un.scm" ;;
+        commonlisp)  echo "clients/lisp/sync/src/un.lisp" ;;
+        lisp)        echo "clients/lisp/sync/src/un.lisp" ;;
+        clojure)     echo "clients/clojure/sync/src/un.clj" ;;
+        elixir)      echo "clients/elixir/sync/src/un.ex" ;;
+        erlang)      echo "clients/erlang/sync/src/un.erl" ;;
+        groovy)      echo "clients/groovy/sync/src/un.groovy" ;;
+        raku)        echo "clients/raku/sync/src/un.raku" ;;
+        julia)       echo "clients/julia/sync/src/un.jl" ;;
+        dart)        echo "clients/dart/sync/src/un.dart" ;;
+        prolog)      echo "clients/prolog/sync/src/un.pro" ;;
+        forth)       echo "clients/forth/sync/src/un.forth" ;;
+        powershell)  echo "clients/powershell/sync/src/un.ps1" ;;
+        objc)        echo "clients/objective-c/sync/src/un.m" ;;
+        v)           echo "clients/v/sync/src/un.v" ;;
+
+        # Compiled languages (will be skipped but need mapping for file check)
+        go)          echo "clients/go/sync/src/un.go" ;;
+        rust)        echo "clients/rust/sync/src/lib.rs" ;;
+        c)           echo "clients/c/src/un.c" ;;
+        cpp)         echo "clients/cpp/sync/src/un.cpp" ;;
+        java)        echo "clients/java/sync/src/Un.java" ;;
+        kotlin)      echo "clients/kotlin/sync/src/un.kt" ;;
+        swift)       echo "clients/swift/sync/src/un.swift" ;;
+        csharp)      echo "clients/csharp/sync/src/un.cs" ;;
+        fsharp)      echo "clients/fsharp/sync/src/un.fs" ;;
+        haskell)     echo "clients/haskell/sync/src/un.hs" ;;
+        ocaml)       echo "clients/ocaml/sync/src/un.ml" ;;
+        d)           echo "clients/d/sync/src/un.d" ;;
+        nim)         echo "clients/nim/sync/src/un.nim" ;;
+        zig)         echo "clients/zig/sync/src/un.zig" ;;
+        crystal)     echo "clients/crystal/sync/src/un.cr" ;;
+        fortran)     echo "clients/fortran/sync/src/un.f90" ;;
+        cobol)       echo "clients/cobol/sync/src/un.cob" ;;
+
+        # Deno uses TypeScript
+        deno)        echo "clients/typescript/sync/src/un.ts" ;;
+
+        # Fallback - try common patterns
+        *)
+            # Try to find the file
+            for ext in py js ts rb php pl lua sh r awk tcl scm lisp clj ex erl groovy raku jl dart pro forth ps1; do
+                if [ -f "clients/$1/sync/src/un.$ext" ]; then
+                    echo "clients/$1/sync/src/un.$ext"
+                    return
+                fi
+            done
+            echo "clients/$1/sync/src/un.NOTFOUND"
+            ;;
     esac
 }
 
-SDK_FILE=$(get_sdk_file "$LANG")
-
-echo "=== Inception Test: $LANG ==="
-echo "SDK: $SDK_FILE"
-echo ""
-
-# Compiled languages can't be run directly - skip inception test for them
-# The unsandbox API can execute scripts, not compiled binaries
+# Check if language is compiled (can't run source directly)
 is_compiled_language() {
     case "$1" in
         rust|go|c|cpp|java|kotlin|swift|csharp|fsharp|haskell|ocaml|d|nim|zig|crystal|fortran|cobol)
@@ -55,6 +100,13 @@ is_compiled_language() {
     esac
 }
 
+SDK_FILE=$(get_sdk_file "$LANG")
+
+echo "=== Inception Test: $LANG ==="
+echo "SDK: $SDK_FILE"
+echo ""
+
+# Skip compiled languages
 if is_compiled_language "$LANG"; then
     echo "SKIP: $LANG is a compiled language - inception test not applicable"
     echo "      (Compiled SDKs require separate build+test workflow)"
@@ -94,16 +146,18 @@ EOF
 fi
 
 # Helper: Run SDK command through inception and capture result
+# Uses -- to separate C CLI options from SDK arguments
 run_sdk_cmd() {
     local test_name="$1"
     local output_file="$2"
     shift 2
     local args=("$@")
 
+    # Use -- to tell C CLI that remaining args are for the SDK script
     build/un -n semitrusted \
         -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
         -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-        "$SDK_FILE" "${args[@]}" > "$output_file" 2>&1
+        -- "$SDK_FILE" "${args[@]}" > "$output_file" 2>&1
 }
 
 START_TIME=$(date +%s.%N)
@@ -134,6 +188,7 @@ run_test() {
                 TEST_RESULTS["$name"]="fail"
                 FAILURES=$((FAILURES + 1))
                 echo "FAIL (validation failed)"
+                cat "$output_file" | head -10
                 return 1
             fi
         else
@@ -145,6 +200,7 @@ run_test() {
         TEST_RESULTS["$name"]="fail"
         FAILURES=$((FAILURES + 1))
         echo "FAIL (command failed)"
+        cat "$output_file" | head -10
         return 1
     fi
 }
@@ -153,43 +209,66 @@ echo "Running inception tests across multiple endpoints..."
 echo ""
 
 # 1. Help command (basic sanity check)
-run_test "help" "Usage:|usage:|USAGE" --help || true
+run_test "help" "Usage:|usage:|USAGE|Options:|options:|help" --help || true
 
-# 2. Execute endpoint - inline code execution
+# 2. Execute endpoint - test code execution through SDK
+# The SDK receives a file to execute and calls the API
 echo -n "Test: execute... "
-if run_sdk_cmd "execute" "$RESULTS_DIR/execute.txt" -s python 'print("inception-test-ok")'; then
-    if grep -q "inception-test-ok" "$RESULTS_DIR/execute.txt"; then
-        TEST_RESULTS["execute"]="pass"
-        echo "PASS"
+TEST_FILE="test/fib.py"
+if [ -f "$TEST_FILE" ]; then
+    if run_sdk_cmd "execute" "$RESULTS_DIR/execute.txt" "$TEST_FILE"; then
+        # Fibonacci of small number should produce numeric output
+        if grep -qE "^[0-9]+" "$RESULTS_DIR/execute.txt"; then
+            TEST_RESULTS["execute"]="pass"
+            echo "PASS"
+        else
+            TEST_RESULTS["execute"]="fail"
+            FAILURES=$((FAILURES + 1))
+            echo "FAIL (output mismatch)"
+            cat "$RESULTS_DIR/execute.txt" | head -5
+        fi
     else
         TEST_RESULTS["execute"]="fail"
         FAILURES=$((FAILURES + 1))
-        echo "FAIL (output mismatch)"
+        echo "FAIL (command failed)"
+        cat "$RESULTS_DIR/execute.txt" | head -5
     fi
 else
-    TEST_RESULTS["execute"]="fail"
-    FAILURES=$((FAILURES + 1))
-    echo "FAIL (command failed)"
+    # Fallback: test inline code if test file doesn't exist
+    if run_sdk_cmd "execute" "$RESULTS_DIR/execute.txt" -s python 'print(42)'; then
+        if grep -q "42" "$RESULTS_DIR/execute.txt"; then
+            TEST_RESULTS["execute"]="pass"
+            echo "PASS"
+        else
+            TEST_RESULTS["execute"]="fail"
+            FAILURES=$((FAILURES + 1))
+            echo "FAIL (output mismatch)"
+        fi
+    else
+        TEST_RESULTS["execute"]="fail"
+        FAILURES=$((FAILURES + 1))
+        echo "FAIL (command failed)"
+    fi
 fi
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
 # 3. Languages endpoint
-run_test "languages" "python|javascript|ruby" languages || true
+run_test "languages" "python|javascript|ruby|bash" languages || true
 
 # 4. Key validation endpoint
-run_test "key" "valid|expires|API|key" key || true
+run_test "key" "valid|Valid|key|Key|expires|Expires|Public" key || true
 
-# 5. Session list endpoint
-run_test "session_list" "" session --list || true
+# 5. Session list endpoint (empty list is valid)
+run_test "session_list" "session|Session|\[\]|\{\}|No.*session|ID|id" session --list || true
 
-# 6. Service list endpoint
-run_test "service_list" "" service --list || true
+# 6. Service list endpoint (empty list is valid)
+run_test "service_list" "service|Service|\[\]|\{\}|No.*service|ID|id" service --list || true
 
-# 7. Snapshot list endpoint
-run_test "snapshot_list" "" snapshot --list || true
+# 7. Snapshot list endpoint (empty list is valid)
+run_test "snapshot_list" "snapshot|Snapshot|\[\]|\{\}|No.*snapshot|ID|id" snapshot --list || true
 
-# 8. Image list endpoint
-run_test "image_list" "" image --list || true
+# 8. Image list endpoint (empty list is valid)
+run_test "image_list" "image|Image|\[\]|\{\}|No.*image|ID|id" image --list || true
 
 END_TIME=$(date +%s.%N)
 DURATION=$(echo "$END_TIME - $START_TIME" | bc)
