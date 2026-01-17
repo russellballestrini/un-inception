@@ -26,7 +26,8 @@ cat > test-matrix.yml << 'EOF'
 # Dynamically generated test matrix based on changed SDKs
 test:
   stage: test
-  image: alpine:latest
+  tags:
+    - build
   parallel:
     matrix:
 EOF
@@ -45,12 +46,11 @@ done
 # Complete the test job template
 cat >> test-matrix.yml << 'EOF'
   script:
-    - apk add --no-cache curl jq bash
     - export TEST_LANG=$SDK_LANG
     - |
       echo "Testing $TEST_LANG..."
-      if [ ! -f "un.py" ]; then
-        echo "ERROR: SDKs not found"
+      if [ ! -d "clients" ]; then
+        echo "ERROR: clients directory not found"
         exit 1
       fi
     # Call unsandbox to test the SDK

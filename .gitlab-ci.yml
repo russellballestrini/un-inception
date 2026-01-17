@@ -40,8 +40,7 @@ generate-matrix:
   needs:
     - detect-changes
   script:
-    - bash scripts/generate-matrix.sh > test-matrix.yml
-    - cat test-matrix.yml
+    - bash scripts/generate-matrix.sh
   artifacts:
     paths:
       - test-matrix.yml
