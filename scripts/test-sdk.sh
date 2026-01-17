@@ -35,6 +35,33 @@ echo "=== Inception Test: $LANG ==="
 echo "SDK: $SDK_FILE"
 echo ""
 
+# Compiled languages can't be run directly - skip inception test for them
+# The unsandbox API can execute scripts, not compiled binaries
+is_compiled_language() {
+    case "$1" in
+        rust|go|c|cpp|java|kotlin|swift|csharp|fsharp|haskell|ocaml|d|nim|zig|crystal|fortran|cobol)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
+
+if is_compiled_language "$LANG"; then
+    echo "SKIP: $LANG is a compiled language - inception test not applicable"
+    echo "      (Compiled SDKs require separate build+test workflow)"
+    cat > "$RESULTS_DIR/test-results.xml" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="Inception Test" tests="1" skipped="1">
+    <testcase name="$LANG SDK inception" classname="un.$LANG">
+      <skipped message="$LANG is a compiled language - inception test not applicable"/>
+    </testcase>
+  </testsuite>
+</testsuites>
+EOF
+    exit 0
+fi
+
 # Check if un CLI exists
 if [ ! -x "build/un" ]; then
     echo "ERROR: build/un not found. Run build-clients.sh first."
