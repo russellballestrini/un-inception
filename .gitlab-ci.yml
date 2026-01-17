@@ -96,6 +96,7 @@ science-validate-examples:
   allow_failure: true
   only:
     - main
+    - /^v\d+\.\d+\.\d+$/
 
 science-lint-sdks:
   stage: science
@@ -110,6 +111,7 @@ science-lint-sdks:
   allow_failure: true
   only:
     - main
+    - /^v\d+\.\d+\.\d+$/
 
 science-benchmark-clients:
   stage: science
@@ -124,6 +126,7 @@ science-benchmark-clients:
   allow_failure: true
   only:
     - main
+    - /^v\d+\.\d+\.\d+$/
 
 # ============================================================================
 # STAGE 6: Validate Examples (from science job artifacts)
@@ -156,6 +159,7 @@ validate-examples:
   allow_failure: true
   only:
     - main
+    - /^v\d+\.\d+\.\d+$/
 
 # ============================================================================
 # STAGE 7: Generate Documentation
@@ -182,6 +186,7 @@ generate-documentation:
   allow_failure: true
   only:
     - main
+    - /^v\d+\.\d+\.\d+$/
 
 # ============================================================================
 # STAGE 8: Report
