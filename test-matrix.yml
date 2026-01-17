@@ -1,0 +1,6 @@
+# Auto-generated test matrix placeholder
+# This file is overwritten by the generate-matrix job during CI/CD runs
+# It exists as a placeholder so GitLab can parse .gitlab-ci.yml
+
+# The generate-matrix job in .gitlab-ci.yml creates the actual test jobs
+# based on which files changed (via scripts/detect-changes.sh)
