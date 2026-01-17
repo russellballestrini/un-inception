@@ -18,30 +18,10 @@ if [ -z "$ALL_SDKS" ]; then
 fi
 echo "Available SDKs from API: $ALL_SDKS"
 
-# Filter out compiled languages - they can't run inception tests
-# (source files need compilation, can't be executed directly via API)
-COMPILED_LANGS="rust go c cpp java kotlin swift csharp fsharp haskell ocaml d nim zig crystal fortran cobol objc v dart"
-
-filter_compiled() {
-    local langs="$1"
-    local result=""
-    for lang in $langs; do
-        local is_compiled=false
-        for compiled in $COMPILED_LANGS; do
-            if [ "$lang" = "$compiled" ]; then
-                is_compiled=true
-                break
-            fi
-        done
-        if [ "$is_compiled" = false ]; then
-            result="$result $lang"
-        fi
-    done
-    echo "$result" | xargs  # trim whitespace
-}
+# Test ALL languages - the sandbox has compilers for compiled languages too!
 
 if [ "$TEST_ALL" = "true" ]; then
-    LANGS=$(filter_compiled "$ALL_SDKS")
+    LANGS="$ALL_SDKS"
 elif [ -z "$CHANGED_LANGS" ]; then
     # No changes - create minimal valid child pipeline that does nothing
     cat > test-matrix.yml << 'EOF'

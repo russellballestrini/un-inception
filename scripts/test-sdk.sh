@@ -70,37 +70,11 @@ get_sdk_file() {
     esac
 }
 
-# Check if language is compiled
-is_compiled_language() {
-    case "$1" in
-        rust|go|c|cpp|java|kotlin|swift|csharp|fsharp|haskell|ocaml|d|nim|zig|crystal|fortran|cobol|objc|dart|v)
-            return 0 ;;
-        *)
-            return 1 ;;
-    esac
-}
-
 SDK_FILE=$(get_sdk_file "$LANG")
 
 echo "=== Inception Test: $LANG ==="
 echo "SDK: $SDK_FILE"
 echo ""
-
-# Skip compiled languages
-if is_compiled_language "$LANG"; then
-    echo "SKIP: $LANG is a compiled language - inception test not applicable"
-    cat > "$RESULTS_DIR/test-results.xml" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuites>
-  <testsuite name="Inception Test" tests="1" skipped="1">
-    <testcase name="$LANG SDK inception" classname="un.$LANG">
-      <skipped message="$LANG is a compiled language - inception test not applicable"/>
-    </testcase>
-  </testsuite>
-</testsuites>
-EOF
-    exit 0
-fi
 
 # Check if un CLI exists
 if [ ! -x "build/un" ]; then
@@ -134,9 +108,10 @@ FAILURES=0
 echo "Running inception tests..."
 echo ""
 
-# Map language name to interpreter for -s flag
+# Map language name to API interpreter name for -s flag
 get_interpreter() {
     case "$1" in
+        # Interpreted languages
         python)      echo "python" ;;
         javascript)  echo "javascript" ;;
         typescript)  echo "typescript" ;;
@@ -157,10 +132,31 @@ get_interpreter() {
         groovy)      echo "groovy" ;;
         raku)        echo "raku" ;;
         julia)       echo "julia" ;;
-        dart)        echo "dart" ;;
         prolog)      echo "prolog" ;;
         forth)       echo "forth" ;;
         powershell)  echo "powershell" ;;
+        deno)        echo "deno" ;;
+        # Compiled languages (sandbox has compilers)
+        go)          echo "go" ;;
+        rust)        echo "rust" ;;
+        c)           echo "c" ;;
+        cpp)         echo "cpp" ;;
+        java)        echo "java" ;;
+        kotlin)      echo "kotlin" ;;
+        swift)       echo "swift" ;;
+        csharp)      echo "csharp" ;;
+        fsharp)      echo "fsharp" ;;
+        haskell)     echo "haskell" ;;
+        ocaml)       echo "ocaml" ;;
+        d)           echo "d" ;;
+        nim)         echo "nim" ;;
+        zig)         echo "zig" ;;
+        crystal)     echo "crystal" ;;
+        fortran)     echo "fortran" ;;
+        cobol)       echo "cobol" ;;
+        objc)        echo "objc" ;;
+        dart)        echo "dart" ;;
+        v)           echo "v" ;;
         *)           echo "$1" ;;
     esac
 }
@@ -246,6 +242,7 @@ TOTAL_TESTS=$((TOTAL_TESTS + 1))
 # Language-specific "hello world" commands
 get_hello_code() {
     case "$1" in
+        # Interpreted languages
         python|python3)   echo 'print("inception-chain-ok")' ;;
         javascript|typescript|deno) echo 'console.log("inception-chain-ok")' ;;
         ruby)             echo 'puts "inception-chain-ok"' ;;
@@ -264,8 +261,32 @@ get_hello_code() {
         groovy)           echo 'println "inception-chain-ok"' ;;
         julia)            echo 'println("inception-chain-ok")' ;;
         prolog)           echo ':- write("inception-chain-ok"), nl, halt.' ;;
-        forth)            echo '.\" inception-chain-ok\" cr' ;;
+        forth)            echo '.( inception-chain-ok) cr bye' ;;
         powershell)       echo 'Write-Output "inception-chain-ok"' ;;
+        # Compiled languages
+        go)               echo 'package main; import "fmt"; func main() { fmt.Println("inception-chain-ok") }' ;;
+        rust)             echo 'fn main() { println!("inception-chain-ok"); }' ;;
+        c)                echo '#include <stdio.h>
+int main() { printf("inception-chain-ok\n"); return 0; }' ;;
+        cpp)              echo '#include <iostream>
+int main() { std::cout << "inception-chain-ok" << std::endl; return 0; }' ;;
+        java)             echo 'public class Main { public static void main(String[] args) { System.out.println("inception-chain-ok"); } }' ;;
+        kotlin)           echo 'fun main() { println("inception-chain-ok") }' ;;
+        swift)            echo 'print("inception-chain-ok")' ;;
+        csharp)           echo 'System.Console.WriteLine("inception-chain-ok");' ;;
+        fsharp)           echo 'printfn "inception-chain-ok"' ;;
+        haskell)          echo 'main = putStrLn "inception-chain-ok"' ;;
+        ocaml)            echo 'print_endline "inception-chain-ok"' ;;
+        d)                echo 'import std.stdio; void main() { writeln("inception-chain-ok"); }' ;;
+        nim)              echo 'echo "inception-chain-ok"' ;;
+        zig)              echo 'const std = @import("std"); pub fn main() void { std.debug.print("inception-chain-ok\n", .{}); }' ;;
+        crystal)          echo 'puts "inception-chain-ok"' ;;
+        fortran)          echo "program main; print *, 'inception-chain-ok'; end program" ;;
+        cobol)            echo 'IDENTIFICATION DIVISION. PROGRAM-ID. HELLO. PROCEDURE DIVISION. DISPLAY "inception-chain-ok". STOP RUN.' ;;
+        objc)             echo '#import <Foundation/Foundation.h>
+int main() { NSLog(@"inception-chain-ok"); return 0; }' ;;
+        dart)             echo 'void main() { print("inception-chain-ok"); }' ;;
+        v)                echo 'fn main() { println("inception-chain-ok") }' ;;
         *)                echo 'print("inception-chain-ok")' ;;
     esac
 }
