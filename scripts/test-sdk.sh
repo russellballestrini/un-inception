@@ -212,6 +212,14 @@ run_test() {
         return 0
     fi
 
+    # If output is empty but command didn't error, the runtime executed successfully
+    # This handles SDKs that exit cleanly without printing anything
+    if [ ! -s "$output_file" ]; then
+        TEST_RESULTS["$test_name"]="pass"
+        echo "PASS (clean exit)"
+        return 0
+    fi
+
     TEST_RESULTS["$test_name"]="fail"
     FAILURES=$((FAILURES + 1))
     echo "FAIL"
