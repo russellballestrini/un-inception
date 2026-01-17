@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generate dynamic test matrix based on detected changes
-# Reads changes.json, outputs test-matrix.yml with parallel jobs
+# Reads changes.json, outputs test-matrix.yml as a child pipeline config
 
 set -e
 
@@ -21,25 +21,48 @@ echo "Available SDKs from API: $ALL_SDKS"
 if [ "$TEST_ALL" = "true" ]; then
     LANGS="$ALL_SDKS"
 elif [ -z "$CHANGED_LANGS" ]; then
-    # No changes - don't generate any test jobs
-    echo "# No SDK changes detected - no tests to run" > test-matrix.yml
+    # No changes - create minimal valid child pipeline that does nothing
+    cat > test-matrix.yml << 'EOF'
+# No SDK changes detected - skip tests
+stages:
+  - skip
+
+skip-tests:
+  stage: skip
+  tags:
+    - build
+  script:
+    - echo "No SDK changes detected - skipping inception tests"
+EOF
+    echo "No SDK changes - created skip pipeline"
     cat test-matrix.yml
     exit 0
 else
     LANGS="$CHANGED_LANGS"
 fi
 
-# Start generating test-matrix.yml
+# Count languages
+LANG_COUNT=$(echo $LANGS | wc -w)
+echo "Testing $LANG_COUNT languages: $LANGS"
+
+# Generate child pipeline config
 cat > test-matrix.yml << 'EOF'
-# Dynamically generated test matrix - inception tests for changed SDKs
+# Dynamically generated child pipeline - inception tests
 # Each test runs: build/un → unsandbox → SDK → unsandbox → test code
+
+stages:
+  - test
+
+default:
+  tags:
+    - build
+
+variables:
+  UNSANDBOX_PUBLIC_KEY: $UNSANDBOX_PUBLIC_KEY
+  UNSANDBOX_SECRET_KEY: $UNSANDBOX_SECRET_KEY
 
 test:
   stage: test
-  tags:
-    - build
-  needs:
-    - build
   parallel:
     matrix:
 EOF
@@ -51,9 +74,11 @@ done
 
 # Complete the test job template
 cat >> test-matrix.yml << 'EOF'
+  before_script:
+    # Build the C CLI for inception testing (child pipeline needs its own build)
+    - bash scripts/build-clients.sh
   script:
-    - echo "=== Inception Test Matrix ==="
-    - echo "Testing SDK: $SDK_LANG"
+    - echo "=== Inception Test: $SDK_LANG ==="
     - bash scripts/test-sdk.sh "$SDK_LANG"
   artifacts:
     reports:
@@ -61,10 +86,11 @@ cat >> test-matrix.yml << 'EOF'
     paths:
       - "test-results-$SDK_LANG/"
     expire_in: 30 days
+    when: always
   allow_failure: true
   retry: 1
 EOF
 
 echo ""
-echo "Generated test-matrix.yml:"
+echo "Generated test-matrix.yml with $LANG_COUNT parallel jobs:"
 cat test-matrix.yml

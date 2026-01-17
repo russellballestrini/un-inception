@@ -1,9 +1,14 @@
-# Auto-generated test matrix placeholder
-# Overwritten by generate-matrix job during CI/CD runs
+# Placeholder child pipeline - replaced by generate-matrix job
+# This file must be valid GitLab CI YAML for initial pipeline parsing
 
-# Empty job that does nothing (valid GitLab CI syntax)
-.test-matrix-placeholder:
+stages:
+  - placeholder
+
+placeholder:
+  stage: placeholder
+  tags:
+    - build
   script:
-    - echo "Placeholder"
+    - echo "This placeholder is replaced by dynamically generated test matrix"
   rules:
     - when: never

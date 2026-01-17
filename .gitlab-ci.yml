@@ -72,11 +72,21 @@ build:
     - /^v\d+\.\d+\.\d+$/
 
 # ============================================================================
-# STAGE 4: Test Matrix (dynamically included)
+# STAGE 4: Test Matrix (child pipeline trigger)
 # ============================================================================
-include:
-  - local: test-matrix.yml
-    optional: true
+trigger-test-matrix:
+  stage: test
+  needs:
+    - generate-matrix
+    - build
+  trigger:
+    include:
+      - artifact: test-matrix.yml
+        job: generate-matrix
+    strategy: depend
+  only:
+    - main
+    - /^v\d+\.\d+\.\d+$/
 
 # ============================================================================
 # STAGE 5: Science Jobs (Pool Burning)
