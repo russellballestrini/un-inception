@@ -15,7 +15,8 @@
 #
 # Usage: test-sdk.sh LANGUAGE
 
-set -e
+# Don't use set -e - we need to continue on test failures to generate report
+# set -e
 
 LANG=${1:-python}
 RESULTS_DIR="test-results-$LANG"
@@ -201,7 +202,7 @@ run_test() {
     FAILURES=$((FAILURES + 1))
     echo "FAIL"
     head -3 "$output_file" 2>/dev/null || echo "(no output)"
-    return 1
+    return 0  # Always return success to continue test execution
 }
 
 echo "Running functional tests..."
@@ -224,9 +225,9 @@ run_test "exec_env" \
     "build/un -s python -e TEST_VAR=hello123 'import os; print(os.environ.get(\"TEST_VAR\", \"missing\"))'" \
     "hello123"
 
-# Test 1.3: Execute with file upload
+# Test 1.3: Execute with file upload (files go to /tmp/input/)
 run_test "exec_file" \
-    "build/un -s python -f test/fib.py 'import os; print(os.listdir(\"/tmp\"))'" \
+    "build/un -s python -f test/fib.py 'import os; print(os.listdir(\"/tmp/input\"))'" \
     "fib"
 
 # Test 1.4: Execute with network access (semitrusted)
