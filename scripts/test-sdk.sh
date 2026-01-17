@@ -3,6 +3,15 @@
 #
 # Pattern: build/un → unsandbox API → un.py/un.js/etc → unsandbox API → test code
 #
+# Tests multiple endpoints:
+#   - execute (code execution)
+#   - session --list
+#   - service --list
+#   - snapshot --list
+#   - image --list
+#   - languages
+#   - key
+#
 # Usage: test-sdk.sh LANGUAGE
 
 set -e
@@ -71,7 +80,6 @@ fi
 # Check if SDK file exists
 if [ ! -f "$SDK_FILE" ]; then
     echo "SKIP: SDK file not found: $SDK_FILE"
-    # Generate skip result
     cat > "$RESULTS_DIR/test-results.xml" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
@@ -85,93 +93,140 @@ EOF
     exit 0
 fi
 
-# Run inception test:
-# 1. Use build/un to execute the SDK file in unsandbox with network access
-# 2. The SDK (un.py, etc.) will then call the API to run a simple test
-echo "Running inception test..."
-echo "Command: build/un -n semitrusted $SDK_FILE --help"
+# Helper: Run SDK command through inception and capture result
+run_sdk_cmd() {
+    local test_name="$1"
+    local output_file="$2"
+    shift 2
+    local args=("$@")
+
+    build/un -n semitrusted \
+        -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
+        -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
+        "$SDK_FILE" "${args[@]}" > "$output_file" 2>&1
+}
 
 START_TIME=$(date +%s.%N)
 
-# First test: Can the SDK show help?
-if build/un -n semitrusted \
-    -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
-    -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-    "$SDK_FILE" --help > "$RESULTS_DIR/help_output.txt" 2>&1; then
-    HELP_OK=true
-    echo "✓ Help command succeeded"
-else
-    HELP_OK=false
-    echo "✗ Help command failed"
-fi
+# Track test results
+declare -A TEST_RESULTS
+TOTAL_TESTS=0
+FAILURES=0
 
-# Second test: Can the SDK execute code? (inception within inception)
-# The SDK runs inside unsandbox, then calls the API to run Python
-echo ""
-echo "Testing code execution through $LANG SDK..."
+# Test function
+run_test() {
+    local name="$1"
+    local output_file="$RESULTS_DIR/${name// /_}.txt"
+    local validation="$2"
+    shift 2
+    local args=("$@")
 
-TEST_CODE='print("inception-test-ok")'
-if build/un -n semitrusted \
-    -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
-    -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-    "$SDK_FILE" -s python "$TEST_CODE" > "$RESULTS_DIR/exec_output.txt" 2>&1; then
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    echo -n "Test: $name... "
 
-    if grep -q "inception-test-ok" "$RESULTS_DIR/exec_output.txt"; then
-        EXEC_OK=true
-        echo "✓ Code execution succeeded"
+    if run_sdk_cmd "$name" "$output_file" "${args[@]}"; then
+        if [ -n "$validation" ]; then
+            if grep -qE "$validation" "$output_file"; then
+                TEST_RESULTS["$name"]="pass"
+                echo "PASS"
+                return 0
+            else
+                TEST_RESULTS["$name"]="fail"
+                FAILURES=$((FAILURES + 1))
+                echo "FAIL (validation failed)"
+                return 1
+            fi
+        else
+            TEST_RESULTS["$name"]="pass"
+            echo "PASS"
+            return 0
+        fi
     else
-        EXEC_OK=false
-        echo "✗ Code execution returned unexpected output"
-        cat "$RESULTS_DIR/exec_output.txt"
+        TEST_RESULTS["$name"]="fail"
+        FAILURES=$((FAILURES + 1))
+        echo "FAIL (command failed)"
+        return 1
+    fi
+}
+
+echo "Running inception tests across multiple endpoints..."
+echo ""
+
+# 1. Help command (basic sanity check)
+run_test "help" "Usage:|usage:|USAGE" --help || true
+
+# 2. Execute endpoint - inline code execution
+echo -n "Test: execute... "
+if run_sdk_cmd "execute" "$RESULTS_DIR/execute.txt" -s python 'print("inception-test-ok")'; then
+    if grep -q "inception-test-ok" "$RESULTS_DIR/execute.txt"; then
+        TEST_RESULTS["execute"]="pass"
+        echo "PASS"
+    else
+        TEST_RESULTS["execute"]="fail"
+        FAILURES=$((FAILURES + 1))
+        echo "FAIL (output mismatch)"
     fi
 else
-    EXEC_OK=false
-    echo "✗ Code execution failed"
-    cat "$RESULTS_DIR/exec_output.txt"
+    TEST_RESULTS["execute"]="fail"
+    FAILURES=$((FAILURES + 1))
+    echo "FAIL (command failed)"
 fi
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+
+# 3. Languages endpoint
+run_test "languages" "python|javascript|ruby" languages || true
+
+# 4. Key validation endpoint
+run_test "key" "valid|expires|API|key" key || true
+
+# 5. Session list endpoint
+run_test "session_list" "" session --list || true
+
+# 6. Service list endpoint
+run_test "service_list" "" service --list || true
+
+# 7. Snapshot list endpoint
+run_test "snapshot_list" "" snapshot --list || true
+
+# 8. Image list endpoint
+run_test "image_list" "" image --list || true
 
 END_TIME=$(date +%s.%N)
 DURATION=$(echo "$END_TIME - $START_TIME" | bc)
 
-# Determine overall result
-if [ "$HELP_OK" = true ] && [ "$EXEC_OK" = true ]; then
-    FAILURES=0
+# Determine overall status
+PASSED=$((TOTAL_TESTS - FAILURES))
+if [ "$FAILURES" -eq 0 ]; then
     STATUS="PASS"
 else
-    FAILURES=1
     STATUS="FAIL"
 fi
 
 echo ""
-echo "=== Result: $STATUS (${DURATION}s) ==="
+echo "=== Result: $STATUS ($PASSED/$TOTAL_TESTS passed, ${DURATION}s) ==="
 
 # Generate JUnit XML
 cat > "$RESULTS_DIR/test-results.xml" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="Inception Test" tests="2" failures="$FAILURES" time="$DURATION">
-    <testcase name="$LANG SDK help" classname="un.$LANG" time="0">
+  <testsuite name="Inception Test - $LANG" tests="$TOTAL_TESTS" failures="$FAILURES" time="$DURATION">
 EOF
 
-if [ "$HELP_OK" = true ]; then
-    echo '      <system-out>Help command succeeded</system-out>' >> "$RESULTS_DIR/test-results.xml"
-else
-    echo '      <failure message="Help command failed">See help_output.txt</failure>' >> "$RESULTS_DIR/test-results.xml"
-fi
-
-cat >> "$RESULTS_DIR/test-results.xml" << EOF
-    </testcase>
-    <testcase name="$LANG SDK execution" classname="un.$LANG" time="$DURATION">
+for test_name in "${!TEST_RESULTS[@]}"; do
+    result="${TEST_RESULTS[$test_name]}"
+    safe_name="${test_name// /_}"
+    cat >> "$RESULTS_DIR/test-results.xml" << EOF
+    <testcase name="$test_name" classname="un.$LANG.$safe_name">
 EOF
-
-if [ "$EXEC_OK" = true ]; then
-    echo '      <system-out>inception-test-ok</system-out>' >> "$RESULTS_DIR/test-results.xml"
-else
-    echo '      <failure message="Code execution failed">See exec_output.txt</failure>' >> "$RESULTS_DIR/test-results.xml"
-fi
+    if [ "$result" = "pass" ]; then
+        echo "      <system-out>Test passed</system-out>" >> "$RESULTS_DIR/test-results.xml"
+    else
+        echo "      <failure message=\"Test failed\">See ${safe_name}.txt for details</failure>" >> "$RESULTS_DIR/test-results.xml"
+    fi
+    echo "    </testcase>" >> "$RESULTS_DIR/test-results.xml"
+done
 
 cat >> "$RESULTS_DIR/test-results.xml" << EOF
-    </testcase>
   </testsuite>
 </testsuites>
 EOF
