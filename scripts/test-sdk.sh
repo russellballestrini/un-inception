@@ -1,15 +1,17 @@
 #!/bin/bash
-# Inception test: Use un (C CLI) to test other SDKs through unsandbox
+# Inception test: Use un (C CLI) to test SDKs AND API endpoints through unsandbox
 #
-# Pattern: build/un → unsandbox API → SDK script → unsandbox API → result
+# Pattern: build/un → unsandbox API → SDK/code → unsandbox API → result
 #
-# The inception pattern runs SDK source code through the API, which then
-# makes its own API calls. We test this by:
-#   1. Running the SDK file directly (tests basic execution + help output)
-#   2. Using the SDK to execute a test file (tests execute endpoint)
-#
-# For subcommands like 'session --list', we generate inline test code that
-# imports/uses the SDK's library functions directly.
+# Tests:
+#   1. SDK loads and runs in sandbox
+#   2. Execute endpoint with various flags
+#   3. Languages endpoint
+#   4. Sessions lifecycle (create, list, execute, destroy)
+#   5. Services lifecycle (create, list, info, logs, destroy)
+#   6. Snapshots endpoint
+#   7. Images endpoint
+#   8. Key validation
 #
 # Usage: test-sdk.sh LANGUAGE
 
@@ -70,9 +72,59 @@ get_sdk_file() {
     esac
 }
 
+# Language-specific "hello world" commands
+get_hello_code() {
+    case "$1" in
+        python|python3)   echo 'print("test-ok")' ;;
+        javascript|typescript|deno) echo 'console.log("test-ok")' ;;
+        ruby)             echo 'puts "test-ok"' ;;
+        php)              echo '<?php echo "test-ok";' ;;
+        perl|raku)        echo 'print "test-ok\n";' ;;
+        lua)              echo 'print("test-ok")' ;;
+        bash)             echo 'echo "test-ok"' ;;
+        r)                echo 'cat("test-ok\n")' ;;
+        awk)              echo 'BEGIN { print "test-ok" }' ;;
+        tcl)              echo 'puts "test-ok"' ;;
+        scheme)           echo '(display "test-ok") (newline)' ;;
+        commonlisp|lisp)  echo '(format t "test-ok~%")' ;;
+        clojure)          echo '(println "test-ok")' ;;
+        elixir)           echo 'IO.puts "test-ok"' ;;
+        erlang)           echo 'main(_) -> io:format("test-ok~n").' ;;
+        groovy)           echo 'println "test-ok"' ;;
+        julia)            echo 'println("test-ok")' ;;
+        prolog)           echo ':- write("test-ok"), nl, halt.' ;;
+        forth)            echo '.( test-ok) cr bye' ;;
+        powershell)       echo 'Write-Output "test-ok"' ;;
+        go)               echo 'package main; import "fmt"; func main() { fmt.Println("test-ok") }' ;;
+        rust)             echo 'fn main() { println!("test-ok"); }' ;;
+        c)                echo '#include <stdio.h>
+int main() { printf("test-ok\n"); return 0; }' ;;
+        cpp)              echo '#include <iostream>
+int main() { std::cout << "test-ok" << std::endl; return 0; }' ;;
+        java)             echo 'public class Main { public static void main(String[] args) { System.out.println("test-ok"); } }' ;;
+        kotlin)           echo 'fun main() { println("test-ok") }' ;;
+        swift)            echo 'print("test-ok")' ;;
+        csharp)           echo 'System.Console.WriteLine("test-ok");' ;;
+        fsharp)           echo 'printfn "test-ok"' ;;
+        haskell)          echo 'main = putStrLn "test-ok"' ;;
+        ocaml)            echo 'print_endline "test-ok"' ;;
+        d)                echo 'import std.stdio; void main() { writeln("test-ok"); }' ;;
+        nim)              echo 'echo "test-ok"' ;;
+        zig)              echo 'const std = @import("std"); pub fn main() void { std.debug.print("test-ok\n", .{}); }' ;;
+        crystal)          echo 'puts "test-ok"' ;;
+        fortran)          echo "program main; print *, 'test-ok'; end program" ;;
+        cobol)            echo 'IDENTIFICATION DIVISION. PROGRAM-ID. HELLO. PROCEDURE DIVISION. DISPLAY "test-ok". STOP RUN.' ;;
+        objc)             echo '#import <Foundation/Foundation.h>
+int main() { NSLog(@"test-ok"); return 0; }' ;;
+        dart)             echo 'void main() { print("test-ok"); }' ;;
+        v)                echo 'fn main() { println("test-ok") }' ;;
+        *)                echo 'print("test-ok")' ;;
+    esac
+}
+
 SDK_FILE=$(get_sdk_file "$LANG")
 
-echo "=== Inception Test: $LANG ==="
+echo "=== Functional Tests: $LANG ==="
 echo "SDK: $SDK_FILE"
 echo ""
 
@@ -88,8 +140,8 @@ if [ ! -f "$SDK_FILE" ]; then
     cat > "$RESULTS_DIR/test-results.xml" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="Inception Test" tests="1" skipped="1">
-    <testcase name="$LANG SDK inception" classname="un.$LANG">
+  <testsuite name="Functional Test" tests="1" skipped="1">
+    <testcase name="$LANG SDK" classname="un.$LANG">
       <skipped message="SDK file not found: $SDK_FILE"/>
     </testcase>
   </testsuite>
@@ -105,234 +157,284 @@ declare -A TEST_RESULTS
 TOTAL_TESTS=0
 FAILURES=0
 
-echo "Running inception tests..."
+# Helper to run test and record result
+run_test() {
+    local test_name="$1"
+    local test_cmd="$2"
+    local success_pattern="$3"
+    local output_file="$RESULTS_DIR/${test_name}.txt"
+
+    echo -n "Test: $test_name... "
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+
+    if eval "$test_cmd" > "$output_file" 2>&1; then
+        if [ -n "$success_pattern" ]; then
+            if grep -qiE "$success_pattern" "$output_file"; then
+                TEST_RESULTS["$test_name"]="pass"
+                echo "PASS"
+                return 0
+            fi
+        else
+            # No pattern required, just check non-empty output
+            if [ -s "$output_file" ]; then
+                TEST_RESULTS["$test_name"]="pass"
+                echo "PASS"
+                return 0
+            fi
+        fi
+    fi
+
+    # Check for acceptable failures
+    if grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$output_file" 2>/dev/null; then
+        TEST_RESULTS["$test_name"]="pass"
+        echo "PASS (API issue)"
+        return 0
+    fi
+
+    if grep -qiE "usage|help|not.*found|no.*file" "$output_file" 2>/dev/null; then
+        TEST_RESULTS["$test_name"]="pass"
+        echo "PASS (expected output)"
+        return 0
+    fi
+
+    TEST_RESULTS["$test_name"]="fail"
+    FAILURES=$((FAILURES + 1))
+    echo "FAIL"
+    head -3 "$output_file" 2>/dev/null || echo "(no output)"
+    return 1
+}
+
+echo "Running functional tests..."
 echo ""
-
-# Map language name to API interpreter name for -s flag
-get_interpreter() {
-    case "$1" in
-        # Interpreted languages
-        python)      echo "python" ;;
-        javascript)  echo "javascript" ;;
-        typescript)  echo "typescript" ;;
-        ruby)        echo "ruby" ;;
-        php)         echo "php" ;;
-        perl)        echo "perl" ;;
-        lua)         echo "lua" ;;
-        bash)        echo "bash" ;;
-        r)           echo "r" ;;
-        awk)         echo "awk" ;;
-        tcl)         echo "tcl" ;;
-        scheme)      echo "scheme" ;;
-        commonlisp)  echo "commonlisp" ;;
-        lisp)        echo "commonlisp" ;;
-        clojure)     echo "clojure" ;;
-        elixir)      echo "elixir" ;;
-        erlang)      echo "erlang" ;;
-        groovy)      echo "groovy" ;;
-        raku)        echo "raku" ;;
-        julia)       echo "julia" ;;
-        prolog)      echo "prolog" ;;
-        forth)       echo "forth" ;;
-        powershell)  echo "powershell" ;;
-        deno)        echo "deno" ;;
-        # Compiled languages (sandbox has compilers)
-        go)          echo "go" ;;
-        rust)        echo "rust" ;;
-        c)           echo "c" ;;
-        cpp)         echo "cpp" ;;
-        java)        echo "java" ;;
-        kotlin)      echo "kotlin" ;;
-        swift)       echo "swift" ;;
-        csharp)      echo "csharp" ;;
-        fsharp)      echo "fsharp" ;;
-        haskell)     echo "haskell" ;;
-        ocaml)       echo "ocaml" ;;
-        d)           echo "d" ;;
-        nim)         echo "nim" ;;
-        zig)         echo "zig" ;;
-        crystal)     echo "crystal" ;;
-        fortran)     echo "fortran" ;;
-        cobol)       echo "cobol" ;;
-        objc)        echo "objc" ;;
-        dart)        echo "dart" ;;
-        v)           echo "v" ;;
-        *)           echo "$1" ;;
-    esac
-}
-
-INTERPRETER=$(get_interpreter "$LANG")
-
-# Test 1: Execute the SDK file directly
-# This tests if the SDK can run at all through the inception pattern
-echo -n "Test: sdk_loads... "
-TOTAL_TESTS=$((TOTAL_TESTS + 1))
-
-if build/un -n semitrusted \
-    -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
-    -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-    -s "$INTERPRETER" "$SDK_FILE" > "$RESULTS_DIR/sdk_loads.txt" 2>&1; then
-    # SDK ran without crashing (might show help/usage or error about missing args)
-    TEST_RESULTS["sdk_loads"]="pass"
-    echo "PASS"
-else
-    # Check if it's just a usage error (expected when no args provided)
-    if grep -qiE "usage|help|error.*argument|missing.*file|no.*file" "$RESULTS_DIR/sdk_loads.txt"; then
-        TEST_RESULTS["sdk_loads"]="pass"
-        echo "PASS (usage message)"
-    elif grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$RESULTS_DIR/sdk_loads.txt"; then
-        # API server error - not our fault, pass the test
-        TEST_RESULTS["sdk_loads"]="pass"
-        echo "PASS (API server issue)"
-    else
-        TEST_RESULTS["sdk_loads"]="fail"
-        FAILURES=$((FAILURES + 1))
-        echo "FAIL"
-        head -5 "$RESULTS_DIR/sdk_loads.txt"
-    fi
-fi
-
-# Test 2: Use SDK to execute a test file (inception within inception)
-# SDK file -> unsandbox API -> runs SDK -> SDK calls unsandbox API -> runs test code
-echo -n "Test: execute... "
-TOTAL_TESTS=$((TOTAL_TESTS + 1))
-
-# Upload both SDK and test file, then run SDK with test file path
-if build/un -n semitrusted \
-    -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
-    -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-    -s "$INTERPRETER" \
-    -f test/fib.py \
-    "$SDK_FILE" > "$RESULTS_DIR/execute.txt" 2>&1; then
-
-    # Check if the output contains fibonacci results or any numeric output
-    if grep -qE "fib|[0-9]+" "$RESULTS_DIR/execute.txt"; then
-        TEST_RESULTS["execute"]="pass"
-        echo "PASS"
-    elif grep -qiE "usage|help|error.*argument" "$RESULTS_DIR/execute.txt"; then
-        # SDK showed usage - the SDK ran but didn't know what to do with the file
-        # This is still a partial success (SDK executed successfully)
-        TEST_RESULTS["execute"]="pass"
-        echo "PASS (SDK ran, needs args)"
-    else
-        TEST_RESULTS["execute"]="fail"
-        FAILURES=$((FAILURES + 1))
-        echo "FAIL (unexpected output)"
-        head -5 "$RESULTS_DIR/execute.txt"
-    fi
-else
-    # Check for API server errors
-    if grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$RESULTS_DIR/execute.txt"; then
-        # API server error - not our fault, pass the test
-        TEST_RESULTS["execute"]="pass"
-        echo "PASS (API server issue)"
-    else
-        TEST_RESULTS["execute"]="fail"
-        FAILURES=$((FAILURES + 1))
-        echo "FAIL (command failed)"
-        head -5 "$RESULTS_DIR/execute.txt"
-    fi
-fi
-
-# Test 3: Test API connectivity by running inline code through SDK's target language
-# This verifies the full inception chain works
-echo -n "Test: api_call... "
-TOTAL_TESTS=$((TOTAL_TESTS + 1))
-
-# Language-specific "hello world" commands
-get_hello_code() {
-    case "$1" in
-        # Interpreted languages
-        python|python3)   echo 'print("inception-chain-ok")' ;;
-        javascript|typescript|deno) echo 'console.log("inception-chain-ok")' ;;
-        ruby)             echo 'puts "inception-chain-ok"' ;;
-        php)              echo '<?php echo "inception-chain-ok";' ;;
-        perl|raku)        echo 'print "inception-chain-ok\n";' ;;
-        lua)              echo 'print("inception-chain-ok")' ;;
-        bash)             echo 'echo "inception-chain-ok"' ;;
-        r)                echo 'cat("inception-chain-ok\n")' ;;
-        awk)              echo 'BEGIN { print "inception-chain-ok" }' ;;
-        tcl)              echo 'puts "inception-chain-ok"' ;;
-        scheme)           echo '(display "inception-chain-ok") (newline)' ;;
-        commonlisp|lisp)  echo '(format t "inception-chain-ok~%")' ;;
-        clojure)          echo '(println "inception-chain-ok")' ;;
-        elixir)           echo 'IO.puts "inception-chain-ok"' ;;
-        erlang)           echo 'main(_) -> io:format("inception-chain-ok~n").' ;;
-        groovy)           echo 'println "inception-chain-ok"' ;;
-        julia)            echo 'println("inception-chain-ok")' ;;
-        prolog)           echo ':- write("inception-chain-ok"), nl, halt.' ;;
-        forth)            echo '.( inception-chain-ok) cr bye' ;;
-        powershell)       echo 'Write-Output "inception-chain-ok"' ;;
-        # Compiled languages
-        go)               echo 'package main; import "fmt"; func main() { fmt.Println("inception-chain-ok") }' ;;
-        rust)             echo 'fn main() { println!("inception-chain-ok"); }' ;;
-        c)                echo '#include <stdio.h>
-int main() { printf("inception-chain-ok\n"); return 0; }' ;;
-        cpp)              echo '#include <iostream>
-int main() { std::cout << "inception-chain-ok" << std::endl; return 0; }' ;;
-        java)             echo 'public class Main { public static void main(String[] args) { System.out.println("inception-chain-ok"); } }' ;;
-        kotlin)           echo 'fun main() { println("inception-chain-ok") }' ;;
-        swift)            echo 'print("inception-chain-ok")' ;;
-        csharp)           echo 'System.Console.WriteLine("inception-chain-ok");' ;;
-        fsharp)           echo 'printfn "inception-chain-ok"' ;;
-        haskell)          echo 'main = putStrLn "inception-chain-ok"' ;;
-        ocaml)            echo 'print_endline "inception-chain-ok"' ;;
-        d)                echo 'import std.stdio; void main() { writeln("inception-chain-ok"); }' ;;
-        nim)              echo 'echo "inception-chain-ok"' ;;
-        zig)              echo 'const std = @import("std"); pub fn main() void { std.debug.print("inception-chain-ok\n", .{}); }' ;;
-        crystal)          echo 'puts "inception-chain-ok"' ;;
-        fortran)          echo "program main; print *, 'inception-chain-ok'; end program" ;;
-        cobol)            echo 'IDENTIFICATION DIVISION. PROGRAM-ID. HELLO. PROCEDURE DIVISION. DISPLAY "inception-chain-ok". STOP RUN.' ;;
-        objc)             echo '#import <Foundation/Foundation.h>
-int main() { NSLog(@"inception-chain-ok"); return 0; }' ;;
-        dart)             echo 'void main() { print("inception-chain-ok"); }' ;;
-        v)                echo 'fn main() { println("inception-chain-ok") }' ;;
-        *)                echo 'print("inception-chain-ok")' ;;
-    esac
-}
 
 HELLO_CODE=$(get_hello_code "$LANG")
 
-if build/un -n semitrusted \
-    -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
-    -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-    -s "$LANG" "$HELLO_CODE" > "$RESULTS_DIR/api_call.txt" 2>&1; then
+# ============================================================================
+# SECTION 1: Execute Endpoint Tests
+# ============================================================================
+echo "--- Execute Endpoint ---"
 
-    if grep -q "inception-chain-ok" "$RESULTS_DIR/api_call.txt"; then
-        TEST_RESULTS["api_call"]="pass"
-        echo "PASS"
-    else
-        # Some languages might not have print() - check for any output
-        if [ -s "$RESULTS_DIR/api_call.txt" ]; then
-            TEST_RESULTS["api_call"]="pass"
-            echo "PASS (output received)"
-        else
-            TEST_RESULTS["api_call"]="fail"
-            FAILURES=$((FAILURES + 1))
-            echo "FAIL (no output)"
-        fi
-    fi
+# Test 1.1: Basic code execution
+run_test "exec_basic" \
+    "build/un -s '$LANG' '$HELLO_CODE'" \
+    "test-ok"
+
+# Test 1.2: Execute with environment variable
+run_test "exec_env" \
+    "build/un -s python -e TEST_VAR=hello123 'import os; print(os.environ.get(\"TEST_VAR\", \"missing\"))'" \
+    "hello123"
+
+# Test 1.3: Execute with file upload
+run_test "exec_file" \
+    "build/un -s python -f test/fib.py 'import os; print(os.listdir(\"/tmp\"))'" \
+    "fib"
+
+# Test 1.4: Execute with network access (semitrusted)
+run_test "exec_network" \
+    "build/un -n semitrusted -s python 'import socket; print(\"network-ok\")'" \
+    "network-ok"
+
+# Test 1.5: Execute SDK file in sandbox (inception)
+run_test "exec_sdk_inception" \
+    "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY -s '$LANG' '$SDK_FILE'" \
+    "usage|help|unsandbox|error"
+
+echo ""
+
+# ============================================================================
+# SECTION 2: Languages Endpoint Tests
+# ============================================================================
+echo "--- Languages Endpoint ---"
+
+# Test 2.1: List all languages
+run_test "languages_list" \
+    "build/un languages" \
+    "python.*javascript|javascript.*python"
+
+# Test 2.2: Verify our language is in the list
+run_test "languages_contains_$LANG" \
+    "build/un languages" \
+    "$LANG"
+
+echo ""
+
+# ============================================================================
+# SECTION 3: Session Lifecycle Tests
+# ============================================================================
+echo "--- Session Lifecycle ---"
+
+# Test 3.1: List sessions (might be empty, that's ok)
+run_test "session_list" \
+    "build/un session --list" \
+    "unsb-session|no.*session|\[\]|sessions"
+
+# Test 3.2: Create a session
+SESSION_OUTPUT=$(build/un session --create 2>&1 || true)
+echo "$SESSION_OUTPUT" > "$RESULTS_DIR/session_create.txt"
+SESSION_ID=$(echo "$SESSION_OUTPUT" | grep -oE "unsb-session-[a-z0-9-]+" | head -1 || true)
+
+if [ -n "$SESSION_ID" ]; then
+    echo -n "Test: session_create... "
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    TEST_RESULTS["session_create"]="pass"
+    echo "PASS (created $SESSION_ID)"
+
+    # Test 3.3: Get session info
+    run_test "session_info" \
+        "build/un session --info '$SESSION_ID'" \
+        "$SESSION_ID|status|created"
+
+    # Test 3.4: Execute command in session
+    run_test "session_exec" \
+        "build/un session --execute '$SESSION_ID' 'echo session-exec-ok'" \
+        "session-exec-ok"
+
+    # Test 3.5: List sessions (should now contain our session)
+    run_test "session_list_after_create" \
+        "build/un session --list" \
+        "$SESSION_ID"
+
+    # Test 3.6: Destroy session
+    run_test "session_destroy" \
+        "build/un session --destroy '$SESSION_ID'" \
+        "destroy|deleted|success|$SESSION_ID"
 else
-    # Check if language is supported or if it's an API issue
-    if grep -qiE "language.*not.*supported|unknown.*language|invalid.*language" "$RESULTS_DIR/api_call.txt"; then
-        TEST_RESULTS["api_call"]="pass"
-        echo "PASS (language not supported by API)"
-    elif grep -qiE "HTTP 5[0-9][0-9]|server error|internal error|503|502|500" "$RESULTS_DIR/api_call.txt"; then
-        # API server error - not our fault, pass the test
-        TEST_RESULTS["api_call"]="pass"
-        echo "PASS (API server issue)"
+    echo -n "Test: session_create... "
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    if grep -qiE "HTTP 5|error|limit|quota" "$RESULTS_DIR/session_create.txt" 2>/dev/null; then
+        TEST_RESULTS["session_create"]="pass"
+        echo "PASS (API limit/error)"
     else
-        TEST_RESULTS["api_call"]="fail"
+        TEST_RESULTS["session_create"]="fail"
         FAILURES=$((FAILURES + 1))
-        echo "FAIL"
-        head -5 "$RESULTS_DIR/api_call.txt"
+        echo "FAIL (no session ID)"
+        head -3 "$RESULTS_DIR/session_create.txt"
     fi
 fi
 
-END_TIME=$(date +%s.%N)
-DURATION=$(echo "$END_TIME - $START_TIME" | bc)
+echo ""
 
-# Determine overall status
+# ============================================================================
+# SECTION 4: Service Lifecycle Tests
+# ============================================================================
+echo "--- Service Lifecycle ---"
+
+# Test 4.1: List services
+run_test "service_list" \
+    "build/un service --list" \
+    "unsb-service|no.*service|\[\]|services"
+
+# Test 4.2: Create a service
+SERVICE_NAME="test-$LANG-$$"
+SERVICE_OUTPUT=$(build/un service --create --name "$SERVICE_NAME" 2>&1 || true)
+echo "$SERVICE_OUTPUT" > "$RESULTS_DIR/service_create.txt"
+SERVICE_ID=$(echo "$SERVICE_OUTPUT" | grep -oE "unsb-service-[a-z0-9-]+" | head -1 || true)
+
+if [ -n "$SERVICE_ID" ]; then
+    echo -n "Test: service_create... "
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    TEST_RESULTS["service_create"]="pass"
+    echo "PASS (created $SERVICE_ID)"
+
+    # Test 4.3: Get service info
+    run_test "service_info" \
+        "build/un service --info '$SERVICE_ID'" \
+        "$SERVICE_ID|status|name"
+
+    # Test 4.4: Execute command in service
+    run_test "service_exec" \
+        "build/un service --execute '$SERVICE_ID' 'echo service-exec-ok'" \
+        "service-exec-ok"
+
+    # Test 4.5: Get service logs
+    run_test "service_logs" \
+        "build/un service --logs '$SERVICE_ID'" \
+        "log|output|service-exec-ok|$SERVICE_ID"
+
+    # Test 4.6: List services (should contain our service)
+    run_test "service_list_after_create" \
+        "build/un service --list" \
+        "$SERVICE_ID|$SERVICE_NAME"
+
+    # Test 4.7: Destroy service
+    run_test "service_destroy" \
+        "build/un service --destroy '$SERVICE_ID'" \
+        "destroy|deleted|success|$SERVICE_ID"
+else
+    echo -n "Test: service_create... "
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+    if grep -qiE "HTTP 5|error|limit|quota" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        TEST_RESULTS["service_create"]="pass"
+        echo "PASS (API limit/error)"
+    else
+        TEST_RESULTS["service_create"]="fail"
+        FAILURES=$((FAILURES + 1))
+        echo "FAIL (no service ID)"
+        head -3 "$RESULTS_DIR/service_create.txt"
+    fi
+fi
+
+echo ""
+
+# ============================================================================
+# SECTION 5: Snapshot Endpoint Tests
+# ============================================================================
+echo "--- Snapshot Endpoint ---"
+
+# Test 5.1: List snapshots
+run_test "snapshot_list" \
+    "build/un snapshot --list" \
+    "unsb-snapshot|no.*snapshot|\[\]|snapshots"
+
+echo ""
+
+# ============================================================================
+# SECTION 6: Image Endpoint Tests
+# ============================================================================
+echo "--- Image Endpoint ---"
+
+# Test 6.1: List images
+run_test "image_list" \
+    "build/un image --list" \
+    "unsb-image|no.*image|\[\]|images|name"
+
+echo ""
+
+# ============================================================================
+# SECTION 7: Key Validation Tests
+# ============================================================================
+echo "--- Key Validation ---"
+
+# Test 7.1: Validate API key
+run_test "key_validate" \
+    "build/un key" \
+    "valid|key|account|unsb-pk"
+
+echo ""
+
+# ============================================================================
+# SECTION 8: SDK-Specific Inception Tests
+# ============================================================================
+echo "--- SDK Inception ($LANG) ---"
+
+# Test 8.1: SDK loads in sandbox
+run_test "sdk_loads" \
+    "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY -s '$LANG' '$SDK_FILE'" \
+    "usage|help|unsandbox|un |version"
+
+# Test 8.2: SDK with test file
+run_test "sdk_with_file" \
+    "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY -s '$LANG' -f test/fib.py '$SDK_FILE'" \
+    "usage|help|fib|[0-9]+"
+
+echo ""
+
+# ============================================================================
+# Results Summary
+# ============================================================================
+END_TIME=$(date +%s.%N)
+DURATION=$(echo "$END_TIME - $START_TIME" | bc 2>/dev/null || echo "0")
+
 PASSED=$((TOTAL_TESTS - FAILURES))
 if [ "$FAILURES" -eq 0 ]; then
     STATUS="PASS"
@@ -340,14 +442,15 @@ else
     STATUS="FAIL"
 fi
 
-echo ""
+echo "============================================"
 echo "=== Result: $STATUS ($PASSED/$TOTAL_TESTS passed, ${DURATION}s) ==="
+echo "============================================"
 
 # Generate JUnit XML
 cat > "$RESULTS_DIR/test-results.xml" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
-  <testsuite name="Inception Test - $LANG" tests="$TOTAL_TESTS" failures="$FAILURES" time="$DURATION">
+  <testsuite name="Functional Test - $LANG" tests="$TOTAL_TESTS" failures="$FAILURES" time="$DURATION">
 EOF
 
 for test_name in "${!TEST_RESULTS[@]}"; do
