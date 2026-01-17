@@ -67,7 +67,7 @@ cli: $(CLI)
 
 $(CLI): $(SRC) $(HEADER)
 	@echo "Building CLI binary..."
-	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDFLAGS)
+	$(CC) $(CFLAGS_LIB) -o $@ $(SRC) $(LDFLAGS)
 	@echo "$(GREEN)✓$(NC) Built: $@"
 
 lib: $(SRC) $(HEADER)
