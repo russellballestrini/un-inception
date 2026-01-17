@@ -29,6 +29,8 @@ UN CLI Inception - The UN CLI written in every language it can execute. 42+ impl
 **Directory Structure**:
 ```
 clients/
+├── c/
+│   └── sync/src/un.c, un.h     # REFERENCE IMPL - 6,354 lines (libcurl + libwebsockets)
 ├── python/
 │   ├── sync/src/un.py          # Synchronous (requests) - 2,698 lines
 │   └── async/src/un_async.py   # Asynchronous (aiohttp) - 2,333 lines
@@ -50,11 +52,13 @@ clients/
 ├── php/
 │   ├── sync/src/un.php         # Synchronous (cURL) - 2,818 lines
 │   └── async/src/UnsandboxAsync.php  # Asynchronous (Guzzle promises) - 2,457 lines
+├── swift/
+│   └── sync/src/un.swift       # Synchronous (URLSession) - 1,893 lines
 ├── CLI_SPEC.md                 # Full CLI specification (all SDKs must match)
 └── README.md                   # SDK documentation
 ```
 
-**Total: 38,125 lines across 14 SDK files (7 languages × 2 variants)**
+**Total: ~46,000 lines across 17 SDK files (8 languages + Swift sync)**
 
 **Each SDK is BOTH a library AND a CLI tool** (see `clients/CLI_SPEC.md`):
 ```bash
@@ -345,6 +349,126 @@ test-functional:   # Real API calls (requires UNSANDBOX_* env vars)
 ```
 
 See **docs/TESTING.md** for complete testing guidelines.
+
+## SDK Migration Status (Updated 2026-01-16)
+
+### Overview
+
+All 42 language implementations have been migrated to `clients/`. The C implementation (`clients/c/src/un.c`) is our **north star** - all other SDKs should match its CLI and library API.
+
+### Migration Progress
+
+| Language | Location | Status |
+|----------|----------|--------|
+| **C** | `clients/c/src/` | Reference impl - CLI + full library API (43 functions) |
+| **Python** | `clients/python/sync/src/` | Complete - full CLI + library |
+| **Go** | `clients/go/sync/src/` | Complete - full CLI + library |
+| **JavaScript** | `clients/javascript/sync/src/` | Complete - full CLI + library |
+| **Java** | `clients/java/sync/src/` | Complete - full CLI + library |
+| **Ruby** | `clients/ruby/sync/src/` | Complete - full CLI + library |
+| **Rust** | `clients/rust/sync/src/` | Complete - full CLI + library |
+| **PHP** | `clients/php/sync/src/` | Complete - full CLI + library |
+| **TypeScript** | `clients/typescript/sync/src/` | CLI only |
+| **+33 more** | `clients/*/sync/src/` | CLI implementations |
+
+**Total: 42 languages in `clients/`, 1 missing (scala)**
+
+### C SDK Library API Status (un.h) - COMPLETE
+
+The C SDK implements **43+ library functions** with full JSON parsing:
+
+**Execution (7 functions):**
+- ✅ `unsandbox_execute()` - Synchronous code execution
+- ✅ `unsandbox_execute_async()` - Async execution, returns job_id
+- ✅ `unsandbox_wait_job()` - Poll job until complete
+- ✅ `unsandbox_get_job()` - Get job status
+- ✅ `unsandbox_cancel_job()` - Cancel running job
+- ✅ `unsandbox_list_jobs()` - List all jobs
+- ✅ `unsandbox_get_languages()` - Get available languages
+
+**Sessions (9 functions):**
+- ✅ `unsandbox_session_list()` - List sessions
+- ✅ `unsandbox_session_get()` - Get session details
+- ✅ `unsandbox_session_create()` - Create new session
+- ✅ `unsandbox_session_destroy/freeze/unfreeze/boost/unboost()`
+- ✅ `unsandbox_session_execute()` - Run command in session
+
+**Services (17 functions):**
+- ✅ `unsandbox_service_list()` - List services
+- ✅ `unsandbox_service_get()` - Get service details
+- ✅ `unsandbox_service_create()` - Create service
+- ✅ `unsandbox_service_execute()` - Run command in service
+- ✅ `unsandbox_service_env_get/set/delete/export()` - Env vault
+- ✅ `unsandbox_service_destroy/freeze/unfreeze/lock/unlock/redeploy/resize()`
+
+**Snapshots (9 functions):**
+- ✅ `unsandbox_snapshot_list()` - List snapshots
+- ✅ `unsandbox_snapshot_get()` - Get snapshot details
+- ✅ `unsandbox_snapshot_session/service()` - Create snapshots
+- ✅ `unsandbox_snapshot_restore/delete/lock/unlock/clone()`
+
+**Images (15 functions) - NEW:**
+- ✅ `unsandbox_image_list()` - List images
+- ✅ `unsandbox_image_get()` - Get image details
+- ✅ `unsandbox_image_publish()` - Publish from service/snapshot
+- ✅ `unsandbox_image_delete/lock/unlock()`
+- ✅ `unsandbox_image_set_visibility()` - private/unlisted/public
+- ✅ `unsandbox_image_grant_access/revoke_access/list_trusted()`
+- ✅ `unsandbox_image_transfer/spawn/clone()`
+
+**Utilities:**
+- ✅ `unsandbox_hmac_sign()` - HMAC-SHA256 signing
+- ✅ `unsandbox_validate_keys()` - Key validation
+- ✅ `unsandbox_detect_language()` - File extension detection
+- ✅ `unsandbox_version()` - Version string
+- ✅ `unsandbox_health_check()` - API health check
+- ✅ `unsandbox_last_error()` - Thread-local error storage
+- ✅ All `unsandbox_free_*()` memory management functions
+
+### Functional Test Results (C SDK)
+
+```
+Tests Passed: 28/30
+- Execute: PASS
+- Languages: PASS (42 languages)
+- Sessions: PASS (list, create, destroy)
+- Services: PASS (list)
+- Snapshots: PASS (list)
+- Images: PASS (list)
+```
+
+### Directory Structure
+
+```
+clients/
+├── {language}/
+│   ├── sync/src/       # Synchronous implementation
+│   ├── async/src/      # Async implementation (some languages)
+│   ├── tests/          # Test files
+│   └── Makefile        # Build + test targets
+```
+
+### Next Steps
+
+1. **Sync other SDKs** - Ensure Python, Go, JS, etc. have library APIs matching C's 43 functions
+2. **Add functional tests** - Each SDK needs functional test coverage
+3. **Create scala SDK** - Only missing language
+
+2. **Add Images API to un.h** - The CLI supports images but library API doesn't expose them
+
+3. **Migrate next language** - Use this template:
+   ```bash
+   mkdir -p clients/{lang}/sync/src clients/{lang}/async/src
+   # Copy from root, update paths, add Makefile
+   ```
+
+4. **Test with inception pattern**:
+   ```bash
+   # Test any SDK through unsandbox itself
+   un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY \
+      -e UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY \
+      clients/python/sync/src/un.py --help
+   ```
 
 ## Related Repos
 

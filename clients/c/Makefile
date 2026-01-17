@@ -97,11 +97,25 @@ test: build $(TEST_DIR)/test_library
 
 test-library: test
 
+test-functional: build $(TEST_DIR)/test_functional
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "FUNCTIONAL MODE: Testing against real API"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo ""
+	@./$(TEST_DIR)/test_functional
+
 $(TEST_DIR)/test_library: $(TEST_DIR)/test_library.c $(SRC) $(HEADER)
 	@mkdir -p $(TEST_DIR)
 	@echo "Building test suite..."
 	$(CC) $(CFLAGS_LIB) -o $@ $< $(SRC) $(LDFLAGS)
 	@echo "$(GREEN)✓$(NC) Test binary ready"
+
+$(TEST_DIR)/test_functional: $(TEST_DIR)/test_functional.c $(SRC) $(HEADER)
+	@mkdir -p $(TEST_DIR)
+	@echo "Building functional test suite..."
+	$(CC) $(CFLAGS_LIB) -o $@ $< $(SRC) $(LDFLAGS)
+	@echo "$(GREEN)✓$(NC) Functional test binary ready"
 
 # ============================================================================
 # Clean

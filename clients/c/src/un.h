@@ -136,6 +136,25 @@ typedef struct {
     size_t count;
 } unsandbox_snapshot_list_t;
 
+/* Image info */
+typedef struct {
+    char *id;
+    char *name;
+    char *description;
+    char *visibility;       /* private, unlisted, public */
+    char *source_type;      /* service, snapshot */
+    char *source_id;
+    char *owner_api_key;
+    int locked;
+    int64_t created_at;
+    int64_t size_bytes;
+} unsandbox_image_t;
+
+typedef struct {
+    unsandbox_image_t *images;
+    size_t count;
+} unsandbox_image_list_t;
+
 /* API key validation result */
 typedef struct {
     int valid;
@@ -326,6 +345,84 @@ int unsandbox_snapshot_unlock(
     const char *snapshot_id,
     const char *public_key, const char *secret_key);
 
+char *unsandbox_snapshot_clone(
+    const char *snapshot_id,
+    const char *clone_type,     /* "session" or "service" */
+    const char *name,           /* name for cloned service, NULL for session */
+    const char *ports,          /* ports for cloned service, NULL for session */
+    const char *shell,          /* shell for cloned session, NULL for service */
+    const char *public_key, const char *secret_key);
+
+/* ============================================================================
+ * Image Functions (15)
+ * ============================================================================ */
+
+unsandbox_image_list_t *unsandbox_image_list(
+    const char *filter,         /* NULL, "owned", "shared", "public" */
+    const char *public_key, const char *secret_key);
+
+unsandbox_image_t *unsandbox_image_get(
+    const char *image_id,
+    const char *public_key, const char *secret_key);
+
+char *unsandbox_image_publish(
+    const char *source_type,    /* "service" or "snapshot" */
+    const char *source_id,
+    const char *name,           /* optional */
+    const char *description,    /* optional */
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_delete(
+    const char *image_id,
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_lock(
+    const char *image_id,
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_unlock(
+    const char *image_id,
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_set_visibility(
+    const char *image_id,
+    const char *visibility,     /* "private", "unlisted", "public" */
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_grant_access(
+    const char *image_id,
+    const char *trusted_api_key,
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_revoke_access(
+    const char *image_id,
+    const char *trusted_api_key,
+    const char *public_key, const char *secret_key);
+
+char **unsandbox_image_list_trusted(
+    const char *image_id,
+    size_t *count,              /* output: number of trusted keys */
+    const char *public_key, const char *secret_key);
+
+int unsandbox_image_transfer(
+    const char *image_id,
+    const char *to_api_key,
+    const char *public_key, const char *secret_key);
+
+char *unsandbox_image_spawn(
+    const char *image_id,
+    const char *name,           /* optional service name */
+    const char *ports,          /* optional ports */
+    const char *bootstrap,      /* optional bootstrap command */
+    const char *network_mode,   /* optional network mode */
+    const char *public_key, const char *secret_key);
+
+char *unsandbox_image_clone(
+    const char *image_id,
+    const char *name,           /* optional clone name */
+    const char *description,    /* optional description */
+    const char *public_key, const char *secret_key);
+
 /* ============================================================================
  * Key Validation (1)
  * ============================================================================ */
@@ -347,6 +444,9 @@ void unsandbox_free_service(unsandbox_service_t *service);
 void unsandbox_free_service_list(unsandbox_service_list_t *services);
 void unsandbox_free_snapshot(unsandbox_snapshot_t *snapshot);
 void unsandbox_free_snapshot_list(unsandbox_snapshot_list_t *snapshots);
+void unsandbox_free_image(unsandbox_image_t *image);
+void unsandbox_free_image_list(unsandbox_image_list_t *images);
+void unsandbox_free_trusted_keys(char **keys, size_t count);
 void unsandbox_free_key_info(unsandbox_key_info_t *info);
 
 /* ============================================================================

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <time.h>
 #include <curl/curl.h>
 #include <sys/stat.h>
@@ -781,6 +782,69 @@ long long extract_json_number(const char *json, const char *key) {
     if (strncmp(start, "null", 4) == 0) return -1;
 
     return atoll(start);
+}
+
+// ============================================================================
+// JSON Array Helpers (for Library API)
+// ============================================================================
+
+// Count objects in a JSON array (for malloc sizing)
+// Returns number of top-level objects in array, or 0 if not found/empty
+static int count_json_array_objects(const char *json, const char *array_key) {
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\":[", array_key);
+    const char *start = strstr(json, search);
+    if (!start) return 0;
+
+    start += strlen(search);
+    int count = 0, depth = 0;
+    for (const char *p = start; *p && !(*p == ']' && depth == 0); p++) {
+        if (*p == '{') {
+            if (depth == 0) count++;
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+        } else if (*p == '"') {
+            // Skip string contents (may contain { } characters)
+            p++;
+            while (*p && !(*p == '"' && *(p-1) != '\\')) p++;
+        }
+    }
+    return count;
+}
+
+// Skip past current JSON object, return pointer to position after closing }
+// If pos doesn't point to '{', returns pos unchanged
+static const char* skip_json_object(const char *pos) {
+    if (!pos || *pos != '{') return pos;
+    int depth = 1;
+    pos++;
+    while (*pos && depth > 0) {
+        if (*pos == '{') {
+            depth++;
+        } else if (*pos == '}') {
+            depth--;
+        } else if (*pos == '"') {
+            // Skip string contents
+            pos++;
+            while (*pos && !(*pos == '"' && *(pos-1) != '\\')) pos++;
+        }
+        pos++;
+    }
+    return pos;
+}
+
+// ============================================================================
+// Thread-Local Error Storage (for Library API)
+// ============================================================================
+
+static __thread char unsandbox_error_buffer[512] = {0};
+
+static void set_last_error(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(unsandbox_error_buffer, sizeof(unsandbox_error_buffer), fmt, args);
+    va_end(args);
 }
 
 // Format bytes to human readable (e.g., 1234567 -> "1.2M")
@@ -5971,107 +6035,1078 @@ unsandbox_key_info_t *unsandbox_validate_keys(const char *public_key, const char
  * These functions are declared in un.h but need HTTP/JSON handling
  * ============================================================================ */
 
-/* Execution - these need HTTP POST with JSON parsing */
+/* Execution - full library implementations */
+
+// Helper to parse execute response into result struct
+static unsandbox_result_t *parse_execute_response(const char *json) {
+    if (!json) return NULL;
+
+    unsandbox_result_t *result = calloc(1, sizeof(unsandbox_result_t));
+    if (!result) {
+        set_last_error("Out of memory");
+        return NULL;
+    }
+
+    result->stdout_str = extract_json_string(json, "stdout");
+    result->stderr_str = extract_json_string(json, "stderr");
+    result->error_message = extract_json_string(json, "error");
+    result->language = extract_json_string(json, "language");
+    result->exit_code = (int)extract_json_number(json, "exit_code");
+    long long exec_time_ms = extract_json_number(json, "execution_time");
+    result->execution_time = exec_time_ms >= 0 ? exec_time_ms / 1000.0 : 0.0;
+    result->success = (result->exit_code == 0 && !result->error_message);
+
+    return result;
+}
+
 unsandbox_result_t *unsandbox_execute(
     const char *language, const char *code,
     const char *public_key, const char *secret_key) {
-    (void)language; (void)code; (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs JSON parsing of API response */
-    return NULL;
+
+    if (!language || !code) {
+        set_last_error("Language and code are required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    // Escape code for JSON
+    char *escaped_code = escape_json_string(code);
+    if (!escaped_code) {
+        set_last_error("Failed to escape code");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    // Build JSON payload
+    size_t payload_size = strlen(escaped_code) + strlen(language) + 64;
+    char *json_payload = malloc(payload_size);
+    if (!json_payload) {
+        set_last_error("Out of memory");
+        free(escaped_code);
+        free_credentials(creds);
+        return NULL;
+    }
+    snprintf(json_payload, payload_size, "{\"language\":\"%s\",\"code\":\"%s\"}", language, escaped_code);
+    free(escaped_code);
+
+    // Initialize curl
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free(json_payload);
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", "/execute", json_payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, API_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(json_payload);
+
+    if (res != CURLE_OK) {
+        set_last_error("Request failed: %s", curl_easy_strerror(res));
+        free(response.data);
+        free_credentials(creds);
+        return NULL;
+    }
+
+    if (http_code != 200) {
+        set_last_error("HTTP %ld: %s", http_code, response.data ? response.data : "Unknown error");
+        free(response.data);
+        free_credentials(creds);
+        return NULL;
+    }
+
+    // Check if we need to poll for job completion
+    char *job_id = extract_json_string(response.data, "job_id");
+    char *status = extract_json_string(response.data, "status");
+
+    unsandbox_result_t *result = NULL;
+    if (job_id && status && (strcmp(status, "pending") == 0 || strcmp(status, "running") == 0)) {
+        // Need to poll
+        char *final_response = poll_job_status(creds, job_id);
+        result = parse_execute_response(final_response);
+        free(final_response);
+    } else {
+        result = parse_execute_response(response.data);
+    }
+
+    free(job_id);
+    free(status);
+    free(response.data);
+    free_credentials(creds);
+    return result;
 }
 
 char *unsandbox_execute_async(
     const char *language, const char *code,
     const char *public_key, const char *secret_key) {
-    (void)language; (void)code; (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs JSON parsing of API response */
-    return NULL;
+
+    if (!language || !code) {
+        set_last_error("Language and code are required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *escaped_code = escape_json_string(code);
+    if (!escaped_code) {
+        set_last_error("Failed to escape code");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    size_t payload_size = strlen(escaped_code) + strlen(language) + 64;
+    char *json_payload = malloc(payload_size);
+    if (!json_payload) {
+        set_last_error("Out of memory");
+        free(escaped_code);
+        free_credentials(creds);
+        return NULL;
+    }
+    snprintf(json_payload, payload_size, "{\"language\":\"%s\",\"code\":\"%s\"}", language, escaped_code);
+    free(escaped_code);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free(json_payload);
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", "/execute", json_payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, API_URL);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(json_payload);
+    free_credentials(creds);
+
+    if (res != CURLE_OK) {
+        set_last_error("Request failed: %s", curl_easy_strerror(res));
+        free(response.data);
+        return NULL;
+    }
+
+    if (http_code != 200 && http_code != 202) {
+        set_last_error("HTTP %ld: %s", http_code, response.data ? response.data : "Unknown error");
+        free(response.data);
+        return NULL;
+    }
+
+    char *job_id = extract_json_string(response.data, "job_id");
+    free(response.data);
+
+    if (!job_id) {
+        set_last_error("No job_id in response");
+    }
+    return job_id;
 }
 
 unsandbox_result_t *unsandbox_wait_job(
     const char *job_id,
     const char *public_key, const char *secret_key) {
-    (void)job_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs polling and JSON parsing */
-    return NULL;
+
+    if (!job_id) {
+        set_last_error("Job ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *final_response = poll_job_status(creds, job_id);
+    free_credentials(creds);
+
+    if (!final_response) {
+        set_last_error("Failed to poll job status");
+        return NULL;
+    }
+
+    unsandbox_result_t *result = parse_execute_response(final_response);
+    free(final_response);
+    return result;
 }
 
 unsandbox_job_t *unsandbox_get_job(
     const char *job_id,
     const char *public_key, const char *secret_key) {
-    (void)job_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs JSON parsing */
-    return NULL;
+
+    if (!job_id) {
+        set_last_error("Job ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/jobs/%s", API_BASE, job_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/jobs/%s", job_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get job: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_job_t *job = calloc(1, sizeof(unsandbox_job_t));
+    if (!job) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    job->id = extract_json_string(response.data, "job_id");
+    if (!job->id) job->id = strdup(job_id);
+    job->language = extract_json_string(response.data, "language");
+    job->status = extract_json_string(response.data, "status");
+    job->created_at = extract_json_number(response.data, "created_at");
+    job->completed_at = extract_json_number(response.data, "completed_at");
+    job->error_message = extract_json_string(response.data, "error");
+
+    free(response.data);
+    return job;
 }
 
 int unsandbox_cancel_job(
     const char *job_id,
     const char *public_key, const char *secret_key) {
-    (void)job_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement */
-    return -1;
+
+    if (!job_id) {
+        set_last_error("Job ID is required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/jobs/%s", API_BASE, job_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return -1;
+    }
+
+    char path[128];
+    snprintf(path, sizeof(path), "/jobs/%s", job_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "DELETE", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK) {
+        set_last_error("Request failed: %s", curl_easy_strerror(res));
+        return -1;
+    }
+
+    return (http_code == 200 || http_code == 204) ? 0 : -1;
 }
 
 unsandbox_job_list_t *unsandbox_list_jobs(
     const char *public_key, const char *secret_key) {
-    (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs JSON array parsing */
-    return NULL;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/jobs", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/jobs", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to list jobs: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    int count = count_json_array_objects(response.data, "jobs");
+    unsandbox_job_list_t *list = calloc(1, sizeof(unsandbox_job_list_t));
+    if (!list) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    if (count > 0) {
+        list->jobs = calloc(count, sizeof(unsandbox_job_t));
+        if (!list->jobs) {
+            set_last_error("Out of memory");
+            free(list);
+            free(response.data);
+            return NULL;
+        }
+        list->count = count;
+
+        const char *jobs_start = strstr(response.data, "\"jobs\":[");
+        if (jobs_start) {
+            const char *pos = jobs_start + 8;
+            for (size_t i = 0; i < list->count && pos; i++) {
+                pos = strchr(pos, '{');
+                if (!pos) break;
+
+                list->jobs[i].id = extract_json_string(pos, "job_id");
+                list->jobs[i].language = extract_json_string(pos, "language");
+                list->jobs[i].status = extract_json_string(pos, "status");
+                list->jobs[i].created_at = extract_json_number(pos, "created_at");
+                list->jobs[i].completed_at = extract_json_number(pos, "completed_at");
+                list->jobs[i].error_message = extract_json_string(pos, "error");
+
+                pos = skip_json_object(pos);
+            }
+        }
+    }
+
+    free(response.data);
+    return list;
 }
 
 unsandbox_languages_t *unsandbox_get_languages(
     const char *public_key, const char *secret_key) {
-    (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs JSON array parsing */
-    return NULL;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/languages", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/languages", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get languages: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    // Count languages - look for "languages":["lang1","lang2",...]
+    const char *langs_start = strstr(response.data, "\"languages\":[");
+    if (!langs_start) {
+        // Try alternative format: just an array
+        langs_start = strchr(response.data, '[');
+    }
+
+    int count = 0;
+    if (langs_start) {
+        const char *p = strchr(langs_start, '[');
+        if (p) {
+            p++;
+            while (*p && *p != ']') {
+                if (*p == '"') {
+                    count++;
+                    p++;
+                    while (*p && *p != '"') p++;
+                }
+                if (*p) p++;
+            }
+        }
+    }
+
+    unsandbox_languages_t *langs = calloc(1, sizeof(unsandbox_languages_t));
+    if (!langs) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    if (count > 0) {
+        langs->languages = calloc(count, sizeof(char *));
+        if (!langs->languages) {
+            set_last_error("Out of memory");
+            free(langs);
+            free(response.data);
+            return NULL;
+        }
+        langs->count = count;
+
+        // Parse again to extract strings
+        const char *p = strchr(langs_start, '[');
+        if (p) {
+            p++;
+            size_t i = 0;
+            while (*p && *p != ']' && i < langs->count) {
+                if (*p == '"') {
+                    p++;
+                    const char *end = strchr(p, '"');
+                    if (end) {
+                        size_t len = end - p;
+                        langs->languages[i] = malloc(len + 1);
+                        if (langs->languages[i]) {
+                            memcpy(langs->languages[i], p, len);
+                            langs->languages[i][len] = '\0';
+                            i++;
+                        }
+                        p = end;
+                    }
+                }
+                if (*p) p++;
+            }
+        }
+    }
+
+    free(response.data);
+    return langs;
 }
 
-/* Session - list/get/create need JSON parsing */
+/* Session - full library implementations */
+
 unsandbox_session_list_t *unsandbox_session_list(
     const char *public_key, const char *secret_key) {
-    (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal list_sessions prints to stdout */
-    return NULL;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/sessions", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/sessions", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to list sessions: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    int count = count_json_array_objects(response.data, "sessions");
+    unsandbox_session_list_t *list = calloc(1, sizeof(unsandbox_session_list_t));
+    if (!list) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    if (count > 0) {
+        list->sessions = calloc(count, sizeof(unsandbox_session_t));
+        if (!list->sessions) {
+            set_last_error("Out of memory");
+            free(list);
+            free(response.data);
+            return NULL;
+        }
+        list->count = count;
+
+        const char *sessions_start = strstr(response.data, "\"sessions\":[");
+        if (sessions_start) {
+            const char *pos = sessions_start + 12;
+            for (size_t i = 0; i < list->count && pos; i++) {
+                pos = strchr(pos, '{');
+                if (!pos) break;
+
+                list->sessions[i].id = extract_json_string(pos, "id");
+                list->sessions[i].container_name = extract_json_string(pos, "container_name");
+                list->sessions[i].status = extract_json_string(pos, "status");
+                list->sessions[i].network_mode = extract_json_string(pos, "network_mode");
+                list->sessions[i].vcpu = (int)extract_json_number(pos, "vcpu");
+                list->sessions[i].created_at = extract_json_number(pos, "created_at");
+                list->sessions[i].last_activity = extract_json_number(pos, "last_activity");
+
+                pos = skip_json_object(pos);
+            }
+        }
+    }
+
+    free(response.data);
+    return list;
 }
 
 unsandbox_session_t *unsandbox_session_get(
     const char *session_id,
     const char *public_key, const char *secret_key) {
-    (void)session_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs JSON parsing */
-    return NULL;
+
+    if (!session_id) {
+        set_last_error("Session ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/sessions/%s", API_BASE, session_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/sessions/%s", session_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get session: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_session_t *session = calloc(1, sizeof(unsandbox_session_t));
+    if (!session) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    session->id = extract_json_string(response.data, "session_id");
+    if (!session->id) session->id = extract_json_string(response.data, "id");
+    session->container_name = extract_json_string(response.data, "container_name");
+    session->status = extract_json_string(response.data, "status");
+    session->network_mode = extract_json_string(response.data, "network_mode");
+    session->vcpu = (int)extract_json_number(response.data, "vcpu");
+    session->created_at = extract_json_number(response.data, "created_at");
+    session->last_activity = extract_json_number(response.data, "last_activity");
+
+    free(response.data);
+    return session;
 }
 
 unsandbox_session_t *unsandbox_session_create(
     const char *network_mode, const char *shell,
     const char *public_key, const char *secret_key) {
-    (void)network_mode; (void)shell; (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal create_session returns struct but starts WebSocket */
-    return NULL;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    // Build payload
+    char payload[512];
+    char *p = payload;
+    p += sprintf(p, "{");
+    int has_field = 0;
+    if (network_mode && strlen(network_mode) > 0) {
+        p += sprintf(p, "\"network_mode\":\"%s\"", network_mode);
+        has_field = 1;
+    }
+    if (shell && strlen(shell) > 0) {
+        if (has_field) p += sprintf(p, ",");
+        p += sprintf(p, "\"shell\":\"%s\"", shell);
+    }
+    p += sprintf(p, "}");
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/sessions", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", "/sessions", payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || (http_code != 200 && http_code != 201)) {
+        set_last_error("Failed to create session: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_session_t *session = calloc(1, sizeof(unsandbox_session_t));
+    if (!session) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    session->id = extract_json_string(response.data, "session_id");
+    if (!session->id) session->id = extract_json_string(response.data, "id");
+    session->container_name = extract_json_string(response.data, "container_name");
+    session->status = extract_json_string(response.data, "status");
+    session->network_mode = extract_json_string(response.data, "network_mode");
+    session->vcpu = (int)extract_json_number(response.data, "vcpu");
+    session->created_at = extract_json_number(response.data, "created_at");
+    session->last_activity = extract_json_number(response.data, "last_activity");
+
+    free(response.data);
+    return session;
 }
 
 unsandbox_result_t *unsandbox_session_execute(
     const char *session_id, const char *command,
     const char *public_key, const char *secret_key) {
-    (void)session_id; (void)command; (void)public_key; (void)secret_key;
-    /* TODO: Implement - needs HTTP POST and JSON parsing */
-    return NULL;
+
+    if (!session_id || !command) {
+        set_last_error("Session ID and command are required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *escaped_cmd = escape_json_string(command);
+    if (!escaped_cmd) {
+        set_last_error("Failed to escape command");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    size_t payload_size = strlen(escaped_cmd) + 64;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        set_last_error("Out of memory");
+        free(escaped_cmd);
+        free_credentials(creds);
+        return NULL;
+    }
+    snprintf(payload, payload_size, "{\"command\":\"%s\"}", escaped_cmd);
+    free(escaped_cmd);
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/sessions/%s/shell", API_BASE, session_id);
+
+    char path[128];
+    snprintf(path, sizeof(path), "/sessions/%s/shell", session_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free(payload);
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(payload);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to execute in session: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_result_t *result = parse_execute_response(response.data);
+    free(response.data);
+    return result;
 }
 
-/* Service - list/get/create need JSON parsing */
+/* Service - full library implementations */
+
 unsandbox_service_list_t *unsandbox_service_list(
     const char *public_key, const char *secret_key) {
-    (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal list_services prints to stdout */
-    return NULL;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/services", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/services", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to list services: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    int count = count_json_array_objects(response.data, "services");
+    unsandbox_service_list_t *list = calloc(1, sizeof(unsandbox_service_list_t));
+    if (!list) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    if (count > 0) {
+        list->services = calloc(count, sizeof(unsandbox_service_t));
+        if (!list->services) {
+            set_last_error("Out of memory");
+            free(list);
+            free(response.data);
+            return NULL;
+        }
+        list->count = count;
+
+        const char *services_start = strstr(response.data, "\"services\":[");
+        if (services_start) {
+            const char *pos = services_start + 12;
+            for (size_t i = 0; i < list->count && pos; i++) {
+                pos = strchr(pos, '{');
+                if (!pos) break;
+
+                list->services[i].id = extract_json_string(pos, "id");
+                list->services[i].name = extract_json_string(pos, "name");
+                list->services[i].status = extract_json_string(pos, "status");
+                list->services[i].container_name = extract_json_string(pos, "container_name");
+                list->services[i].network_mode = extract_json_string(pos, "network_mode");
+                list->services[i].ports = extract_json_string(pos, "ports");
+                list->services[i].domains = extract_json_string(pos, "domains");
+                list->services[i].vcpu = (int)extract_json_number(pos, "vcpu");
+                list->services[i].locked = (int)extract_json_number(pos, "locked");
+                list->services[i].created_at = extract_json_number(pos, "created_at");
+                list->services[i].last_activity = extract_json_number(pos, "last_activity");
+
+                pos = skip_json_object(pos);
+            }
+        }
+    }
+
+    free(response.data);
+    return list;
 }
 
 unsandbox_service_t *unsandbox_service_get(
     const char *service_id,
     const char *public_key, const char *secret_key) {
-    (void)service_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal get_service_info prints to stdout */
-    return NULL;
+
+    if (!service_id) {
+        set_last_error("Service ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/services/%s", API_BASE, service_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/services/%s", service_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get service: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_service_t *service = calloc(1, sizeof(unsandbox_service_t));
+    if (!service) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    service->id = extract_json_string(response.data, "id");
+    service->name = extract_json_string(response.data, "name");
+    service->status = extract_json_string(response.data, "status");
+    service->container_name = extract_json_string(response.data, "container_name");
+    service->network_mode = extract_json_string(response.data, "network_mode");
+    service->ports = extract_json_string(response.data, "ports");
+    service->domains = extract_json_string(response.data, "domains");
+    service->vcpu = (int)extract_json_number(response.data, "vcpu");
+    service->locked = (int)extract_json_number(response.data, "locked");
+    service->created_at = extract_json_number(response.data, "created_at");
+    service->last_activity = extract_json_number(response.data, "last_activity");
+
+    free(response.data);
+    return service;
 }
 
 char *unsandbox_service_create(
@@ -6079,7 +7114,10 @@ char *unsandbox_service_create(
     const char *bootstrap, const char *network_mode,
     const char *public_key, const char *secret_key) {
     UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
-    if (!creds) return NULL;
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
     char *result = create_service(creds, name, ports, domains, bootstrap, NULL, network_mode, 0, NULL, NULL, 0, NULL);
     free_credentials(creds);
     return result;
@@ -6088,69 +7126,1056 @@ char *unsandbox_service_create(
 unsandbox_result_t *unsandbox_service_execute(
     const char *service_id, const char *command, int timeout_ms,
     const char *public_key, const char *secret_key) {
-    (void)service_id; (void)command; (void)timeout_ms; (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal execute_service prints output */
-    return NULL;
+
+    if (!service_id || !command) {
+        set_last_error("Service ID and command are required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *escaped_cmd = escape_json_string(command);
+    if (!escaped_cmd) {
+        set_last_error("Failed to escape command");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    size_t payload_size = strlen(escaped_cmd) + 128;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        set_last_error("Out of memory");
+        free(escaped_cmd);
+        free_credentials(creds);
+        return NULL;
+    }
+    if (timeout_ms > 0) {
+        snprintf(payload, payload_size, "{\"command\":\"%s\",\"timeout\":%d}", escaped_cmd, timeout_ms);
+    } else {
+        snprintf(payload, payload_size, "{\"command\":\"%s\"}", escaped_cmd);
+    }
+    free(escaped_cmd);
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/services/%s/execute", API_BASE, service_id);
+
+    char path[128];
+    snprintf(path, sizeof(path), "/services/%s/execute", service_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free(payload);
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (timeout_ms > 0) ? (timeout_ms / 1000 + 30) : 120L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(payload);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to execute in service: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_result_t *result = parse_execute_response(response.data);
+    free(response.data);
+    return result;
 }
 
 char *unsandbox_service_env_get(
     const char *service_id,
     const char *public_key, const char *secret_key) {
-    (void)service_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal service_env_status prints to stdout */
-    return NULL;
+
+    if (!service_id) {
+        set_last_error("Service ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/services/%s/env", API_BASE, service_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/services/%s/env", service_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get env: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    // Return the raw JSON response (caller can parse as needed)
+    return response.data;
 }
 
 char *unsandbox_service_env_export(
     const char *service_id,
     const char *public_key, const char *secret_key) {
-    (void)service_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal service_env_export prints to stdout */
-    return NULL;
+
+    if (!service_id) {
+        set_last_error("Service ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/services/%s/env?format=export", API_BASE, service_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/services/%s/env", service_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to export env: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    // Return the export-formatted env content
+    return response.data;
 }
 
-/* Snapshot - list/get/create need JSON parsing */
+/* Snapshot - full library implementations */
+
 unsandbox_snapshot_list_t *unsandbox_snapshot_list(
     const char *public_key, const char *secret_key) {
-    (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal list_snapshots prints to stdout */
-    return NULL;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/snapshots", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/snapshots", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to list snapshots: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    int count = count_json_array_objects(response.data, "snapshots");
+    unsandbox_snapshot_list_t *list = calloc(1, sizeof(unsandbox_snapshot_list_t));
+    if (!list) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    if (count > 0) {
+        list->snapshots = calloc(count, sizeof(unsandbox_snapshot_t));
+        if (!list->snapshots) {
+            set_last_error("Out of memory");
+            free(list);
+            free(response.data);
+            return NULL;
+        }
+        list->count = count;
+
+        const char *snapshots_start = strstr(response.data, "\"snapshots\":[");
+        if (snapshots_start) {
+            const char *pos = snapshots_start + 13;
+            for (size_t i = 0; i < list->count && pos; i++) {
+                pos = strchr(pos, '{');
+                if (!pos) break;
+
+                list->snapshots[i].id = extract_json_string(pos, "id");
+                list->snapshots[i].name = extract_json_string(pos, "name");
+                list->snapshots[i].type = extract_json_string(pos, "type");
+                list->snapshots[i].source_id = extract_json_string(pos, "source_id");
+                list->snapshots[i].hot = (int)extract_json_number(pos, "hot");
+                list->snapshots[i].locked = (int)extract_json_number(pos, "locked");
+                list->snapshots[i].created_at = extract_json_number(pos, "created_at");
+                list->snapshots[i].size_bytes = extract_json_number(pos, "size_bytes");
+
+                pos = skip_json_object(pos);
+            }
+        }
+    }
+
+    free(response.data);
+    return list;
 }
 
 unsandbox_snapshot_t *unsandbox_snapshot_get(
     const char *snapshot_id,
     const char *public_key, const char *secret_key) {
-    (void)snapshot_id; (void)public_key; (void)secret_key;
-    /* TODO: Implement - internal get_snapshot_info prints to stdout */
-    return NULL;
+
+    if (!snapshot_id) {
+        set_last_error("Snapshot ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/snapshots/%s", API_BASE, snapshot_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/snapshots/%s", snapshot_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get snapshot: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_snapshot_t *snapshot = calloc(1, sizeof(unsandbox_snapshot_t));
+    if (!snapshot) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    snapshot->id = extract_json_string(response.data, "id");
+    snapshot->name = extract_json_string(response.data, "name");
+    snapshot->type = extract_json_string(response.data, "type");
+    snapshot->source_id = extract_json_string(response.data, "source_id");
+    snapshot->hot = (int)extract_json_number(response.data, "hot");
+    snapshot->locked = (int)extract_json_number(response.data, "locked");
+    snapshot->created_at = extract_json_number(response.data, "created_at");
+    snapshot->size_bytes = extract_json_number(response.data, "size_bytes");
+
+    free(response.data);
+    return snapshot;
 }
 
 char *unsandbox_snapshot_session(
     const char *session_id, const char *name, int hot,
     const char *public_key, const char *secret_key) {
+
+    if (!session_id) {
+        set_last_error("Session ID is required");
+        return NULL;
+    }
+
     UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
-    if (!creds) return NULL;
-    int result = create_session_snapshot(creds, session_id, name, hot);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    // Build payload
+    char payload[512];
+    char *p = payload;
+    p += sprintf(p, "{\"source_type\":\"session\",\"source_id\":\"%s\"", session_id);
+    if (name && strlen(name) > 0) {
+        char *esc_name = escape_json_string(name);
+        p += sprintf(p, ",\"name\":\"%s\"", esc_name);
+        free(esc_name);
+    }
+    if (hot) {
+        p += sprintf(p, ",\"hot\":true");
+    }
+    p += sprintf(p, "}");
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/snapshots", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", "/snapshots", payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
     free_credentials(creds);
-    /* TODO: Return snapshot ID - internal function returns int status */
-    return (result == 0) ? strdup("snapshot_created") : NULL;
+
+    if (res != CURLE_OK || (http_code != 200 && http_code != 201)) {
+        set_last_error("Failed to create snapshot: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    char *snapshot_id = extract_json_string(response.data, "id");
+    free(response.data);
+    return snapshot_id;
 }
 
 char *unsandbox_snapshot_service(
     const char *service_id, const char *name, int hot,
     const char *public_key, const char *secret_key) {
+
+    if (!service_id) {
+        set_last_error("Service ID is required");
+        return NULL;
+    }
+
     UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
-    if (!creds) return NULL;
-    int result = create_service_snapshot(creds, service_id, name, hot);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    // Build payload
+    char payload[512];
+    char *p = payload;
+    p += sprintf(p, "{\"source_type\":\"service\",\"source_id\":\"%s\"", service_id);
+    if (name && strlen(name) > 0) {
+        char *esc_name = escape_json_string(name);
+        p += sprintf(p, ",\"name\":\"%s\"", esc_name);
+        free(esc_name);
+    }
+    if (hot) {
+        p += sprintf(p, ",\"hot\":true");
+    }
+    p += sprintf(p, "}");
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/snapshots", API_BASE);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", "/snapshots", payload);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
     free_credentials(creds);
-    /* TODO: Return snapshot ID - internal function returns int status */
-    return (result == 0) ? strdup("snapshot_created") : NULL;
+
+    if (res != CURLE_OK || (http_code != 200 && http_code != 201)) {
+        set_last_error("Failed to create snapshot: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    char *snapshot_id = extract_json_string(response.data, "id");
+    free(response.data);
+    return snapshot_id;
+}
+
+/* ============================================================================
+ * Image API - Library Implementations
+ * ============================================================================ */
+
+unsandbox_image_list_t *unsandbox_image_list(
+    const char *filter,
+    const char *public_key, const char *secret_key) {
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    char path[128];
+    if (filter && strlen(filter) > 0) {
+        snprintf(url, sizeof(url), "%s/images?filter=%s", API_BASE, filter);
+        snprintf(path, sizeof(path), "/images?filter=%s", filter);
+    } else {
+        snprintf(url, sizeof(url), "%s/images", API_BASE);
+        snprintf(path, sizeof(path), "/images");
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", "/images", NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to list images: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    int count = count_json_array_objects(response.data, "images");
+    unsandbox_image_list_t *list = calloc(1, sizeof(unsandbox_image_list_t));
+    if (!list) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    if (count > 0) {
+        list->images = calloc(count, sizeof(unsandbox_image_t));
+        if (!list->images) {
+            set_last_error("Out of memory");
+            free(list);
+            free(response.data);
+            return NULL;
+        }
+        list->count = count;
+
+        const char *images_start = strstr(response.data, "\"images\":[");
+        if (images_start) {
+            const char *pos = images_start + 10;
+            for (size_t i = 0; i < list->count && pos; i++) {
+                pos = strchr(pos, '{');
+                if (!pos) break;
+
+                list->images[i].id = extract_json_string(pos, "id");
+                list->images[i].name = extract_json_string(pos, "name");
+                list->images[i].description = extract_json_string(pos, "description");
+                list->images[i].visibility = extract_json_string(pos, "visibility");
+                list->images[i].source_type = extract_json_string(pos, "source_type");
+                list->images[i].source_id = extract_json_string(pos, "source_id");
+                list->images[i].owner_api_key = extract_json_string(pos, "owner_api_key");
+                list->images[i].locked = (int)extract_json_number(pos, "locked");
+                list->images[i].created_at = extract_json_number(pos, "created_at");
+                list->images[i].size_bytes = extract_json_number(pos, "size_bytes");
+
+                pos = skip_json_object(pos);
+            }
+        }
+    }
+
+    free(response.data);
+    return list;
+}
+
+unsandbox_image_t *unsandbox_image_get(
+    const char *image_id,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id) {
+        set_last_error("Image ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/images/%s", API_BASE, image_id);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        set_last_error("Failed to initialize curl");
+        free_credentials(creds);
+        return NULL;
+    }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[128];
+    snprintf(path, sizeof(path), "/images/%s", image_id);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        set_last_error("Failed to get image: HTTP %ld", http_code);
+        free(response.data);
+        return NULL;
+    }
+
+    unsandbox_image_t *image = calloc(1, sizeof(unsandbox_image_t));
+    if (!image) {
+        set_last_error("Out of memory");
+        free(response.data);
+        return NULL;
+    }
+
+    image->id = extract_json_string(response.data, "id");
+    image->name = extract_json_string(response.data, "name");
+    image->description = extract_json_string(response.data, "description");
+    image->visibility = extract_json_string(response.data, "visibility");
+    image->source_type = extract_json_string(response.data, "source_type");
+    image->source_id = extract_json_string(response.data, "source_id");
+    image->owner_api_key = extract_json_string(response.data, "owner_api_key");
+    image->locked = (int)extract_json_number(response.data, "locked");
+    image->created_at = extract_json_number(response.data, "created_at");
+    image->size_bytes = extract_json_number(response.data, "size_bytes");
+
+    free(response.data);
+    return image;
+}
+
+char *unsandbox_image_publish(
+    const char *source_type, const char *source_id,
+    const char *name, const char *description,
+    const char *public_key, const char *secret_key) {
+
+    if (!source_type || !source_id) {
+        set_last_error("Source type and ID are required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    // Use internal function
+    char *result = image_publish(creds, source_type, source_id, name, description);
+    free_credentials(creds);
+
+    if (!result) {
+        set_last_error("Failed to publish image");
+        return NULL;
+    }
+
+    char *image_id = extract_json_string(result, "id");
+    free(result);
+    return image_id;
+}
+
+int unsandbox_image_delete(
+    const char *image_id,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id) {
+        set_last_error("Image ID is required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = delete_image(creds, image_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_image_lock(
+    const char *image_id,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id) {
+        set_last_error("Image ID is required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = lock_image(creds, image_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_image_unlock(
+    const char *image_id,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id) {
+        set_last_error("Image ID is required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = unlock_image(creds, image_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_image_set_visibility(
+    const char *image_id, const char *visibility,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id || !visibility) {
+        set_last_error("Image ID and visibility are required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = set_image_visibility(creds, image_id, visibility);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_image_grant_access(
+    const char *image_id, const char *trusted_api_key,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id || !trusted_api_key) {
+        set_last_error("Image ID and trusted API key are required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = grant_image_access(creds, image_id, trusted_api_key);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_image_revoke_access(
+    const char *image_id, const char *trusted_api_key,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id || !trusted_api_key) {
+        set_last_error("Image ID and trusted API key are required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = revoke_image_access(creds, image_id, trusted_api_key);
+    free_credentials(creds);
+    return result;
+}
+
+char **unsandbox_image_list_trusted(
+    const char *image_id, size_t *count,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id || !count) {
+        set_last_error("Image ID and count pointer are required");
+        return NULL;
+    }
+
+    *count = 0;
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *result = list_image_trusted(creds, image_id);
+    free_credentials(creds);
+
+    if (!result) {
+        set_last_error("Failed to list trusted keys");
+        return NULL;
+    }
+
+    // Count keys in response
+    const char *keys_start = strstr(result, "\"trusted_keys\":[");
+    if (!keys_start) {
+        free(result);
+        return NULL;
+    }
+
+    size_t key_count = 0;
+    const char *p = strchr(keys_start, '[');
+    if (p) {
+        p++;
+        while (*p && *p != ']') {
+            if (*p == '"') {
+                key_count++;
+                p++;
+                while (*p && *p != '"') p++;
+            }
+            if (*p) p++;
+        }
+    }
+
+    if (key_count == 0) {
+        free(result);
+        return NULL;
+    }
+
+    char **keys = calloc(key_count, sizeof(char *));
+    if (!keys) {
+        set_last_error("Out of memory");
+        free(result);
+        return NULL;
+    }
+
+    // Parse keys
+    p = strchr(keys_start, '[');
+    if (p) {
+        p++;
+        size_t i = 0;
+        while (*p && *p != ']' && i < key_count) {
+            if (*p == '"') {
+                p++;
+                const char *end = strchr(p, '"');
+                if (end) {
+                    size_t len = end - p;
+                    keys[i] = malloc(len + 1);
+                    if (keys[i]) {
+                        memcpy(keys[i], p, len);
+                        keys[i][len] = '\0';
+                        i++;
+                    }
+                    p = end;
+                }
+            }
+            if (*p) p++;
+        }
+        *count = i;
+    }
+
+    free(result);
+    return keys;
+}
+
+int unsandbox_image_transfer(
+    const char *image_id, const char *to_api_key,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id || !to_api_key) {
+        set_last_error("Image ID and destination API key are required");
+        return -1;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return -1;
+    }
+
+    int result = transfer_image(creds, image_id, to_api_key);
+    free_credentials(creds);
+    return result;
+}
+
+char *unsandbox_image_spawn(
+    const char *image_id, const char *name, const char *ports,
+    const char *bootstrap, const char *network_mode,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id) {
+        set_last_error("Image ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *result = spawn_from_image(creds, image_id, name, ports, bootstrap, network_mode);
+    free_credentials(creds);
+
+    if (!result) {
+        set_last_error("Failed to spawn from image");
+        return NULL;
+    }
+
+    char *service_id = extract_json_string(result, "id");
+    free(result);
+    return service_id;
+}
+
+char *unsandbox_image_clone(
+    const char *image_id, const char *name, const char *description,
+    const char *public_key, const char *secret_key) {
+
+    if (!image_id) {
+        set_last_error("Image ID is required");
+        return NULL;
+    }
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) {
+        set_last_error("No credentials available");
+        return NULL;
+    }
+
+    char *result = clone_image(creds, image_id, name, description);
+    free_credentials(creds);
+
+    if (!result) {
+        set_last_error("Failed to clone image");
+        return NULL;
+    }
+
+    char *cloned_id = extract_json_string(result, "id");
+    free(result);
+    return cloned_id;
+}
+
+/* ============================================================================
+ * Memory Management for Images
+ * ============================================================================ */
+
+void unsandbox_free_image(unsandbox_image_t *image) {
+    if (!image) return;
+    free(image->id);
+    free(image->name);
+    free(image->description);
+    free(image->visibility);
+    free(image->source_type);
+    free(image->source_id);
+    free(image->owner_api_key);
+    free(image);
+}
+
+void unsandbox_free_image_list(unsandbox_image_list_t *images) {
+    if (!images) return;
+    for (size_t i = 0; i < images->count; i++) {
+        free(images->images[i].id);
+        free(images->images[i].name);
+        free(images->images[i].description);
+        free(images->images[i].visibility);
+        free(images->images[i].source_type);
+        free(images->images[i].source_id);
+        free(images->images[i].owner_api_key);
+    }
+    free(images->images);
+    free(images);
+}
+
+void unsandbox_free_trusted_keys(char **keys, size_t count) {
+    if (!keys) return;
+    for (size_t i = 0; i < count; i++) {
+        free(keys[i]);
+    }
+    free(keys);
 }
 
 /* Utility */
 const char *unsandbox_last_error(void) {
-    /* TODO: Implement thread-local error storage */
-    return NULL;
+    return unsandbox_error_buffer[0] ? unsandbox_error_buffer : NULL;
 }
 
 #ifndef UNSANDBOX_LIBRARY
