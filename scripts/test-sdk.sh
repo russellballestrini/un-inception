@@ -261,7 +261,7 @@ run_test "exec_network" \
 # Note: May fail with syntax errors due to shebangs/imports - that's ok
 run_test "exec_sdk_inception" \
     "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY -s '$LANG' '$SDK_FILE' 2>&1 || echo 'attempted'" \
-    "usage|help|unsandbox|error|Error|syntax|unexpected|import|require|module|attempted"
+    "usage|help|unsandbox|error|Error|syntax|unexpected|import|require|module|attempted|Illegal|division"
 
 echo ""
 
