@@ -134,6 +134,39 @@ FAILURES=0
 echo "Running inception tests..."
 echo ""
 
+# Map language name to interpreter for -s flag
+get_interpreter() {
+    case "$1" in
+        python)      echo "python" ;;
+        javascript)  echo "javascript" ;;
+        typescript)  echo "typescript" ;;
+        ruby)        echo "ruby" ;;
+        php)         echo "php" ;;
+        perl)        echo "perl" ;;
+        lua)         echo "lua" ;;
+        bash)        echo "bash" ;;
+        r)           echo "r" ;;
+        awk)         echo "awk" ;;
+        tcl)         echo "tcl" ;;
+        scheme)      echo "scheme" ;;
+        commonlisp)  echo "commonlisp" ;;
+        lisp)        echo "commonlisp" ;;
+        clojure)     echo "clojure" ;;
+        elixir)      echo "elixir" ;;
+        erlang)      echo "erlang" ;;
+        groovy)      echo "groovy" ;;
+        raku)        echo "raku" ;;
+        julia)       echo "julia" ;;
+        dart)        echo "dart" ;;
+        prolog)      echo "prolog" ;;
+        forth)       echo "forth" ;;
+        powershell)  echo "powershell" ;;
+        *)           echo "$1" ;;
+    esac
+}
+
+INTERPRETER=$(get_interpreter "$LANG")
+
 # Test 1: Execute the SDK file directly
 # This tests if the SDK can run at all through the inception pattern
 echo -n "Test: sdk_loads... "
@@ -142,7 +175,7 @@ TOTAL_TESTS=$((TOTAL_TESTS + 1))
 if build/un -n semitrusted \
     -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
     -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
-    "$SDK_FILE" > "$RESULTS_DIR/sdk_loads.txt" 2>&1; then
+    -s "$INTERPRETER" "$SDK_FILE" > "$RESULTS_DIR/sdk_loads.txt" 2>&1; then
     # SDK ran without crashing (might show help/usage or error about missing args)
     TEST_RESULTS["sdk_loads"]="pass"
     echo "PASS"
@@ -168,6 +201,7 @@ TOTAL_TESTS=$((TOTAL_TESTS + 1))
 if build/un -n semitrusted \
     -e "UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY" \
     -e "UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY" \
+    -s "$INTERPRETER" \
     -f test/fib.py \
     "$SDK_FILE" > "$RESULTS_DIR/execute.txt" 2>&1; then
 
