@@ -4,10 +4,17 @@
 
 set -e
 
-# Read changes from detect-changes output
-CHANGES=$(cat changes.json)
-CHANGED_LANGS=$(echo "$CHANGES" | jq -r '.changed_langs[]' 2>/dev/null || echo "")
-TEST_ALL=$(echo "$CHANGES" | jq -r '.test_all' 2>/dev/null || echo "false")
+# CRITICAL: Tags ALWAYS run full test matrix, no matter what
+if [ -n "$CI_COMMIT_TAG" ]; then
+    echo "Tag detected ($CI_COMMIT_TAG) - forcing full test matrix"
+    TEST_ALL="true"
+    CHANGED_LANGS=""
+else
+    # Read changes from detect-changes output
+    CHANGES=$(cat changes.json)
+    CHANGED_LANGS=$(echo "$CHANGES" | jq -r '.changed_langs[]' 2>/dev/null || echo "")
+    TEST_ALL=$(echo "$CHANGES" | jq -r '.test_all' 2>/dev/null || echo "false")
+fi
 
 # Fetch ALL supported languages from the unsandbox API (the source of truth)
 ALL_SDKS=$(curl -s "https://api.unsandbox.com/languages" | jq -r '.languages[]' | tr '\n' ' ')
@@ -53,6 +60,7 @@ cat > test-matrix.yml << 'EOF'
 # Each test runs: build/un → unsandbox → SDK → unsandbox → test code
 
 stages:
+  - build
   - test
 
 default:
@@ -63,8 +71,19 @@ variables:
   UNSANDBOX_PUBLIC_KEY: $UNSANDBOX_PUBLIC_KEY
   UNSANDBOX_SECRET_KEY: $UNSANDBOX_SECRET_KEY
 
+build-cli:
+  stage: build
+  script:
+    - bash scripts/build-clients.sh
+  artifacts:
+    paths:
+      - build/
+    expire_in: 1 hour
+
 test:
   stage: test
+  needs:
+    - build-cli
   parallel:
     matrix:
 EOF
@@ -76,8 +95,6 @@ done
 
 # Complete the test job template
 cat >> test-matrix.yml << 'EOF'
-  before_script:
-    - bash scripts/build-clients.sh
   script:
     - bash scripts/test-sdk.sh "$SDK_LANG"
   artifacts:
