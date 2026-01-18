@@ -235,6 +235,8 @@ perf-report:
   stage: report
   needs:
     - trigger-test-matrix
+    - job: build
+      artifacts: true
   variables:
     GIT_STRATEGY: clone
     GIT_DEPTH: 0
@@ -256,7 +258,7 @@ perf-report:
     - mkdir -p ~/.ssh
     - echo "$DEPLOY_KEY" | base64 -d > ~/.ssh/id_ed25519
     - chmod 600 ~/.ssh/id_ed25519
-    - ssh-keyscan -H git.unturf.com >> ~/.ssh/known_hosts 2>/dev/null
+    - ssh-keyscan -p 2222 -H git.unturf.com >> ~/.ssh/known_hosts 2>/dev/null
     - git remote set-url origin "ssh://git@git.unturf.com:2222/${CI_PROJECT_PATH}.git"
     - git config user.email "ci@unturf.com"
     - git config user.name "GitLab CI"
