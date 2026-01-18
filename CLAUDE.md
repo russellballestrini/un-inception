@@ -285,21 +285,21 @@ The `VERSION` file in the repo root contains the current semantic version (e.g.,
 ### Release Process
 
 ```bash
-# 1. Update VERSION file first
-echo "0.0.3" > VERSION
+# 1. Update version in all files (VERSION + all client source files)
+make set-version VERSION=4.2.0
 
 # 2. Commit the version bump
-git add VERSION
-git commit -m "chore: Bump version to 0.0.3"
+git add -A
+git commit -m "chore: Bump version to 4.2.0"
 
 # 3. Create and push the tag (triggers full 42-language test matrix)
-git tag -a v0.0.3 -m "Release v0.0.3 - Description of changes"
-git push origin main v0.0.3
+git tag -a 4.2.0 -m "Release 4.2.0 - Description of changes"
+git push origin main 4.2.0
 ```
 
 ### Tag Triggers
 
-- **Tag push** (`v*.*.*`) triggers the **full test matrix** with all 42 languages
+- **Tag push** (`X.Y.Z` format, no v prefix) triggers the **full test matrix** with all 42 languages
 - **Regular push to main** only tests changed SDKs (smart detection)
 
 ### Version Format
