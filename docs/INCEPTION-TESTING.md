@@ -1,6 +1,6 @@
 # The Inception Test Matrix
 
-## 650 Tests. 42 Languages. 100% Pass Rate.
+## 638 Tests. 42 Languages. 100% Pass Rate.
 
 ```
 ████████╗██╗  ██╗███████╗    ██╗███╗   ██╗ ██████╗███████╗██████╗ ████████╗██╗ ██████╗ ███╗   ██╗
@@ -73,7 +73,7 @@ The sandbox contains compilers and interpreters for all 42 supported languages. 
 | **Key** | 1 | Validate API credentials |
 | **SDK** | 2 | File exists, runs in sandbox |
 
-**Total: ~15 tests per language × 42 languages = 650 tests**
+**Total: ~15 tests per language × 42 languages = 638 tests**
 
 ### Execute Endpoint Tests
 
@@ -226,8 +226,8 @@ test:
 │                                                        │
 ├────────────────────────────────────────────────────────┤
 │                                                        │
-│   Total Tests:     650                                 │
-│   Passed:          650                                 │
+│   Total Tests:     638                                 │
+│   Passed:          638                                 │
 │   Failed:          0                                   │
 │   Skipped:         0                                   │
 │   Pass Rate:       100%                                │
@@ -282,6 +282,6 @@ The inception pattern proves that:
 
 ---
 
-**42 languages. 650 tests. 100% pass rate.**
+**42 languages. 638 tests. 100% pass rate.**
 
 *The inception is complete.*

@@ -267,6 +267,7 @@ static char* get_accounts_csv_path(void) {
 }
 
 // Ensure ~/.unsandbox directory exists
+__attribute__((unused))
 static void ensure_unsandbox_dir(void) {
     const char *home = getenv("HOME");
     if (!home) {
@@ -341,6 +342,7 @@ static UnsandboxCredentials* load_credentials_from_csv(int account_index) {
 }
 
 // Count total accounts in CSV
+__attribute__((unused))
 static int count_accounts_in_csv(void) {
     char *path = get_accounts_csv_path();
     if (!path) return 0;
@@ -791,6 +793,7 @@ long long extract_json_number(const char *json, const char *key) {
 
 // Count objects in a JSON array (for malloc sizing)
 // Returns number of top-level objects in array, or 0 if not found/empty
+__attribute__((unused))
 static int count_json_array_objects(const char *json, const char *array_key) {
     char search[256];
     snprintf(search, sizeof(search), "\"%s\":[", array_key);
@@ -816,6 +819,7 @@ static int count_json_array_objects(const char *json, const char *array_key) {
 
 // Skip past current JSON object, return pointer to position after closing }
 // If pos doesn't point to '{', returns pos unchanged
+__attribute__((unused))
 static const char* skip_json_object(const char *pos) {
     if (!pos || *pos != '{') return pos;
     int depth = 1;
@@ -841,6 +845,7 @@ static const char* skip_json_object(const char *pos) {
 
 static __thread char unsandbox_error_buffer[512] = {0};
 
+__attribute__((unused))
 static void set_last_error(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -1243,7 +1248,7 @@ static int shell_ws_callback(struct lws *wsi, enum lws_callback_reasons reason,
             // Check if it's a binary frame (raw stdout) or text frame (JSON control)
             if (lws_frame_is_binary(wsi)) {
                 // Binary frame = raw shell output, write directly
-                write(STDOUT_FILENO, in, len);
+                if (write(STDOUT_FILENO, in, len) < 0) { /* ignore */ }
             } else {
                 // Text frame = JSON control message (exit, error, detached, etc.)
                 char *json = (char *)in;
@@ -4093,7 +4098,7 @@ static char* execute_service_capture(const UnsandboxCredentials *creds, const ch
     response.data = malloc(1);
     response.size = 0;
 
-    char path[512];
+    char path[256];
     char url[512];
     snprintf(path, sizeof(path), "/services/%s/execute", service_id);
     snprintf(url, sizeof(url), "%s%s", API_BASE, path);
@@ -4140,7 +4145,7 @@ static char* execute_service_capture(const UnsandboxCredentials *creds, const ch
 
     if (!job_id) return NULL;
 
-    char job_path[512];
+    char job_path[256];
     char job_url[512];
     snprintf(job_path, sizeof(job_path), "/jobs/%s", job_id);
     snprintf(job_url, sizeof(job_url), "%s%s", API_BASE, job_path);
@@ -5256,6 +5261,7 @@ static int set_image_visibility(const UnsandboxCredentials *creds, const char *i
 }
 
 // Grant image access to another API key
+__attribute__((unused))
 static int grant_image_access(const UnsandboxCredentials *creds, const char *image_id, const char *trusted_api_key) {
     if (!creds || !creds->public_key || !creds->secret_key || !image_id || !trusted_api_key) {
         return 1;
@@ -5295,6 +5301,7 @@ static int grant_image_access(const UnsandboxCredentials *creds, const char *ima
 }
 
 // Revoke image access from another API key
+__attribute__((unused))
 static int revoke_image_access(const UnsandboxCredentials *creds, const char *image_id, const char *trusted_api_key) {
     if (!creds || !creds->public_key || !creds->secret_key || !image_id || !trusted_api_key) {
         return 1;
@@ -5334,6 +5341,7 @@ static int revoke_image_access(const UnsandboxCredentials *creds, const char *im
 }
 
 // List API keys with access to an image
+__attribute__((unused))
 static char* list_image_trusted(const UnsandboxCredentials *creds, const char *image_id) {
     if (!creds || !creds->public_key || !creds->secret_key || !image_id) {
         return NULL;
@@ -5372,6 +5380,7 @@ static char* list_image_trusted(const UnsandboxCredentials *creds, const char *i
 }
 
 // Transfer image ownership to another API key
+__attribute__((unused))
 static int transfer_image(const UnsandboxCredentials *creds, const char *image_id, const char *to_api_key) {
     if (!creds || !creds->public_key || !creds->secret_key || !image_id || !to_api_key) {
         return 1;
@@ -8502,15 +8511,15 @@ int main(int argc, char *argv[]) {
                 #ifdef __APPLE__
                 char cmd[1024];
                 snprintf(cmd, sizeof(cmd), "open '%s'", extend_url);
-                system(cmd);
+                if (system(cmd) != 0) { /* ignore */ }
                 #elif defined(__linux__)
-                char cmd[1024];
+                char cmd[2048];
                 snprintf(cmd, sizeof(cmd), "xdg-open '%s' 2>/dev/null || sensible-browser '%s' 2>/dev/null", extend_url, extend_url);
-                system(cmd);
+                if (system(cmd) != 0) { /* ignore */ }
                 #elif defined(_WIN32)
                 char cmd[1024];
                 snprintf(cmd, sizeof(cmd), "start %s", extend_url);
-                system(cmd);
+                if (system(cmd) != 0) { /* ignore */ }
                 #endif
 
                 free_credentials(creds);

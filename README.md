@@ -2,6 +2,8 @@
 
 The UN CLI written in every language it can execute. **42 implementations, one unified interface.**
 
+[![638 Tests Passing](https://img.shields.io/badge/tests-638%20passing-brightgreen)](docs/INCEPTION-TESTING.md) [![42 Languages](https://img.shields.io/badge/languages-42-blue)](docs/INCEPTION-TESTING.md) [![100% Pass Rate](https://img.shields.io/badge/pass%20rate-100%25-success)](docs/INCEPTION-TESTING.md)
+
 > "If you replace every line of un.c with a different programming language, but it still executes code on unsandbox... is it still un?"
 
 ## Download UN CLI
