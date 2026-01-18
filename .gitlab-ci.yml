@@ -266,8 +266,8 @@ perf-report:
     - git checkout main
     - git pull origin main --rebase
     - git add reports/
-    - git diff --cached --quiet || git commit -m "perf - Add performance report for $CI_COMMIT_TAG [ci skip]"
-    - git diff --cached --quiet || git push origin main
+    - git diff --cached --quiet && echo "No changes to commit" || git commit -m "perf - Add performance report for $CI_COMMIT_TAG [ci skip]"
+    - git push origin main || echo "Nothing to push"
     - echo "Done"
   artifacts:
     paths:
