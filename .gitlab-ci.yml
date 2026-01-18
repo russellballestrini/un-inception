@@ -227,3 +227,36 @@ report:
   only:
     - main
     - /^\d+\.\d+\.\d+$/
+
+# ============================================================================
+# STAGE 9: Performance Report (Tags Only)
+# ============================================================================
+perf-report:
+  stage: report
+  needs:
+    - trigger-test-matrix
+  script:
+    - echo "Generating performance report for $CI_COMMIT_TAG..."
+    - bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG"
+    - |
+      echo "Generating performance charts..."
+      build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "Charts generation requires unsandbox"
+      mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || true
+    - ls -la "reports/$CI_COMMIT_TAG/"
+    - |
+      echo "Committing performance report to main..."
+      git config user.email "ci@unturf.com"
+      git config user.name "GitLab CI"
+      git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@git.unturf.com/${CI_PROJECT_PATH}.git"
+      git fetch origin main
+      git checkout main
+      git add reports/
+      git commit -m "perf: Add performance report for $CI_COMMIT_TAG" || echo "No changes to commit"
+      git push origin main || echo "Push failed - may need deploy key"
+  artifacts:
+    paths:
+      - reports/
+    expire_in: 90 days
+  only:
+    - /^\d+\.\d+\.\d+$/
+  allow_failure: true

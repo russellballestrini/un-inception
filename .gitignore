@@ -44,3 +44,4 @@ clients/c/un
 clients/c/examples/fibonacci
 clients/c/examples/hello_world
 clients/c/tests/test_library
+build/

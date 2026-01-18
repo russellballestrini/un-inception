@@ -314,10 +314,24 @@ endif
 # Performance Reporting
 # ============================================================================
 
-.PHONY: perf-report
+.PHONY: perf-report perf-charts
 perf-report:
 ifdef TAG
 	@bash scripts/generate-perf-report.sh $(TAG)
 else
 	@bash scripts/generate-perf-report.sh
 endif
+
+perf-charts:
+ifdef TAG
+	@echo "Generating performance charts for $(TAG)..."
+	@build/un -a -f reports/$(TAG)/perf.json scripts/generate-perf-charts.py
+	@mv -f *.png reports/$(TAG)/ 2>/dev/null || true
+	@echo "✓ Charts saved to reports/$(TAG)/"
+else
+	@echo "Usage: make perf-charts TAG=4.2.0"
+endif
+
+perf-all: perf-report perf-charts
+	@echo "✓ Performance report and charts complete for $(TAG)"
+	@ls -la reports/$(TAG)/
