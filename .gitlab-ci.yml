@@ -246,6 +246,7 @@ perf-report:
     - echo "Tag - $CI_COMMIT_TAG"
     - echo "========================================"
     - ls -la build/ || echo "No build/ directory"
+    - echo "UNSANDBOX_PUBLIC_KEY set:" && test -n "$UNSANDBOX_PUBLIC_KEY" && echo "yes (${UNSANDBOX_PUBLIC_KEY:0:12}...)" || echo "NO - MISSING!"
     - echo "$CI_COMMIT_TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
     - echo "Step 1 - Generating performance report..."
     - bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG" || echo "WARN - Report generation failed"
