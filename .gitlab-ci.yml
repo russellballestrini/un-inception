@@ -11,10 +11,8 @@ default:
   tags:
     - build
 
-variables:
-  UNSANDBOX_API_KEY: $UNSANDBOX_API_KEY
-  UNSANDBOX_PUBLIC_KEY: $UNSANDBOX_PUBLIC_KEY
-  UNSANDBOX_SECRET_KEY: $UNSANDBOX_SECRET_KEY
+# CI variables UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY, DEPLOY_KEY
+# are configured in GitLab Settings > CI/CD > Variables
 
 # ============================================================================
 # STAGE 1: Detect Changes
