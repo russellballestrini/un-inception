@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua set-version
+.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua set-version perf-report
 
 # Client directories with their own Makefiles
 CLIENTS_WITH_MAKEFILE := $(wildcard clients/*/Makefile)
@@ -33,6 +33,7 @@ help:
 	@echo "  make lint                     # Lint all clients"
 	@echo "  make clean                    # Clean build artifacts"
 	@echo "  make set-version VERSION=X.Y.Z  # Set version in all files"
+	@echo "  make perf-report TAG=X.Y.Z     # Generate performance report for release"
 	@echo ""
 	@echo "Available client Makefiles:"
 	@for dir in $(CLIENT_DIRS); do echo "  $$dir"; done
@@ -308,3 +309,15 @@ ifndef VERSION
 	@exit 1
 endif
 	@bash scripts/set-version.sh $(VERSION)
+
+# ============================================================================
+# Performance Reporting
+# ============================================================================
+
+.PHONY: perf-report
+perf-report:
+ifdef TAG
+	@bash scripts/generate-perf-report.sh $(TAG)
+else
+	@bash scripts/generate-perf-report.sh
+endif
