@@ -245,11 +245,12 @@ perf-report:
     - echo "Performance Report Generator"
     - echo "Tag - $CI_COMMIT_TAG"
     - echo "========================================"
+    - ls -la build/ || echo "No build/ directory"
     - echo "$CI_COMMIT_TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
     - echo "Step 1 - Generating performance report..."
     - bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG" || echo "WARN - Report generation failed"
     - echo "Step 2 - Generating performance charts..."
-    - test -f "reports/$CI_COMMIT_TAG/perf.json" && build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "WARN - No perf.json"
+    - test -x build/un && test -f "reports/$CI_COMMIT_TAG/perf.json" && build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "WARN - Charts skipped (build/un or perf.json missing)"
     - mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || true
     - echo "Step 3 - Report contents..."
     - ls -la "reports/$CI_COMMIT_TAG/" 2>/dev/null || echo "No report directory"
