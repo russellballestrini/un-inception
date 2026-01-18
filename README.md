@@ -239,8 +239,9 @@ This is the **inception** - each layer executes through unsandbox's remote API, 
 
 ## Links
 
+- [UN CLI](https://unsandbox.com/cli) - Download and documentation
+- [CLI Inception Gallery](https://unsandbox.com/cli/inception) - Browse all 42 implementations
 - [unsandbox.com](https://unsandbox.com) - Remote code execution API
-- [CLI Inception Gallery](https://unsandbox.com/cli/inception) - Browse all implementations
 - [API Documentation](https://unsandbox.com/docs) - Full API reference
 
 ## License
