@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua
+.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua set-version
 
 # Client directories with their own Makefiles
 CLIENTS_WITH_MAKEFILE := $(wildcard clients/*/Makefile)
@@ -32,6 +32,7 @@ help:
 	@echo "  make test-ci-locally          # Simulate CI pipeline"
 	@echo "  make lint                     # Lint all clients"
 	@echo "  make clean                    # Clean build artifacts"
+	@echo "  make set-version VERSION=X.Y.Z  # Set version in all files"
 	@echo ""
 	@echo "Available client Makefiles:"
 	@for dir in $(CLIENT_DIRS); do echo "  $$dir"; done
@@ -295,3 +296,15 @@ clean:
 	@find . -name "*.pyc" -delete
 	@find . -name "__pycache__" -type d -delete
 	@echo "Clean complete"
+
+# ============================================================================
+# Version Management
+# ============================================================================
+
+.PHONY: set-version
+set-version:
+ifndef VERSION
+	@echo "Usage: make set-version VERSION=4.2.0"
+	@exit 1
+endif
+	@bash scripts/set-version.sh $(VERSION)
