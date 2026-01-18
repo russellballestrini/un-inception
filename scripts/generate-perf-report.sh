@@ -5,9 +5,21 @@
 # Usage: scripts/generate-perf-report.sh [TAG]
 # Example: scripts/generate-perf-report.sh 4.2.0
 #
-# Output: reports/perf-{TAG}.md and reports/perf-{TAG}.json
+# Output: reports/{TAG}/perf.json and reports/{TAG}/perf.md
+#
+# Safe for automation - idempotent and validates inputs
 
 set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 TAG="${1:-}"
 GITLAB_URL="https://git.unturf.com"
@@ -17,19 +29,43 @@ if [ -z "$TAG" ]; then
     # Default to current VERSION
     if [ -f VERSION ]; then
         TAG=$(cat VERSION)
+        log_info "Using version from VERSION file: $TAG"
     else
-        echo "Usage: $0 <tag>"
+        log_error "Usage: $0 <tag>"
         echo "Example: $0 4.2.0"
         exit 1
     fi
 fi
 
-echo "Generating performance report for tag: $TAG"
+# Validate tag format
+if ! echo "$TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    log_error "Invalid tag format: $TAG (expected X.Y.Z)"
+    exit 1
+fi
+
+# Check for required tools
+for cmd in curl jq bc; do
+    if ! command -v $cmd &> /dev/null; then
+        log_error "Required command not found: $cmd"
+        exit 1
+    fi
+done
+
+log_info "Generating performance report for tag: $TAG"
 
 # Create versioned reports directory
 REPORT_DIR="reports/$TAG"
 mkdir -p "$REPORT_DIR"
-echo "Output directory: $REPORT_DIR"
+log_info "Output directory: $REPORT_DIR"
+
+# Check if report already exists (idempotent - skip if complete)
+if [ -f "$REPORT_DIR/perf.json" ] && [ -f "$REPORT_DIR/perf.md" ]; then
+    log_warn "Report already exists for $TAG"
+    log_info "To regenerate, delete: rm -rf $REPORT_DIR"
+    echo ""
+    ls -la "$REPORT_DIR/"
+    exit 0
+fi
 
 # Find pipeline for this tag (prefer passing pipelines)
 echo "Finding pipeline for tag $TAG..."

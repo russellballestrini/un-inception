@@ -235,28 +235,67 @@ perf-report:
   stage: report
   needs:
     - trigger-test-matrix
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
   script:
-    - echo "Generating performance report for $CI_COMMIT_TAG..."
-    - bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG"
+    - echo "========================================"
+    - echo "Performance Report Generator"
+    - echo "Tag: $CI_COMMIT_TAG"
+    - echo "========================================"
     - |
-      echo "Generating performance charts..."
-      build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "Charts generation requires unsandbox"
-      mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || true
-    - ls -la "reports/$CI_COMMIT_TAG/"
+      # Validate tag format
+      if ! echo "$CI_COMMIT_TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "ERROR: Invalid tag format: $CI_COMMIT_TAG"
+        exit 1
+      fi
     - |
-      echo "Committing performance report to main..."
-      git config user.email "ci@unturf.com"
-      git config user.name "GitLab CI"
-      git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@git.unturf.com/${CI_PROJECT_PATH}.git"
-      git fetch origin main
-      git checkout main
-      git add reports/
-      git commit -m "perf: Add performance report for $CI_COMMIT_TAG" || echo "No changes to commit"
-      git push origin main || echo "Push failed - may need deploy key"
+      # Generate performance report (fetches CI timing data)
+      echo "Step 1: Generating performance report..."
+      bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG" || {
+        echo "WARN: Report generation failed, continuing..."
+      }
+    - |
+      # Generate charts via unsandbox (optional - may fail without API keys)
+      echo "Step 2: Generating performance charts..."
+      if [ -f "reports/$CI_COMMIT_TAG/perf.json" ]; then
+        build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py && \
+        mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || \
+        echo "WARN: Chart generation skipped (unsandbox unavailable)"
+      else
+        echo "WARN: No perf.json found, skipping charts"
+      fi
+    - |
+      # Show what was generated
+      echo "Step 3: Report contents..."
+      ls -la "reports/$CI_COMMIT_TAG/" 2>/dev/null || echo "No report directory"
+    - |
+      # Commit back to main (requires write access)
+      echo "Step 4: Committing to main..."
+      if [ -d "reports/$CI_COMMIT_TAG" ]; then
+        git config user.email "ci@unturf.com"
+        git config user.name "GitLab CI"
+        git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@git.unturf.com/${CI_PROJECT_PATH}.git"
+        git fetch origin main
+        git checkout main
+        git pull origin main
+        git add reports/
+        git diff --cached --quiet || {
+          git commit -m "perf: Add performance report for $CI_COMMIT_TAG
+
+Generated automatically by CI after tagged release.
+Pipeline: $CI_PIPELINE_URL"
+          git push origin main && echo "SUCCESS: Report committed to main" || \
+          echo "WARN: Push failed - CI_JOB_TOKEN may lack write access"
+        }
+      else
+        echo "WARN: No report to commit"
+      fi
   artifacts:
     paths:
       - reports/
     expire_in: 90 days
-  only:
-    - /^\d+\.\d+\.\d+$/
+    when: always
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
   allow_failure: true
