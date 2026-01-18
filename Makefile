@@ -335,3 +335,97 @@ endif
 perf-all: perf-report perf-charts
 	@echo "✓ Performance report and charts complete for $(TAG)"
 	@ls -la reports/$(TAG)/
+
+# ============================================================================
+# CI Deploy Key Setup (one-time)
+# ============================================================================
+
+GITLAB_URL ?= https://git.unturf.com
+PROJECT_ID ?= 113
+DEPLOY_KEY_NAME ?= ci-perf-report
+DEPLOY_KEY_PATH ?= $(HOME)/.ssh/un-inception-ci
+
+.PHONY: setup-ci-deploy-key
+setup-ci-deploy-key:
+ifndef GITLAB_TOKEN
+	@echo "ERROR: GITLAB_TOKEN required (API token with api scope)"
+	@echo "Usage: GITLAB_TOKEN=xxx make setup-ci-deploy-key"
+	@exit 1
+endif
+	@echo "========================================"
+	@echo "Setting up CI Deploy Key"
+	@echo "========================================"
+	@echo ""
+	@# Step 1: Generate SSH key if not exists
+	@if [ -f "$(DEPLOY_KEY_PATH)" ]; then \
+		echo "Key already exists: $(DEPLOY_KEY_PATH)"; \
+		echo "Delete it first if you want to regenerate"; \
+	else \
+		echo "Step 1: Generating SSH key..."; \
+		ssh-keygen -t ed25519 -C "ci@un-inception" -f "$(DEPLOY_KEY_PATH)" -N ""; \
+		echo "✓ Key generated: $(DEPLOY_KEY_PATH)"; \
+	fi
+	@echo ""
+	@# Step 2: Add public key as deploy key to repo
+	@echo "Step 2: Adding deploy key to GitLab repo..."
+	@PUBKEY=$$(cat "$(DEPLOY_KEY_PATH).pub"); \
+	curl -s --request POST \
+		--header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+		--header "Content-Type: application/json" \
+		--data "{\"title\": \"$(DEPLOY_KEY_NAME)\", \"key\": \"$$PUBKEY\", \"can_push\": true}" \
+		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/deploy_keys" | jq -r 'if .id then "✓ Deploy key added (id: \(.id))" else "⚠ \(.message // "Already exists or error")" end'
+	@echo ""
+	@# Step 3: Add private key as CI variable
+	@echo "Step 3: Adding DEPLOY_KEY variable to CI..."
+	@PRIVKEY=$$(base64 -w0 < "$(DEPLOY_KEY_PATH)"); \
+	curl -s --request POST \
+		--header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+		--form "key=DEPLOY_KEY" \
+		--form "value=$$PRIVKEY" \
+		--form "protected=true" \
+		--form "masked=true" \
+		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/variables" | jq -r 'if .key then "✓ CI variable added: \(.key) (protected, masked)" else "⚠ \(.message // "Already exists or error")" end'
+	@echo ""
+	@echo "========================================"
+	@echo "Setup complete!"
+	@echo "========================================"
+	@echo ""
+	@echo "Key location: $(DEPLOY_KEY_PATH)"
+	@echo ""
+	@echo "IMPORTANT: DEPLOY_KEY is protected - only works on protected branches/tags."
+	@echo "Ensure release tags are protected in GitLab:"
+	@echo "  Settings > Repository > Protected Tags > Add '*.*.*'"
+	@echo ""
+	@echo "Test with: make test-ci-deploy-key"
+
+.PHONY: test-ci-deploy-key
+test-ci-deploy-key:
+	@echo "Testing deploy key SSH access..."
+	@ssh -i "$(DEPLOY_KEY_PATH)" -o StrictHostKeyChecking=no -p 2222 git@git.unturf.com 2>&1 | head -5 || true
+
+.PHONY: remove-ci-deploy-key
+remove-ci-deploy-key:
+ifndef GITLAB_TOKEN
+	@echo "ERROR: GITLAB_TOKEN required"
+	@exit 1
+endif
+	@echo "Removing deploy key and CI variable..."
+	@# Get deploy key ID and delete
+	@KEYID=$$(curl -s --header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/deploy_keys" | \
+		jq -r '.[] | select(.title == "$(DEPLOY_KEY_NAME)") | .id'); \
+	if [ -n "$$KEYID" ]; then \
+		curl -s --request DELETE --header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+			"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/deploy_keys/$$KEYID"; \
+		echo "✓ Deploy key removed"; \
+	else \
+		echo "⚠ Deploy key not found"; \
+	fi
+	@# Delete CI variable
+	@curl -s --request DELETE --header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/variables/DEPLOY_KEY" && \
+		echo "✓ CI variable removed" || echo "⚠ CI variable not found"
+	@# Optionally remove local key
+	@echo ""
+	@echo "Local key still at: $(DEPLOY_KEY_PATH)"
+	@echo "To remove: rm $(DEPLOY_KEY_PATH) $(DEPLOY_KEY_PATH).pub"
