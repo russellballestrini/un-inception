@@ -67,9 +67,7 @@ default:
   tags:
     - build
 
-variables:
-  UNSANDBOX_PUBLIC_KEY: $UNSANDBOX_PUBLIC_KEY
-  UNSANDBOX_SECRET_KEY: $UNSANDBOX_SECRET_KEY
+# CI variables inherited from parent pipeline
 
 build-cli:
   stage: build
