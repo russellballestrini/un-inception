@@ -375,8 +375,16 @@ endif
 		--data "{\"title\": \"$(DEPLOY_KEY_NAME)\", \"key\": \"$$PUBKEY\", \"can_push\": true}" \
 		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/deploy_keys" | jq -r 'if .id then "✓ Deploy key added (id: \(.id))" else "⚠ \(.message // "Already exists or error")" end'
 	@echo ""
-	@# Step 3: Add private key as CI variable
-	@echo "Step 3: Adding DEPLOY_KEY variable to CI..."
+	@# Step 3: Protect release tags (so protected variables are available)
+	@echo "Step 3: Protecting release tags (*.*.*) ..."
+	@curl -s --request POST \
+		--header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+		--header "Content-Type: application/json" \
+		--data '{"name": "*.*.*", "create_access_level": "40"}' \
+		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/protected_tags" | jq -r 'if .name then "✓ Protected tag added: \(.name)" else "⚠ \(.message // "Already exists or error")" end'
+	@echo ""
+	@# Step 4: Add private key as CI variable
+	@echo "Step 4: Adding DEPLOY_KEY variable to CI..."
 	@PRIVKEY=$$(base64 -w0 < "$(DEPLOY_KEY_PATH)"); \
 	curl -s --request POST \
 		--header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
@@ -391,10 +399,7 @@ endif
 	@echo "========================================"
 	@echo ""
 	@echo "Key location: $(DEPLOY_KEY_PATH)"
-	@echo ""
-	@echo "IMPORTANT: DEPLOY_KEY is protected - only works on protected branches/tags."
-	@echo "Ensure release tags are protected in GitLab:"
-	@echo "  Settings > Repository > Protected Tags > Add '*.*.*'"
+	@echo "Protected tags: *.*.*"
 	@echo ""
 	@echo "Test with: make test-ci-deploy-key"
 
@@ -425,6 +430,10 @@ endif
 	@curl -s --request DELETE --header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
 		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/variables/DEPLOY_KEY" && \
 		echo "✓ CI variable removed" || echo "⚠ CI variable not found"
+	@# Delete protected tag
+	@curl -s --request DELETE --header "PRIVATE-TOKEN: $(GITLAB_TOKEN)" \
+		"$(GITLAB_URL)/api/v4/projects/$(PROJECT_ID)/protected_tags/*.*.*" && \
+		echo "✓ Protected tag removed" || echo "⚠ Protected tag not found"
 	@# Optionally remove local key
 	@echo ""
 	@echo "Local key still at: $(DEPLOY_KEY_PATH)"
