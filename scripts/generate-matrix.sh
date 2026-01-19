@@ -61,6 +61,7 @@ cat > test-matrix.yml << 'EOF'
 
 stages:
   - build
+  - cleanup
   - test
 
 default:
@@ -78,10 +79,31 @@ build-cli:
       - build/
     expire_in: 1 hour
 
+# Cleanup orphaned test services before fan-out to avoid concurrency limits
+cleanup-services:
+  stage: cleanup
+  needs:
+    - build-cli
+  script:
+    - echo "Cleaning up orphaned test services..."
+    - |
+      SERVICES=$(build/un service --list 2>/dev/null | grep -oE 'unsb-service-[a-f0-9]+' || true)
+      if [ -n "$SERVICES" ]; then
+        for SVC in $SERVICES; do
+          echo "Destroying orphan: $SVC"
+          build/un service --destroy "$SVC" || true
+        done
+        echo "Cleanup complete"
+      else
+        echo "No orphaned services found"
+      fi
+  allow_failure: true
+
 test:
   stage: test
   needs:
     - build-cli
+    - cleanup-services
   parallel:
     matrix:
 EOF
