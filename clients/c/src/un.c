@@ -5938,7 +5938,7 @@ void print_usage(const char *prog) {
  * ============================================================================ */
 
 const char *unsandbox_version(void) {
-    return "4.2.0";
+    return "4.2.5";
 }
 
 const char *unsandbox_detect_language(const char *filename) {
