@@ -244,14 +244,9 @@ perf-report:
     - echo "Tag - $CI_COMMIT_TAG"
     - echo "========================================"
     - echo "$CI_COMMIT_TAG" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
-    - echo "Step 1 - Generating performance report..."
-    - bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG" || echo "WARN - Report generation failed"
-    - echo "Step 2 - Generating performance charts..."
-    - test -x build/un && test -f "reports/$CI_COMMIT_TAG/perf.json" && build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "WARN - Charts skipped (build/un or perf.json missing)"
-    - mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || true
-    - echo "Step 3 - Report contents..."
-    - ls -la "reports/$CI_COMMIT_TAG/" 2>/dev/null || echo "No report directory"
-    - echo "Step 4 - Committing to main..."
+    - echo "Step 0 - Waiting 60s for pipeline data to settle..."
+    - sleep 60
+    - echo "Step 1 - Setting up git on main branch..."
     - test -z "$DEPLOY_KEY" && echo "WARN - No DEPLOY_KEY, skipping commit" && exit 0 || true
     - mkdir -p ~/.ssh
     - echo "$DEPLOY_KEY" | base64 -d > ~/.ssh/id_ed25519
@@ -261,8 +256,15 @@ perf-report:
     - git config user.email "ci@unturf.com"
     - git config user.name "GitLab CI"
     - git fetch origin main
-    - git checkout main
-    - git pull origin main --rebase
+    - git checkout -B main origin/main
+    - echo "Step 2 - Generating performance report..."
+    - bash scripts/generate-perf-report.sh "$CI_COMMIT_TAG" || echo "WARN - Report generation failed"
+    - echo "Step 3 - Generating performance charts..."
+    - test -x build/un && test -f "reports/$CI_COMMIT_TAG/perf.json" && build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "WARN - Charts skipped (build/un or perf.json missing)"
+    - mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || true
+    - echo "Step 4 - Report contents..."
+    - ls -la "reports/$CI_COMMIT_TAG/" 2>/dev/null || echo "No report directory"
+    - echo "Step 5 - Committing to main..."
     - git add reports/
     - git diff --cached --quiet && echo "No changes to commit" || git commit -m "perf - Add performance report for $CI_COMMIT_TAG [ci skip]"
     - git push origin main || echo "Nothing to push"
