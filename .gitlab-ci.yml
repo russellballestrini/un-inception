@@ -334,8 +334,14 @@ perf-aggregate-report:
     - git config user.email "ci@unturf.com"
     - git config user.name "GitLab CI"
     - git fetch origin main
-    - git checkout -B main origin/main
-    - echo "Step 6 - Committing aggregated report..."
+    - echo "Step 6 - Stashing artifact files temporarily..."
+    - git add -A
+    - git stash push -m "Temporary stash of artifacts and generated files"
+    - echo "Step 7 - Checking out main branch..."
+    - git checkout main
+    - git pull origin main || echo "Already up to date"
+    - echo "Step 8 - Restoring artifacts and committing..."
+    - git stash pop || echo "No stash to pop"
     - git add reports/ AGGREGATED-PERFORMANCE.md
     - |
       if git diff --cached --quiet; then
@@ -344,6 +350,7 @@ perf-aggregate-report:
         git commit -m "perf: Update aggregated performance analysis [ci skip]"
       fi
     - git push origin main || echo "Nothing to push"
+    - echo "Step 9 - Verifying results..."
     - echo "✓ Aggregated report generated with charts"
     - ls -lh AGGREGATED-PERFORMANCE.md
     - ls -lh reports/aggregated-*.png 2>/dev/null || echo "  (charts may not have generated)"
