@@ -277,3 +277,60 @@ perf-report:
   rules:
     - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
   allow_failure: true
+
+# ============================================================================
+# STAGE 9b: Aggregated Performance Analysis (cross-release trends)
+# ============================================================================
+perf-aggregate-report:
+  stage: report
+  needs:
+    - perf-report
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
+  script:
+    - echo "========================================"
+    - echo "Aggregated Performance Analysis"
+    - echo "========================================"
+    - echo "Step 1 - Discovering releases from git tags..."
+    - VERSIONS=$(git tag | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
+    - echo "Found tagged releases:"
+    - echo "$VERSIONS"
+    - test -z "$VERSIONS" && echo "ERROR - No version tags found" && exit 1 || true
+    - echo "Step 2 - Copying perf.json files for tagged releases..."
+    - for v in $VERSIONS; do if [ -f "reports/$v/perf.json" ]; then cp "reports/$v/perf.json" "perf-$v.json"; echo "  ✓ $v"; fi; done
+    - FILES=$(ls perf-*.json 2>/dev/null | sed 's/^/-f /' | tr '\n' ' ')
+    - test -z "$FILES" && echo "ERROR - No perf JSON files found" && exit 1 || true
+    - echo "Step 3 - Generating charts via UN..."
+    - test -x build/un && build/un -a $FILES scripts/generate-aggregated-charts.py || echo "WARN - Charts skipped (build/un missing)"
+    - rm -f perf-*.json
+    - mv -f *.png reports/ 2>/dev/null || true
+    - echo "Step 4 - Generating markdown report..."
+    - python3 scripts/aggregate-performance-reports.py reports AGGREGATED-PERFORMANCE.md
+    - echo "Step 5 - Setting up git..."
+    - test -z "$DEPLOY_KEY" && echo "WARN - No DEPLOY_KEY, skipping commit" && exit 0 || true
+    - mkdir -p ~/.ssh
+    - echo "$DEPLOY_KEY" | base64 -d > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - ssh-keyscan -p 2222 -H git.unturf.com >> ~/.ssh/known_hosts 2>/dev/null
+    - git remote set-url origin "ssh://git@git.unturf.com:2222/${CI_PROJECT_PATH}.git"
+    - git config user.email "ci@unturf.com"
+    - git config user.name "GitLab CI"
+    - git fetch origin main
+    - git checkout -B main origin/main
+    - echo "Step 6 - Committing aggregated report..."
+    - git add reports/ AGGREGATED-PERFORMANCE.md
+    - git diff --cached --quiet && echo "No changes to commit" || git commit -m "perf: Update aggregated performance analysis [ci skip]"
+    - git push origin main || echo "Nothing to push"
+    - echo "✓ Aggregated report generated with charts"
+    - ls -lh AGGREGATED-PERFORMANCE.md
+    - ls -lh reports/aggregated-*.png 2>/dev/null || echo "  (charts may not have generated)"
+  artifacts:
+    paths:
+      - AGGREGATED-PERFORMANCE.md
+      - reports/aggregated-*.png
+    expire_in: 90 days
+    when: always
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+  allow_failure: true

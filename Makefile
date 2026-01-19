@@ -1,4 +1,4 @@
-.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua set-version perf-report
+.PHONY: help test test-all test-c test-python test-go test-javascript test-ruby test-php test-rust test-java test-bash test-perl test-lua set-version perf-report perf-aggregate-report
 
 # Client directories with their own Makefiles
 CLIENTS_WITH_MAKEFILE := $(wildcard clients/*/Makefile)
@@ -34,6 +34,7 @@ help:
 	@echo "  make clean                    # Clean build artifacts"
 	@echo "  make set-version VERSION=X.Y.Z  # Set version in all files"
 	@echo "  make perf-report TAG=X.Y.Z     # Generate performance report for release"
+	@echo "  make perf-aggregate-report    # Analyze variance across all reports"
 	@echo ""
 	@echo "Available client Makefiles:"
 	@for dir in $(CLIENT_DIRS); do echo "  $$dir"; done
@@ -335,6 +336,31 @@ endif
 perf-all: perf-report perf-charts
 	@echo "✓ Performance report and charts complete for $(TAG)"
 	@ls -la reports/$(TAG)/
+
+perf-aggregate-report:
+	@echo "Aggregating performance reports across all releases..."
+	@echo "Step 1: Discovering releases from git tags..."
+	@VERSIONS=$$(git tag | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$$' | sort -V); \
+	echo "Found tagged releases: $$VERSIONS"; \
+	if [ -z "$$VERSIONS" ]; then echo "ERROR: No version tags found"; exit 1; fi; \
+	echo "Step 2: Copying perf.json files for tagged releases..."; \
+	for v in $$VERSIONS; do \
+		if [ -f "reports/$$v/perf.json" ]; then \
+			cp "reports/$$v/perf.json" "perf-$$v.json"; \
+			echo "  ✓ $$v"; \
+		fi; \
+	done; \
+	echo "Step 3: Generating charts via UN..."; \
+	FILES=$$(ls perf-*.json 2>/dev/null | sed 's/^/-f /' | tr '\n' ' '); \
+	if [ -z "$$FILES" ]; then echo "ERROR: No perf JSON files found"; exit 1; fi; \
+	build/un -a $$FILES scripts/generate-aggregated-charts.py; \
+	rm -f perf-*.json; \
+	mv -f *.png reports/ 2>/dev/null || true; \
+	echo "Step 4: Generating markdown report..."; \
+	python3 scripts/aggregate-performance-reports.py reports AGGREGATED-PERFORMANCE.md; \
+	echo "✓ Aggregated report generated: AGGREGATED-PERFORMANCE.md"; \
+	echo "✓ Charts generated via UN:"; \
+	ls -lh reports/aggregated-*.png 2>/dev/null || true
 
 # ============================================================================
 # CI Deploy Key Setup (one-time)
