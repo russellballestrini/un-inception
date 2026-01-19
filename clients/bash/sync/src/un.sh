@@ -122,6 +122,10 @@ EOF
 
 run() {
     local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "Error: File not found: $file" >&2
+        exit 1
+    fi
     local code=$(cat "$file")
     local lang=$(detect_language "$file")
     execute "$lang" "$code"
@@ -160,7 +164,42 @@ detect_language() {
         *.sh) echo "bash" ;;
         *.rb) echo "ruby" ;;
         *.js) echo "javascript" ;;
-        *) echo "Unknown file type" >&2; exit 1 ;;
+        *.ts) echo "typescript" ;;
+        *.go) echo "go" ;;
+        *.rs) echo "rust" ;;
+        *.c) echo "c" ;;
+        *.cpp|*.cc|*.cxx) echo "cpp" ;;
+        *.java) echo "java" ;;
+        *.kt) echo "kotlin" ;;
+        *.php) echo "php" ;;
+        *.pl) echo "perl" ;;
+        *.lua) echo "lua" ;;
+        *.r|*.R) echo "r" ;;
+        *.jl) echo "julia" ;;
+        *.hs) echo "haskell" ;;
+        *.ml) echo "ocaml" ;;
+        *.ex|*.exs) echo "elixir" ;;
+        *.erl) echo "erlang" ;;
+        *.clj) echo "clojure" ;;
+        *.scm) echo "scheme" ;;
+        *.lisp) echo "commonlisp" ;;
+        *.cs) echo "csharp" ;;
+        *.fs) echo "fsharp" ;;
+        *.d) echo "d" ;;
+        *.nim) echo "nim" ;;
+        *.zig) echo "zig" ;;
+        *.v) echo "v" ;;
+        *.cr) echo "crystal" ;;
+        *.dart) echo "dart" ;;
+        *.groovy) echo "groovy" ;;
+        *.f90|*.f95) echo "fortran" ;;
+        *.cob) echo "cobol" ;;
+        *.tcl) echo "tcl" ;;
+        *.raku) echo "raku" ;;
+        *.pro) echo "prolog" ;;
+        *.forth|*.4th) echo "forth" ;;
+        *.m) echo "objc" ;;
+        *) echo "Error: Cannot detect language for $file" >&2; exit 1 ;;
     esac
 }
 
@@ -352,9 +391,14 @@ if [ $# -gt 0 ]; then
             ;;
         *)
             result=$(run "$1")
+            if [ -z "$result" ] || ! echo "$result" | jq -e . >/dev/null 2>&1; then
+                echo "Error: Failed to execute $1" >&2
+                exit 1
+            fi
             echo "$result" | jq -r '.stdout // empty'
             echo "$result" | jq -r '.stderr // empty' >&2
-            exit "$(echo "$result" | jq -r '.exit_code // 0')"
+            exit_code=$(echo "$result" | jq -r '.exit_code // 0')
+            exit "${exit_code:-0}"
             ;;
     esac
 else

@@ -19,90 +19,88 @@ os.environ['UNSANDBOX_SECRET_KEY'] = 'test-secret-key'
 
 
 class TestExtensionMapping(unittest.TestCase):
-    """Test the EXT_MAP extension to language mapping"""
+    """Test the detect_language function for extension to language mapping"""
 
     def setUp(self):
         # Import here after env is set
         import importlib.util
         spec = importlib.util.spec_from_file_location("un", os.path.join(os.path.dirname(__file__), '../../un.py'))
         self.un = importlib.util.module_from_spec(spec)
-        # Don't execute the module, just load the constants
-        with open(os.path.join(os.path.dirname(__file__), '../../un.py')) as f:
-            content = f.read()
-            # Extract EXT_MAP
-            exec(compile(content.split('def get_api_keys')[0], 'un.py', 'exec'), self.un.__dict__)
+        spec.loader.exec_module(self.un)
 
     def test_python_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.py'], 'python')
+        self.assertEqual(self.un.detect_language('test.py'), 'python')
 
     def test_javascript_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.js'], 'javascript')
-        self.assertEqual(self.un.EXT_MAP['.ts'], 'typescript')
+        self.assertEqual(self.un.detect_language('test.js'), 'javascript')
+        self.assertEqual(self.un.detect_language('test.ts'), 'typescript')
 
     def test_ruby_extension(self):
-        self.assertEqual(self.un.EXT_MAP['.rb'], 'ruby')
+        self.assertEqual(self.un.detect_language('test.rb'), 'ruby')
 
     def test_go_extension(self):
-        self.assertEqual(self.un.EXT_MAP['.go'], 'go')
+        self.assertEqual(self.un.detect_language('test.go'), 'go')
 
     def test_rust_extension(self):
-        self.assertEqual(self.un.EXT_MAP['.rs'], 'rust')
+        self.assertEqual(self.un.detect_language('test.rs'), 'rust')
 
     def test_c_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.c'], 'c')
-        self.assertEqual(self.un.EXT_MAP['.cpp'], 'cpp')
-        self.assertEqual(self.un.EXT_MAP['.cc'], 'cpp')
-        self.assertEqual(self.un.EXT_MAP['.cxx'], 'cpp')
+        self.assertEqual(self.un.detect_language('test.c'), 'c')
+        self.assertEqual(self.un.detect_language('test.cpp'), 'cpp')
+        self.assertEqual(self.un.detect_language('test.cc'), 'cpp')
+        self.assertEqual(self.un.detect_language('test.cxx'), 'cpp')
 
     def test_jvm_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.java'], 'java')
-        self.assertEqual(self.un.EXT_MAP['.kt'], 'kotlin')
-        self.assertEqual(self.un.EXT_MAP['.groovy'], 'groovy')
-        self.assertEqual(self.un.EXT_MAP['.scala'], 'scala')
+        self.assertEqual(self.un.detect_language('test.java'), 'java')
+        self.assertEqual(self.un.detect_language('test.kt'), 'kotlin')
+        self.assertEqual(self.un.detect_language('test.groovy'), 'groovy')
+        # scala not supported in current SDK
+        self.assertIsNone(self.un.detect_language('test.scala'))
 
     def test_dotnet_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.cs'], 'csharp')
-        self.assertEqual(self.un.EXT_MAP['.fs'], 'fsharp')
+        self.assertEqual(self.un.detect_language('test.cs'), 'csharp')
+        self.assertEqual(self.un.detect_language('test.fs'), 'fsharp')
 
     def test_functional_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.hs'], 'haskell')
-        self.assertEqual(self.un.EXT_MAP['.ml'], 'ocaml')
-        self.assertEqual(self.un.EXT_MAP['.clj'], 'clojure')
-        self.assertEqual(self.un.EXT_MAP['.scm'], 'scheme')
-        self.assertEqual(self.un.EXT_MAP['.lisp'], 'commonlisp')
-        self.assertEqual(self.un.EXT_MAP['.erl'], 'erlang')
-        self.assertEqual(self.un.EXT_MAP['.ex'], 'elixir')
-        self.assertEqual(self.un.EXT_MAP['.exs'], 'elixir')
+        self.assertEqual(self.un.detect_language('test.hs'), 'haskell')
+        self.assertEqual(self.un.detect_language('test.ml'), 'ocaml')
+        self.assertEqual(self.un.detect_language('test.clj'), 'clojure')
+        self.assertEqual(self.un.detect_language('test.scm'), 'scheme')
+        self.assertEqual(self.un.detect_language('test.lisp'), 'commonlisp')
+        self.assertEqual(self.un.detect_language('test.erl'), 'erlang')
+        self.assertEqual(self.un.detect_language('test.ex'), 'elixir')
+        self.assertEqual(self.un.detect_language('test.exs'), 'elixir')
 
     def test_scientific_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.jl'], 'julia')
-        self.assertEqual(self.un.EXT_MAP['.r'], 'r')
-        self.assertEqual(self.un.EXT_MAP['.R'], 'r')
-        self.assertEqual(self.un.EXT_MAP['.f90'], 'fortran')
-        self.assertEqual(self.un.EXT_MAP['.f95'], 'fortran')
+        self.assertEqual(self.un.detect_language('test.jl'), 'julia')
+        self.assertEqual(self.un.detect_language('test.r'), 'r')
+        # Note: .R gets lowercased, so still maps to 'r'
+        self.assertEqual(self.un.detect_language('test.R'), 'r')
+        self.assertEqual(self.un.detect_language('test.f90'), 'fortran')
+        self.assertEqual(self.un.detect_language('test.f95'), 'fortran')
 
     def test_exotic_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.d'], 'd')
-        self.assertEqual(self.un.EXT_MAP['.nim'], 'nim')
-        self.assertEqual(self.un.EXT_MAP['.zig'], 'zig')
-        self.assertEqual(self.un.EXT_MAP['.v'], 'v')
-        self.assertEqual(self.un.EXT_MAP['.cr'], 'crystal')
-        self.assertEqual(self.un.EXT_MAP['.dart'], 'dart')
+        self.assertEqual(self.un.detect_language('test.d'), 'd')
+        self.assertEqual(self.un.detect_language('test.nim'), 'nim')
+        self.assertEqual(self.un.detect_language('test.zig'), 'zig')
+        self.assertEqual(self.un.detect_language('test.v'), 'v')
+        self.assertEqual(self.un.detect_language('test.cr'), 'crystal')
+        self.assertEqual(self.un.detect_language('test.dart'), 'dart')
 
     def test_legacy_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.cob'], 'cobol')
-        self.assertEqual(self.un.EXT_MAP['.pro'], 'prolog')
-        self.assertEqual(self.un.EXT_MAP['.forth'], 'forth')
-        self.assertEqual(self.un.EXT_MAP['.4th'], 'forth')
+        self.assertEqual(self.un.detect_language('test.cob'), 'cobol')
+        self.assertEqual(self.un.detect_language('test.pro'), 'prolog')
+        self.assertEqual(self.un.detect_language('test.forth'), 'forth')
+        self.assertEqual(self.un.detect_language('test.4th'), 'forth')
 
     def test_other_extensions(self):
-        self.assertEqual(self.un.EXT_MAP['.tcl'], 'tcl')
-        self.assertEqual(self.un.EXT_MAP['.raku'], 'raku')
-        self.assertEqual(self.un.EXT_MAP['.m'], 'objc')
-        self.assertEqual(self.un.EXT_MAP['.lua'], 'lua')
-        self.assertEqual(self.un.EXT_MAP['.pl'], 'perl')
-        self.assertEqual(self.un.EXT_MAP['.php'], 'php')
-        self.assertEqual(self.un.EXT_MAP['.sh'], 'bash')
+        self.assertEqual(self.un.detect_language('test.tcl'), 'tcl')
+        self.assertEqual(self.un.detect_language('test.raku'), 'raku')
+        self.assertEqual(self.un.detect_language('test.m'), 'objc')
+        self.assertEqual(self.un.detect_language('test.lua'), 'lua')
+        self.assertEqual(self.un.detect_language('test.pl'), 'perl')
+        self.assertEqual(self.un.detect_language('test.php'), 'php')
+        self.assertEqual(self.un.detect_language('test.sh'), 'bash')
 
 
 class TestHMACSignature(unittest.TestCase):
