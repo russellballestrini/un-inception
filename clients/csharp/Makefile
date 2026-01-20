@@ -1,9 +1,10 @@
 # UN C# Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional clean help
+.PHONY: all build build-mono build-dotnet test test-cli test-library test-integration test-functional clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
+DOTNET_DIR := dotnet
 GREEN := \033[32m
 RED := \033[31m
 YELLOW := \033[33m
@@ -14,14 +15,25 @@ NC := \033[0m
 help:
 	@echo "UN C# Client - Build and Test"
 	@echo ""
-	@echo "  make build            Compile with dotnet"
+	@echo "  make build            Compile both Mono (.NET Framework) and .NET versions"
+	@echo "  make build-mono       Compile Mono/.NET Framework version (sync/)"
+	@echo "  make build-dotnet     Compile modern .NET 10 version (dotnet/)"
 	@echo "  make test             All 4 test modes"
 	@echo ""
 
-build:
-	@if [ -f "$(SYNC_DIR)/*.csproj" ] || [ -f "$(SYNC_DIR)/*.sln" ]; then \
-		cd $(SYNC_DIR) && dotnet build && echo "$(GREEN)✓$(NC) Sync SDK compiled"; \
-	else echo "$(YELLOW)⊘$(NC) No .csproj or .sln found"; fi
+build: build-mono build-dotnet
+
+build-mono:
+	@echo "$(YELLOW)Building Mono/.NET Framework version...$(NC)"
+	@if [ -f "$(SYNC_DIR)/Un.cs" ]; then \
+		mcs "$(SYNC_DIR)/src/Un.cs" -out:"$(SYNC_DIR)/un-mono.exe" && echo "$(GREEN)✓$(NC) Mono version compiled"; \
+	else echo "$(RED)✗$(NC) Mono source not found"; fi
+
+build-dotnet:
+	@echo "$(YELLOW)Building .NET 10 version...$(NC)"
+	@if [ -f "$(DOTNET_DIR)/Un.csproj" ]; then \
+		cd $(DOTNET_DIR) && dotnet build -c Release && echo "$(GREEN)✓$(NC) .NET version compiled"; \
+	else echo "$(RED)✗$(NC) .NET project not found"; fi
 
 test: test-cli test-library test-integration test-functional
 	@echo "$(GREEN)✓ C# Client: All 4 test modes complete$(NC)"
@@ -64,5 +76,6 @@ test-functional:
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
 
 clean:
-	@rm -rf $(SYNC_DIR)/bin $(SYNC_DIR)/obj 2>/dev/null || true
+	@rm -rf $(SYNC_DIR)/bin $(SYNC_DIR)/obj $(SYNC_DIR)/un-mono.exe 2>/dev/null || true
+	@rm -rf $(DOTNET_DIR)/bin $(DOTNET_DIR)/obj 2>/dev/null || true
 	@echo "$(GREEN)✓$(NC) Cleaned C# artifacts"
