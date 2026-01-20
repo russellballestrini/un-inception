@@ -2121,7 +2121,7 @@ pub fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
         .timeout(Duration::from_secs(30))
         .build()?;
 
-    let url = "https://unsandbox.com/keys/validate";
+    let url = "https://api.unsandbox.com/keys/validate";
     let path = "/keys/validate";
     let timestamp = get_timestamp();
     let body_str = "";

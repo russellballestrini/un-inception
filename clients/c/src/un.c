@@ -5574,7 +5574,7 @@ static int validate_api_key(const UnsandboxCredentials *creds) {
     response.size = 0;
 
     char url[256];
-    snprintf(url, sizeof(url), "%s/keys/validate", PORTAL_BASE);
+    snprintf(url, sizeof(url), "%s/keys/validate", API_BASE);
 
     // Use HMAC authentication with empty body
     struct curl_slist *headers = NULL;
@@ -5824,7 +5824,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --lock ID          Lock a service to prevent deletion\n");
     fprintf(stderr, "  --unlock ID        Unlock a service to allow deletion\n");
     fprintf(stderr, "  --resize ID        Resize service vCPU/memory (requires --vcpu)\n");
-    fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (requires --bootstrap)\n");
+    fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (optional: --bootstrap or --bootstrap-file)\n");
     fprintf(stderr, "  --execute ID CMD   Run a command in a running service\n");
     fprintf(stderr, "  --dump-bootstrap ID [FILE]  Dump bootstrap script (for migrations)\n");
     fprintf(stderr, "  --snapshot ID      Create snapshot of service (paid tiers only)\n");
@@ -5901,7 +5901,8 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s service --unfreeze abc123       # unfreeze a service\n", prog);
     fprintf(stderr, "  %s service --resize abc123 --vcpu 4  # scale to 4 vCPU, 8GB RAM\n", prog);
     fprintf(stderr, "  %s service --destroy abc123        # destroy a service\n", prog);
-    fprintf(stderr, "  %s service --redeploy abc123 --bootstrap ./script.sh\n", prog);
+    fprintf(stderr, "  %s service --redeploy abc123 --bootstrap-file ./script.sh\n", prog);
+    fprintf(stderr, "  %s service --redeploy abc123       # uses stored encrypted bootstrap\n", prog);
     fprintf(stderr, "  %s service --execute maldoror 'journalctl -u myapp -n 50'\n", prog);
     fprintf(stderr, "  %s service --dump-bootstrap maldoror  # print bootstrap to stdout\n", prog);
     fprintf(stderr, "  %s service --dump-bootstrap maldoror backup.sh  # save to file\n", prog);
@@ -9332,13 +9333,11 @@ int main(int argc, char *argv[]) {
             }
             ret = resize_service(creds, service_id, vcpu);
         } else if (do_redeploy) {
-            if (!service_bootstrap) {
-                fprintf(stderr, "Error: --bootstrap required for --redeploy\n");
-                curl_global_cleanup();
-                free_credentials(creds);
-                return 1;
-            }
-            ret = redeploy_service(creds, service_id, service_bootstrap);
+            // Bootstrap is optional for redeploy:
+            // - If provided via --bootstrap or --bootstrap-file, use it
+            // - If omitted, API will use the stored encrypted bootstrap
+            const char *bootstrap_to_use = bootstrap_file ? bootstrap_file : service_bootstrap;
+            ret = redeploy_service(creds, service_id, bootstrap_to_use);
         } else if (do_execute) {
             // Default timeout 30 seconds (30000ms)
             ret = execute_service(creds, service_id, execute_command, 30000);

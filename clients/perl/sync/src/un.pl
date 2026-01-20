@@ -853,7 +853,7 @@ sub validate_key {
     my ($public_key, $secret_key, $should_extend) = @_;
 
     # Call /keys/validate endpoint
-    my $url = "$PORTAL_BASE/keys/validate";
+    my $url = "$API_BASE/keys/validate";
     my $ua = LWP::UserAgent->new(timeout => 30);
     my $request = HTTP::Request->new('POST' => $url);
     $request->header('Authorization' => "Bearer $public_key");

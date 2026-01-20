@@ -2007,7 +2007,7 @@ def validate_keys(
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
 
-    url = f"{PORTAL_BASE}/keys/validate"
+    url = f"{API_BASE}/keys/validate"
     timestamp = int(time.time())
     body = ""
 
