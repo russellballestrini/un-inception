@@ -110,6 +110,7 @@ typedef struct {
     char *domains;
     int vcpu;
     int locked;
+    int unfreeze_on_demand; /* if true, frozen services auto-unfreeze on HTTP request */
     int64_t created_at;
     int64_t last_activity;
 } unsandbox_service_t;
@@ -274,6 +275,10 @@ int unsandbox_service_lock(
 
 int unsandbox_service_unlock(
     const char *service_id,
+    const char *public_key, const char *secret_key);
+
+int unsandbox_service_set_unfreeze_on_demand(
+    const char *service_id, int enabled,
     const char *public_key, const char *secret_key);
 
 int unsandbox_service_redeploy(

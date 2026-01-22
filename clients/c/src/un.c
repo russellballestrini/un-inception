@@ -2654,7 +2654,7 @@ static char* get_service_logs(const UnsandboxCredentials *creds, const char *ser
 // input_files: array of files to include (written to /tmp/ in container)
 // input_file_count: number of input files
 // golden_image: optional LXD image alias to use instead of default (for testing)
-static char* create_service(const UnsandboxCredentials *creds, const char *name, const char *ports, const char *domains, const char *bootstrap, const char *bootstrap_content, const char *network_mode, int vcpu, const char *service_type, struct InputFile *input_files, int input_file_count, const char *golden_image) {
+static char* create_service(const UnsandboxCredentials *creds, const char *name, const char *ports, const char *domains, const char *bootstrap, const char *bootstrap_content, const char *network_mode, int vcpu, const char *service_type, struct InputFile *input_files, int input_file_count, const char *golden_image, int unfreeze_on_demand) {
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
 
@@ -2787,6 +2787,12 @@ static char* create_service(const UnsandboxCredentials *creds, const char *name,
             free(esc_filename);
         }
         p += sprintf(p, "]");
+    }
+
+    // Unfreeze on demand (auto-wake on HTTP request)
+    if (unfreeze_on_demand) {
+        if (p > payload + 1) p += sprintf(p, ",");
+        p += sprintf(p, "\"unfreeze_on_demand\":true");
     }
 
     p += sprintf(p, "}");
@@ -3020,17 +3026,21 @@ static int get_service_info(const UnsandboxCredentials *creds, const char *servi
     char *name = extract_json_string(response.data, "name");
     char *status = extract_json_string(response.data, "status");
     char *network_mode = extract_json_string(response.data, "network_mode");
+    int locked = (int)extract_json_number(response.data, "locked");
+    int unfreeze_on_demand = (int)extract_json_number(response.data, "unfreeze_on_demand");
 
     printf("Service Information:\n");
-    printf("  ID:           %s\n", id ? id : "-");
-    printf("  Name:         %s\n", name ? name : "-");
-    printf("  Status:       %s\n", status ? status : "-");
-    printf("  Network Mode: %s\n", network_mode ? network_mode : "-");
+    printf("  ID:              %s\n", id ? id : "-");
+    printf("  Name:            %s\n", name ? name : "-");
+    printf("  Status:          %s\n", status ? status : "-");
+    printf("  Network Mode:    %s\n", network_mode ? network_mode : "-");
+    printf("  Locked:          %s\n", locked ? "yes" : "no");
+    printf("  Auto-Unfreeze:   %s\n", unfreeze_on_demand ? "yes" : "no");
 
     // Extract ports array
     const char *ports_start = strstr(response.data, "\"ports\":[");
     if (ports_start) {
-        printf("  Ports:        ");
+        printf("  Ports:           ");
         const char *pos = ports_start + 9;
         const char *ports_end = strchr(pos, ']');
         if (ports_end) {
@@ -3336,6 +3346,67 @@ static int unlock_service(const UnsandboxCredentials *creds, const char *service
     }
 
     printf("\033[32mService unlocked successfully\033[0m\n");
+    free(response.data);
+    return 0;
+}
+
+// Set unfreeze_on_demand for a service
+static int set_unfreeze_on_demand(const UnsandboxCredentials *creds, const char *service_id, int enabled) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s/services/%s", API_BASE, service_id);
+
+    char path[256];
+    snprintf(path, sizeof(path), "/services/%s", service_id);
+
+    char body[128];
+    snprintf(body, sizeof(body), "{\"unfreeze_on_demand\":%s}", enabled ? "true" : "false");
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "PATCH", path, body);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code == 404) {
+        fprintf(stderr, "Error: Service not found\n");
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code != 200) {
+        fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        if (response.data) fprintf(stderr, "%s\n", response.data);
+        free(response.data);
+        return 1;
+    }
+
+    printf("\033[32mAuto-unfreeze %s\033[0m\n", enabled ? "enabled" : "disabled");
     free(response.data);
     return 0;
 }
@@ -5809,6 +5880,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --golden-image IMG Use custom LXD image alias (for testing, e.g., jammy-golden-22.04)\n");
     fprintf(stderr, "  --bootstrap CMD    Bootstrap command or URI to run on startup\n");
     fprintf(stderr, "  --bootstrap-file FILE  Upload local file as bootstrap script content\n");
+    fprintf(stderr, "  --unfreeze-on-demand   Enable auto-unfreeze when HTTP request arrives\n");
     fprintf(stderr, "  -e, --env KEY=VAL  Set environment variable (can repeat, stored encrypted)\n");
     fprintf(stderr, "  --env-file FILE    Load env vars from .env file (stored encrypted)\n");
     fprintf(stderr, "  -f FILE            Upload file to /tmp/ (can use multiple times)\n");
@@ -5823,6 +5895,8 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --destroy ID       Destroy a service\n");
     fprintf(stderr, "  --lock ID          Lock a service to prevent deletion\n");
     fprintf(stderr, "  --unlock ID        Unlock a service to allow deletion\n");
+    fprintf(stderr, "  --auto-unfreeze ID     Enable auto-unfreeze on HTTP request\n");
+    fprintf(stderr, "  --no-auto-unfreeze ID  Disable auto-unfreeze on HTTP request\n");
     fprintf(stderr, "  --resize ID        Resize service vCPU/memory (requires --vcpu)\n");
     fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (optional: --bootstrap or --bootstrap-file)\n");
     fprintf(stderr, "  --execute ID CMD   Run a command in a running service\n");
@@ -6184,6 +6258,15 @@ int unsandbox_service_unlock(const char *service_id,
     UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
     if (!creds) return -1;
     int result = unlock_service(creds, service_id);
+    free_credentials(creds);
+    return result;
+}
+
+int unsandbox_service_set_unfreeze_on_demand(const char *service_id, int enabled,
+                                             const char *public_key, const char *secret_key) {
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) return -1;
+    int result = set_unfreeze_on_demand(creds, service_id, enabled);
     free_credentials(creds);
     return result;
 }
@@ -7283,6 +7366,7 @@ unsandbox_service_list_t *unsandbox_service_list(
                 list->services[i].domains = extract_json_string(pos, "domains");
                 list->services[i].vcpu = (int)extract_json_number(pos, "vcpu");
                 list->services[i].locked = (int)extract_json_number(pos, "locked");
+                list->services[i].unfreeze_on_demand = (int)extract_json_number(pos, "unfreeze_on_demand");
                 list->services[i].created_at = extract_json_number(pos, "created_at");
                 list->services[i].last_activity = extract_json_number(pos, "last_activity");
 
@@ -7366,6 +7450,7 @@ unsandbox_service_t *unsandbox_service_get(
     service->domains = extract_json_string(response.data, "domains");
     service->vcpu = (int)extract_json_number(response.data, "vcpu");
     service->locked = (int)extract_json_number(response.data, "locked");
+    service->unfreeze_on_demand = (int)extract_json_number(response.data, "unfreeze_on_demand");
     service->created_at = extract_json_number(response.data, "created_at");
     service->last_activity = extract_json_number(response.data, "last_activity");
 
@@ -7382,7 +7467,7 @@ char *unsandbox_service_create(
         set_last_error("No credentials available");
         return NULL;
     }
-    char *result = create_service(creds, name, ports, domains, bootstrap, NULL, network_mode, 0, NULL, NULL, 0, NULL);
+    char *result = create_service(creds, name, ports, domains, bootstrap, NULL, network_mode, 0, NULL, NULL, 0, NULL, 0);
     free_credentials(creds);
     return result;
 }
@@ -8981,6 +9066,8 @@ int main(int argc, char *argv[]) {
         int do_destroy = 0;
         int do_lock = 0;
         int do_unlock = 0;
+        int do_auto_unfreeze = 0;
+        int do_no_auto_unfreeze = 0;
         int do_resize = 0;
         int do_redeploy = 0;
         int do_execute = 0;
@@ -8992,6 +9079,7 @@ int main(int argc, char *argv[]) {
         const char *restore_snapshot_id = NULL;
         const char *snapshot_name = NULL;
         int hot_snapshot = 0;
+        int create_unfreeze_on_demand = 0;  // For --unfreeze-on-demand flag on create
 
         // Environment variables for service create
         char *service_env_content = NULL;  // Accumulated env vars (KEY=VALUE\n...)
@@ -9133,6 +9221,14 @@ int main(int argc, char *argv[]) {
                 do_unlock = 1;
                 i++;
                 service_id = argv[i];
+            } else if (strcmp(argv[i], "--auto-unfreeze") == 0 && i + 1 < argc) {
+                do_auto_unfreeze = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--no-auto-unfreeze") == 0 && i + 1 < argc) {
+                do_no_auto_unfreeze = 1;
+                i++;
+                service_id = argv[i];
             } else if (strcmp(argv[i], "--resize") == 0 && i + 1 < argc) {
                 do_resize = 1;
                 i++;
@@ -9176,6 +9272,8 @@ int main(int argc, char *argv[]) {
                 snapshot_name = argv[i];
             } else if (strcmp(argv[i], "--hot") == 0) {
                 hot_snapshot = 1;
+            } else if (strcmp(argv[i], "--unfreeze-on-demand") == 0) {
+                create_unfreeze_on_demand = 1;
             } else if ((strcmp(argv[i], "-e") == 0 || strcmp(argv[i], "--env") == 0) && i + 1 < argc) {
                 // -e KEY=VALUE or --env KEY=VALUE - accumulate env vars
                 i++;
@@ -9324,6 +9422,10 @@ int main(int argc, char *argv[]) {
             ret = lock_service(creds, service_id);
         } else if (do_unlock) {
             ret = unlock_service(creds, service_id);
+        } else if (do_auto_unfreeze) {
+            ret = set_unfreeze_on_demand(creds, service_id, 1);
+        } else if (do_no_auto_unfreeze) {
+            ret = set_unfreeze_on_demand(creds, service_id, 0);
         } else if (do_resize) {
             if (vcpu < 1 || vcpu > 8) {
                 fprintf(stderr, "Error: --vcpu must be 1-8 for resize\n");
@@ -9406,7 +9508,7 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, " (%d files)...", service_input_file_count);
             }
             fflush(stderr);
-            char *created_id = create_service(creds, service_name, service_ports, service_domains, service_bootstrap, bootstrap_content, network_mode, vcpu, service_type, service_input_files, service_input_file_count, golden_image);
+            char *created_id = create_service(creds, service_name, service_ports, service_domains, service_bootstrap, bootstrap_content, network_mode, vcpu, service_type, service_input_files, service_input_file_count, golden_image, create_unfreeze_on_demand);
             if (bootstrap_content) free(bootstrap_content);
             // Free input file memory
             for (int i = 0; i < service_input_file_count; i++) {
