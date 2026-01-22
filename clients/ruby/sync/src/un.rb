@@ -894,6 +894,7 @@ module Un
     # @param vcpu [Integer] Number of vCPUs (1-8)
     # @param custom_domains [Array<String>, nil] Custom domains for the service
     # @param service_type [String, nil] Service type for SRV records (e.g., "minecraft")
+    # @param unfreeze_on_demand [Boolean] If true, service will auto-wake on HTTP request (default: false)
     # @return [Hash] Response hash with service_id
     # @raise [CredentialsError] If no credentials found
     # @raise [APIError] If API request fails
@@ -901,7 +902,7 @@ module Un
     # @example
     #     result = Un.create_service("web", [80, 443], "apt install -y nginx && nginx")
     #     puts result["service_id"]
-    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil)
+    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false)
       pk, sk = resolve_credentials(public_key, secret_key)
       data = {
         name: name,
@@ -912,6 +913,7 @@ module Un
       data[:vcpu] = vcpu if vcpu > 1
       data[:custom_domains] = custom_domains if custom_domains
       data[:service_type] = service_type if service_type
+      data[:unfreeze_on_demand] = unfreeze_on_demand if unfreeze_on_demand
       make_request('POST', '/services', pk, sk, data)
     end
 
@@ -1031,6 +1033,25 @@ module Un
     def unlock_service(service_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
       make_request('POST', "/services/#{service_id}/unlock", pk, sk, {})
+    end
+
+    # Set unfreeze-on-demand for a service
+    #
+    # When enabled, a frozen service will automatically wake when it receives an HTTP request.
+    #
+    # @param service_id [String] Service ID to update
+    # @param enabled [Boolean] Whether to enable unfreeze-on-demand
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with update confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.set_unfreeze_on_demand(service_id, true)
+    def set_unfreeze_on_demand(service_id, enabled, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('PATCH', "/services/#{service_id}", pk, sk, { unfreeze_on_demand: enabled })
     end
 
     # Get service logs (bootstrap output)

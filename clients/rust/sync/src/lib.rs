@@ -311,6 +311,9 @@ pub struct Service {
     /// Whether the service is locked (cannot be modified)
     #[serde(default)]
     pub locked: bool,
+    /// Whether the service automatically unfreezes on incoming HTTP requests
+    #[serde(default)]
+    pub unfreeze_on_demand: bool,
     /// Public URL for the service
     #[serde(default)]
     pub url: String,
@@ -377,6 +380,8 @@ pub struct ServiceCreateOptions {
     pub bootstrap: Option<String>,
     /// Bootstrap script URL
     pub bootstrap_url: Option<String>,
+    /// Whether to enable automatic unfreezing on incoming HTTP requests
+    pub unfreeze_on_demand: Option<bool>,
 }
 
 /// Options for updating a service
@@ -1807,6 +1812,9 @@ pub fn create_service(
         if let Some(bootstrap_url) = opts.bootstrap_url {
             body["bootstrap_url"] = serde_json::json!(bootstrap_url);
         }
+        if let Some(unfreeze_on_demand) = opts.unfreeze_on_demand {
+            body["unfreeze_on_demand"] = serde_json::json!(unfreeze_on_demand);
+        }
     }
 
     make_request("POST", "/services", creds, Some(&body))
@@ -1923,6 +1931,26 @@ pub fn unlock_service(service_id: &str, creds: &Credentials) -> Result<Service> 
     let path = format!("/services/{}/unlock", service_id);
     let body = serde_json::json!({});
     make_request("POST", &path, creds, Some(&body))
+}
+
+/// Set the unfreeze_on_demand flag for a service.
+///
+/// When enabled, the service will automatically unfreeze when it receives
+/// an incoming HTTP request while frozen.
+///
+/// # Arguments
+/// * `service_id` - Service ID to update
+/// * `enabled` - Whether to enable automatic unfreezing on demand
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+pub fn set_unfreeze_on_demand(service_id: &str, enabled: bool, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}", service_id);
+    let body = serde_json::json!({
+        "unfreeze_on_demand": enabled
+    });
+    make_request("PATCH", &path, creds, Some(&body))
 }
 
 /// Get bootstrap logs for a service.

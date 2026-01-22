@@ -141,6 +141,8 @@ interface Args {
   visibilityMode: string | null;
   imageSpawn: string | null;
   imageClone: string | null;
+  unfreezeOnDemand: boolean | null;
+  setUnfreezeOnDemand: string | null;
 }
 
 interface ApiKeys {
@@ -687,6 +689,14 @@ async function cmdService(args: Args): Promise<void> {
     return;
   }
 
+  if (args.setUnfreezeOnDemand) {
+    const enabled = args.unfreezeOnDemand === true;
+    const payload = { unfreeze_on_demand: enabled };
+    await apiRequest(`/services/${args.setUnfreezeOnDemand}`, "PATCH", payload, keys);
+    console.log(`${GREEN}Unfreeze on demand ${enabled ? 'enabled' : 'disabled'} for service ${args.setUnfreezeOnDemand}${RESET}`);
+    return;
+  }
+
   if (args.execute) {
     const payload = { command: args.command_arg };
     const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, keys);
@@ -755,6 +765,7 @@ async function cmdService(args: Args): Promise<void> {
     }
     if (args.network) payload.network = args.network;
     if (args.vcpu) payload.vcpu = args.vcpu;
+    if (args.unfreezeOnDemand) payload.unfreeze_on_demand = true;
 
     const result = await apiRequest("/services", "POST", payload, keys);
     const serviceId = result.id;
@@ -1010,6 +1021,8 @@ function parseArgs(argv: string[]): Args {
     visibilityMode: null,
     imageSpawn: null,
     imageClone: null,
+    unfreezeOnDemand: null,
+    setUnfreezeOnDemand: null,
   };
 
   let i = 2;
@@ -1170,6 +1183,12 @@ function parseArgs(argv: string[]): Args {
         args.clone = argv[++i];
       }
       i++;
+    } else if (arg === '--unfreeze-on-demand') {
+      args.unfreezeOnDemand = true;
+      i++;
+    } else if (arg === '--set-unfreeze-on-demand' && i + 1 < argv.length) {
+      args.setUnfreezeOnDemand = argv[++i];
+      i++;
     } else if (!arg.startsWith('-')) {
       args.sourceFile = arg;
       i++;
@@ -1251,6 +1270,8 @@ Service options:
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script
   --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
+  --unfreeze-on-demand Enable unfreeze on demand (with --name or --set-unfreeze-on-demand)
+  --set-unfreeze-on-demand ID  Set unfreeze on demand for service
 
 Image options:
   --list           List all images

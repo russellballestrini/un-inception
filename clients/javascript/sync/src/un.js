@@ -13,7 +13,7 @@
  *     freezeSession, unfreezeSession, boostSession, unboostSession, shellSession,
  *     // Service management
  *     listServices, createService, getService, updateService, deleteService,
- *     freezeService, unfreezeService, lockService, unlockService,
+ *     freezeService, unfreezeService, lockService, unlockService, setUnfreezeOnDemand,
  *     getServiceLogs, getServiceEnv, setServiceEnv, deleteServiceEnv,
  *     exportServiceEnv, redeployService, executeInService,
  *     // Snapshot management
@@ -735,6 +735,7 @@ async function listServices(publicKey, secretKey) {
  *     - vcpu: Number of vCPUs (1-8)
  *     - domains: Array of custom domains
  *     - serviceType: Service type for SRV records (minecraft, mumble, etc.)
+ *     - unfreezeOnDemand: If true, frozen services wake automatically on HTTP traffic
  *
  * Returns: Promise<Object> (service info with service_id)
  */
@@ -755,6 +756,7 @@ async function createService(name, ports, bootstrap, opts = {}, publicKey, secre
   if (opts.vcpu && opts.vcpu > 1) data.vcpu = opts.vcpu;
   if (opts.domains) data.custom_domains = opts.domains;
   if (opts.serviceType) data.service_type = opts.serviceType;
+  if (opts.unfreezeOnDemand) data.unfreeze_on_demand = true;
 
   return makeRequest('POST', '/services', publicKey, secretKey, data);
 }
@@ -852,6 +854,22 @@ async function lockService(serviceId, publicKey, secretKey) {
 async function unlockService(serviceId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
   return makeRequest('POST', `/services/${serviceId}/unlock`, publicKey, secretKey, {});
+}
+
+/**
+ * Set unfreeze-on-demand for a service.
+ *
+ * When enabled, frozen services will automatically wake when HTTP traffic arrives.
+ *
+ * Args:
+ *   serviceId: Service ID to update
+ *   enabled: true to enable, false to disable
+ *
+ * Returns: Promise<Object> (update confirmation)
+ */
+async function setUnfreezeOnDemand(serviceId, enabled, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('PATCH', `/services/${serviceId}`, publicKey, secretKey, { unfreeze_on_demand: enabled });
 }
 
 /**
@@ -1356,6 +1374,7 @@ module.exports = {
   unfreezeService,
   lockService,
   unlockService,
+  setUnfreezeOnDemand,
   getServiceLogs,
   getServiceEnv,
   setServiceEnv,

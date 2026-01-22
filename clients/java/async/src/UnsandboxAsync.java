@@ -1353,6 +1353,54 @@ public class UnsandboxAsync {
     }
 
     /**
+     * Create a new service (long-running container) with unfreeze-on-demand option.
+     *
+     * @param name Service name (used for hostname)
+     * @param ports Comma-separated list of ports to expose (e.g., "80,443")
+     * @param bootstrap Bootstrap script or URL to run on service creation
+     * @param unfreezeOnDemand If true, frozen service will auto-wake on HTTP request
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with service_id
+     */
+    public static CompletableFuture<Map<String, Object>> createService(
+        String name,
+        String ports,
+        String bootstrap,
+        boolean unfreezeOnDemand,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("name", name);
+        if (ports != null && !ports.isEmpty()) {
+            List<Integer> portList = new ArrayList<>();
+            for (String p : ports.split(",")) {
+                try {
+                    portList.add(Integer.parseInt(p.trim()));
+                } catch (NumberFormatException e) {
+                    // Skip invalid port
+                }
+            }
+            data.put("ports", portList);
+        }
+        if (bootstrap != null && !bootstrap.isEmpty()) {
+            if (bootstrap.startsWith("http://") || bootstrap.startsWith("https://")) {
+                data.put("bootstrap_url", bootstrap);
+            } else {
+                data.put("bootstrap", bootstrap);
+            }
+        }
+        if (unfreezeOnDemand) {
+            data.put("unfreeze_on_demand", true);
+        }
+
+        return makeRequest("POST", "/services", creds[0], creds[1], data);
+    }
+
+    /**
      * Get details of a specific service.
      *
      * @param serviceId Service ID to retrieve
@@ -1471,6 +1519,30 @@ public class UnsandboxAsync {
     ) {
         String[] creds = resolveCredentials(publicKey, secretKey);
         return makeRequest("POST", "/services/" + serviceId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    /**
+     * Set unfreeze-on-demand for a service.
+     *
+     * <p>When enabled, a frozen service will automatically wake up when it receives
+     * an HTTP request, without requiring an explicit unfreeze API call.
+     *
+     * @param serviceId Service ID to configure
+     * @param enabled True to enable unfreeze-on-demand, false to disable
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with update confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> setUnfreezeOnDemand(
+        String serviceId,
+        boolean enabled,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("unfreeze_on_demand", enabled);
+        return makeRequestWithMethod("PATCH", "/services/" + serviceId, creds[0], creds[1], data);
     }
 
     /**

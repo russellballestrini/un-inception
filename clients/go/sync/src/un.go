@@ -773,9 +773,10 @@ func ShellSession(creds *Credentials, sessionID, command string) (map[string]int
 
 // ServiceOptions contains optional parameters for service creation.
 type ServiceOptions struct {
-	NetworkMode string // "zerotrust" (default) or "semitrusted"
-	Shell       string // Shell to use for bootstrap
-	VCPU        int    // Number of virtual CPUs
+	NetworkMode      string // "zerotrust" (default) or "semitrusted"
+	Shell            string // Shell to use for bootstrap
+	VCPU             int    // Number of virtual CPUs
+	UnfreezeOnDemand bool   // Enable automatic unfreezing on HTTP request
 }
 
 // ServiceUpdateOptions contains optional parameters for service updates.
@@ -829,6 +830,9 @@ func CreateService(creds *Credentials, name string, ports []int, bootstrap strin
 		if opts.VCPU > 0 {
 			data["vcpu"] = opts.VCPU
 		}
+		if opts.UnfreezeOnDemand {
+			data["unfreeze_on_demand"] = true
+		}
 	}
 
 	return makeRequest("POST", "/services", creds, data)
@@ -873,6 +877,13 @@ func LockService(creds *Credentials, serviceID string) (map[string]interface{}, 
 // UnlockService unlocks a previously locked service.
 func UnlockService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
 	return makeRequest("POST", fmt.Sprintf("/services/%s/unlock", serviceID), creds, map[string]interface{}{})
+}
+
+// SetUnfreezeOnDemand enables or disables automatic unfreezing on HTTP request.
+func SetUnfreezeOnDemand(creds *Credentials, serviceID string, enabled bool) (map[string]interface{}, error) {
+	return makeRequest("PATCH", fmt.Sprintf("/services/%s", serviceID), creds, map[string]interface{}{
+		"unfreeze_on_demand": enabled,
+	})
 }
 
 // GetServiceLogs retrieves logs from a service.

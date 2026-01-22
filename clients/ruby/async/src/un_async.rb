@@ -765,6 +765,7 @@ module UnAsync
     # @param vcpu [Integer] Number of vCPUs (1-8)
     # @param custom_domains [Array<String>, nil] Custom domains for the service
     # @param service_type [String, nil] Service type for SRV records
+    # @param unfreeze_on_demand [Boolean] If true, service will auto-wake on HTTP request (default: false)
     # @return [Future<Hash>] Future resolving to response hash with service_id
     # @raise [CredentialsError] If no credentials found (on .value)
     # @raise [APIError] If API request fails (on .value)
@@ -772,7 +773,7 @@ module UnAsync
     # @example
     #     result = UnAsync.create_service("web", [80, 443], "apt install -y nginx && nginx").value
     #     puts result["service_id"]
-    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil)
+    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false)
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         data = {
@@ -784,6 +785,7 @@ module UnAsync
         data[:vcpu] = vcpu if vcpu > 1
         data[:custom_domains] = custom_domains if custom_domains
         data[:service_type] = service_type if service_type
+        data[:unfreeze_on_demand] = unfreeze_on_demand if unfreeze_on_demand
         make_request_sync('POST', '/services', pk, sk, data)
       end
     end
@@ -917,6 +919,27 @@ module UnAsync
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         make_request_sync('POST', "/services/#{service_id}/unlock", pk, sk, {})
+      end
+    end
+
+    # Set unfreeze-on-demand for a service
+    #
+    # When enabled, a frozen service will automatically wake when it receives an HTTP request.
+    #
+    # @param service_id [String] Service ID to update
+    # @param enabled [Boolean] Whether to enable unfreeze-on-demand
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Future<Hash>] Future resolving to response hash with update confirmation
+    # @raise [CredentialsError] If no credentials found (on .value)
+    # @raise [APIError] If API request fails (on .value)
+    #
+    # @example
+    #     UnAsync.set_unfreeze_on_demand(service_id, true).value
+    def set_unfreeze_on_demand(service_id, enabled, public_key: nil, secret_key: nil)
+      Future.new do
+        pk, sk = resolve_credentials(public_key, secret_key)
+        make_request_sync('PATCH', "/services/#{service_id}", pk, sk, { unfreeze_on_demand: enabled })
       end
     end
 

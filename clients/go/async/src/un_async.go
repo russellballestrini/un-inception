@@ -1100,9 +1100,10 @@ func ShellSession(creds *Credentials, sessionID, command string) <-chan SessionR
 
 // ServiceOptions contains optional parameters for service creation.
 type ServiceOptions struct {
-	NetworkMode string // "zerotrust" (default) or "semitrusted"
-	Shell       string // Shell to use for bootstrap
-	VCPU        int    // Number of virtual CPUs
+	NetworkMode      string // "zerotrust" (default) or "semitrusted"
+	Shell            string // Shell to use for bootstrap
+	VCPU             int    // Number of virtual CPUs
+	UnfreezeOnDemand bool   // Enable automatic unfreezing on HTTP request
 }
 
 // ServiceUpdateOptions contains optional parameters for service updates.
@@ -1183,6 +1184,9 @@ func CreateService(creds *Credentials, name string, ports []int, bootstrap strin
 			}
 			if opts.VCPU > 0 {
 				data["vcpu"] = opts.VCPU
+			}
+			if opts.UnfreezeOnDemand {
+				data["unfreeze_on_demand"] = true
 			}
 		}
 
@@ -1298,6 +1302,23 @@ func UnlockService(creds *Credentials, serviceID string) <-chan ServiceResult {
 		defer close(resultChan)
 
 		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/unlock", serviceID), creds, map[string]interface{}{})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
+// SetUnfreezeOnDemand enables or disables automatic unfreezing on HTTP request.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func SetUnfreezeOnDemand(creds *Credentials, serviceID string, enabled bool) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("PATCH", fmt.Sprintf("/services/%s", serviceID), creds, map[string]interface{}{
+			"unfreeze_on_demand": enabled,
+		})
 		resultChan <- ServiceResult{Data: response, Err: err}
 	}()
 

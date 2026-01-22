@@ -34,6 +34,7 @@ Library Usage:
         unfreeze_service,
         lock_service,
         unlock_service,
+        set_unfreeze_on_demand,
         get_service_logs,
         get_service_env,
         set_service_env,
@@ -1060,6 +1061,7 @@ def create_service(
     custom_domains: Optional[List[str]] = None,
     vcpu: int = 1,
     service_type: Optional[str] = None,
+    unfreeze_on_demand: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new persistent service.
@@ -1074,6 +1076,7 @@ def create_service(
         custom_domains: Optional list of custom domain names
         vcpu: Number of vCPUs (1-8, default 1)
         service_type: Optional service type for SRV records (e.g., "minecraft")
+        unfreeze_on_demand: If True, automatically unfreeze service on incoming requests
 
     Returns:
         Response dict containing service_id, etc.
@@ -1101,6 +1104,8 @@ def create_service(
         data["vcpu"] = vcpu
     if service_type:
         data["service_type"] = service_type
+    if unfreeze_on_demand:
+        data["unfreeze_on_demand"] = unfreeze_on_demand
 
     return _make_request("POST", "/services", public_key, secret_key, data)
 
@@ -1287,6 +1292,42 @@ def unlock_service(
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
     return _make_request("POST", f"/services/{service_id}/unlock", public_key, secret_key, {})
+
+
+def set_unfreeze_on_demand(
+    service_id: str,
+    enabled: bool,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Enable or disable automatic unfreezing on incoming requests.
+
+    When enabled, a frozen service will automatically wake up when it
+    receives an incoming HTTP request.
+
+    Args:
+        service_id: Service ID to configure
+        enabled: True to enable auto-unfreeze, False to disable
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with update confirmation
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request(
+        "PATCH",
+        f"/services/{service_id}",
+        public_key,
+        secret_key,
+        {"unfreeze_on_demand": enabled},
+    )
 
 
 def get_service_logs(
