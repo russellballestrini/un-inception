@@ -96,6 +96,7 @@ defmodule Un do
     IO.puts("       un.ex languages [--json]")
     IO.puts("")
     IO.puts("Service options: --name, --ports, --bootstrap, -e KEY=VALUE, --env-file FILE")
+    IO.puts("                --set-unfreeze-on-demand ID true|false")
     IO.puts("Service env commands: status, set, export, delete")
     IO.puts("Image options: --list, --info ID, --delete ID, --lock ID, --unlock ID,")
     IO.puts("               --publish ID --source-type TYPE, --visibility ID MODE,")
@@ -263,6 +264,14 @@ defmodule Un do
     curl_patch(api_key, "/services/#{service_id}", json)
     ram = vcpu_int * 2
     IO.puts("#{@green}Service resized to #{vcpu_int} vCPU, #{ram} GB RAM#{@reset}")
+  end
+
+  defp service_command(["--set-unfreeze-on-demand", service_id, enabled | _]) do
+    api_key = get_api_key()
+    enabled_bool = String.downcase(enabled) in ["true", "1", "yes", "on"]
+    json = "{\"unfreeze_on_demand\":#{enabled_bool}}"
+    curl_patch(api_key, "/services/#{service_id}", json)
+    IO.puts("#{@green}Service unfreeze_on_demand set to #{enabled_bool}: #{service_id}#{@reset}")
   end
 
   defp service_command(["--snapshot", service_id | rest]) do

@@ -93,6 +93,8 @@
        01  WS-IMAGE-VISIBILITY PIC X(32).
        01  WS-ARG4             PIC X(256).
        01  WS-ARG5             PIC X(256).
+       01  WS-UNFREEZE-ON-DEMAND PIC X(8).
+       01  WS-UOD-ENABLED      PIC X(8).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -267,6 +269,10 @@
                ACCEPT WS-ID FROM ARGUMENT-VALUE
                PERFORM PARSE-SERVICE-RESIZE-ARGS
                PERFORM SERVICE-RESIZE
+           ELSE IF WS-ARG2 = "--set-unfreeze-on-demand"
+               ACCEPT WS-ID FROM ARGUMENT-VALUE
+               PERFORM PARSE-SERVICE-UOD-ARGS
+               PERFORM SERVICE-SET-UNFREEZE-ON-DEMAND
            ELSE IF WS-ARG2 = "--name"
                ACCEPT WS-NAME FROM ARGUMENT-VALUE
                PERFORM PARSE-SERVICE-CREATE-ARGS
@@ -274,7 +280,8 @@
            ELSE
                DISPLAY "Error: Use --list, --info, --logs, "
                    "--freeze, --unfreeze, --destroy, --dump-bootstrap, "
-                   "--resize, --name, or env" UPON SYSERR
+                   "--resize, --set-unfreeze-on-demand, --name, or env"
+                   UPON SYSERR
                MOVE 1 TO RETURN-CODE
            END-IF.
 
@@ -597,6 +604,7 @@
        PARSE-SERVICE-CREATE-ARGS.
       * Parse remaining arguments for service creation
       * This is a simplified parser that looks for specific flags
+           MOVE SPACES TO WS-UNFREEZE-ON-DEMAND.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
                IF WS-ARG3 = "--ports"
@@ -609,6 +617,8 @@
                    ACCEPT WS-BOOTSTRAP FROM ARGUMENT-VALUE
                ELSE IF WS-ARG3 = "--bootstrap-file"
                    ACCEPT WS-BOOTSTRAP-FILE FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--unfreeze-on-demand"
+                   ACCEPT WS-UNFREEZE-ON-DEMAND FROM ARGUMENT-VALUE
                ELSE IF WS-ARG3 = "-e"
                    ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
                    IF WS-SVC-ENVS NOT = SPACES
@@ -817,6 +827,15 @@
                END-STRING
            END-IF.
 
+      * Add unfreeze_on_demand if provided
+           IF WS-UNFREEZE-ON-DEMAND NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",\"unfreeze_on_demand\":"
+                   FUNCTION TRIM(WS-UNFREEZE-ON-DEMAND)
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
       * Close JSON body
            STRING FUNCTION TRIM(WS-CURL-CMD) "}'; "
                "TS=$(date +%s); "
@@ -1000,6 +1019,50 @@
                "-d \"$BODY\" >/dev/null && "
                "echo -e '\x1b[32mService resized to " WS-VCPU
                " vCPU, " WS-RAM " GB RAM\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-SERVICE-UOD-ARGS.
+      * Parse --enabled argument for unfreeze_on_demand
+           MOVE SPACES TO WS-UOD-ENABLED.
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "--enabled"
+                   ACCEPT WS-UOD-ENABLED FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+       SERVICE-SET-UNFREEZE-ON-DEMAND.
+      * Validate enabled value
+           IF WS-UOD-ENABLED NOT = "true" AND WS-UOD-ENABLED NOT = "false"
+               DISPLAY "Error: --set-unfreeze-on-demand requires "
+                   "--enabled true|false" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Build and execute set unfreeze_on_demand request with HMAC auth
+           STRING "TS=$(date +%s); "
+               "BODY='{\"unfreeze_on_demand\":"
+               FUNCTION TRIM(WS-UOD-ENABLED) "}'; "
+               "SIG=$(echo -n \"$TS:PATCH:/services/"
+               FUNCTION TRIM(WS-ID)
+               ":$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X PATCH 'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" >/dev/null && "
+               "echo -e '\x1b[32mService unfreeze_on_demand set to "
+               FUNCTION TRIM(WS-UOD-ENABLED) "\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

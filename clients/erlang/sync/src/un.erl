@@ -227,6 +227,9 @@ service_command(["--resize", ServiceId, "--vcpu", VcpuStr | _]) ->
 service_command(["--resize", ServiceId, "-v", VcpuStr | _]) ->
     service_resize(ServiceId, VcpuStr);
 
+service_command(["--set-unfreeze-on-demand", ServiceId, EnabledStr | _]) ->
+    service_set_unfreeze_on_demand(ServiceId, EnabledStr);
+
 service_command(["--execute", ServiceId, "--command", Command | _]) ->
     ApiKey = get_api_key(),
     Json = "{\"command\":\"" ++ escape_json(Command) ++ "\"}",
@@ -1001,6 +1004,21 @@ service_resize(ServiceId, VcpuStr) ->
     file:delete(TmpFile),
     Ram = Vcpu * 2,
     io:format("\033[32mService resized to ~B vCPU, ~B GB RAM\033[0m~n", [Vcpu, Ram]).
+
+service_set_unfreeze_on_demand(ServiceId, EnabledStr) ->
+    ApiKey = get_api_key(),
+    Enabled = case string:lowercase(EnabledStr) of
+        "true" -> "true";
+        "1" -> "true";
+        "yes" -> "true";
+        "on" -> "true";
+        _ -> "false"
+    end,
+    Json = "{\"unfreeze_on_demand\":" ++ Enabled ++ "}",
+    TmpFile = write_temp_file(Json),
+    _ = curl_patch(ApiKey, "/services/" ++ ServiceId, TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[32mService unfreeze_on_demand set to ~s: ~s\033[0m~n", [Enabled, ServiceId]).
 
 %% Argument parsing
 parse_exec_args([], Opts) ->

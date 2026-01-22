@@ -321,6 +321,19 @@ bool service_env_delete(const string& service_id, const string& public_key, cons
     return true;
 }
 
+void set_unfreeze_on_demand(const string& service_id, bool enabled, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id;
+    string enabled_str = enabled ? "true" : "false";
+    string body = "{\"unfreeze_on_demand\":" + enabled_str + "}";
+    string auth_headers = build_auth_headers("PATCH", path, body, public_key, secret_key);
+    string cmd = "curl -s -X PATCH '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " "
+                 "-d '" + body + "'";
+    exec_curl(cmd);
+    cout << GREEN << "Service unfreeze_on_demand set to " << enabled_str << RESET << endl;
+}
+
 void cmd_service_env(const string& action, const string& target, const vector<string>& envs, const string& env_file, const string& public_key, const string& secret_key) {
     if (action == "status") {
         if (target.empty()) {
@@ -529,7 +542,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& resize, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& public_key, const string& secret_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& resize, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& set_unfreeze_on_demand_id, int set_unfreeze_on_demand_enabled, int unfreeze_on_demand, const string& public_key, const string& secret_key) {
     // Handle service env subcommand
     if (!env_action.empty()) {
         cmd_service_env(env_action, env_target, envs, env_file, public_key, secret_key);
@@ -602,6 +615,15 @@ void cmd_service(const string& name, const string& ports, const string& type, co
                      "-d '" + json.str() + "'";
         exec_curl(cmd);
         cout << GREEN << "Service resized to " << vcpu << " vCPU, " << (vcpu * 2) << " GB RAM" << RESET << endl;
+        return;
+    }
+
+    if (!set_unfreeze_on_demand_id.empty()) {
+        if (set_unfreeze_on_demand_enabled < 0) {
+            cerr << RED << "Error: --set-unfreeze-on-demand requires --enabled true|false" << RESET << endl;
+            exit(1);
+        }
+        set_unfreeze_on_demand(set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled == 1, public_key, secret_key);
         return;
     }
 
@@ -733,6 +755,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         }
         if (!network.empty()) json << ",\"network\":\"" << network << "\"";
         if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
+        if (unfreeze_on_demand >= 0) json << ",\"unfreeze_on_demand\":" << (unfreeze_on_demand ? "true" : "false");
         json << "}";
 
         cout << YELLOW << "Creating service..." << RESET << endl;
@@ -1111,6 +1134,9 @@ int main(int argc, char* argv[]) {
         vector<string> files;
         vector<string> envs;
         string env_file, env_action, env_target;
+        string set_unfreeze_on_demand_id;
+        int set_unfreeze_on_demand_enabled = -1;  // -1 = not specified, 0 = false, 1 = true
+        int unfreeze_on_demand = -1;  // For service creation
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
@@ -1145,10 +1171,19 @@ int main(int argc, char* argv[]) {
             else if (arg == "--dump-file" && i+1 < argc) dump_file = argv[++i];
             else if (arg == "-n" && i+1 < argc) network = argv[++i];
             else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
+            else if (arg == "--set-unfreeze-on-demand" && i+1 < argc) set_unfreeze_on_demand_id = argv[++i];
+            else if (arg == "--enabled" && i+1 < argc) {
+                string val = argv[++i];
+                set_unfreeze_on_demand_enabled = (val == "true") ? 1 : 0;
+            }
+            else if (arg == "--unfreeze-on-demand" && i+1 < argc) {
+                string val = argv[++i];
+                unfreeze_on_demand = (val == "true") ? 1 : 0;
+            }
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network, vcpu, envs, env_file, env_action, env_target, public_key, secret_key);
+        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network, vcpu, envs, env_file, env_action, env_target, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, unfreeze_on_demand, public_key, secret_key);
         return 0;
     }
 

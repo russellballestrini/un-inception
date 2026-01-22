@@ -733,6 +733,17 @@ sub cmd_service {
         return;
     }
 
+    if ($options->{set_unfreeze_on_demand}) {
+        my $enabled = ($options->{set_unfreeze_on_demand_enabled} &&
+                       ($options->{set_unfreeze_on_demand_enabled} eq 'true' || $options->{set_unfreeze_on_demand_enabled} eq '1'))
+                       ? JSON::PP::true : JSON::PP::false;
+        my $payload = { unfreeze_on_demand => $enabled };
+        api_request("/services/$options->{set_unfreeze_on_demand}", 'PATCH', $payload, $public_key, $secret_key);
+        my $status = $enabled ? 'enabled' : 'disabled';
+        print "${GREEN}Unfreeze-on-demand $status for service: $options->{set_unfreeze_on_demand}${RESET}\n";
+        return;
+    }
+
     if ($options->{execute}) {
         my $payload = { command => $options->{command} };
         my $result = api_request("/services/$options->{execute}/execute", 'POST', $payload, $public_key, $secret_key);
@@ -816,6 +827,7 @@ sub cmd_service {
         }
         $payload->{network} = $options->{network} if $options->{network};
         $payload->{vcpu} = $options->{vcpu} if $options->{vcpu};
+        $payload->{unfreeze_on_demand} = JSON::PP::true if $options->{unfreeze_on_demand};
 
         my $result = api_request('/services', 'POST', $payload, $public_key, $secret_key);
         my $service_id = $result->{id};
@@ -1170,6 +1182,11 @@ sub main {
             $options{spawn} = $ARGV[++$i];
         } elsif ($arg eq '--clone') {
             $options{clone} = $ARGV[++$i];
+        } elsif ($arg eq '--unfreeze-on-demand') {
+            $options{unfreeze_on_demand} = 1;
+        } elsif ($arg eq '--set-unfreeze-on-demand') {
+            $options{set_unfreeze_on_demand} = $ARGV[++$i];
+            $options{set_unfreeze_on_demand_enabled} = $ARGV[++$i] if defined $ARGV[$i + 1];
         } elsif ($arg =~ /^-/) {
             print STDERR "${RED}Unknown option: $arg${RESET}\n";
             exit 1;

@@ -103,6 +103,8 @@ data class Args(
     var serviceDumpBootstrap: String? = null,
     var serviceDumpFile: String? = null,
     var serviceResize: String? = null,
+    var serviceUnfreezeOnDemand: String? = null,
+    var serviceUnfreezeOnDemandValue: Boolean? = null,
     var keyExtend: Boolean = false,
     var envFile: String? = null,
     var envAction: String? = null,
@@ -360,6 +362,17 @@ fun cmdService(args: Args) {
         apiRequestPatch("/services/${args.serviceResize}", payload, publicKey, secretKey)
         val ram = args.vcpu * 2
         println("${GREEN}Service resized to ${args.vcpu} vCPU, ${ram} GB RAM${RESET}")
+        return
+    }
+
+    if (args.serviceUnfreezeOnDemand != null) {
+        if (args.serviceUnfreezeOnDemandValue == null) {
+            System.err.println("${RED}Error: --unfreeze-on-demand requires true or false${RESET}")
+            exitProcess(1)
+        }
+        val payload = mapOf("unfreeze_on_demand" to args.serviceUnfreezeOnDemandValue!!)
+        apiRequestPatch("/services/${args.serviceUnfreezeOnDemand}", payload, publicKey, secretKey)
+        println("${GREEN}Service unfreeze_on_demand set to ${args.serviceUnfreezeOnDemandValue}: ${args.serviceUnfreezeOnDemand}${RESET}")
         return
     }
 
@@ -1145,6 +1158,12 @@ fun parseArgs(args: Array<String>): Args {
             "--unfreeze" -> result.serviceWake = args[++i]
             "--destroy" -> result.serviceDestroy = args[++i]
             "--resize" -> result.serviceResize = args[++i]
+            "--unfreeze-on-demand" -> {
+                result.serviceUnfreezeOnDemand = args[++i]
+                if (i + 1 < args.size && (args[i + 1] == "true" || args[i + 1] == "false")) {
+                    result.serviceUnfreezeOnDemandValue = args[++i].toBoolean()
+                }
+            }
             "--execute" -> result.serviceExecute = args[++i]
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
@@ -1244,6 +1263,7 @@ Service options:
   --unfreeze ID     Unfreeze service
   --destroy ID      Destroy service
   --resize ID       Resize service (requires --vcpu N)
+  --unfreeze-on-demand ID true|false  Enable/disable auto-unfreeze on HTTP request
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script

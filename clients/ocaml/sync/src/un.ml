@@ -1180,8 +1180,25 @@ let session_command action shell network vcpu input_files =
     Printf.printf "%s\n" response
   | _ -> ()
 
+(* Set unfreeze_on_demand for a service *)
+let set_service_unfreeze_on_demand service_id enabled =
+  let (public_key, secret_key) = get_api_keys () in
+  let enabled_str = if enabled then "true" else "false" in
+  let json = Printf.sprintf "{\"unfreeze_on_demand\":%s}" enabled_str in
+  let endpoint = Printf.sprintf "/services/%s" service_id in
+  let auth_headers = build_auth_headers public_key secret_key "PATCH" endpoint json in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
+  let _ = Sys.command cmd in
+  Sys.remove tmp_file;
+  true
+
 (* Service command *)
-let service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files envs env_file =
+let service_command action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand input_files envs env_file =
   let api_key = get_api_key () in
   match action with
   | "env" ->
@@ -1262,6 +1279,16 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
      | (None, _) ->
        Printf.fprintf stderr "Error: --resize requires service ID\n";
        exit 1)
+  | "set_unfreeze_on_demand" ->
+    (match (name, ports) with
+     | (Some sid, Some enabled_str) ->
+       let enabled = enabled_str = "true" || enabled_str = "1" in
+       let _ = set_service_unfreeze_on_demand sid enabled in
+       let status = if enabled then "enabled" else "disabled" in
+       Printf.printf "%sUnfreeze-on-demand %s for service: %s%s\n" green status sid reset
+     | _ ->
+       Printf.fprintf stderr "Error: --set-unfreeze-on-demand requires service ID and enabled (true/false)\n";
+       exit 1)
   | "execute" ->
     (match name with
      | Some sid ->
@@ -1316,8 +1343,9 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let service_type_json = match service_type with Some t -> Printf.sprintf ",\"service_type\":\"%s\"" t | None -> "" in
        let network_json = match network with Some net -> Printf.sprintf ",\"network\":\"%s\"" net | None -> "" in
        let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
+       let unfreeze_on_demand_json = if unfreeze_on_demand then ",\"unfreeze_on_demand\":true" else "" in
        let input_files_json = build_input_files_json input_files in
-       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s%s%s}" n ports_json bootstrap_json bootstrap_content_json service_type_json network_json vcpu_json input_files_json in
+       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s%s%s%s}" n ports_json bootstrap_json bootstrap_content_json service_type_json network_json vcpu_json unfreeze_on_demand_json input_files_json in
        let response = curl_post api_key "/services" json in
        Printf.printf "%sService created%s\n" green reset;
        Printf.printf "%s\n" response;
@@ -1517,36 +1545,38 @@ let () =
       | _ :: rest -> parse_envs acc rest
     in
     let envs = parse_envs [] rest in
-    let rec parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file = function
-      | [] -> service_command action name ports bootstrap bootstrap_file service_type network vcpu input_files envs env_file
+    let rec parse_service action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file = function
+      | [] -> service_command action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand input_files envs env_file
       | "env" :: env_action :: target :: rest when not (String.length target > 0 && target.[0] = '-') ->
-        parse_service "env_cmd" (Some env_action) (Some target) bootstrap bootstrap_file service_type network vcpu env_file rest
+        parse_service "env_cmd" (Some env_action) (Some target) bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
       | "env" :: env_action :: rest ->
-        parse_service "env_cmd" (Some env_action) None bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--list" :: rest -> parse_service "list" name ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--resize" :: id :: rest -> parse_service "resize" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--vcpu" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) env_file rest
-      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) bootstrap_file service_type network vcpu env_file rest
-      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) service_type network vcpu env_file rest
-      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap bootstrap_file service_type network vcpu env_file rest
-      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) bootstrap_file service_type network vcpu env_file rest
-      | "--bootstrap-file" :: f :: rest -> parse_service action name ports bootstrap (Some f) service_type network vcpu env_file rest
-      | "--type" :: t :: rest -> parse_service action name ports bootstrap bootstrap_file (Some t) network vcpu env_file rest
-      | "-n" :: net :: rest -> parse_service action name ports bootstrap bootstrap_file service_type (Some net) vcpu env_file rest
-      | "-v" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) env_file rest
-      | "--env-file" :: f :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu (Some f) rest
-      | "-e" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file rest (* skip -e, already parsed *)
-      | "-f" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file rest (* skip -f, already parsed *)
-      | _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu env_file rest
+        parse_service "env_cmd" (Some env_action) None bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--list" :: rest -> parse_service "list" name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--info" :: id :: rest -> parse_service "info" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--logs" :: id :: rest -> parse_service "logs" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--freeze" :: id :: rest -> parse_service "sleep" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--unfreeze" :: id :: rest -> parse_service "wake" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--destroy" :: id :: rest -> parse_service "destroy" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--resize" :: id :: rest -> parse_service "resize" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--vcpu" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) unfreeze_on_demand env_file rest
+      | "--execute" :: id :: "--command" :: cmd :: rest -> parse_service "execute" (Some id) ports (Some cmd) bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--dump-bootstrap" :: id :: file :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap (Some file) service_type network vcpu unfreeze_on_demand env_file rest
+      | "--dump-bootstrap" :: id :: rest -> parse_service "dump_bootstrap" (Some id) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--name" :: n :: rest -> parse_service "create" (Some n) ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--ports" :: p :: rest -> parse_service action name (Some p) bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--bootstrap" :: b :: rest -> parse_service action name ports (Some b) bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "--bootstrap-file" :: f :: rest -> parse_service action name ports bootstrap (Some f) service_type network vcpu unfreeze_on_demand env_file rest
+      | "--type" :: t :: rest -> parse_service action name ports bootstrap bootstrap_file (Some t) network vcpu unfreeze_on_demand env_file rest
+      | "-n" :: net :: rest -> parse_service action name ports bootstrap bootstrap_file service_type (Some net) vcpu unfreeze_on_demand env_file rest
+      | "-v" :: v :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network (Some (int_of_string v)) unfreeze_on_demand env_file rest
+      | "--env-file" :: f :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand (Some f) rest
+      | "--unfreeze-on-demand" :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu true env_file rest
+      | "--set-unfreeze-on-demand" :: id :: enabled :: rest -> parse_service "set_unfreeze_on_demand" (Some id) (Some enabled) bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
+      | "-e" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest (* skip -e, already parsed *)
+      | "-f" :: _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest (* skip -f, already parsed *)
+      | _ :: rest -> parse_service action name ports bootstrap bootstrap_file service_type network vcpu unfreeze_on_demand env_file rest
     in
-    parse_service "create" None None None None None None None None rest
+    parse_service "create" None None None None None None None false None rest
   | args ->
     let rec parse_execute file env_vars artifacts out_dir network vcpu = function
       | [] -> execute_command file env_vars artifacts out_dir network vcpu

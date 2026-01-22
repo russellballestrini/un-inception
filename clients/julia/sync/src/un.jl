@@ -561,6 +561,17 @@ function cmd_service(args)
         return
     end
 
+    if args["unfreeze-on-demand"] !== nothing
+        enabled = args["unfreeze-on-demand-value"]
+        if enabled === nothing
+            println(stderr, "$(RED)Error: --unfreeze-on-demand requires true or false$(RESET)")
+            exit(1)
+        end
+        api_request_patch("/services/$(args["unfreeze-on-demand"])", public_key, secret_key, data=Dict("unfreeze_on_demand" => enabled))
+        println("$(GREEN)Service unfreeze_on_demand set to $(enabled): $(args["unfreeze-on-demand"])$(RESET)")
+        return
+    end
+
     if args["dump-bootstrap"] !== nothing
         println(stderr, "Fetching bootstrap script from $(args["dump-bootstrap"])...")
         payload = Dict("command" => "cat /tmp/bootstrap.sh")
@@ -992,6 +1003,11 @@ function main()
             help = "Destroy service"
         "--resize"
             help = "Resize service (requires --vcpu N)"
+        "--unfreeze-on-demand"
+            help = "Service ID to set unfreeze_on_demand for"
+        "--unfreeze-on-demand-value"
+            help = "Enable/disable unfreeze_on_demand (true or false)"
+            arg_type = Bool
         "--dump-bootstrap"
             help = "Dump bootstrap script from service"
         "--dump-file"

@@ -411,7 +411,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl(cmd))
 }
 
-fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, resize string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, svc_envs []string, svc_env_file string, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, resize string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, svc_envs []string, svc_env_file string, unfreeze_on_demand bool, set_unfreeze_on_demand_id string, set_unfreeze_on_demand_enabled string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -489,6 +489,21 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		return
 	}
 
+	// Handle set_unfreeze_on_demand
+	if set_unfreeze_on_demand_id != '' {
+		enabled := set_unfreeze_on_demand_enabled == 'true' || set_unfreeze_on_demand_enabled == '1'
+		enabled_str := if enabled { 'true' } else { 'false' }
+		json := '{"unfreeze_on_demand":${enabled_str}}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:PATCH:/services/${set_unfreeze_on_demand_id}:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X PATCH '${api_base}/services/${set_unfreeze_on_demand_id}' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		exec_curl(cmd)
+		if enabled {
+			println('${green}Unfreeze-on-demand enabled for service ${set_unfreeze_on_demand_id}${reset}')
+		} else {
+			println('${green}Unfreeze-on-demand disabled for service ${set_unfreeze_on_demand_id}${reset}')
+		}
+		return
+	}
+
 	if dump_bootstrap != '' {
 		eprintln('Fetching bootstrap script from ${dump_bootstrap}...')
 		json := '{"command":"cat /tmp/bootstrap.sh"}'
@@ -542,6 +557,9 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		}
 		if vcpu > 0 {
 			json += ',"vcpu":${vcpu}'
+		}
+		if unfreeze_on_demand {
+			json += ',"unfreeze_on_demand":true'
 		}
 		json += build_input_files_json(input_files)
 		json += '}'
@@ -960,6 +978,9 @@ fn main() {
 		mut svc_env_file := ''
 		mut env_action := ''
 		mut env_target := ''
+		mut unfreeze_on_demand := false
+		mut set_unfreeze_on_demand_id := ''
+		mut set_unfreeze_on_demand_enabled := ''
 
 		mut i := 2
 		for i < os.args.len {
@@ -1046,6 +1067,15 @@ fn main() {
 					i++
 					svc_env_file = os.args[i]
 				}
+				'--unfreeze-on-demand' { unfreeze_on_demand = true }
+				'--set-unfreeze-on-demand' {
+					i++
+					set_unfreeze_on_demand_id = os.args[i]
+					i++
+					if i < os.args.len {
+						set_unfreeze_on_demand_enabled = os.args[i]
+					}
+				}
 				'-n' {
 					i++
 					network = os.args[i]
@@ -1080,7 +1110,7 @@ fn main() {
 		}
 
 		cmd_service(name, ports, service_type, bootstrap, bootstrap_file, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network,
-			vcpu, input_files, svc_envs, svc_env_file, api_key)
+			vcpu, input_files, svc_envs, svc_env_file, unfreeze_on_demand, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, api_key)
 		return
 	}
 

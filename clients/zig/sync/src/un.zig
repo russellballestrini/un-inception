@@ -430,6 +430,9 @@ pub fn main() !u8 {
         var dump_file: ?[]const u8 = null;
         var resize: ?[]const u8 = null;
         var vcpu: i32 = 0;
+        var unfreeze_on_demand = false;
+        var set_unfreeze_on_demand_id: ?[]const u8 = null;
+        var set_unfreeze_on_demand_enabled: ?[]const u8 = null;
         var input_files = std.ArrayList([]const u8).init(allocator);
         defer input_files.deinit();
         var svc_envs = std.ArrayList([]const u8).init(allocator);
@@ -489,6 +492,13 @@ pub fn main() !u8 {
             } else if (mem.eql(u8, args[i], "--env-file") and i + 1 < args.len) {
                 i += 1;
                 svc_env_file = args[i];
+            } else if (mem.eql(u8, args[i], "--unfreeze-on-demand")) {
+                unfreeze_on_demand = true;
+            } else if (mem.eql(u8, args[i], "--set-unfreeze-on-demand") and i + 2 < args.len) {
+                i += 1;
+                set_unfreeze_on_demand_id = args[i];
+                i += 1;
+                set_unfreeze_on_demand_enabled = args[i];
             } else if (mem.eql(u8, args[i], "-k") and i + 1 < args.len) {
                 i += 1;
                 allocator.free(public_key);
@@ -620,6 +630,31 @@ pub fn main() !u8 {
             // Calculate RAM
             const ram = vcpu * 2;
             std.debug.print("\n{s}Service resized to {d} vCPU, {d} GB RAM{s}\n", .{ GREEN, vcpu, ram, RESET });
+        } else if (set_unfreeze_on_demand_id) |svc_id| {
+            // Handle set-unfreeze-on-demand
+            const enabled = if (set_unfreeze_on_demand_enabled) |e|
+                mem.eql(u8, e, "true") or mem.eql(u8, e, "1")
+            else
+                false;
+            const enabled_str = if (enabled) "true" else "false";
+            const json = try std.fmt.allocPrint(allocator, "{{\"unfreeze_on_demand\":{s}}}", .{enabled_str});
+            defer allocator.free(json);
+
+            const path = try std.fmt.allocPrint(allocator, "/services/{s}", .{svc_id});
+            defer allocator.free(path);
+
+            const auth_headers = try buildAuthCmd(allocator, "PATCH", path, json, public_key, secret_key);
+            defer allocator.free(auth_headers);
+
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, svc_id, auth_headers, json });
+            defer allocator.free(cmd);
+            _ = std.c.system(cmd.ptr);
+
+            if (enabled) {
+                std.debug.print("\n{s}Unfreeze-on-demand enabled for service {s}{s}\n", .{ GREEN, svc_id, RESET });
+            } else {
+                std.debug.print("\n{s}Unfreeze-on-demand disabled for service {s}{s}\n", .{ GREEN, svc_id, RESET });
+            }
         } else if (name) |n| {
             var json_buf: [65536]u8 = undefined;
             var json_stream = std.io.fixedBufferStream(&json_buf);
@@ -665,6 +700,9 @@ pub fn main() !u8 {
                     }
                 }
                 try writer.writeAll("\"");
+            }
+            if (unfreeze_on_demand) {
+                try writer.writeAll(",\"unfreeze_on_demand\":true");
             }
             // Add input_files JSON
             const input_files_json = try buildInputFilesJson(allocator, input_files);

@@ -1460,6 +1460,19 @@ cmd_service <- function(args) {
         return()
     }
 
+    if (!is.null(args$set_unfreeze_on_demand)) {
+        if (is.null(args$set_unfreeze_on_demand_val)) {
+            cat(sprintf("%sError: --set-unfreeze-on-demand requires true/false or 1/0%s\n", RED, RESET), file = stderr())
+            quit(status = 1)
+        }
+        enabled <- args$set_unfreeze_on_demand_val %in% c("true", "1")
+        payload <- list(unfreeze_on_demand = enabled)
+        result <- api_request(paste0("/services/", args$set_unfreeze_on_demand), public_key, secret_key, method = "PATCH", data = payload)
+        status_msg <- if (enabled) "enabled" else "disabled"
+        cat(sprintf("%sUnfreeze-on-demand %s for service: %s%s\n", GREEN, status_msg, args$set_unfreeze_on_demand, RESET))
+        return()
+    }
+
     if (!is.null(args$snapshot_svc)) {
         payload <- list()
         if (!is.null(args$snapshot_name)) {
@@ -1550,6 +1563,10 @@ cmd_service <- function(args) {
             payload$vcpu <- args$vcpu
         }
 
+        if (!is.null(args$unfreeze_on_demand) && args$unfreeze_on_demand) {
+            payload$unfreeze_on_demand <- TRUE
+        }
+
         # Add input files
         if (!is.null(args$files)) {
             input_files <- list()
@@ -1628,6 +1645,9 @@ parse_args <- function() {
         shell = NULL,
         dump_bootstrap = NULL,
         dump_file = NULL,
+        set_unfreeze_on_demand = NULL,
+        set_unfreeze_on_demand_val = NULL,
+        unfreeze_on_demand = FALSE,
         name = NULL,
         ports = NULL,
         domains = NULL,
@@ -1763,6 +1783,17 @@ parse_args <- function() {
         } else if (arg == "--dump-file") {
             i <- i + 1
             result$dump_file <- args[i]
+            i <- i + 1
+        } else if (arg == "--set-unfreeze-on-demand") {
+            i <- i + 1
+            result$set_unfreeze_on_demand <- args[i]
+            i <- i + 1
+            if (i <= length(args)) {
+                result$set_unfreeze_on_demand_val <- args[i]
+                i <- i + 1
+            }
+        } else if (arg == "--unfreeze-on-demand") {
+            result$unfreeze_on_demand <- TRUE
             i <- i + 1
         } else if (arg == "--name") {
             i <- i + 1

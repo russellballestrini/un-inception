@@ -131,6 +131,14 @@ run() {
     execute "$lang" "$code"
 }
 
+# Service toggle functions
+set_unfreeze_on_demand() {
+    local service_id="$1"
+    local enabled="$2"
+    local body="{\"unfreeze_on_demand\":$enabled}"
+    api_request "PATCH" "/services/$service_id" "$body"
+}
+
 # Job management
 get_job() {
     local job_id="$1"

@@ -379,7 +379,20 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
   let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, resize: string, resizeVcpu: int, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
+proc setServiceUnfreezeOnDemand(serviceId: string, enabled: bool, publicKey: string, secretKey: string): bool =
+  let enabledStr = if enabled: "true" else: "false"
+  let json = fmt"""{{"unfreeze_on_demand":{enabledStr}}}"""
+  let path = fmt"/services/{serviceId}"
+  let authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey)
+  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X PATCH '{API_BASE}/services/{serviceId}' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+  let output = execProcess(cmd).strip()
+  try:
+    let status = parseInt(output)
+    return status >= 200 and status < 300
+  except:
+    return false
+
+proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, resize: string, resizeVcpu: int, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, unfreezeOnDemand: bool, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled: string, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
   # Handle env subcommand
   if envAction != "":
     cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey)
@@ -450,6 +463,16 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     discard execCurl(cmd)
     let ram = resizeVcpu * 2
     echo GREEN & "Service resized to " & $resizeVcpu & " vCPU, " & $ram & " GB RAM" & RESET
+    return
+
+  if setUnfreezeOnDemand != "":
+    let enabled = setUnfreezeOnDemandEnabled == "true" or setUnfreezeOnDemandEnabled == "1"
+    if setServiceUnfreezeOnDemand(setUnfreezeOnDemand, enabled, publicKey, secretKey):
+      let status = if enabled: "enabled" else: "disabled"
+      echo GREEN & "Unfreeze-on-demand " & status & " for service: " & setUnfreezeOnDemand & RESET
+    else:
+      stderr.writeLine(RED & "Error: Failed to update unfreeze-on-demand setting" & RESET)
+      quit(1)
     return
 
   if execute != "":
@@ -542,6 +565,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     if serviceType != "": json.add(fmt""","service_type":"{serviceType}"""")
     if network != "": json.add(fmt""","network":"{network}"""")
     if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
+    if unfreezeOnDemand: json.add(""","unfreeze_on_demand":true""")
     json.add(buildInputFilesJson(inputFiles))
     json.add("}")
 
@@ -926,6 +950,8 @@ proc main() =
     var info, logs, tail, sleep, wake, destroy, resize, execute, command, dumpBootstrap, dumpFile, network = ""
     var vcpu = 0
     var resizeVcpu = 0
+    var unfreezeOnDemand = false
+    var setUnfreezeOnDemand, setUnfreezeOnDemandEnabled = ""
     var inputFiles: seq[string] = @[]
     var svcEnvs: seq[string] = @[]
     var svcEnvFile = ""
@@ -946,7 +972,7 @@ proc main() =
         of "-k": publicKey = args[i+1]; inc i
         else: discard
         inc i
-      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, unfreezeOnDemand, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
       return
 
     while i < args.len:
@@ -974,6 +1000,11 @@ proc main() =
       of "-k": publicKey = args[i+1]; inc i
       of "-e": svcEnvs.add(args[i+1]); inc i
       of "--env-file": svcEnvFile = args[i+1]; inc i
+      of "--unfreeze-on-demand": unfreezeOnDemand = true
+      of "--set-unfreeze-on-demand":
+        setUnfreezeOnDemand = args[i+1]
+        setUnfreezeOnDemandEnabled = args[i+2]
+        inc i, 2
       of "-f":
         let file = args[i+1]
         if fileExists(file):
@@ -984,7 +1015,7 @@ proc main() =
         inc i
       else: discard
       inc i
-    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, unfreezeOnDemand, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
     return
 
   # Execute mode

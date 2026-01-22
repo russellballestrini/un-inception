@@ -979,6 +979,9 @@ proc cmd_service {args} {
     set env_file ""
     set env_action ""
     set env_target ""
+    set unfreeze_on_demand 0
+    set unfreeze_on_demand_id ""
+    set unfreeze_on_demand_enabled ""
 
     # Parse arguments
     for {set i 0} {$i < [llength $args]} {incr i} {
@@ -1076,12 +1079,34 @@ proc cmd_service {args} {
                 incr i
                 set env_file [lindex $args $i]
             }
+            --unfreeze-on-demand {
+                set unfreeze_on_demand 1
+            }
+            --set-unfreeze-on-demand {
+                incr i
+                set unfreeze_on_demand_id [lindex $args $i]
+                incr i
+                set unfreeze_on_demand_enabled [lindex $args $i]
+            }
         }
     }
 
     # Handle env subcommand
     if {$env_action ne ""} {
         cmd_service_env $env_action $env_target $envs $env_file $public_key $secret_key
+        return
+    }
+
+    # Handle set-unfreeze-on-demand
+    if {$unfreeze_on_demand_id ne ""} {
+        set enabled_val [expr {$unfreeze_on_demand_enabled eq "true" || $unfreeze_on_demand_enabled eq "1"}]
+        set payload [list unfreeze_on_demand [::json::write string [expr {$enabled_val ? "true" : "false"}]]]
+        api_request "/services/$unfreeze_on_demand_id" "PATCH" $payload $public_key $secret_key
+        if {$enabled_val} {
+            puts "${::GREEN}Unfreeze-on-demand enabled for service $unfreeze_on_demand_id${::RESET}"
+        } else {
+            puts "${::GREEN}Unfreeze-on-demand disabled for service $unfreeze_on_demand_id${::RESET}"
+        }
         return
     }
 
@@ -1211,6 +1236,9 @@ proc cmd_service {args} {
         }
         if {$vcpu > 0} {
             lappend payload vcpu $vcpu
+        }
+        if {$unfreeze_on_demand} {
+            lappend payload unfreeze_on_demand true
         }
 
         # Add input files

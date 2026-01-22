@@ -1257,6 +1257,16 @@ contains
                     call get_command_argument(i+1, service_type)
                     i = i + 1
                 end if
+            else if (trim(arg) == '--set-unfreeze-on-demand') then
+                operation = 'set-unfreeze-on-demand'
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_id)
+                    i = i + 1
+                end if
+                if (i+1 <= command_argument_count()) then
+                    call get_command_argument(i+1, service_type)
+                    i = i + 1
+                end if
             end if
             i = i + 1
         end do
@@ -1422,6 +1432,23 @@ contains
                 '-d "$BODY" >/dev/null && ', &
                 'echo -e "\x1b[32mService resized to ', resize_vcpu, ' vCPU, ', resize_vcpu * 2, ' GB RAM\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'set-unfreeze-on-demand' .and. len_trim(service_id) > 0) then
+            ! service_type holds the enabled value (true/false/1/0/yes/no/on/off)
+            write(full_cmd, '(30A)') &
+                'ENABLED_STR=$(echo "', trim(service_type), '" | tr "[:upper:]" "[:lower:]"); ', &
+                'case "$ENABLED_STR" in true|1|yes|on) ENABLED=true;; *) ENABLED=false;; esac; ', &
+                'BODY="{\"unfreeze_on_demand\":$ENABLED}"; ', &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:PATCH:/services/', trim(service_id), ':$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X PATCH https://api.unsandbox.com/services/', &
+                trim(service_id), ' ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" ', &
+                '-d "$BODY" >/dev/null && ', &
+                'echo -e "\x1b[32mService unfreeze_on_demand set to $ENABLED: ', trim(service_id), '\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'dump-bootstrap' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(30A)') &
                 'echo "Fetching bootstrap script from ', trim(service_id), '..." >&2; ', &
@@ -1480,7 +1507,7 @@ contains
                 'else echo "$RESP" | jq .; fi'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else
-            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --dump-bootstrap, --name, or env'
+            write(0, '(A)') 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --set-unfreeze-on-demand, --dump-bootstrap, --name, or env'
             stop 1
         end if
     end subroutine handle_service

@@ -175,6 +175,7 @@ data ServiceAction = ServiceList | ServiceInfo String | ServiceLogs String
                    | ServiceResize String | ServiceExecute String String | ServiceDumpBootstrap String (Maybe String)
                    | ServiceCreate | ServiceSnapshot String | ServiceRestore String
                    | ServiceEnv String (Maybe String)  -- action, target
+                   | ServiceSetUnfreezeOnDemand String Bool  -- service_id, enabled
 
 data SnapshotOpts = SnapshotOpts
   { snapAction :: SnapshotAction
@@ -296,6 +297,8 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
     parseServiceArgs ("--resize":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceResize id }
     parseServiceArgs ("--snapshot":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceSnapshot id }
     parseServiceArgs ("--restore":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceRestore id }
+    parseServiceArgs ("--unfreeze-on-demand":id:"true":rest) opts = parseServiceArgs rest opts { svcAction = ServiceSetUnfreezeOnDemand id True }
+    parseServiceArgs ("--unfreeze-on-demand":id:"false":rest) opts = parseServiceArgs rest opts { svcAction = ServiceSetUnfreezeOnDemand id False }
     parseServiceArgs ("--execute":id:"--command":cmd:rest) opts = parseServiceArgs rest opts { svcAction = ServiceExecute id cmd }
     parseServiceArgs ("--dump-bootstrap":id:file:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id (Just file) }
     parseServiceArgs ("--dump-bootstrap":id:rest) opts = parseServiceArgs rest opts { svcAction = ServiceDumpBootstrap id Nothing }
@@ -384,6 +387,7 @@ printHelp = do
   putStrLn "  --unfreeze ID        Unfreeze service"
   putStrLn "  --destroy ID         Destroy service"
   putStrLn "  --resize ID          Resize service (requires -v N)"
+  putStrLn "  --unfreeze-on-demand ID true|false  Enable/disable auto-unfreeze on HTTP request"
   putStrLn ""
   putStrLn "Service env commands:"
   putStrLn "  env status ID        Check vault status"
@@ -592,6 +596,10 @@ serviceCommand opts = do
       (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ snapshotId ++ "/restore") "{}"
       putStrLn $ green ++ "Service restored from snapshot" ++ reset
       putStrLn stdout
+    ServiceSetUnfreezeOnDemand sid enabled -> do
+      let json = "{\"unfreeze_on_demand\":" ++ (if enabled then "true" else "false") ++ "}"
+      (_, stdout, _) <- curlPatch apiKey ("https://api.unsandbox.com/services/" ++ sid) json
+      putStrLn $ green ++ "Service unfreeze_on_demand set to " ++ (if enabled then "true" else "false") ++ ": " ++ sid ++ reset
     ServiceEnv action maybeTarget -> do
       case action of
         "status" -> case maybeTarget of

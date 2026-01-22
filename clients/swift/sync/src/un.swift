@@ -637,6 +637,7 @@ func createService(
     customDomains: [String]? = nil,
     vcpu: Int = 1,
     serviceType: String? = nil,
+    unfreezeOnDemand: Bool = false,
     publicKey: String? = nil,
     secretKey: String? = nil
 ) throws -> [String: Any] {
@@ -663,6 +664,9 @@ func createService(
     }
     if let serviceType = serviceType {
         data["service_type"] = serviceType
+    }
+    if unfreezeOnDemand {
+        data["unfreeze_on_demand"] = unfreezeOnDemand
     }
 
     return try makeRequest(method: "POST", path: "/services", publicKey: pk, secretKey: sk, data: data)
@@ -712,6 +716,12 @@ func lockService(_ serviceId: String, publicKey: String? = nil, secretKey: Strin
 func unlockService(_ serviceId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
     return try makeRequest(method: "POST", path: "/services/\(serviceId)/unlock", publicKey: pk, secretKey: sk, data: [:])
+}
+
+/// Enable or disable automatic unfreezing on incoming requests
+func setUnfreezeOnDemand(_ serviceId: String, enabled: Bool, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
+    return try makeRequest(method: "PATCH", path: "/services/\(serviceId)", publicKey: pk, secretKey: sk, data: ["unfreeze_on_demand": enabled])
 }
 
 /// Get bootstrap/runtime logs for a service

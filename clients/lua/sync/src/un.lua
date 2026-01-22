@@ -242,6 +242,51 @@ function Un.image_clone(image_id, name, opts)
     return Un.api_request("POST", "/images/" .. image_id .. "/clone", body, opts)
 end
 
+-- Service API functions
+function Un.service_list(opts)
+    opts = opts or {}
+    return Un.api_request("GET", "/services", nil, opts)
+end
+
+function Un.service_get(service_id, opts)
+    opts = opts or {}
+    return Un.api_request("GET", "/services/" .. service_id, nil, opts)
+end
+
+function Un.service_set_unfreeze_on_demand(service_id, enabled, opts)
+    opts = opts or {}
+    return Un.api_request_patch("/services/" .. service_id, {unfreeze_on_demand = enabled}, opts)
+end
+
+function Un.api_request_patch(endpoint, body, opts)
+    opts = opts or {}
+    local pk, sk = Un.get_credentials(opts)
+
+    local timestamp = tostring(os.time())
+    local url = Un.API_BASE .. endpoint
+    local body_str = body and json.encode(body) or "{}"
+    local signature = Un.sign_request(sk, timestamp, "PATCH", endpoint, body_str)
+
+    local headers = {
+        ["Authorization"] = "Bearer " .. pk,
+        ["X-Timestamp"] = timestamp,
+        ["X-Signature"] = signature,
+        ["Content-Type"] = "application/json"
+    }
+
+    local resp_body = {}
+    local resp, status = https.request({
+        url = url,
+        method = "PATCH",
+        headers = headers,
+        source = body_str and ltn12.source.string(body_str),
+        sink = ltn12.sink.table(resp_body)
+    })
+
+    if status ~= 200 then error("API error (" .. status .. ")") end
+    return json.decode(table.concat(resp_body))
+end
+
 -- CLI
 if arg and arg[1] then
     if arg[1] == "languages" then
@@ -255,6 +300,50 @@ if arg and arg[1] then
             for _, lang in ipairs(langs) do
                 print(lang)
             end
+        end
+        os.exit(0)
+    elseif arg[1] == "service" then
+        -- Service command
+        local i = 2
+        local action = nil
+        local service_id = nil
+        local unfreeze_on_demand_value = nil
+
+        while i <= #arg do
+            if arg[i] == "--list" or arg[i] == "-l" then
+                action = "list"
+            elseif arg[i] == "--info" then
+                action = "info"
+                i = i + 1
+                service_id = arg[i]
+            elseif arg[i] == "--unfreeze-on-demand" then
+                action = "unfreeze-on-demand"
+                i = i + 1
+                service_id = arg[i]
+                if i + 1 <= #arg and (arg[i + 1] == "true" or arg[i + 1] == "false") then
+                    i = i + 1
+                    unfreeze_on_demand_value = arg[i] == "true"
+                end
+            end
+            i = i + 1
+        end
+
+        if action == "list" then
+            local result = Un.service_list()
+            print(json.encode(result))
+        elseif action == "info" then
+            local result = Un.service_get(service_id)
+            print(json.encode(result))
+        elseif action == "unfreeze-on-demand" then
+            if unfreeze_on_demand_value == nil then
+                io.stderr:write("Error: --unfreeze-on-demand requires true or false\n")
+                os.exit(1)
+            end
+            Un.service_set_unfreeze_on_demand(service_id, unfreeze_on_demand_value)
+            print("Service unfreeze_on_demand set to " .. tostring(unfreeze_on_demand_value) .. ": " .. service_id)
+        else
+            io.stderr:write("Error: Use --list, --info ID, or --unfreeze-on-demand ID true|false\n")
+            os.exit(1)
         end
         os.exit(0)
     elseif arg[1] == "image" then
@@ -368,14 +457,21 @@ if arg and arg[1] then
     elseif arg[1] == "--help" or arg[1] == "-h" then
         print("Usage: lua un.lua [options] <source_file>")
         print("       lua un.lua languages [--json]")
+        print("       lua un.lua service [options]")
         print("       lua un.lua image [options]")
         print("")
         print("Commands:")
         print("  languages [--json]  List available programming languages")
+        print("  service [options]   Manage services")
         print("  image [options]     Manage images")
         print("")
         print("Languages options:")
         print("  --json              Output as JSON array")
+        print("")
+        print("Service options:")
+        print("  --list              List all services")
+        print("  --info ID           Get service details")
+        print("  --unfreeze-on-demand ID true|false  Enable/disable auto-unfreeze on HTTP request")
         print("")
         print("Image options:")
         print("  --list              List all images")

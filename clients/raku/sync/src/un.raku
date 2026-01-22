@@ -924,6 +924,8 @@ sub cmd-service(@args) {
     my $wake-id = '';
     my $destroy-id = '';
     my $resize-id = '';
+    my $set-unfreeze-on-demand-id = '';
+    my $set-unfreeze-on-demand-val = False;
     my $name = '';
     my $ports = '';
     my $type = '';
@@ -931,6 +933,7 @@ sub cmd-service(@args) {
     my $bootstrap-file = '';
     my $network = '';
     my $vcpu = 0;
+    my $unfreeze-on-demand = False;
     my @input-files;
 
     # Parse arguments
@@ -963,6 +966,16 @@ sub cmd-service(@args) {
             when '--resize' {
                 $i++;
                 $resize-id = @args[$i];
+            }
+            when '--set-unfreeze-on-demand' {
+                $i++;
+                $set-unfreeze-on-demand-id = @args[$i];
+                $i++;
+                my $val = @args[$i];
+                $set-unfreeze-on-demand-val = ($val eq 'true' || $val eq '1');
+            }
+            when '--unfreeze-on-demand' {
+                $unfreeze-on-demand = True;
             }
             when '--name' {
                 $i++;
@@ -1059,6 +1072,14 @@ sub cmd-service(@args) {
         return;
     }
 
+    if $set-unfreeze-on-demand-id {
+        my %payload = unfreeze_on_demand => $set-unfreeze-on-demand-val;
+        api-request("/services/$set-unfreeze-on-demand-id", 'PATCH', %payload, :$public-key, :$secret-key);
+        my $status = $set-unfreeze-on-demand-val ?? 'enabled' !! 'disabled';
+        say "{$GREEN}Unfreeze-on-demand $status for service: $set-unfreeze-on-demand-id{$RESET}";
+        return;
+    }
+
     # Create new service
     if $name {
         my %payload = name => $name;
@@ -1086,6 +1107,7 @@ sub cmd-service(@args) {
 
         %payload<network> = $network if $network;
         %payload<vcpu> = $vcpu if $vcpu > 0;
+        %payload<unfreeze_on_demand> = True if $unfreeze-on-demand;
 
         # Add input files
         if @input-files {

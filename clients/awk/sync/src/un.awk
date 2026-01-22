@@ -308,6 +308,40 @@ function service_resize(id, vcpu    , endpoint, json, tmp, timestamp, sig_header
     print GREEN "Service resized to " vcpu " vCPU, " ram " GB RAM" RESET
 }
 
+function set_unfreeze_on_demand(id, enabled    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, enabled_str) {
+    get_api_keys()
+    endpoint = "/services/" id
+    enabled_str = (enabled ? "true" : "false")
+    json = "{\"unfreeze_on_demand\":" enabled_str "}"
+
+    # Write to temp file
+    tmp = "/tmp/un_awk_unfreeze_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":PATCH:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    cmd = "curl -s -X PATCH '" API_BASE endpoint "' " \
+          "-H 'Content-Type: application/json' " \
+          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          sig_headers \
+          "-d '@" tmp "'"
+    system(cmd " > /dev/null")
+
+    # Clean up
+    system("rm -f " tmp)
+
+    print GREEN "Service unfreeze_on_demand set to " enabled_str RESET
+}
+
 function service_dump_bootstrap(id, dump_file    , endpoint, json_body, timestamp, sig_headers, signature, sig_input, sig_cmd) {
     get_api_keys()
     print "Fetching bootstrap script from " id "..." > "/dev/stderr"
@@ -445,7 +479,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
     print response
 }
 
-function service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, boot_content, line, input_files_json, response) {
+function service_create(name, ports, domains, service_type, bootstrap, bootstrap_file, input_files, unfreeze_on_demand    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, boot_content, line, input_files_json, response) {
     get_api_keys()
 
     # Build JSON payload
@@ -495,6 +529,11 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     input_files_json = build_input_files_json(input_files)
     if (input_files_json != "") {
         json = json input_files_json
+    }
+
+    # Add unfreeze_on_demand if provided
+    if (unfreeze_on_demand != "") {
+        json = json ",\"unfreeze_on_demand\":" (unfreeze_on_demand ? "true" : "false")
     }
 
     json = json "}"
@@ -1665,6 +1704,24 @@ END {
                 exit 1
             }
             service_resize(resize_id, resize_vcpu)
+        } else if (ARGC >= 4 && ARGV[2] == "--set-unfreeze-on-demand") {
+            # Parse enabled flag
+            set_uod_id = ARGV[3]
+            set_uod_enabled = ""
+            i = 4
+            while (i < ARGC) {
+                if (ARGV[i] == "--enabled" && i + 1 < ARGC) {
+                    set_uod_enabled = ARGV[i + 1]
+                    i += 2
+                } else {
+                    i++
+                }
+            }
+            if (set_uod_enabled == "") {
+                print RED "Error: --enabled (true/false) is required with --set-unfreeze-on-demand" RESET > "/dev/stderr"
+                exit 1
+            }
+            set_unfreeze_on_demand(set_uod_id, (set_uod_enabled == "true"))
         } else if (ARGC >= 4 && ARGV[2] == "--dump-bootstrap") {
             dump_file = ""
             if (ARGC >= 6 && ARGV[4] == "--dump-file") {

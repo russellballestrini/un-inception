@@ -101,6 +101,9 @@ class Args {
   String? serviceCommand;
   String? serviceDumpBootstrap;
   String? serviceDumpFile;
+  String? serviceUnfreezeOnDemand;
+  bool serviceUnfreezeOnDemandEnabled = true;
+  bool serviceCreateUnfreezeOnDemand = false;
   bool keyExtend = false;
   String? envFile;
   String? envAction;
@@ -646,6 +649,14 @@ Future<void> cmdService(Args args) async {
     return;
   }
 
+  if (args.serviceUnfreezeOnDemand != null) {
+    final payload = {'unfreeze_on_demand': args.serviceUnfreezeOnDemandEnabled};
+    await apiRequestCurl('/services/${args.serviceUnfreezeOnDemand}', 'PATCH', jsonEncode(payload), publicKey, secretKey);
+    final status = args.serviceUnfreezeOnDemandEnabled ? 'enabled' : 'disabled';
+    print('${green}Unfreeze-on-demand $status for service: ${args.serviceUnfreezeOnDemand}$reset');
+    return;
+  }
+
   if (args.serviceDestroy != null) {
     await apiRequestCurl('/services/${args.serviceDestroy}', 'DELETE', null, publicKey, secretKey);
     print('${green}Service destroyed: ${args.serviceDestroy}$reset');
@@ -735,6 +746,9 @@ Future<void> cmdService(Args args) async {
     }
     if (args.vcpu > 0) {
       payload['vcpu'] = args.vcpu;
+    }
+    if (args.serviceCreateUnfreezeOnDemand) {
+      payload['unfreeze_on_demand'] = true;
     }
 
     // Add input files
@@ -1091,6 +1105,15 @@ Args parseArgs(List<String> argv) {
       case '--dump-file':
         args.serviceDumpFile = argv[++i];
         break;
+      case '--unfreeze-on-demand':
+        args.serviceUnfreezeOnDemand = argv[++i];
+        break;
+      case '--unfreeze-on-demand-enabled':
+        args.serviceUnfreezeOnDemandEnabled = argv[++i].toLowerCase() == 'true';
+        break;
+      case '--with-unfreeze-on-demand':
+        args.serviceCreateUnfreezeOnDemand = true;
+        break;
       case '--extend':
         args.keyExtend = true;
         break;
@@ -1202,6 +1225,9 @@ Service options:
   --tail ID         Get last 9000 lines
   --freeze ID       Freeze service
   --unfreeze ID     Unfreeze service
+  --unfreeze-on-demand ID   Set unfreeze-on-demand for service
+  --unfreeze-on-demand-enabled BOOL   Enable/disable (default: true)
+  --with-unfreeze-on-demand   Enable unfreeze-on-demand when creating service
   --destroy ID      Destroy service
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)

@@ -299,6 +299,15 @@ async Task CmdServiceAsync(Args args)
         return;
     }
 
+    if (args.ServiceUnfreezeOnDemand != null)
+    {
+        var payload = new Dictionary<string, object> { ["unfreeze_on_demand"] = args.ServiceUnfreezeOnDemandEnabled };
+        await ApiRequestAsync($"/services/{args.ServiceUnfreezeOnDemand}", new HttpMethod("PATCH"), payload, publicKey, secretKey);
+        string status = args.ServiceUnfreezeOnDemandEnabled ? "enabled" : "disabled";
+        Console.WriteLine($"{GREEN}Unfreeze-on-demand {status} for service: {args.ServiceUnfreezeOnDemand}{RESET}");
+        return;
+    }
+
     if (args.ServiceDestroy != null)
     {
         await ApiRequestAsync($"/services/{args.ServiceDestroy}", HttpMethod.Delete, null, publicKey, secretKey);
@@ -347,6 +356,7 @@ async Task CmdServiceAsync(Args args)
         if (args.ServiceBootstrap != null) payload["bootstrap"] = args.ServiceBootstrap;
         if (args.Network != null) payload["network"] = args.Network;
         if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
+        if (args.ServiceCreateUnfreezeOnDemand) payload["unfreeze_on_demand"] = true;
 
         var result = await ApiRequestAsync("/services", HttpMethod.Post, payload, publicKey, secretKey);
         var serviceId = result.TryGetValue("id", out var id) && id is JsonElement idEl ? idEl.GetString() : null;
@@ -568,6 +578,9 @@ Args ParseArgs(string[] args)
         else if (arg == "--command") result.ServiceCommand = args[++i];
         else if (arg == "--dump-bootstrap") result.ServiceDumpBootstrap = args[++i];
         else if (arg == "--dump-file") result.ServiceDumpFile = args[++i];
+        else if (arg == "--unfreeze-on-demand") result.ServiceUnfreezeOnDemand = args[++i];
+        else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
+        else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
         else if (arg == "--extend") result.KeyExtend = true;
         else if (!arg.StartsWith("-")) result.SourceFile = arg;
     }
@@ -609,6 +622,9 @@ Service options:
   --tail ID         Get last 9000 lines
   --freeze ID       Freeze service
   --unfreeze ID     Unfreeze service
+  --unfreeze-on-demand ID   Set unfreeze-on-demand for service
+  --unfreeze-on-demand-enabled BOOL   Enable/disable (default: true)
+  --with-unfreeze-on-demand   Enable unfreeze-on-demand when creating service
   --destroy ID      Destroy service
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
@@ -643,6 +659,9 @@ class Args
     public string? ServiceInfo, ServiceLogs, ServiceTail, ServiceSleep, ServiceWake, ServiceDestroy;
     public string? ServiceExecute, ServiceCommand;
     public string? ServiceDumpBootstrap, ServiceDumpFile;
+    public string? ServiceUnfreezeOnDemand;
+    public bool ServiceUnfreezeOnDemandEnabled = true;
+    public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
     public bool KeyExtend;
 }

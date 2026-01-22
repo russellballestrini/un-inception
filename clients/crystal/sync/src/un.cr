@@ -746,6 +746,15 @@ def cmd_service(args)
     return
   end
 
+  if unfreeze_on_demand_id = args[:unfreeze_on_demand]?.as?(String)
+    enabled = args[:unfreeze_on_demand_enabled]?.as?(Bool) || true
+    payload = JSON.parse({unfreeze_on_demand: enabled}.to_json)
+    api_request("/services/#{unfreeze_on_demand_id}", public_key, secret_key, method: "PATCH", data: payload)
+    status = enabled ? "enabled" : "disabled"
+    puts "#{GREEN}Unfreeze-on-demand #{status} for service: #{unfreeze_on_demand_id}#{RESET}"
+    return
+  end
+
   if destroy_id = args[:destroy]?.as?(String)
     api_request("/services/#{destroy_id}", public_key, secret_key, method: "DELETE")
     puts "#{GREEN}Service destroyed: #{destroy_id}#{RESET}"
@@ -839,6 +848,11 @@ def cmd_service(args)
       payload.as_h["network"] = JSON::Any.new(network)
     end
 
+    # Add unfreeze_on_demand
+    if args[:create_unfreeze_on_demand]?.as?(Bool)
+      payload.as_h["unfreeze_on_demand"] = JSON::Any.new(true)
+    end
+
     # Add input files
     if files = args[:files]?.as?(Array(String))
       input_files = [] of JSON::Any
@@ -908,6 +922,9 @@ def main
     dump_file: nil,
     resize: nil,
     vcpu: nil,
+    unfreeze_on_demand: nil,
+    unfreeze_on_demand_enabled: true,
+    create_unfreeze_on_demand: false,
     name: nil,
     ports: nil,
     domains: nil,
@@ -952,6 +969,9 @@ def main
     opts.on("--logs=ID", "Get service logs") { |id| args[:logs] = id }
     opts.on("--freeze=ID", "Sleep service") { |id| args[:sleep] = id }
     opts.on("--unfreeze=ID", "Wake service") { |id| args[:wake] = id }
+    opts.on("--unfreeze-on-demand=ID", "Set unfreeze-on-demand for service") { |id| args[:unfreeze_on_demand] = id }
+    opts.on("--unfreeze-on-demand-enabled=BOOL", "Enable/disable unfreeze-on-demand (default: true)") { |b| args[:unfreeze_on_demand_enabled] = b.downcase == "true" }
+    opts.on("--with-unfreeze-on-demand", "Enable unfreeze-on-demand when creating service") { args[:create_unfreeze_on_demand] = true }
     opts.on("--destroy=ID", "Destroy service") { |id| args[:destroy] = id }
     opts.on("--execute=ID", "Execute command in service") { |id| args[:execute] = id }
     opts.on("--command=CMD", "Command to execute (with --execute)") { |cmd| args[:command] = cmd }

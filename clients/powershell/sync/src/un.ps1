@@ -765,6 +765,26 @@ function Invoke-Service {
         return
     }
 
+    if ($Args -contains "--set-unfreeze-on-demand") {
+        $idx = [array]::IndexOf($Args, "--set-unfreeze-on-demand")
+        $serviceId = $Args[$idx + 1]
+        $enabled = $Args[$idx + 2]
+
+        if ($enabled -eq "true" -or $enabled -eq "1") {
+            $payload = @{ unfreeze_on_demand = $true } | ConvertTo-Json
+            Invoke-Api -Endpoint "/services/$serviceId" -Method "PATCH" -Body $payload
+            Write-Host "`e[32mUnfreeze-on-demand enabled for service: $serviceId`e[0m"
+        } elseif ($enabled -eq "false" -or $enabled -eq "0") {
+            $payload = @{ unfreeze_on_demand = $false } | ConvertTo-Json
+            Invoke-Api -Endpoint "/services/$serviceId" -Method "PATCH" -Body $payload
+            Write-Host "`e[32mUnfreeze-on-demand disabled for service: $serviceId`e[0m"
+        } else {
+            Write-Error "Error: --set-unfreeze-on-demand requires true/false or 1/0"
+            exit 1
+        }
+        return
+    }
+
     if ($Args -contains "--dump-bootstrap") {
         $idx = [array]::IndexOf($Args, "--dump-bootstrap")
         $serviceId = $Args[$idx + 1]
@@ -827,6 +847,10 @@ function Invoke-Service {
         if ($Args -contains "--type") {
             $tIdx = [array]::IndexOf($Args, "--type")
             $payload["service_type"] = $Args[$tIdx + 1]
+        }
+
+        if ($Args -contains "--unfreeze-on-demand") {
+            $payload["unfreeze_on_demand"] = $true
         }
 
         # Parse input files
@@ -917,6 +941,7 @@ Service options:
   --ports PORTS        Comma-separated ports
   --type TYPE          Service type (minecraft, mumble, teamspeak, source, tcp, udp)
   --bootstrap CMD      Bootstrap command
+  --unfreeze-on-demand Enable unfreeze-on-demand for new service
   -f FILE              Input file (can be repeated)
   -e KEY=VALUE         Environment variable for vault (can be repeated)
   --env-file FILE      Load vault variables from file
@@ -927,6 +952,7 @@ Service options:
   --unfreeze ID        Unfreeze service
   --destroy ID         Destroy service
   --resize ID          Resize service (requires --vcpu or -v)
+  --set-unfreeze-on-demand ID true|false  Enable/disable unfreeze-on-demand
   --dump-bootstrap ID  Dump bootstrap script from service
   --dump-file FILE     Save bootstrap to file (with --dump-bootstrap)
 

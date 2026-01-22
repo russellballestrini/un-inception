@@ -109,6 +109,8 @@ type Args = {
     mutable ServiceDumpBootstrap: string option
     mutable ServiceDumpFile: string option
     mutable ServiceResize: string option
+    mutable ServiceSetUnfreezeOnDemand: string option
+    mutable ServiceUnfreezeOnDemandValue: string option
     mutable ServiceSnapshot: string option
     mutable ServiceRestore: string option
     mutable ServiceFrom: string option
@@ -962,6 +964,12 @@ let cmdService (args: Args) =
         let result = apiRequestPatch (sprintf "/services/%s" args.ServiceResize.Value) payload publicKey secretKey
         let ram = args.Vcpu * 2
         printfn "%sService resized to %d vCPU, %d GB RAM%s" green args.Vcpu ram reset
+    elif args.ServiceSetUnfreezeOnDemand.IsSome then
+        let enabledStr = args.ServiceUnfreezeOnDemandValue.Value.ToLower()
+        let enabled = enabledStr = "true" || enabledStr = "1" || enabledStr = "yes" || enabledStr = "on"
+        let payload = [("unfreeze_on_demand", box enabled)]
+        let result = apiRequestPatch (sprintf "/services/%s" args.ServiceSetUnfreezeOnDemand.Value) payload publicKey secretKey
+        printfn "%sService unfreeze_on_demand set to %b: %s%s" green enabled args.ServiceSetUnfreezeOnDemand.Value reset
     elif args.ServiceExecute.IsSome then
         let payload = [("command", box args.ServiceCommand.Value)]
         let result = apiRequest (sprintf "/services/%s/execute" args.ServiceExecute.Value) "POST" (Some payload) publicKey secretKey
@@ -1083,6 +1091,8 @@ let parseArgs (argv: string[]) =
         ServiceDumpBootstrap = None
         ServiceDumpFile = None
         ServiceResize = None
+        ServiceSetUnfreezeOnDemand = None
+        ServiceUnfreezeOnDemandValue = None
         ServiceSnapshot = None
         ServiceRestore = None
         ServiceFrom = None
@@ -1219,6 +1229,12 @@ let parseArgs (argv: string[]) =
         | "--unfreeze" -> i <- i + 1; args.ServiceWake <- Some argv.[i]
         | "--destroy" -> i <- i + 1; args.ServiceDestroy <- Some argv.[i]
         | "--resize" -> i <- i + 1; args.ServiceResize <- Some argv.[i]
+        | "--set-unfreeze-on-demand" ->
+            i <- i + 1
+            args.ServiceSetUnfreezeOnDemand <- Some argv.[i]
+            if i + 1 < argv.Length && not (argv.[i + 1].StartsWith("-")) then
+                i <- i + 1
+                args.ServiceUnfreezeOnDemandValue <- Some argv.[i]
         | "--execute" -> i <- i + 1; args.ServiceExecute <- Some argv.[i]
         | "--command" -> i <- i + 1; args.ServiceCommand <- Some argv.[i]
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
@@ -1313,6 +1329,8 @@ let printHelp () =
     printfn "  --unfreeze ID     Unfreeze service"
     printfn "  --destroy ID      Destroy service"
     printfn "  --resize ID       Resize service (requires --vcpu N)"
+    printfn "  --set-unfreeze-on-demand ID true|false"
+    printfn "                    Set unfreeze_on_demand for service"
     printfn "  --execute ID      Execute command in service"
     printfn "  --command CMD     Command to execute (with --execute)"
     printfn "  --dump-bootstrap ID   Dump bootstrap script"

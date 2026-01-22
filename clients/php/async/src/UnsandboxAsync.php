@@ -759,6 +759,9 @@ class UnsandboxAsync {
         if (isset($opts['input_files'])) {
             $data['input_files'] = $opts['input_files'];
         }
+        if (isset($opts['unfreeze_on_demand']) && $opts['unfreeze_on_demand']) {
+            $data['unfreeze_on_demand'] = true;
+        }
 
         return $this->makeRequest('POST', '/services', $publicKey, $secretKey, $data);
     }
@@ -858,6 +861,20 @@ class UnsandboxAsync {
     public function unlockService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
         return $this->makeRequest('POST', "/services/{$serviceId}/unlock", $publicKey, $secretKey, []);
+    }
+
+    /**
+     * Set unfreeze_on_demand flag for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param bool $enabled Whether to enable unfreeze on demand
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with update confirmation
+     */
+    public function setUnfreezeOnDemand(string $serviceId, bool $enabled, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('PATCH', "/services/{$serviceId}", $publicKey, $secretKey, ['unfreeze_on_demand' => $enabled]);
     }
 
     /**
@@ -1860,6 +1877,14 @@ class UnsandboxAsync {
             return;
         }
 
+        if ($serviceOpts['set_unfreeze_on_demand']) {
+            $enabled = in_array($serviceOpts['set_unfreeze_on_demand_enabled'], ['true', '1'], true);
+            $result = $this->setUnfreezeOnDemand($serviceOpts['set_unfreeze_on_demand'], $enabled)->wait();
+            $status = $enabled ? 'enabled' : 'disabled';
+            echo "Unfreeze-on-demand {$status} for service: " . $serviceOpts['set_unfreeze_on_demand'] . "\n";
+            return;
+        }
+
         // Create new service
         if (!empty($serviceOpts['name'])) {
             $createOpts = [];
@@ -1874,6 +1899,9 @@ class UnsandboxAsync {
             }
             if (!empty($serviceOpts['domains'])) {
                 $createOpts['custom_domains'] = explode(',', $serviceOpts['domains']);
+            }
+            if ($serviceOpts['unfreeze_on_demand']) {
+                $createOpts['unfreeze_on_demand'] = true;
             }
 
             // Handle bootstrap from file
@@ -1940,6 +1968,9 @@ class UnsandboxAsync {
             'execute_cmd' => null,
             'snapshot' => null,
             'snapshot_name' => null,
+            'unfreeze_on_demand' => false,
+            'set_unfreeze_on_demand' => null,
+            'set_unfreeze_on_demand_enabled' => null,
         ];
 
         $i = 0;
@@ -2011,6 +2042,13 @@ class UnsandboxAsync {
             } elseif ($arg === '--snapshot-name') {
                 $i++;
                 $opts['snapshot_name'] = $args[$i] ?? null;
+            } elseif ($arg === '--unfreeze-on-demand') {
+                $opts['unfreeze_on_demand'] = true;
+            } elseif ($arg === '--set-unfreeze-on-demand') {
+                $i++;
+                $opts['set_unfreeze_on_demand'] = $args[$i] ?? null;
+                $i++;
+                $opts['set_unfreeze_on_demand_enabled'] = $args[$i] ?? null;
             }
 
             $i++;

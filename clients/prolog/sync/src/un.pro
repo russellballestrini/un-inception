@@ -246,6 +246,19 @@ service_resize(ServiceId, Vcpu) :-
         [Vcpu, ServiceId, SecretKey, ServiceId, PublicKey, Vcpu, Ram]),
     shell(Cmd, 0).
 
+% Service set unfreeze on demand
+service_set_unfreeze_on_demand(ServiceId, Enabled) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   Enabled = true
+    ->  EnabledStr = 'true', Msg = 'enabled'
+    ;   EnabledStr = 'false', Msg = 'disabled'
+    ),
+    format(atom(Cmd),
+        'BODY=\'\'{\"unfreeze_on_demand\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH https://api.unsandbox.com/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mUnfreeze-on-demand ~w for service: ~w\\x1b[0m"',
+        [EnabledStr, ServiceId, SecretKey, ServiceId, PublicKey, Msg, ServiceId]),
+    shell(Cmd, 0).
+
 % Service env status
 service_env_status(ServiceId) :-
     get_public_key(PublicKey),
@@ -650,6 +663,14 @@ parse_service_args(['--resize', ServiceId, '-v', VcpuAtom|_], _, _, _, _, _, _, 
 parse_service_args(['--resize', _|_], _, _, _, _, _, _, _, _, _, _) :-
     write(user_error, '\x1b[31mError: --resize requires --vcpu or -v\x1b[0m\n'),
     halt(1).
+parse_service_args(['--set-unfreeze-on-demand', ServiceId, EnabledAtom|_], _, _, _, _, _, _, _, _, _, _) :-
+    (   (EnabledAtom = 'true' ; EnabledAtom = '1')
+    ->  service_set_unfreeze_on_demand(ServiceId, true)
+    ;   (EnabledAtom = 'false' ; EnabledAtom = '0')
+    ->  service_set_unfreeze_on_demand(ServiceId, false)
+    ;   write(user_error, '\x1b[31mError: --set-unfreeze-on-demand requires true/false or 1/0\x1b[0m\n'),
+        halt(1)
+    ).
 parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _, _, _, _, _, _) :-
     (   Rest = ['--dump-file', DumpFile|_]
     ->  service_dump_bootstrap(ServiceId, DumpFile)

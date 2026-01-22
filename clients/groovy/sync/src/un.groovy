@@ -1006,6 +1006,8 @@ class Args {
     String serviceDumpBootstrap = null
     String serviceDumpFile = null
     String serviceResize = null
+    String serviceSetUnfreezeOnDemand = null
+    String serviceUnfreezeOnDemandValue = null
     String serviceSnapshot = null
     String serviceRestore = null
     String serviceFrom = null
@@ -1558,6 +1560,14 @@ def cmdService(args) {
         return
     }
 
+    if (args.serviceSetUnfreezeOnDemand) {
+        def enabledStr = (args.serviceUnfreezeOnDemandValue ?: 'false').toLowerCase()
+        def enabled = enabledStr in ['true', '1', 'yes', 'on']
+        apiRequestPatch("/services/${args.serviceSetUnfreezeOnDemand}", [unfreeze_on_demand: enabled], publicKey, secretKey)
+        println("${GREEN}Service unfreeze_on_demand set to ${enabled}: ${args.serviceSetUnfreezeOnDemand}${RESET}")
+        return
+    }
+
     if (args.serviceExecute) {
         def output = apiRequest("/services/${args.serviceExecute}/execute", 'POST',
             [command: args.serviceCommand], publicKey, secretKey)
@@ -1823,6 +1833,12 @@ def parseArgs(argv) {
             case '--resize':
                 args.serviceResize = argv[++i]
                 break
+            case '--set-unfreeze-on-demand':
+                args.serviceSetUnfreezeOnDemand = argv[++i]
+                if (i + 1 < argv.size() && !argv[i + 1].startsWith('-')) {
+                    args.serviceUnfreezeOnDemandValue = argv[++i]
+                }
+                break
             case '--execute':
                 args.serviceExecute = argv[++i]
                 break
@@ -1900,6 +1916,8 @@ Service options:
   --unfreeze ID       Unfreeze service
   --destroy ID        Destroy service
   --resize ID         Resize service (requires --vcpu N)
+  --set-unfreeze-on-demand ID true|false
+                      Set unfreeze_on_demand for service
   --execute ID        Execute command in service
   --command CMD       Command to execute (with --execute)
   --dump-bootstrap ID Dump bootstrap script

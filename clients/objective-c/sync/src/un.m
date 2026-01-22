@@ -1258,6 +1258,15 @@ void cmdSession(NSArray* args) {
            [YELLOW UTF8String], [RESET UTF8String]);
 }
 
+/**
+ * Set unfreeze_on_demand flag for a service.
+ */
+void setServiceUnfreezeOnDemand(NSString* serviceId, BOOL enabled, NSString* publicKey, NSString* secretKey) {
+    NSString* endpoint = [NSString stringWithFormat:@"/services/%@", serviceId];
+    NSDictionary* payload = @{@"unfreeze_on_demand": @(enabled)};
+    apiRequestCLI(endpoint, @"PATCH", payload, publicKey, secretKey);
+}
+
 void cmdService(NSArray* args) {
     NSString* publicKey, *secretKey;
     UNGetApiKeysCLI(&publicKey, &secretKey);
@@ -1274,6 +1283,9 @@ void cmdService(NSArray* args) {
     NSString* bootstrapFile = nil;
     NSString* network = nil;
     int vcpu = 0;
+    BOOL unfreezeOnDemand = NO;
+    NSString* setUnfreezeOnDemandId = nil;
+    BOOL setUnfreezeOnDemandEnabled = NO;
     NSMutableArray* inputFiles = [NSMutableArray array];
     NSMutableArray* envVars = [NSMutableArray array];
     NSString* envFile = nil;
@@ -1351,7 +1363,21 @@ void cmdService(NSArray* args) {
             network = args[++i];
         } else if ([arg isEqualToString:@"-v"] && i + 1 < [args count]) {
             vcpu = [args[++i] intValue];
+        } else if ([arg isEqualToString:@"--unfreeze-on-demand"]) {
+            unfreezeOnDemand = YES;
+        } else if ([arg isEqualToString:@"--set-unfreeze-on-demand"] && i + 2 < [args count]) {
+            setUnfreezeOnDemandId = args[++i];
+            NSString* enabledStr = args[++i];
+            setUnfreezeOnDemandEnabled = [enabledStr isEqualToString:@"true"] || [enabledStr isEqualToString:@"1"];
         }
+    }
+
+    if (setUnfreezeOnDemandId) {
+        setServiceUnfreezeOnDemand(setUnfreezeOnDemandId, setUnfreezeOnDemandEnabled, publicKey, secretKey);
+        NSString* status = setUnfreezeOnDemandEnabled ? @"enabled" : @"disabled";
+        printf("%sUnfreeze-on-demand %s for service: %s%s\n",
+               [GREEN UTF8String], [status UTF8String], [setUnfreezeOnDemandId UTF8String], [RESET UTF8String]);
+        return;
     }
 
     if (listMode) {
@@ -1462,6 +1488,7 @@ void cmdService(NSArray* args) {
 
         if (network) payload[@"network"] = network;
         if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
+        if (unfreezeOnDemand) payload[@"unfreeze_on_demand"] = @YES;
 
         NSDictionary* result = apiRequestCLI(@"/services", @"POST", payload, publicKey, secretKey);
         printf("%sService created: %s%s\n", [GREEN UTF8String], [result[@"id"] UTF8String], [RESET UTF8String]);

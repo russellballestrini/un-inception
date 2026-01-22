@@ -458,7 +458,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     writeln(execCurl(cmd));
 }
 
-void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string resize, int resizeVcpu, string execute, string command, string dumpBootstrap, string dumpFile, string network, int vcpu, string[] inputFiles, string[] svcEnvs, string svcEnvFile, string envAction, string envTarget, string publicKey, string secretKey) {
+void cmdService(string name, string ports, string bootstrap, string bootstrapFile, string type, bool list, string info, string logs, string tail, string sleep, string wake, string destroy, string resize, int resizeVcpu, string execute, string command, string dumpBootstrap, string dumpFile, string unfreezeOnDemand, bool unfreezeOnDemandEnabled, bool createUnfreezeOnDemand, string network, int vcpu, string[] inputFiles, string[] svcEnvs, string svcEnvFile, string envAction, string envTarget, string publicKey, string secretKey) {
     // Handle env subcommand
     if (!envAction.empty) {
         cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey);
@@ -511,6 +511,17 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         string cmd = format(`curl -s -X POST '%s/services/%s/unfreeze' %s`, API_BASE, wake, authHeaders);
         execCurl(cmd);
         writefln("%sService unfreezing: %s%s", GREEN, wake, RESET);
+        return;
+    }
+
+    if (!unfreezeOnDemand.empty) {
+        string json = format(`{"unfreeze_on_demand":%s}`, unfreezeOnDemandEnabled ? "true" : "false");
+        string path = format("/services/%s", unfreezeOnDemand);
+        string authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey);
+        string cmd = format(`curl -s -X PATCH '%s/services/%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, unfreezeOnDemand, authHeaders, json);
+        execCurl(cmd);
+        string status = unfreezeOnDemandEnabled ? "enabled" : "disabled";
+        writefln("%sUnfreeze-on-demand %s for service: %s%s", GREEN, status, unfreezeOnDemand, RESET);
         return;
     }
 
@@ -629,6 +640,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         }
         if (!network.empty) json ~= format(`,"network":"%s"`, network);
         if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
+        if (createUnfreezeOnDemand) json ~= `,"unfreeze_on_demand":true`;
         json ~= buildInputFilesJson(inputFiles);
         json ~= "}";
 
@@ -999,7 +1011,9 @@ int main(string[] args) {
     if (args[1] == "service") {
         string name, ports, bootstrap, bootstrapFile, type;
         bool list = false;
-        string info, logs, tail, sleep, wake, destroy, resize, execute, command, dumpBootstrap, dumpFile, network;
+        string info, logs, tail, sleep, wake, destroy, resize, execute, command, dumpBootstrap, dumpFile, unfreezeOnDemand, network;
+        bool unfreezeOnDemandEnabled = true;
+        bool createUnfreezeOnDemand = false;
         int vcpu = 0;
         int resizeVcpu = 0;
         string[] inputFiles;
@@ -1016,7 +1030,7 @@ int main(string[] args) {
                 else if (args[i] == "--env-file" && i+1 < args.length) svcEnvFile = args[++i];
                 else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
             }
-            cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
+            cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, unfreezeOnDemand, unfreezeOnDemandEnabled, createUnfreezeOnDemand, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
             return 0;
         }
 
@@ -1039,6 +1053,9 @@ int main(string[] args) {
             else if (args[i] == "--command" && i+1 < args.length) command = args[++i];
             else if (args[i] == "--dump-bootstrap" && i+1 < args.length) dumpBootstrap = args[++i];
             else if (args[i] == "--dump-file" && i+1 < args.length) dumpFile = args[++i];
+            else if (args[i] == "--unfreeze-on-demand" && i+1 < args.length) unfreezeOnDemand = args[++i];
+            else if (args[i] == "--unfreeze-on-demand-enabled" && i+1 < args.length) unfreezeOnDemandEnabled = args[++i] == "true";
+            else if (args[i] == "--with-unfreeze-on-demand") createUnfreezeOnDemand = true;
             else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
             else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
             else if (args[i] == "-f" && i+1 < args.length) inputFiles ~= args[++i];
@@ -1047,7 +1064,7 @@ int main(string[] args) {
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
         }
 
-        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
+        cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, unfreezeOnDemand, unfreezeOnDemandEnabled, createUnfreezeOnDemand, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
         return 0;
     }
 
