@@ -161,31 +161,55 @@ TOTAL_TESTS=0
 FAILURES=0
 
 # Helper to run test and record result
+# Retries on HTTP 429 (rate limiting) with exponential backoff
 run_test() {
     local test_name="$1"
     local test_cmd="$2"
     local success_pattern="$3"
     local output_file="$RESULTS_DIR/${test_name}.txt"
+    local max_retries=42
+    local retry_delay=2
+    local attempt=0
 
     echo -n "Test: $test_name... "
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
-    if eval "$test_cmd" > "$output_file" 2>&1; then
-        if [ -n "$success_pattern" ]; then
-            if grep -qiE "$success_pattern" "$output_file"; then
-                TEST_RESULTS["$test_name"]="pass"
-                echo "PASS"
-                return 0
-            fi
-        else
-            # No pattern required, just check non-empty output
-            if [ -s "$output_file" ]; then
-                TEST_RESULTS["$test_name"]="pass"
-                echo "PASS"
-                return 0
+    while [ $attempt -lt $max_retries ]; do
+        if eval "$test_cmd" > "$output_file" 2>&1; then
+            if [ -n "$success_pattern" ]; then
+                if grep -qiE "$success_pattern" "$output_file"; then
+                    TEST_RESULTS["$test_name"]="pass"
+                    echo "PASS"
+                    return 0
+                fi
+            else
+                # No pattern required, just check non-empty output
+                if [ -s "$output_file" ]; then
+                    TEST_RESULTS["$test_name"]="pass"
+                    echo "PASS"
+                    return 0
+                fi
             fi
         fi
-    fi
+
+        # Check for HTTP 429 (rate limiting) - retry with backoff
+        if grep -qiE "HTTP 429|concurrency_limit|too many.*concurrent|rate.limit" "$output_file" 2>/dev/null; then
+            attempt=$((attempt + 1))
+            if [ $attempt -lt $max_retries ]; then
+                echo -n "(429 retry $attempt/$max_retries)... "
+                sleep $retry_delay
+                # Exponential backoff, cap at 30 seconds
+                retry_delay=$((retry_delay * 2))
+                if [ $retry_delay -gt 30 ]; then
+                    retry_delay=30
+                fi
+                continue
+            fi
+        fi
+
+        # Not a 429 error, break out of retry loop
+        break
+    done
 
     # Check for acceptable failures (transient API/sandbox issues)
     if grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$output_file" 2>/dev/null; then
