@@ -1,13 +1,13 @@
 # UN Inception: Aggregated Performance Analysis
 
-**Analysis Date:** 1769175050.0194023
-**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.3, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
+**Analysis Date:** 1769176325.3071244
+**Reports Analyzed:** 4.2.11, 4.2.12
 
 ---
 
 ## Executive Summary
 
-Analysis of 11 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+Analysis of 2 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
 
 1. **Orchestrator placement on CPU-bound pool** (not an SRE best practice)
 2. **Resource contention** between the orchestrator & test jobs
@@ -22,17 +22,8 @@ Analysis of 11 performance reports reveals **significant variance** in execution
 
 | Release | Avg Duration | Slowest | Fastest | Change from Previous |
 |---------|--------------|---------|---------|----------------------|
-| 4.2.0 | 33s | raku (93s) | ocaml (19s) | baseline |
-| 4.2.10 | 153s | scheme (320s) | bash (29s) | +120s (+363.6%) |
-| 4.2.11 | 103s | deno (289s) | cpp (43s) | -50s (-32.7%) |
+| 4.2.11 | 103s | deno (289s) | cpp (43s) | baseline |
 | 4.2.12 | 142s | go (406s) | erlang (21s) | +39s (+37.9%) |
-| 4.2.3 | 63s | rust (142s) | v (40s) | -79s (-55.6%) |
-| 4.2.4 | 70s | python (110s) | c (23s) | +7s (+11.1%) |
-| 4.2.5 | 67s | v (114s) | erlang (44s) | -3s (-4.3%) |
-| 4.2.6 | 54s | haskell (128s) | awk (23s) | -13s (-19.4%) |
-| 4.2.7 | 117s | typescript (319s) | dotnet (5s) | +63s (+116.7%) |
-| 4.2.8 | 111s | kotlin (313s) | fortran (28s) | -6s (-5.1%) |
-| 4.2.9 | 107s | ruby (279s) | d (19s) | -4s (-3.6%) |
 
 **Observation:** Average duration increased **0.0%** from 0s to 0s.
 
@@ -49,74 +40,29 @@ The same language changes dramatically in rank between runs:
 
 
 **CRYSTAL:**
-  - 4.2.0: 24s
-  - 4.2.10: 89s
   - 4.2.11: 90s
   - 4.2.12: 397s
-  - 4.2.3: 61s
-  - 4.2.4: 60s
-  - 4.2.5: 88s
-  - 4.2.6: 28s
-  - 4.2.7: 260s
-  - 4.2.8: 44s
-  - 4.2.9: 221s
-  - **Range:** 24s → 397s (1554.2% variance)
+  - **Range:** 90s → 397s (341.1% variance)
 
 **GROOVY:**
-  - 4.2.0: 23s
-  - 4.2.10: 151s
   - 4.2.11: 90s
   - 4.2.12: 393s
-  - 4.2.3: 60s
-  - 4.2.4: 59s
-  - 4.2.5: 70s
-  - 4.2.6: 40s
-  - 4.2.7: 36s
-  - 4.2.8: 41s
-  - 4.2.9: 98s
-  - **Range:** 23s → 393s (1608.7% variance)
+  - **Range:** 90s → 393s (336.7% variance)
 
 **GO:**
-  - 4.2.0: 53s
-  - 4.2.10: 161s
   - 4.2.11: 177s
   - 4.2.12: 406s
-  - 4.2.3: 74s
-  - 4.2.4: 94s
-  - 4.2.5: 65s
-  - 4.2.6: 107s
-  - 4.2.7: 86s
-  - 4.2.8: 64s
-  - 4.2.9: 92s
-  - **Range:** 53s → 406s (666.0% variance)
+  - **Range:** 177s → 406s (129.4% variance)
 
-**SCHEME:**
-  - 4.2.0: 24s
-  - 4.2.10: 320s
-  - 4.2.11: 92s
-  - 4.2.12: 205s
-  - 4.2.3: 65s
-  - 4.2.4: 100s
-  - 4.2.5: 102s
-  - 4.2.6: 42s
-  - 4.2.7: 146s
-  - 4.2.8: 55s
-  - 4.2.9: 153s
-  - **Range:** 24s → 320s (1233.3% variance)
+**COBOL:**
+  - 4.2.11: 72s
+  - 4.2.12: 290s
+  - **Range:** 72s → 290s (302.8% variance)
 
-**ELIXIR:**
-  - 4.2.0: 20s
-  - 4.2.10: 98s
-  - 4.2.11: 228s
-  - 4.2.12: 124s
-  - 4.2.3: 69s
-  - 4.2.4: 105s
-  - 4.2.5: 55s
-  - 4.2.6: 41s
-  - 4.2.7: 313s
-  - 4.2.8: 127s
-  - 4.2.9: 59s
-  - **Range:** 20s → 313s (1465.0% variance)
+**ERLANG:**
+  - 4.2.11: 235s
+  - 4.2.12: 21s
+  - **Range:** 21s → 235s (1019.0% variance)
 
 
 ---
@@ -125,31 +71,13 @@ The same language changes dramatically in rank between runs:
 
 **Fastest Languages by Run:**
 
-4.2.0: ocaml, tcl, elixir, csharp, cobol
-4.2.10: bash, powershell, erlang, ruby, typescript
 4.2.11: cpp, forth, lua, typescript, ruby
 4.2.12: erlang, php, python, javascript, haskell
-4.2.3: v, d, kotlin, awk, raku
-4.2.4: c, d, cobol, raku, v
-4.2.5: erlang, awk, bash, deno, tcl
-4.2.6: awk, powershell, crystal, raku, erlang
-4.2.7: dotnet, deno, awk, fortran, commonlisp
-4.2.8: fortran, groovy, crystal, java, powershell
-4.2.9: d, julia, csharp, v, objc
 
 **Slowest Languages by Run:**
 
-4.2.0: raku, javascript, cpp, rust, go
-4.2.10: scheme, clojure, deno, c, julia
 4.2.11: deno, awk, erlang, elixir, clojure
 4.2.12: go, crystal, groovy, deno, awk
-4.2.3: rust, c, python, typescript, javascript
-4.2.4: python, javascript, elixir, scheme, bash
-4.2.5: v, haskell, scheme, ocaml, powershell
-4.2.6: haskell, go, cpp, rust, forth
-4.2.7: typescript, ruby, r, elixir, crystal
-4.2.8: kotlin, python, javascript, tcl, raku
-4.2.9: ruby, deno, rust, crystal, java
 
 **Conclusion:** No consistent "fast" or "slow" languages across runs. This proves:
 - Execution order is random or system-dependent
@@ -231,25 +159,25 @@ If concurrency was fixed at N parallel jobs:
 ### Most Variable Languages
 
 
-CRYSTAL: 24s → 397s (+1554.2%)
+CRYSTAL: 90s → 397s (+341.1%)
 
-GROOVY: 23s → 393s (+1608.7%)
+GROOVY: 90s → 393s (+336.7%)
 
-GO: 53s → 406s (+666.0%)
+GO: 177s → 406s (+129.4%)
 
-SCHEME: 24s → 320s (+1233.3%)
+COBOL: 72s → 290s (+302.8%)
 
-ELIXIR: 20s → 313s (+1465.0%)
+ERLANG: 21s → 235s (+1019.0%)
 
-TYPESCRIPT: 29s → 319s (+1000.0%)
+ZIG: 68s → 199s (+192.6%)
 
-CLOJURE: 21s → 310s (+1376.2%)
+FORTH: 53s → 178s (+235.8%)
 
-R: 25s → 313s (+1152.0%)
+POWERSHELL: 58s → 175s (+201.7%)
 
-DENO: 24s → 310s (+1191.7%)
+SCHEME: 92s → 205s (+122.8%)
 
-KOTLIN: 27s → 313s (+1059.3%)
+RUST: 115s → 227s (+97.4%)
 
 
 These languages are most affected by resource contention. Likely reasons:
@@ -302,26 +230,26 @@ Keep it as-is for stress testing, but in separate test environment.
 
 | Language | Min (s) | Max (s) | Avg (s) | Range (s) | Variance % |
 |----------|---------|---------|---------|-----------|------------|
-| DOTNET | 5 | 125 | 79.0 | 120 | 2400.0% |
-| GROOVY | 23 | 393 | 96.5 | 370 | 1608.7% |
-| CRYSTAL | 24 | 397 | 123.8 | 373 | 1554.2% |
-| ELIXIR | 20 | 313 | 112.6 | 293 | 1465.0% |
-| CLOJURE | 21 | 310 | 113.0 | 289 | 1376.2% |
-| COBOL | 20 | 290 | 90.0 | 270 | 1350.0% |
-| SCHEME | 24 | 320 | 118.5 | 296 | 1233.3% |
-| AWK | 23 | 306 | 110.5 | 283 | 1230.4% |
-| DENO | 24 | 310 | 130.5 | 286 | 1191.7% |
-| OCAML | 19 | 240 | 93.9 | 221 | 1163.2% |
-| R | 25 | 313 | 109.1 | 288 | 1152.0% |
-| TCL | 20 | 247 | 103.6 | 227 | 1135.0% |
-| C | 23 | 276 | 97.6 | 253 | 1100.0% |
-| CSHARP | 20 | 235 | 81.4 | 215 | 1075.0% |
-| KOTLIN | 27 | 313 | 107.3 | 286 | 1059.3% |
-| ERLANG | 21 | 235 | 80.5 | 214 | 1019.0% |
-| TYPESCRIPT | 29 | 319 | 95.6 | 290 | 1000.0% |
-| PHP | 23 | 235 | 91.4 | 212 | 921.7% |
-| HASKELL | 21 | 214 | 93.5 | 193 | 919.0% |
-| RUBY | 33 | 318 | 110.3 | 285 | 863.6% |
+| ERLANG | 21 | 235 | 128.0 | 214 | 1019.0% |
+| CRYSTAL | 90 | 397 | 243.5 | 307 | 341.1% |
+| GROOVY | 90 | 393 | 241.5 | 303 | 336.7% |
+| PHP | 26 | 108 | 67.0 | 82 | 315.4% |
+| COBOL | 72 | 290 | 181.0 | 218 | 302.8% |
+| FORTH | 53 | 178 | 115.5 | 125 | 235.8% |
+| POWERSHELL | 58 | 175 | 116.5 | 117 | 201.7% |
+| ZIG | 68 | 199 | 133.5 | 131 | 192.6% |
+| BASH | 58 | 169 | 113.5 | 111 | 191.4% |
+| CSHARP | 59 | 157 | 108.0 | 98 | 166.1% |
+| FSHARP | 59 | 156 | 107.5 | 97 | 164.4% |
+| CPP | 43 | 106 | 74.5 | 63 | 146.5% |
+| RUBY | 58 | 136 | 97.0 | 78 | 134.5% |
+| COMMONLISP | 39 | 91 | 65.0 | 52 | 133.3% |
+| PYTHON | 29 | 67 | 48.0 | 38 | 131.0% |
+| GO | 177 | 406 | 291.5 | 229 | 129.4% |
+| TYPESCRIPT | 58 | 132 | 95.0 | 74 | 127.6% |
+| SCHEME | 92 | 205 | 148.5 | 113 | 122.8% |
+| DOTNET | 59 | 125 | 92.0 | 66 | 111.9% |
+| PROLOG | 61 | 124 | 92.5 | 63 | 103.3% |
 
 
 ---
@@ -376,17 +304,8 @@ Individual Reports → Aggregation Script → Chart Generation (via UN) → Fina
 ### Data Sources
 
 **Input Files:**
-- `reports/4.2.0/perf.json` - 642 tests, generated 2026-01-18T23:20:51Z
-- `reports/4.2.10/perf.json` - 673 tests, generated 2026-01-23T11:46:18Z
 - `reports/4.2.11/perf.json` - 669 tests, generated 2026-01-23T12:14:08Z
 - `reports/4.2.12/perf.json` - 665 tests, generated 2026-01-23T13:30:32Z
-- `reports/4.2.3/perf.json` - 642 tests, generated 2026-01-19T11:58:45Z
-- `reports/4.2.4/perf.json` - 682 tests, generated 2026-01-19T12:02:14Z
-- `reports/4.2.5/perf.json` - 658 tests, generated 2026-01-19T19:10:23Z
-- `reports/4.2.6/perf.json` - 642 tests, generated 2026-01-19T20:22:16Z
-- `reports/4.2.7/perf.json` - 631 tests, generated 2026-01-23T09:36:18Z
-- `reports/4.2.8/perf.json` - 645 tests, generated 2026-01-23T10:01:33Z
-- `reports/4.2.9/perf.json` - 645 tests, generated 2026-01-23T10:05:34Z
 
 
 Each `perf.json` contains:
@@ -583,5 +502,5 @@ For questions about this methodology or to report issues:
 ---
 
 **Generated by UN Inception Performance Analysis Pipeline**
-**Analysis Date:** 2026-01-23T08:30:50.087575
+**Analysis Date:** 2026-01-23T08:52:20.299366
 **Report Version:** 1.0.0
