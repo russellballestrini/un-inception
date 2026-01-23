@@ -227,6 +227,35 @@ report:
     - /^\d+\.\d+\.\d+$/
 
 # ============================================================================
+# STAGE 8b: Collect Pool Metrics During Tests (Tags Only)
+# ============================================================================
+collect-pool-metrics:
+  stage: test
+  script:
+    - echo "Starting pool metrics collector..."
+    - mkdir -p pool-metrics
+    - bash scripts/collect-pool-metrics.sh start pool-metrics
+    - echo "Collector running, waiting for tests to complete..."
+    - |
+      # Poll until trigger-test-matrix child pipeline completes (max 20 min)
+      for i in $(seq 1 240); do
+        sleep 5
+        bash scripts/collect-pool-metrics.sh status pool-metrics || true
+      done
+    - echo "Stopping collector..."
+    - bash scripts/collect-pool-metrics.sh stop pool-metrics
+    - echo "Generating pool metrics report..."
+    - bash scripts/collect-pool-metrics.sh report pool-metrics
+    - cat pool-metrics/pool-metrics.json
+  artifacts:
+    paths:
+      - pool-metrics/
+    expire_in: 90 days
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+  allow_failure: true
+
+# ============================================================================
 # STAGE 9: Performance Report (Tags Only)
 # ============================================================================
 perf-report:
@@ -235,6 +264,9 @@ perf-report:
     - trigger-test-matrix
     - job: build
       artifacts: true
+    - job: collect-pool-metrics
+      artifacts: true
+      optional: true
   variables:
     GIT_STRATEGY: clone
     GIT_DEPTH: 0
@@ -262,9 +294,12 @@ perf-report:
     - echo "Step 3 - Generating performance charts..."
     - test -x build/un && test -f "reports/$CI_COMMIT_TAG/perf.json" && build/un -a -f "reports/$CI_COMMIT_TAG/perf.json" scripts/generate-perf-charts.py || echo "WARN - Charts skipped (build/un or perf.json missing)"
     - mv -f *.png "reports/$CI_COMMIT_TAG/" 2>/dev/null || true
-    - echo "Step 4 - Report contents..."
+    - echo "Step 4 - Adding pool metrics if available..."
+    - test -f pool-metrics/pool-metrics.json && cp pool-metrics/pool-metrics.json "reports/$CI_COMMIT_TAG/" && echo "  ✓ Pool metrics added" || echo "  (no pool metrics)"
+    - test -f pool-metrics/raw-samples.csv && cp pool-metrics/raw-samples.csv "reports/$CI_COMMIT_TAG/" || true
+    - echo "Step 5 - Report contents..."
     - ls -la "reports/$CI_COMMIT_TAG/" 2>/dev/null || echo "No report directory"
-    - echo "Step 5 - Committing to main..."
+    - echo "Step 6 - Committing to main..."
     - git add reports/
     - git diff --cached --quiet && echo "No changes to commit" || git commit -m "perf - Add performance report for $CI_COMMIT_TAG [ci skip]"
     - git push origin main || echo "Nothing to push"
