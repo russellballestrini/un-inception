@@ -17,3 +17,4 @@ Tracking compile and test execution times across releases.
 | 4.2.10 | 2026-01-23 | 673 | 99.7% | 153s | scheme | bash |
 | 4.2.11 | 2026-01-23 | 669 | 100.0% | 103s | deno | cpp |
 | 4.2.12 | 2026-01-23 | 665 | 100.0% | 142s | go | erlang |
+| 4.2.13 | 2026-01-23 | 673 | 100.0% | 126s | deno | haskell |

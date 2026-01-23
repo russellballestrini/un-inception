@@ -1,0 +1,114 @@
+{
+  "summary": {
+    "total_samples": 193,
+    "collection_duration_seconds": 1202,
+    "success_rate": 100.0
+  },
+  "cpu": {
+    "load1": {
+      "min": 0.0,
+      "max": 55.84,
+      "avg": 6.69,
+      "median": 1.03,
+      "stdev": 12.21
+    },
+    "load5": {
+      "min": 0.0,
+      "max": 31.99,
+      "avg": 11.37,
+      "median": 8.78,
+      "stdev": 9.35
+    },
+    "load15": {
+      "min": 0.0,
+      "max": 19.31,
+      "avg": 11.78,
+      "median": 12.56,
+      "stdev": 5.55
+    }
+  },
+  "memory": {
+    "used_gb": {
+      "min": 0.0,
+      "max": 127.0,
+      "avg": 110.07,
+      "median": 126.5,
+      "stdev": 42.57
+    },
+    "available_gb": {
+      "min": 0.0,
+      "max": 262.3,
+      "avg": 227.52,
+      "median": 261.3,
+      "stdev": 88.0
+    },
+    "used_percent": {
+      "min": 0.0,
+      "max": 33.6,
+      "avg": 29.15,
+      "median": 33.5,
+      "stdev": 11.27
+    }
+  },
+  "pool": {
+    "available": {
+      "min": 0,
+      "max": 309,
+      "avg": 267.13,
+      "median": 309,
+      "stdev": 103.39
+    },
+    "allocated": {
+      "min": 0,
+      "max": 11,
+      "avg": 2.5,
+      "median": 2,
+      "stdev": 2.03
+    },
+    "spawning": {
+      "min": 0,
+      "max": 14,
+      "avg": 0.79,
+      "median": 0,
+      "stdev": 2.33
+    }
+  },
+  "latency_ms": {
+    "min": 139,
+    "max": 5425,
+    "avg": 1120.1,
+    "median": 226,
+    "stdev": 1705.84
+  },
+  "http_codes": {
+    "200": 193
+  },
+  "pools": [
+    {
+      "id": "ai-foxhop-net",
+      "host": "ai.foxhop.net",
+      "status": "healthy",
+      "vcpu_count": 32,
+      "load_avg": {
+        "load1": 0.19,
+        "load15": 2.55,
+        "load5": 0.91
+      },
+      "available": 68,
+      "total": 68
+    },
+    {
+      "id": "cammy-foxhop-net",
+      "host": "cammy.foxhop.net",
+      "status": "healthy",
+      "vcpu_count": 32,
+      "load_avg": {
+        "load1": 1.1,
+        "load15": 8.89,
+        "load5": 3.02
+      },
+      "available": 309,
+      "total": 309
+    }
+  ]
+}
