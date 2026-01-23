@@ -33,7 +33,11 @@ get_auth_header() {
 
 # Background collector loop
 collector_loop() {
+    # Cluster-level samples
     echo "timestamp,load1,load5,load15,mem_used_gb,mem_avail_gb,mem_pct,available,allocated,spawning,latency_ms,http_code" > "$RAW_FILE"
+    # Per-pool samples
+    POOLS_FILE="$RESULTS_DIR/raw-pools.csv"
+    echo "timestamp,pool_id,load1,load5,load15,available,total,status" > "$POOLS_FILE"
 
     while true; do
         ts=$(date +%s)
@@ -64,6 +68,12 @@ collector_loop() {
 
         echo "$ts,$load1,$load5,$load15,$mem_used,$mem_avail,$mem_pct,$available,$allocated,$spawning,$latency_ms,$http_code" >> "$RAW_FILE"
 
+        # Get per-pool metrics
+        pools=$(curl -s "$API_BASE/pools" -H "$(get_auth_header)" 2>/dev/null || echo "{}")
+        if [ -n "$pools" ] && [ "$pools" != "{}" ]; then
+            echo "$pools" | jq -r --arg ts "$ts" '.pools[] | "\($ts),\(.id),\(.load_avg.load1),\(.load_avg.load5),\(.load_avg.load15),\(.available),\(.total),\(.status)"' >> "$POOLS_FILE" 2>/dev/null || true
+        fi
+
         sleep 5  # Sample every 5 seconds
     done
 }
@@ -76,9 +86,10 @@ generate_report() {
 
     # Get pools data for the report
     pools=$(curl -s "$API_BASE/pools" -H "$(get_auth_header)" 2>/dev/null || echo "{}")
+    POOLS_FILE="$RESULTS_DIR/raw-pools.csv"
 
     # Parse raw samples and generate stats
-    python3 - "$RAW_FILE" "$METRICS_FILE" "$pools" << 'PYTHON'
+    python3 - "$RAW_FILE" "$METRICS_FILE" "$pools" "$POOLS_FILE" << 'PYTHON'
 import sys
 import json
 import statistics
@@ -86,11 +97,15 @@ import statistics
 raw_file = sys.argv[1]
 output_file = sys.argv[2]
 pools_json = sys.argv[3] if len(sys.argv) > 3 else "{}"
+pools_csv = sys.argv[4] if len(sys.argv) > 4 else None
 
 try:
     pools_data = json.loads(pools_json)
 except:
     pools_data = {}
+
+# Per-pool time series data
+pool_samples = {}  # pool_id -> {load1: [], load5: [], ...}
 
 samples = {
     "load1": [], "load5": [], "load15": [],
@@ -158,8 +173,49 @@ report = {
     "http_codes": http_codes
 }
 
-# Add pool breakdown if available
-if pools_data and "pools" in pools_data:
+# Parse per-pool time series if available
+if pools_csv:
+    try:
+        import os
+        if os.path.exists(pools_csv):
+            with open(pools_csv) as f:
+                next(f)  # skip header
+                for line in f:
+                    parts = line.strip().split(',')
+                    if len(parts) >= 8:
+                        pool_id = parts[1]
+                        if pool_id not in pool_samples:
+                            pool_samples[pool_id] = {"load1": [], "load5": [], "load15": [], "available": [], "total": []}
+                        pool_samples[pool_id]["load1"].append(float(parts[2]))
+                        pool_samples[pool_id]["load5"].append(float(parts[3]))
+                        pool_samples[pool_id]["load15"].append(float(parts[4]))
+                        pool_samples[pool_id]["available"].append(int(parts[5]))
+                        pool_samples[pool_id]["total"].append(int(parts[6]))
+    except Exception as e:
+        print(f"Warning: Could not parse pools CSV: {e}")
+
+# Add pool breakdown with time series stats
+if pool_samples:
+    report["pools"] = []
+    for pool_id, samples in pool_samples.items():
+        pool_info = {"id": pool_id}
+        # Find host from pools_data
+        if pools_data and "pools" in pools_data:
+            for p in pools_data["pools"]:
+                if p.get("id") == pool_id:
+                    pool_info["host"] = p.get("host")
+                    pool_info["vcpu_count"] = p.get("vcpu_count")
+                    pool_info["status"] = p.get("status")
+                    break
+        pool_info["load1"] = calc_stats(samples["load1"])
+        pool_info["load5"] = calc_stats(samples["load5"])
+        pool_info["load15"] = calc_stats(samples["load15"])
+        pool_info["available"] = calc_stats(samples["available"])
+        pool_info["total"] = calc_stats(samples["total"])
+        pool_info["sample_count"] = len(samples["load1"])
+        report["pools"].append(pool_info)
+elif pools_data and "pools" in pools_data:
+    # Fallback to snapshot data
     report["pools"] = []
     for pool in pools_data["pools"]:
         report["pools"].append({

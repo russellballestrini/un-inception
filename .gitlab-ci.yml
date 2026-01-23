@@ -297,6 +297,7 @@ perf-report:
     - echo "Step 4 - Adding pool metrics if available..."
     - test -f pool-metrics/pool-metrics.json && cp pool-metrics/pool-metrics.json "reports/$CI_COMMIT_TAG/" && echo "  ✓ Pool metrics added" || echo "  (no pool metrics)"
     - test -f pool-metrics/raw-samples.csv && cp pool-metrics/raw-samples.csv "reports/$CI_COMMIT_TAG/" || true
+    - test -f pool-metrics/raw-pools.csv && cp pool-metrics/raw-pools.csv "reports/$CI_COMMIT_TAG/" && echo "  ✓ Per-pool metrics added" || true
     - echo "Step 5 - Report contents..."
     - ls -la "reports/$CI_COMMIT_TAG/" 2>/dev/null || echo "No report directory"
     - echo "Step 6 - Committing to main..."
