@@ -175,14 +175,14 @@ report = {
 
 # Parse per-pool time series if available
 if pools_csv:
-    try:
-        import os
-        if os.path.exists(pools_csv):
-            with open(pools_csv) as f:
-                next(f)  # skip header
-                for line in f:
+    import os
+    if os.path.exists(pools_csv):
+        with open(pools_csv) as f:
+            next(f)  # skip header
+            for line in f:
+                try:
                     parts = line.strip().split(',')
-                    if len(parts) >= 8:
+                    if len(parts) >= 8 and parts[2] != 'null':
                         pool_id = parts[1]
                         if pool_id not in pool_samples:
                             pool_samples[pool_id] = {"load1": [], "load5": [], "load15": [], "available": [], "total": []}
@@ -191,8 +191,8 @@ if pools_csv:
                         pool_samples[pool_id]["load15"].append(float(parts[4]))
                         pool_samples[pool_id]["available"].append(int(parts[5]))
                         pool_samples[pool_id]["total"].append(int(parts[6]))
-    except Exception as e:
-        print(f"Warning: Could not parse pools CSV: {e}")
+                except (ValueError, IndexError):
+                    continue  # Skip invalid rows
 
 # Add pool breakdown with time series stats
 if pool_samples:
