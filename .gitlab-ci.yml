@@ -362,7 +362,7 @@ perf-aggregate-report:
     - rm -f perf-*.json
     - mv -f *.png reports/ 2>/dev/null || true
     - echo "Step 4 - Generating markdown report..."
-    - python3 scripts/aggregate-performance-reports.py reports AGGREGATED-PERFORMANCE.md
+    - python3 scripts/aggregate-performance-reports.py reports -o AGGREGATED-PERFORMANCE.md
     - echo "Step 5 - Setting up git..."
     - |
       if [ -z "$DEPLOY_KEY" ]; then
