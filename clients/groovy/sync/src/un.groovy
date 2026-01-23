@@ -72,7 +72,7 @@
  * </ol>
  *
  * @author Permacomputer Project
- * @version 4.2.5
+ * @version 4.2.7
  */
 
 import javax.crypto.Mac
