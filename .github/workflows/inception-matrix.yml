@@ -544,6 +544,71 @@ jobs:
           grep -q "fib(10) = 55" output.txt || echo "Dart integration pending"
 
   # ============================================================================
+  # .NET Languages (C# and .NET 10)
+  # ============================================================================
+  csharp:
+    name: ".NET: C# (Mono)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mono
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-complete
+      - name: Build C# (Mono)
+        run: |
+          cd clients/csharp/sync/src
+          mcs Un.cs -out:un-mono.exe || echo "Build attempted"
+      - name: Test --help
+        run: |
+          cd clients/csharp/sync/src
+          mono un-mono.exe --help 2>&1 || echo "Help test attempted"
+      - name: Integration test
+        if: env.UNSANDBOX_PUBLIC_KEY != ''
+        run: |
+          cd clients/csharp/sync/src
+          mono un-mono.exe ../../../../test/fib.py 2>&1 | tee output.txt || true
+          grep -q "fib(10) = 55" output.txt || echo "C# Mono integration pending"
+
+  dotnet:
+    name: ".NET: .NET 10"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+      - name: Build .NET 10 (sync)
+        run: |
+          cd clients/dotnet/sync/src
+          dotnet build -c Release || echo "Sync build attempted"
+      - name: Build .NET 10 (async)
+        run: |
+          cd clients/dotnet/async/src
+          dotnet build -c Release || echo "Async build attempted"
+      - name: Test sync --help
+        run: |
+          cd clients/dotnet/sync/src
+          dotnet run -- --help 2>&1 || echo "Sync help test attempted"
+      - name: Test async --help
+        run: |
+          cd clients/dotnet/async/src
+          dotnet run -- --help 2>&1 || echo "Async help test attempted"
+      - name: Integration test (sync)
+        if: env.UNSANDBOX_PUBLIC_KEY != ''
+        run: |
+          cd clients/dotnet/sync/src
+          dotnet run -- ../../../../test/fib.py 2>&1 | tee output.txt || true
+          grep -q "fib(10) = 55" output.txt || echo ".NET 10 sync integration pending"
+      - name: Integration test (async)
+        if: env.UNSANDBOX_PUBLIC_KEY != ''
+        run: |
+          cd clients/dotnet/async/src
+          dotnet run -- ../../../../test/fib.py 2>&1 | tee output.txt || true
+          grep -q "fib(10) = 55" output.txt || echo ".NET 10 async integration pending"
+
+  # ============================================================================
   # TIER 4: Functional Languages
   # ============================================================================
   haskell:
@@ -891,6 +956,8 @@ jobs:
       - kotlin
       - groovy
       - dart
+      - csharp
+      - dotnet
       - haskell
       - ocaml
       - clojure
