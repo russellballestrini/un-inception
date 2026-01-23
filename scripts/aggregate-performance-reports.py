@@ -32,8 +32,8 @@ def load_perf_json(report_dir):
         return None
 
 
-def analyze_reports(reports_dir):
-    """Analyze all performance reports"""
+def analyze_reports(reports_dir, versions_filter=None):
+    """Analyze performance reports, optionally filtering to specific versions"""
     reports_path = Path(reports_dir)
 
     # Load all reports
@@ -42,6 +42,11 @@ def analyze_reports(reports_dir):
         if not version_dir.is_dir():
             continue
         version = version_dir.name
+
+        # Filter to specific versions if provided
+        if versions_filter and version not in versions_filter:
+            continue
+
         perf_data = load_perf_json(version_dir)
         if perf_data:
             reports[version] = perf_data
@@ -745,26 +750,33 @@ For questions about this methodology or to report issues:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: aggregate-performance-reports.py <reports_directory> [output_file]")
-        sys.exit(1)
+    import argparse
 
-    reports_dir = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else "AGGREGATED-PERFORMANCE.md"
+    parser = argparse.ArgumentParser(description="Aggregate performance reports across releases")
+    parser.add_argument("reports_dir", help="Directory containing version subdirectories with perf.json")
+    parser.add_argument("-o", "--output", default="AGGREGATED-PERFORMANCE.md", help="Output markdown file")
+    parser.add_argument("-v", "--versions", nargs="+", help="Only include these versions (e.g., 4.2.11 4.2.12)")
 
-    reports = analyze_reports(reports_dir)
+    args = parser.parse_args()
+
+    versions_filter = set(args.versions) if args.versions else None
+    if versions_filter:
+        print(f"Filtering to versions: {', '.join(sorted(versions_filter))}")
+
+    reports = analyze_reports(args.reports_dir, versions_filter=versions_filter)
     if not reports:
         print("Failed to load reports")
         sys.exit(1)
+
+    print(f"Loaded {len(reports)} reports: {', '.join(sorted(reports.keys()))}")
 
     # Generate analysis
     analysis = analyze_variance(reports)
 
     # Generate charts (if matplotlib available)
-    generate_charts(analysis, reports, output_dir=reports_dir)
+    generate_charts(analysis, reports, output_dir=args.reports_dir)
 
-    report = generate_report(reports, output_file, analysis=analysis)
+    report = generate_report(reports, args.output, analysis=analysis)
 
-    Path(output_file).write_text(report)
-    print(f"Generated {output_file}")
-    print(f"\n{report}")
+    Path(args.output).write_text(report)
+    print(f"Generated {args.output}")
