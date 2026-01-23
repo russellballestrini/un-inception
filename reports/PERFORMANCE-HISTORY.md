@@ -14,3 +14,4 @@ Tracking compile and test execution times across releases.
 | 4.2.7 | 2026-01-23 | 631 | 99.8% | 117s | typescript | dotnet |
 | 4.2.8 | 2026-01-23 | 645 | 99.8% | 111s | kotlin | fortran |
 | 4.2.9 | 2026-01-23 | 645 | 100.0% | 107s | ruby | d |
+| 4.2.10 | 2026-01-23 | 673 | 99.7% | 153s | scheme | bash |
