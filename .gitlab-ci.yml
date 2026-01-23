@@ -238,8 +238,15 @@ collect-pool-metrics:
     - echo "Collector running, waiting for tests to complete..."
     - |
       # Poll until trigger-test-matrix child pipeline completes (max 20 min)
+      # Stop early when child pipeline finishes to avoid skewing averages
       for i in $(seq 1 240); do
         sleep 5
+        # Check if child pipeline is done via GitLab API
+        CHILD_STATUS=$(curl -s "https://git.unturf.com/api/v4/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}/bridges" 2>/dev/null | jq -r '.[0].downstream_pipeline.status // "pending"' 2>/dev/null || echo "pending")
+        if [ "$CHILD_STATUS" = "success" ] || [ "$CHILD_STATUS" = "failed" ]; then
+          echo "Child pipeline finished with status: $CHILD_STATUS"
+          break
+        fi
         bash scripts/collect-pool-metrics.sh status pool-metrics || true
       done
     - echo "Stopping collector..."
