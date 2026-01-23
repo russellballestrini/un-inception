@@ -1,0 +1,407 @@
+{
+    "tag": "4.2.20",
+    "generated_at": "2026-01-23T20:41:23Z",
+    "parent_pipeline_id": 12239,
+    "child_pipeline_id": 12241,
+    "summary": {
+        "total_tests": 685,
+        "passed_tests": 685,
+        "failed_tests": 0,
+        "total_languages": 43,
+        "passed_languages": 43,
+        "avg_duration_seconds": 114,
+        "max_duration_seconds": 272,
+        "min_duration_seconds": 49,
+        "slowest_language": "java",
+        "fastest_language": "crystal"
+    },
+    "languages": [
+  {
+    "language": "java",
+    "status": "Passed",
+    "queued_duration": 367.527723,
+    "started_at": "2026-01-23T20:35:21Z",
+    "updated_at": "2026-01-23T20:39:53Z",
+    "job_id": 30450,
+    "duration_seconds": 272
+  },
+  {
+    "language": "zig",
+    "status": "Passed",
+    "queued_duration": 409.546307,
+    "started_at": "2026-01-23T20:36:04Z",
+    "updated_at": "2026-01-23T20:39:48Z",
+    "job_id": 30455,
+    "duration_seconds": 224
+  },
+  {
+    "language": "cobol",
+    "status": "Passed",
+    "queued_duration": 368.43577,
+    "started_at": "2026-01-23T20:35:23Z",
+    "updated_at": "2026-01-23T20:38:41Z",
+    "job_id": 30452,
+    "duration_seconds": 198
+  },
+  {
+    "language": "perl",
+    "status": "Passed",
+    "queued_duration": 285.348193,
+    "started_at": "2026-01-23T20:33:53Z",
+    "updated_at": "2026-01-23T20:37:04Z",
+    "job_id": 30429,
+    "duration_seconds": 191
+  },
+  {
+    "language": "haskell",
+    "status": "Passed",
+    "queued_duration": 465.271889,
+    "started_at": "2026-01-23T20:37:01Z",
+    "updated_at": "2026-01-23T20:40:08Z",
+    "job_id": 30461,
+    "duration_seconds": 187
+  },
+  {
+    "language": "bash",
+    "status": "Passed",
+    "queued_duration": 286.497149,
+    "started_at": "2026-01-23T20:33:55Z",
+    "updated_at": "2026-01-23T20:37:01Z",
+    "job_id": 30432,
+    "duration_seconds": 186
+  },
+  {
+    "language": "objc",
+    "status": "Passed",
+    "queued_duration": 413.231482,
+    "started_at": "2026-01-23T20:36:09Z",
+    "updated_at": "2026-01-23T20:38:44Z",
+    "job_id": 30458,
+    "duration_seconds": 155
+  },
+  {
+    "language": "raku",
+    "status": "Passed",
+    "queued_duration": 365.463978,
+    "started_at": "2026-01-23T20:35:17Z",
+    "updated_at": "2026-01-23T20:37:51Z",
+    "job_id": 30445,
+    "duration_seconds": 154
+  },
+  {
+    "language": "elixir",
+    "status": "Passed",
+    "queued_duration": 287.431517,
+    "started_at": "2026-01-23T20:33:57Z",
+    "updated_at": "2026-01-23T20:36:27Z",
+    "job_id": 30434,
+    "duration_seconds": 150
+  },
+  {
+    "language": "awk",
+    "status": "Passed",
+    "queued_duration": 363.289351,
+    "started_at": "2026-01-23T20:35:15Z",
+    "updated_at": "2026-01-23T20:37:40Z",
+    "job_id": 30444,
+    "duration_seconds": 145
+  },
+  {
+    "language": "c",
+    "status": "Passed",
+    "queued_duration": 365.828728,
+    "started_at": "2026-01-23T20:35:18Z",
+    "updated_at": "2026-01-23T20:37:42Z",
+    "job_id": 30446,
+    "duration_seconds": 144
+  },
+  {
+    "language": "rust",
+    "status": "Passed",
+    "queued_duration": 366.834392,
+    "started_at": "2026-01-23T20:35:20Z",
+    "updated_at": "2026-01-23T20:37:42Z",
+    "job_id": 30449,
+    "duration_seconds": 142
+  },
+  {
+    "language": "fortran",
+    "status": "Passed",
+    "queued_duration": 368.781887,
+    "started_at": "2026-01-23T20:35:23Z",
+    "updated_at": "2026-01-23T20:37:42Z",
+    "job_id": 30453,
+    "duration_seconds": 139
+  },
+  {
+    "language": "typescript",
+    "status": "Passed",
+    "queued_duration": 284.738596,
+    "started_at": "2026-01-23T20:33:52Z",
+    "updated_at": "2026-01-23T20:36:10Z",
+    "job_id": 30427,
+    "duration_seconds": 138
+  },
+  {
+    "language": "lua",
+    "status": "Passed",
+    "queued_duration": 286.226975,
+    "started_at": "2026-01-23T20:33:54Z",
+    "updated_at": "2026-01-23T20:36:07Z",
+    "job_id": 30431,
+    "duration_seconds": 133
+  },
+  {
+    "language": "dart",
+    "status": "Passed",
+    "queued_duration": 413.8284,
+    "started_at": "2026-01-23T20:36:10Z",
+    "updated_at": "2026-01-23T20:38:17Z",
+    "job_id": 30459,
+    "duration_seconds": 127
+  },
+  {
+    "language": "go",
+    "status": "Passed",
+    "queued_duration": 366.334986,
+    "started_at": "2026-01-23T20:35:19Z",
+    "updated_at": "2026-01-23T20:37:25Z",
+    "job_id": 30448,
+    "duration_seconds": 126
+  },
+  {
+    "language": "kotlin",
+    "status": "Passed",
+    "queued_duration": 368.073167,
+    "started_at": "2026-01-23T20:35:22Z",
+    "updated_at": "2026-01-23T20:37:11Z",
+    "job_id": 30451,
+    "duration_seconds": 109
+  },
+  {
+    "language": "cpp",
+    "status": "Passed",
+    "queued_duration": 365.975285,
+    "started_at": "2026-01-23T20:35:19Z",
+    "updated_at": "2026-01-23T20:37:06Z",
+    "job_id": 30447,
+    "duration_seconds": 107
+  },
+  {
+    "language": "nim",
+    "status": "Passed",
+    "queued_duration": 412.22448,
+    "started_at": "2026-01-23T20:36:07Z",
+    "updated_at": "2026-01-23T20:37:50Z",
+    "job_id": 30456,
+    "duration_seconds": 103
+  },
+  {
+    "language": "d",
+    "status": "Passed",
+    "queued_duration": 369.128692,
+    "started_at": "2026-01-23T20:35:24Z",
+    "updated_at": "2026-01-23T20:37:03Z",
+    "job_id": 30454,
+    "duration_seconds": 99
+  },
+  {
+    "language": "commonlisp",
+    "status": "Passed",
+    "queued_duration": 315.196988,
+    "started_at": "2026-01-23T20:34:26Z",
+    "updated_at": "2026-01-23T20:36:05Z",
+    "job_id": 30440,
+    "duration_seconds": 99
+  },
+  {
+    "language": "ocaml",
+    "status": "Passed",
+    "queued_duration": 468.070007,
+    "started_at": "2026-01-23T20:37:04Z",
+    "updated_at": "2026-01-23T20:38:42Z",
+    "job_id": 30462,
+    "duration_seconds": 98
+  },
+  {
+    "language": "dotnet",
+    "status": "Passed",
+    "queued_duration": 470.739291,
+    "started_at": "2026-01-23T20:37:07Z",
+    "updated_at": "2026-01-23T20:38:41Z",
+    "job_id": 30465,
+    "duration_seconds": 94
+  },
+  {
+    "language": "prolog",
+    "status": "Passed",
+    "queued_duration": 473.544669,
+    "started_at": "2026-01-23T20:37:10Z",
+    "updated_at": "2026-01-23T20:38:41Z",
+    "job_id": 30466,
+    "duration_seconds": 91
+  },
+  {
+    "language": "ruby",
+    "status": "Passed",
+    "queued_duration": 284.979333,
+    "started_at": "2026-01-23T20:33:52Z",
+    "updated_at": "2026-01-23T20:35:21Z",
+    "job_id": 30428,
+    "duration_seconds": 89
+  },
+  {
+    "language": "python",
+    "status": "Passed",
+    "queued_duration": 284.042693,
+    "started_at": "2026-01-23T20:33:50Z",
+    "updated_at": "2026-01-23T20:35:18Z",
+    "job_id": 30425,
+    "duration_seconds": 88
+  },
+  {
+    "language": "javascript",
+    "status": "Passed",
+    "queued_duration": 284.47094,
+    "started_at": "2026-01-23T20:33:51Z",
+    "updated_at": "2026-01-23T20:35:18Z",
+    "job_id": 30426,
+    "duration_seconds": 87
+  },
+  {
+    "language": "julia",
+    "status": "Passed",
+    "queued_duration": 430.738409,
+    "started_at": "2026-01-23T20:36:27Z",
+    "updated_at": "2026-01-23T20:37:53Z",
+    "job_id": 30460,
+    "duration_seconds": 86
+  },
+  {
+    "language": "php",
+    "status": "Passed",
+    "queued_duration": 285.742894,
+    "started_at": "2026-01-23T20:33:54Z",
+    "updated_at": "2026-01-23T20:35:18Z",
+    "job_id": 30430,
+    "duration_seconds": 84
+  },
+  {
+    "language": "tcl",
+    "status": "Passed",
+    "queued_duration": 288.306212,
+    "started_at": "2026-01-23T20:33:58Z",
+    "updated_at": "2026-01-23T20:35:18Z",
+    "job_id": 30436,
+    "duration_seconds": 80
+  },
+  {
+    "language": "erlang",
+    "status": "Passed",
+    "queued_duration": 287.730241,
+    "started_at": "2026-01-23T20:33:57Z",
+    "updated_at": "2026-01-23T20:35:16Z",
+    "job_id": 30435,
+    "duration_seconds": 79
+  },
+  {
+    "language": "scheme",
+    "status": "Passed",
+    "queued_duration": 291.810311,
+    "started_at": "2026-01-23T20:34:02Z",
+    "updated_at": "2026-01-23T20:35:17Z",
+    "job_id": 30437,
+    "duration_seconds": 75
+  },
+  {
+    "language": "groovy",
+    "status": "Passed",
+    "queued_duration": 342.131926,
+    "started_at": "2026-01-23T20:34:53Z",
+    "updated_at": "2026-01-23T20:36:08Z",
+    "job_id": 30442,
+    "duration_seconds": 75
+  },
+  {
+    "language": "clojure",
+    "status": "Passed",
+    "queued_duration": 292.86702,
+    "started_at": "2026-01-23T20:34:03Z",
+    "updated_at": "2026-01-23T20:35:18Z",
+    "job_id": 30439,
+    "duration_seconds": 75
+  },
+  {
+    "language": "fsharp",
+    "status": "Passed",
+    "queued_duration": 468.557423,
+    "started_at": "2026-01-23T20:37:05Z",
+    "updated_at": "2026-01-23T20:38:18Z",
+    "job_id": 30463,
+    "duration_seconds": 73
+  },
+  {
+    "language": "forth",
+    "status": "Passed",
+    "queued_duration": 474.07102,
+    "started_at": "2026-01-23T20:37:11Z",
+    "updated_at": "2026-01-23T20:38:24Z",
+    "job_id": 30467,
+    "duration_seconds": 73
+  },
+  {
+    "language": "powershell",
+    "status": "Passed",
+    "queued_duration": 292.353723,
+    "started_at": "2026-01-23T20:34:02Z",
+    "updated_at": "2026-01-23T20:35:14Z",
+    "job_id": 30438,
+    "duration_seconds": 72
+  },
+  {
+    "language": "csharp",
+    "status": "Passed",
+    "queued_duration": 469.120675,
+    "started_at": "2026-01-23T20:37:05Z",
+    "updated_at": "2026-01-23T20:38:03Z",
+    "job_id": 30464,
+    "duration_seconds": 58
+  },
+  {
+    "language": "r",
+    "status": "Passed",
+    "queued_duration": 287.032298,
+    "started_at": "2026-01-23T20:33:56Z",
+    "updated_at": "2026-01-23T20:34:53Z",
+    "job_id": 30433,
+    "duration_seconds": 57
+  },
+  {
+    "language": "v",
+    "status": "Passed",
+    "queued_duration": 412.799967,
+    "started_at": "2026-01-23T20:36:08Z",
+    "updated_at": "2026-01-23T20:37:04Z",
+    "job_id": 30457,
+    "duration_seconds": 56
+  },
+  {
+    "language": "deno",
+    "status": "Passed",
+    "queued_duration": 362.21686,
+    "started_at": "2026-01-23T20:35:11Z",
+    "updated_at": "2026-01-23T20:36:07Z",
+    "job_id": 30443,
+    "duration_seconds": 56
+  },
+  {
+    "language": "crystal",
+    "status": "Passed",
+    "queued_duration": 317.936515,
+    "started_at": "2026-01-23T20:34:29Z",
+    "updated_at": "2026-01-23T20:35:18Z",
+    "job_id": 30441,
+    "duration_seconds": 49
+  }
+]
+}
