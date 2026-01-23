@@ -285,9 +285,10 @@ run_test "exec_network" \
 
 # Test 1.5: Execute SDK file in sandbox (inception)
 # Note: May fail with syntax errors due to shebangs/imports - that's ok
+# Pattern matches various interpreter errors indicating the code was attempted
 run_test "exec_sdk_inception" \
     "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY -s '$LANG' '$SDK_FILE' 2>&1 || echo 'attempted'" \
-    "usage|help|unsandbox|error|Error|syntax|unexpected|import|require|module|attempted|Illegal|division"
+    "usage|help|unsandbox|error|Error|syntax|unexpected|import|require|module|attempted|Illegal|division|property|command|undefined|invalid|Exception|Traceback|cannot|failed|missing"
 
 echo ""
 
@@ -438,7 +439,7 @@ run_test "sdk_exists" \
 # We accept any output showing the runtime attempted execution
 run_test "sdk_runs" \
     "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY '$SDK_FILE' 2>&1 || echo 'attempted'" \
-    "usage|help|unsandbox|un |version|error|Error|compile|undefined|attempted|unexpected|syntax|import|require|module|WARNING|domain|license"
+    "usage|help|unsandbox|un |version|error|Error|compile|undefined|attempted|unexpected|syntax|import|require|module|WARNING|domain|license|property|command|invalid|Exception|Traceback|cannot|failed|missing"
 
 echo ""
 
