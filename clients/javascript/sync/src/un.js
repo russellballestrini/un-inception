@@ -338,11 +338,10 @@ function loadCredentialsFromCsv(csvPath, accountIndex = 0) {
 }
 
 /**
- * Load credentials from vault or localStorage. [Browser only]
+ * Load credentials from vault. [Browser only]
  * Priority:
  *   1. UnsandboxVault (own encrypted vault, requires unlocked via portal UI)
  *   2. External vaults (window.UncloseVault for uncloseai.com integration)
- *   3. Plain localStorage (legacy fallback)
  */
 function loadCredentialsFromStorage() {
   if (!IS_BROWSER) return null;
@@ -371,21 +370,6 @@ function loadCredentialsFromStorage() {
     }
   } catch (e) {
     // External vault not available
-  }
-
-  // Priority 3: Plain localStorage (legacy fallback)
-  try {
-    const useUnsandbox = localStorage.getItem('useUnsandbox') === 'true';
-    if (!useUnsandbox) return null;
-
-    const publicKey = localStorage.getItem('unsandboxPublicKey');
-    const secretKey = localStorage.getItem('unsandboxSecretKey');
-
-    if (publicKey && secretKey) {
-      return [publicKey, secretKey];
-    }
-  } catch (e) {
-    // localStorage not available
   }
 
   return null;
