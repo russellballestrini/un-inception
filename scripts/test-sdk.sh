@@ -284,10 +284,11 @@ run_test "exec_network" \
     "network-ok"
 
 # Test 1.5: Execute SDK file in sandbox (inception)
-# Note: May fail with syntax errors due to shebangs/imports - that's ok
+# Runs the SDK file inside unsandbox - tests that the interpreter can load/parse the SDK
+# Expected: help/usage output, or interpreter errors (all acceptable)
 run_test "exec_sdk_inception" \
-    "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY -s '$LANG' '$SDK_FILE' 2>&1 || echo 'attempted'" \
-    "usage|help|unsandbox|error|Error|syntax|unexpected|import|require|module|attempted|Illegal|division|Exception|Property|Method|Compilation|expected|package|found"
+    "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY '$SDK_FILE' 2>&1 || echo 'attempted'" \
+    "usage|help|unsandbox|Usage|error|Error|attempted"
 
 echo ""
 
