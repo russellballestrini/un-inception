@@ -1,6 +1,6 @@
 // PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 //
-// Un.cs - Unsandbox CLI Client (.NET 10 Synchronous Implementation)
+// Un.cs - Unsandbox CLI Client (.NET 10 Implementation)
 // Build: dotnet build
 // Run: dotnet run -- [options] <source_file>
 // Requires: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY environment variables
@@ -59,23 +59,21 @@ try
 
     if (parsedArgs.ShowVersion)
     {
-        Console.WriteLine($"un {VERSION} (.NET 10 sync)");
+        Console.WriteLine($"un {VERSION} (.NET 10)");
         return 0;
     }
 
-    switch (parsedArgs.Command)
+    await (parsedArgs.Command switch
     {
-        case "session": CmdSession(parsedArgs); break;
-        case "service": CmdService(parsedArgs); break;
-        case "snapshot": CmdSnapshot(parsedArgs); break;
-        case "image": CmdImage(parsedArgs); break;
-        case "languages": CmdLanguages(parsedArgs); break;
-        case "key": CmdKey(parsedArgs); break;
-        default:
-            if (parsedArgs.SourceFile != null) CmdExecute(parsedArgs);
-            else { PrintHelp(); return 1; }
-            break;
-    }
+        "session" => CmdSessionAsync(parsedArgs),
+        "service" => CmdServiceAsync(parsedArgs),
+        "snapshot" => CmdSnapshotAsync(parsedArgs),
+        "image" => CmdImageAsync(parsedArgs),
+        "languages" => CmdLanguagesAsync(parsedArgs),
+        "key" => CmdKeyAsync(parsedArgs),
+        _ when parsedArgs.SourceFile != null => CmdExecuteAsync(parsedArgs),
+        _ => Task.Run(() => { PrintHelp(); Environment.Exit(1); })
+    });
 
     return 0;
 }
@@ -85,10 +83,10 @@ catch (Exception ex)
     return 1;
 }
 
-void CmdExecute(Args args)
+async Task CmdExecuteAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
-    var code = File.ReadAllText(args.SourceFile!);
+    var code = await File.ReadAllTextAsync(args.SourceFile!);
     var language = DetectLanguage(args.SourceFile!);
 
     var payload = new Dictionary<string, object> { ["language"] = language, ["code"] = code };
@@ -107,7 +105,7 @@ void CmdExecute(Args args)
         var inputFiles = new List<Dictionary<string, string>>();
         foreach (var filepath in args.Files)
         {
-            var content = File.ReadAllBytes(filepath);
+            var content = await File.ReadAllBytesAsync(filepath);
             inputFiles.Add(new Dictionary<string, string>
             {
                 ["filename"] = Path.GetFileName(filepath),
@@ -121,7 +119,7 @@ void CmdExecute(Args args)
     if (args.Network != null) payload["network"] = args.Network;
     if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
 
-    var result = ApiRequest("/execute", HttpMethod.Post, payload, publicKey, secretKey);
+    var result = await ApiRequestAsync("/execute", HttpMethod.Post, payload, publicKey, secretKey);
 
     if (result.TryGetValue("stdout", out var stdout) && stdout is JsonElement stdoutEl)
         Console.Write($"{BLUE}{stdoutEl.GetString()}{RESET}");
@@ -137,7 +135,7 @@ void CmdExecute(Args args)
             var filename = artifact.GetProperty("filename").GetString() ?? "artifact";
             var contentB64 = artifact.GetProperty("content_base64").GetString() ?? "";
             var path = Path.Combine(outDir, filename);
-            File.WriteAllBytes(path, Convert.FromBase64String(contentB64));
+            await File.WriteAllBytesAsync(path, Convert.FromBase64String(contentB64));
             Console.Error.WriteLine($"{GREEN}Saved: {path}{RESET}");
         }
     }
@@ -146,55 +144,57 @@ void CmdExecute(Args args)
     Environment.Exit(exitCode);
 }
 
-void CmdSession(Args args)
+async Task CmdSessionAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
     if (args.SessionList)
     {
-        var result = ApiRequest("/sessions", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync("/sessions", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("sessions", out var sessions) && sessions is JsonElement sessionsEl)
         {
             var sessionList = sessionsEl.EnumerateArray().ToList();
             if (sessionList.Count == 0) { Console.WriteLine("No active sessions"); return; }
             Console.WriteLine($"{"ID",-40} {"Shell",-10} {"Status",-10} {"Created"}");
             foreach (var s in sessionList)
+            {
                 Console.WriteLine($"{GetStr(s, "id"),-40} {GetStr(s, "shell"),-10} {GetStr(s, "status"),-10} {GetStr(s, "created_at")}");
+            }
         }
         return;
     }
 
     if (args.SessionKill != null)
     {
-        ApiRequest($"/sessions/{args.SessionKill}", HttpMethod.Delete, null, publicKey, secretKey);
+        await ApiRequestAsync($"/sessions/{args.SessionKill}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Session terminated: {args.SessionKill}{RESET}");
         return;
     }
 
     if (args.SessionFreeze != null)
     {
-        ApiRequest($"/sessions/{args.SessionFreeze}/freeze", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/sessions/{args.SessionFreeze}/freeze", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Session frozen: {args.SessionFreeze}{RESET}");
         return;
     }
 
     if (args.SessionUnfreeze != null)
     {
-        ApiRequest($"/sessions/{args.SessionUnfreeze}/unfreeze", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/sessions/{args.SessionUnfreeze}/unfreeze", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Session unfreezing: {args.SessionUnfreeze}{RESET}");
         return;
     }
 
     if (args.SessionBoost != null)
     {
-        ApiRequest($"/sessions/{args.SessionBoost}/boost", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/sessions/{args.SessionBoost}/boost", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Session boosted: {args.SessionBoost}{RESET}");
         return;
     }
 
     if (args.SessionUnboost != null)
     {
-        ApiRequest($"/sessions/{args.SessionUnboost}/unboost", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/sessions/{args.SessionUnboost}/unboost", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Session unboosted: {args.SessionUnboost}{RESET}");
         return;
     }
@@ -205,27 +205,27 @@ void CmdSession(Args args)
         if (args.SnapshotName != null) payload["name"] = args.SnapshotName;
         if (args.SnapshotHot) payload["hot"] = true;
 
-        var result = ApiRequest($"/sessions/{args.SessionSnapshot}/snapshot", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/sessions/{args.SessionSnapshot}/snapshot", HttpMethod.Post, payload, publicKey, secretKey);
         var id = result.TryGetValue("id", out var idObj) && idObj is JsonElement idEl ? idEl.GetString() : "unknown";
         Console.WriteLine($"{GREEN}Snapshot created: {id}{RESET}");
         return;
     }
 
-    var createPayload = new Dictionary<string, object> { ["shell"] = args.SessionShell ?? "bash" };
-    if (args.Network != null) createPayload["network"] = args.Network;
-    if (args.Vcpu > 0) createPayload["vcpu"] = args.Vcpu;
+    var payload = new Dictionary<string, object> { ["shell"] = args.SessionShell ?? "bash" };
+    if (args.Network != null) payload["network"] = args.Network;
+    if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
 
     Console.WriteLine($"{YELLOW}Creating session...{RESET}");
-    var createResult = ApiRequest("/sessions", HttpMethod.Post, createPayload, publicKey, secretKey);
-    var sessionId = createResult.TryGetValue("id", out var sid) && sid is JsonElement sidEl ? sidEl.GetString() : "unknown";
+    var createResult = await ApiRequestAsync("/sessions", HttpMethod.Post, payload, publicKey, secretKey);
+    var sessionId = createResult.TryGetValue("id", out var id) && id is JsonElement idEl ? idEl.GetString() : "unknown";
     Console.WriteLine($"{GREEN}Session created: {sessionId}{RESET}");
     Console.WriteLine($"{YELLOW}(Interactive sessions require WebSocket - use un2 for full support){RESET}");
 }
 
-void CmdKey(Args args)
+async Task CmdKeyAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
-    var result = ApiRequest("/keys/validate", HttpMethod.Post, null, publicKey, secretKey);
+    var result = await ApiRequestAsync("/keys/validate", HttpMethod.Post, null, publicKey, secretKey);
 
     if (!result.TryGetValue("valid", out var validObj) || validObj is not JsonElement validEl)
     {
@@ -279,19 +279,19 @@ void OpenBrowser(string url)
     catch (Exception ex) { Console.Error.WriteLine($"{RED}Failed to open browser: {ex.Message}{RESET}"); }
 }
 
-void CmdService(Args args)
+async Task CmdServiceAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
     if (!string.IsNullOrEmpty(args.EnvAction))
     {
-        CmdServiceEnv(args, publicKey, secretKey);
+        await CmdServiceEnvAsync(args, publicKey, secretKey);
         return;
     }
 
     if (args.ServiceList)
     {
-        var result = ApiRequest("/services", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync("/services", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("services", out var services) && services is JsonElement servicesEl)
         {
             var serviceList = servicesEl.EnumerateArray().ToList();
@@ -309,35 +309,35 @@ void CmdService(Args args)
 
     if (args.ServiceInfo != null)
     {
-        var result = ApiRequest($"/services/{args.ServiceInfo}", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{args.ServiceInfo}", HttpMethod.Get, null, publicKey, secretKey);
         Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
         return;
     }
 
     if (args.ServiceLogs != null)
     {
-        var result = ApiRequest($"/services/{args.ServiceLogs}/logs", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{args.ServiceLogs}/logs", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("logs", out var logs) && logs is JsonElement logsEl) Console.WriteLine(logsEl.GetString());
         return;
     }
 
     if (args.ServiceTail != null)
     {
-        var result = ApiRequest($"/services/{args.ServiceTail}/logs?lines=9000", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{args.ServiceTail}/logs?lines=9000", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("logs", out var logs) && logs is JsonElement logsEl) Console.WriteLine(logsEl.GetString());
         return;
     }
 
     if (args.ServiceSleep != null)
     {
-        ApiRequest($"/services/{args.ServiceSleep}/freeze", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceSleep}/freeze", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service frozen: {args.ServiceSleep}{RESET}");
         return;
     }
 
     if (args.ServiceWake != null)
     {
-        ApiRequest($"/services/{args.ServiceWake}/unfreeze", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceWake}/unfreeze", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service unfreezing: {args.ServiceWake}{RESET}");
         return;
     }
@@ -345,7 +345,7 @@ void CmdService(Args args)
     if (args.ServiceUnfreezeOnDemand != null)
     {
         var payload = new Dictionary<string, object> { ["unfreeze_on_demand"] = args.ServiceUnfreezeOnDemandEnabled };
-        ApiRequest($"/services/{args.ServiceUnfreezeOnDemand}", new HttpMethod("PATCH"), payload, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceUnfreezeOnDemand}", new HttpMethod("PATCH"), payload, publicKey, secretKey);
         string status = args.ServiceUnfreezeOnDemandEnabled ? "enabled" : "disabled";
         Console.WriteLine($"{GREEN}Unfreeze-on-demand {status} for service: {args.ServiceUnfreezeOnDemand}{RESET}");
         return;
@@ -353,21 +353,21 @@ void CmdService(Args args)
 
     if (args.ServiceDestroy != null)
     {
-        ApiRequest($"/services/{args.ServiceDestroy}", HttpMethod.Delete, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceDestroy}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service destroyed: {args.ServiceDestroy}{RESET}");
         return;
     }
 
     if (args.ServiceLock != null)
     {
-        ApiRequest($"/services/{args.ServiceLock}/lock", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceLock}/lock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service locked: {args.ServiceLock}{RESET}");
         return;
     }
 
     if (args.ServiceUnlock != null)
     {
-        ApiRequest($"/services/{args.ServiceUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service unlocked: {args.ServiceUnlock}{RESET}");
         return;
     }
@@ -376,14 +376,15 @@ void CmdService(Args args)
     {
         var payload = new Dictionary<string, object>();
         if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
-        ApiRequest($"/services/{args.ServiceResize}/resize", HttpMethod.Post, payload, publicKey, secretKey);
+
+        await ApiRequestAsync($"/services/{args.ServiceResize}/resize", HttpMethod.Post, payload, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service resized: {args.ServiceResize}{RESET}");
         return;
     }
 
     if (args.ServiceRedeploy != null)
     {
-        ApiRequest($"/services/{args.ServiceRedeploy}/redeploy", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{args.ServiceRedeploy}/redeploy", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service redeploying: {args.ServiceRedeploy}{RESET}");
         return;
     }
@@ -394,7 +395,7 @@ void CmdService(Args args)
         if (args.SnapshotName != null) payload["name"] = args.SnapshotName;
         if (args.SnapshotHot) payload["hot"] = true;
 
-        var result = ApiRequest($"/services/{args.ServiceSnapshot}/snapshot", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{args.ServiceSnapshot}/snapshot", HttpMethod.Post, payload, publicKey, secretKey);
         var id = result.TryGetValue("id", out var idObj) && idObj is JsonElement idEl ? idEl.GetString() : "unknown";
         Console.WriteLine($"{GREEN}Snapshot created: {id}{RESET}");
         return;
@@ -403,7 +404,7 @@ void CmdService(Args args)
     if (args.ServiceExecute != null)
     {
         var payload = new Dictionary<string, object> { ["command"] = args.ServiceCommand ?? "" };
-        var result = ApiRequest($"/services/{args.ServiceExecute}/execute", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{args.ServiceExecute}/execute", HttpMethod.Post, payload, publicKey, secretKey);
         if (result.TryGetValue("stdout", out var stdout) && stdout is JsonElement stdoutEl) Console.Write($"{BLUE}{stdoutEl.GetString()}{RESET}");
         if (result.TryGetValue("stderr", out var stderr) && stderr is JsonElement stderrEl) Console.Error.Write($"{RED}{stderrEl.GetString()}{RESET}");
         return;
@@ -413,13 +414,13 @@ void CmdService(Args args)
     {
         Console.Error.WriteLine($"Fetching bootstrap script from {args.ServiceDumpBootstrap}...");
         var payload = new Dictionary<string, object> { ["command"] = "cat /tmp/bootstrap.sh" };
-        var result = ApiRequest($"/services/{args.ServiceDumpBootstrap}/execute", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{args.ServiceDumpBootstrap}/execute", HttpMethod.Post, payload, publicKey, secretKey);
         var bootstrap = result.TryGetValue("stdout", out var bs) && bs is JsonElement bsEl ? bsEl.GetString() : null;
         if (!string.IsNullOrEmpty(bootstrap))
         {
             if (args.ServiceDumpFile != null)
             {
-                File.WriteAllText(args.ServiceDumpFile, bootstrap);
+                await File.WriteAllTextAsync(args.ServiceDumpFile, bootstrap);
                 Console.WriteLine($"Bootstrap saved to {args.ServiceDumpFile}");
             }
             else Console.Write(bootstrap);
@@ -444,7 +445,7 @@ void CmdService(Args args)
         if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
         if (args.ServiceCreateUnfreezeOnDemand) payload["unfreeze_on_demand"] = true;
 
-        var result = ApiRequest("/services", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync("/services", HttpMethod.Post, payload, publicKey, secretKey);
         var serviceId = result.TryGetValue("id", out var id) && id is JsonElement idEl ? idEl.GetString() : null;
         Console.WriteLine($"{GREEN}Service created: {serviceId}{RESET}");
         if (result.TryGetValue("name", out var name) && name is JsonElement nameEl) Console.WriteLine($"Name: {nameEl.GetString()}");
@@ -455,7 +456,7 @@ void CmdService(Args args)
             var envContent = BuildEnvContent(args.Env, args.EnvFile);
             if (!string.IsNullOrEmpty(envContent))
             {
-                if (ServiceEnvSet(serviceId, envContent, publicKey, secretKey))
+                if (await ServiceEnvSetAsync(serviceId, envContent, publicKey, secretKey))
                     Console.WriteLine($"{GREEN}Vault configured with environment variables{RESET}");
                 else
                     Console.Error.WriteLine($"{YELLOW}Warning: Failed to set vault{RESET}");
@@ -468,7 +469,7 @@ void CmdService(Args args)
     Environment.Exit(1);
 }
 
-void CmdServiceEnv(Args args, string publicKey, string secretKey)
+async Task CmdServiceEnvAsync(Args args, string publicKey, string secretKey)
 {
     var action = args.EnvAction;
     var target = args.EnvTarget;
@@ -476,7 +477,7 @@ void CmdServiceEnv(Args args, string publicKey, string secretKey)
     if (action == "status")
     {
         if (string.IsNullOrEmpty(target)) { Console.Error.WriteLine($"{RED}Error: service env status requires service ID{RESET}"); Environment.Exit(1); }
-        var result = ApiRequest($"/services/{target}/env", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{target}/env", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("has_vault", out var hv) && hv is JsonElement hvEl && hvEl.GetBoolean())
         {
             Console.WriteLine($"{GREEN}Vault: configured{RESET}");
@@ -490,66 +491,68 @@ void CmdServiceEnv(Args args, string publicKey, string secretKey)
         if (string.IsNullOrEmpty(target)) { Console.Error.WriteLine($"{RED}Error: service env set requires service ID{RESET}"); Environment.Exit(1); }
         if (args.Env.Count == 0 && string.IsNullOrEmpty(args.EnvFile)) { Console.Error.WriteLine($"{RED}Error: service env set requires -e or --env-file{RESET}"); Environment.Exit(1); }
         var envContent = BuildEnvContent(args.Env, args.EnvFile);
-        if (ServiceEnvSet(target, envContent, publicKey, secretKey))
+        if (await ServiceEnvSetAsync(target, envContent, publicKey, secretKey))
             Console.WriteLine($"{GREEN}Vault updated for service {target}{RESET}");
         else { Console.Error.WriteLine($"{RED}Error: Failed to update vault{RESET}"); Environment.Exit(1); }
     }
     else if (action == "export")
     {
         if (string.IsNullOrEmpty(target)) { Console.Error.WriteLine($"{RED}Error: service env export requires service ID{RESET}"); Environment.Exit(1); }
-        var result = ApiRequest($"/services/{target}/env/export", HttpMethod.Post, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/services/{target}/env/export", HttpMethod.Post, null, publicKey, secretKey);
         if (result.TryGetValue("content", out var content) && content is JsonElement contentEl) Console.Write(contentEl.GetString());
     }
     else if (action == "delete")
     {
         if (string.IsNullOrEmpty(target)) { Console.Error.WriteLine($"{RED}Error: service env delete requires service ID{RESET}"); Environment.Exit(1); }
-        ApiRequest($"/services/{target}/env", HttpMethod.Delete, null, publicKey, secretKey);
+        await ApiRequestAsync($"/services/{target}/env", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Vault deleted for service {target}{RESET}");
     }
 }
 
-void CmdSnapshot(Args args)
+async Task CmdSnapshotAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
     if (args.SnapshotList)
     {
-        var result = ApiRequest("/snapshots", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync("/snapshots", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("snapshots", out var snapshots) && snapshots is JsonElement snapshotsEl)
         {
             var snapshotList = snapshotsEl.EnumerateArray().ToList();
             if (snapshotList.Count == 0) { Console.WriteLine("No snapshots"); return; }
             Console.WriteLine($"{"ID",-40} {"Name",-20} {"Type",-10} {"Status",-10} {"Created"}");
             foreach (var s in snapshotList)
+            {
                 Console.WriteLine($"{GetStr(s, "id"),-40} {GetStr(s, "name"),-20} {GetStr(s, "source_type"),-10} {GetStr(s, "status"),-10} {GetStr(s, "created_at")}");
+            }
         }
         return;
     }
 
     if (args.SnapshotInfo != null)
     {
-        var result = ApiRequest($"/snapshots/{args.SnapshotInfo}", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/snapshots/{args.SnapshotInfo}", HttpMethod.Get, null, publicKey, secretKey);
         Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
         return;
     }
 
     if (args.SnapshotDelete != null)
     {
-        ApiRequest($"/snapshots/{args.SnapshotDelete}", HttpMethod.Delete, null, publicKey, secretKey);
+        await ApiRequestAsync($"/snapshots/{args.SnapshotDelete}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Snapshot deleted: {args.SnapshotDelete}{RESET}");
         return;
     }
 
     if (args.SnapshotLock != null)
     {
-        ApiRequest($"/snapshots/{args.SnapshotLock}/lock", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/snapshots/{args.SnapshotLock}/lock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Snapshot locked: {args.SnapshotLock}{RESET}");
         return;
     }
 
     if (args.SnapshotUnlock != null)
     {
-        ApiRequest($"/snapshots/{args.SnapshotUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/snapshots/{args.SnapshotUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Snapshot unlocked: {args.SnapshotUnlock}{RESET}");
         return;
     }
@@ -562,7 +565,7 @@ void CmdSnapshot(Args args)
         if (args.ServicePorts != null) payload["ports"] = args.ServicePorts.Split(',').Select(p => int.Parse(p.Trim())).ToList();
         if (args.Network != null) payload["network"] = args.Network;
 
-        var result = ApiRequest($"/snapshots/{args.SnapshotClone}/clone", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/snapshots/{args.SnapshotClone}/clone", HttpMethod.Post, payload, publicKey, secretKey);
         var id = result.TryGetValue("id", out var idObj) && idObj is JsonElement idEl ? idEl.GetString() : "unknown";
         Console.WriteLine($"{GREEN}Cloned to {args.SnapshotCloneType ?? "session"}: {id}{RESET}");
         return;
@@ -572,48 +575,50 @@ void CmdSnapshot(Args args)
     Environment.Exit(1);
 }
 
-void CmdImage(Args args)
+async Task CmdImageAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
     if (args.ImageList)
     {
-        var result = ApiRequest("/images", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync("/images", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("images", out var images) && images is JsonElement imagesEl)
         {
             var imageList = imagesEl.EnumerateArray().ToList();
             if (imageList.Count == 0) { Console.WriteLine("No images"); return; }
             Console.WriteLine($"{"ID",-40} {"Name",-20} {"Visibility",-12} {"Status",-10} {"Created"}");
             foreach (var img in imageList)
+            {
                 Console.WriteLine($"{GetStr(img, "id"),-40} {GetStr(img, "name"),-20} {GetStr(img, "visibility"),-12} {GetStr(img, "status"),-10} {GetStr(img, "created_at")}");
+            }
         }
         return;
     }
 
     if (args.ImageInfo != null)
     {
-        var result = ApiRequest($"/images/{args.ImageInfo}", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/images/{args.ImageInfo}", HttpMethod.Get, null, publicKey, secretKey);
         Console.WriteLine(JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
         return;
     }
 
     if (args.ImageDelete != null)
     {
-        ApiRequest($"/images/{args.ImageDelete}", HttpMethod.Delete, null, publicKey, secretKey);
+        await ApiRequestAsync($"/images/{args.ImageDelete}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Image deleted: {args.ImageDelete}{RESET}");
         return;
     }
 
     if (args.ImageLock != null)
     {
-        ApiRequest($"/images/{args.ImageLock}/lock", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/images/{args.ImageLock}/lock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Image locked: {args.ImageLock}{RESET}");
         return;
     }
 
     if (args.ImageUnlock != null)
     {
-        ApiRequest($"/images/{args.ImageUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
+        await ApiRequestAsync($"/images/{args.ImageUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Image unlocked: {args.ImageUnlock}{RESET}");
         return;
     }
@@ -624,7 +629,7 @@ void CmdImage(Args args)
         if (args.ImageSourceType != null) payload["source_type"] = args.ImageSourceType;
         if (args.ServiceName != null) payload["name"] = args.ServiceName;
 
-        var result = ApiRequest("/images", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync("/images", HttpMethod.Post, payload, publicKey, secretKey);
         var id = result.TryGetValue("id", out var idObj) && idObj is JsonElement idEl ? idEl.GetString() : "unknown";
         Console.WriteLine($"{GREEN}Image published: {id}{RESET}");
         return;
@@ -633,7 +638,7 @@ void CmdImage(Args args)
     if (args.ImageVisibility != null)
     {
         var payload = new Dictionary<string, object> { ["visibility"] = args.ImageVisibilityMode ?? "private" };
-        ApiRequest($"/images/{args.ImageVisibility}", new HttpMethod("PATCH"), payload, publicKey, secretKey);
+        await ApiRequestAsync($"/images/{args.ImageVisibility}", new HttpMethod("PATCH"), payload, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Image visibility set to {args.ImageVisibilityMode}: {args.ImageVisibility}{RESET}");
         return;
     }
@@ -645,7 +650,7 @@ void CmdImage(Args args)
         if (args.ServicePorts != null) payload["ports"] = args.ServicePorts.Split(',').Select(p => int.Parse(p.Trim())).ToList();
         if (args.Network != null) payload["network"] = args.Network;
 
-        var result = ApiRequest($"/images/{args.ImageSpawn}/spawn", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/images/{args.ImageSpawn}/spawn", HttpMethod.Post, payload, publicKey, secretKey);
         var id = result.TryGetValue("id", out var idObj) && idObj is JsonElement idEl ? idEl.GetString() : "unknown";
         Console.WriteLine($"{GREEN}Service spawned: {id}{RESET}");
         if (result.TryGetValue("url", out var url) && url is JsonElement urlEl) Console.WriteLine($"URL: {urlEl.GetString()}");
@@ -657,7 +662,7 @@ void CmdImage(Args args)
         var payload = new Dictionary<string, object>();
         if (args.ServiceName != null) payload["name"] = args.ServiceName;
 
-        var result = ApiRequest($"/images/{args.ImageClone}/clone", HttpMethod.Post, payload, publicKey, secretKey);
+        var result = await ApiRequestAsync($"/images/{args.ImageClone}/clone", HttpMethod.Post, payload, publicKey, secretKey);
         var id = result.TryGetValue("id", out var idObj) && idObj is JsonElement idEl ? idEl.GetString() : "unknown";
         Console.WriteLine($"{GREEN}Image cloned: {id}{RESET}");
         return;
@@ -667,7 +672,7 @@ void CmdImage(Args args)
     Environment.Exit(1);
 }
 
-void CmdLanguages(Args args)
+async Task CmdLanguagesAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
@@ -685,7 +690,7 @@ void CmdLanguages(Args args)
         {
             try
             {
-                var cacheContent = File.ReadAllText(cachePath);
+                var cacheContent = await File.ReadAllTextAsync(cachePath);
                 languages = JsonSerializer.Deserialize<List<string>>(cacheContent);
             }
             catch { /* Cache corrupted, fetch fresh */ }
@@ -694,7 +699,7 @@ void CmdLanguages(Args args)
 
     if (languages == null)
     {
-        var result = ApiRequest("/languages", HttpMethod.Get, null, publicKey, secretKey);
+        var result = await ApiRequestAsync("/languages", HttpMethod.Get, null, publicKey, secretKey);
         if (result.TryGetValue("languages", out var langsObj) && langsObj is JsonElement langsEl)
         {
             languages = langsEl.EnumerateArray().Select(l => l.GetString() ?? "").Where(l => !string.IsNullOrEmpty(l)).ToList();
@@ -703,7 +708,7 @@ void CmdLanguages(Args args)
             try
             {
                 Directory.CreateDirectory(cacheDir);
-                File.WriteAllText(cachePath, JsonSerializer.Serialize(languages));
+                await File.WriteAllTextAsync(cachePath, JsonSerializer.Serialize(languages));
             }
             catch { /* Cache write failed, continue anyway */ }
         }
@@ -716,13 +721,19 @@ void CmdLanguages(Args args)
     }
 
     if (args.LanguagesJson)
+    {
         Console.WriteLine(JsonSerializer.Serialize(languages));
+    }
     else
+    {
         foreach (var lang in languages)
+        {
             Console.WriteLine(lang);
+        }
+    }
 }
 
-Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey)
+async Task<Dictionary<string, object>> ApiRequestAsync(string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey)
 {
     var body = data != null ? JsonSerializer.Serialize(data, jsonOptions) : "";
 
@@ -745,10 +756,8 @@ Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictio
         request.Headers.Add("Authorization", $"Bearer {publicKey}");
     }
 
-    // Synchronous HTTP call
-    var response = httpClient.Send(request);
-    using var reader = new StreamReader(response.Content.ReadAsStream());
-    var responseBody = reader.ReadToEnd();
+    var response = await httpClient.SendAsync(request);
+    var responseBody = await response.Content.ReadAsStringAsync();
 
     if (!response.IsSuccessStatusCode)
     {
@@ -774,7 +783,7 @@ Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictio
     }
 }
 
-bool ServiceEnvSet(string serviceId, string envContent, string publicKey, string secretKey)
+async Task<bool> ServiceEnvSetAsync(string serviceId, string envContent, string publicKey, string secretKey)
 {
     if (envContent.Length > 65536) { Console.Error.WriteLine($"{RED}Error: Env content exceeds maximum size of 64KB{RESET}"); return false; }
 
@@ -791,7 +800,7 @@ bool ServiceEnvSet(string serviceId, string envContent, string publicKey, string
         request.Headers.Add("X-Timestamp", timestamp.ToString());
         request.Headers.Add("X-Signature", signature);
 
-        var response = httpClient.Send(request);
+        var response = await httpClient.SendAsync(request);
         return response.IsSuccessStatusCode;
     }
     catch { return false; }
@@ -936,6 +945,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
         else if (arg == "--extend") result.KeyExtend = true;
+        // Snapshot options
         else if (arg == "--delete")
         {
             var val = args[++i];
@@ -949,6 +959,7 @@ Args ParseArgs(string[] args)
             else if (result.Command == "image") result.ImageClone = val;
         }
         else if (arg == "--clone-type") result.SnapshotCloneType = args[++i];
+        // Image options
         else if (arg == "--publish") result.ImagePublish = args[++i];
         else if (arg == "--source-type") result.ImageSourceType = args[++i];
         else if (arg == "--visibility")
@@ -957,6 +968,7 @@ Args ParseArgs(string[] args)
             if (i + 1 < args.Length && !args[i + 1].StartsWith("-")) result.ImageVisibilityMode = args[++i];
         }
         else if (arg == "--spawn") result.ImageSpawn = args[++i];
+        // Languages options
         else if (arg == "--json") result.LanguagesJson = true;
         else if (!arg.StartsWith("-")) result.SourceFile = arg;
     }
@@ -965,7 +977,7 @@ Args ParseArgs(string[] args)
 
 void PrintHelp()
 {
-    Console.WriteLine($@"un {VERSION} (.NET 10 sync) - Unsandbox CLI
+    Console.WriteLine($@"un {VERSION} (.NET 10) - Unsandbox CLI
 
 Usage: dotnet run -- [options] <source_file>
        dotnet run -- session [options]
@@ -1084,13 +1096,16 @@ class Args
     public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
     public bool KeyExtend;
+    // Snapshot command
     public bool SnapshotList;
     public string? SnapshotInfo, SnapshotDelete, SnapshotLock, SnapshotUnlock, SnapshotClone;
     public string? SnapshotCloneType, SnapshotName;
     public bool SnapshotHot;
+    // Image command
     public bool ImageList;
     public string? ImageInfo, ImageDelete, ImageLock, ImageUnlock;
     public string? ImagePublish, ImageSourceType, ImageVisibility, ImageVisibilityMode;
     public string? ImageSpawn, ImageClone;
+    // Languages command
     public bool LanguagesJson;
 }

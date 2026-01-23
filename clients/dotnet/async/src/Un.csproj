@@ -3,10 +3,10 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <Nullable>enable</Nullable>
+    <RootNamespace>Unsandbox</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
     <AssemblyName>un</AssemblyName>
-    <RootNamespace>Unsandbox.Cli</RootNamespace>
   </PropertyGroup>
 
 </Project>
