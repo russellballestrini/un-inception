@@ -21,3 +21,4 @@ Tracking compile and test execution times across releases.
 | 4.2.14 | 2026-01-23 | 661 | 99.8% | 97s | javascript | go |
 | 4.2.15 | 2026-01-23 | 657 | 99.8% | 103s | d | cobol |
 | 4.2.16 | 2026-01-23 | 665 | 99.8% | 98s | javascript | c |
+| 4.2.17 | 2026-01-23 | 665 | 100.0% | 104s | ruby | objc |
