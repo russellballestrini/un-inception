@@ -59,6 +59,7 @@ get_sdk_file() {
         kotlin)      echo "clients/kotlin/sync/src/un.kt" ;;
         swift)       echo "clients/swift/sync/src/un.swift" ;;
         csharp)      echo "clients/csharp/sync/src/Un.cs" ;;
+        dotnet)      echo "clients/dotnet/sync/src/Un.cs" ;;
         fsharp)      echo "clients/fsharp/sync/src/un.fs" ;;
         haskell)     echo "clients/haskell/sync/src/un.hs" ;;
         ocaml)       echo "clients/ocaml/sync/src/un.ml" ;;
@@ -105,7 +106,7 @@ int main() { std::cout << "test-ok" << std::endl; return 0; }' ;;
         java)             echo 'public class Main { public static void main(String[] args) { System.out.println("test-ok"); } }' ;;
         kotlin)           echo 'fun main() { println("test-ok") }' ;;
         swift)            echo 'print("test-ok")' ;;
-        csharp)           echo 'class P{static void Main(){System.Console.WriteLine("test-ok");}}' ;;
+        csharp|dotnet)    echo 'class P{static void Main(){System.Console.WriteLine("test-ok");}}' ;;
         fsharp)           echo 'printfn "test-ok"' ;;
         haskell)          echo 'main = putStrLn "test-ok"' ;;
         ocaml)            echo 'print_endline "test-ok"' ;;
