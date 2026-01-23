@@ -37,7 +37,7 @@
  * Authentication Priority (5-tier):
  *   1. Function arguments (publicKey, secretKey)
  *   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY) [Node.js]
- *   3. localStorage (unsandboxPublicKey, unsandboxSecretKey) [Browser]
+ *   3. Encrypted vault or localStorage [Browser] (vault preferred if CryptoJS available)
  *   4. ~/.unsandbox/accounts.csv [Node.js]
  *   5. ./accounts.csv [Node.js]
  *
@@ -53,7 +53,10 @@
  *
  * Browser Usage:
  *   - Import as ES module: <script type="module">
- *   - Configure credentials via localStorage:
+ *   - Credentials can be stored in encrypted vault (requires CryptoJS):
+ *       UnsandboxVault.createVault('mypassword');
+ *       UnsandboxVault.saveKeysToVault(vaultId, [{publicKey, secretKey}], 'mypassword');
+ *   - Or configure via plain localStorage (legacy):
  *       localStorage.setItem('useUnsandbox', 'true');
  *       localStorage.setItem('unsandboxPublicKey', 'unsb-pk-...');
  *       localStorage.setItem('unsandboxSecretKey', 'unsb-sk-...');

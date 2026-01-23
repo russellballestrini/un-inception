@@ -40,7 +40,7 @@
  * Authentication Priority (5-tier):
  *   1. Function arguments (publicKey, secretKey)
  *   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY) [Node.js]
- *   3. localStorage (unsandboxPublicKey, unsandboxSecretKey) [Browser]
+ *   3. Encrypted vault or localStorage [Browser] (vault preferred if CryptoJS available)
  *   4. ~/.unsandbox/accounts.csv [Node.js]
  *   5. ./accounts.csv [Node.js]
  *
@@ -56,10 +56,9 @@
  *
  * Browser Usage:
  *   - Import as ES module: <script type="module">
- *   - Configure credentials via localStorage:
- *       localStorage.setItem('useUnsandbox', 'true');
- *       localStorage.setItem('unsandboxPublicKey', 'unsb-pk-...');
- *       localStorage.setItem('unsandboxSecretKey', 'unsb-sk-...');
+ *   - Credentials stored in encrypted vault (requires CryptoJS):
+ *       UnsandboxVault.createVault('mypassword');
+ *       UnsandboxVault.saveKeysToVault(vaultId, [{publicKey, secretKey}], 'mypassword');
  *   - Or pass credentials directly to functions
  *   - Uses Web Crypto API for HMAC-SHA256 signing
  */
@@ -83,6 +82,204 @@ if (IS_NODE) {
 const API_BASE = 'https://api.unsandbox.com';
 const POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000];
 const LANGUAGES_CACHE_TTL = 3600; // 1 hour
+
+// ============================================================================
+// Vault System for Encrypted Credential Storage [Browser only]
+// Requires CryptoJS library for AES encryption
+// ============================================================================
+
+/**
+ * UnsandboxVault - Encrypted credential storage using AES-256
+ * Compatible with unsandbox.com portal vault format
+ */
+const UnsandboxVault = {
+  /**
+   * Check if CryptoJS is available for encryption
+   */
+  isAvailable() {
+    return IS_BROWSER && typeof CryptoJS !== 'undefined';
+  },
+
+  /**
+   * Get or create stable device salt (32 bytes, stored in localStorage)
+   */
+  getDeviceSalt() {
+    if (!IS_BROWSER) return null;
+    let salt = localStorage.getItem('unsandbox_device_salt');
+    if (!salt) {
+      const randomBytes = CryptoJS.lib.WordArray.random(32);
+      salt = randomBytes.toString();
+      localStorage.setItem('unsandbox_device_salt', salt);
+    }
+    return salt;
+  },
+
+  /**
+   * Encrypt data with password using AES-256
+   */
+  encrypt(data, password) {
+    if (!this.isAvailable()) return null;
+    try {
+      return CryptoJS.AES.encrypt(JSON.stringify(data), password).toString();
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /**
+   * Decrypt data with password
+   */
+  decrypt(encryptedData, password) {
+    if (!this.isAvailable()) return null;
+    try {
+      const bytes = CryptoJS.AES.decrypt(encryptedData, password);
+      const decryptedStr = bytes.toString(CryptoJS.enc.Utf8);
+      if (!decryptedStr) return null;
+      return JSON.parse(decryptedStr);
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /**
+   * Generate vault ID from password (deterministic per device)
+   */
+  getVaultId(password) {
+    if (!this.isAvailable()) return null;
+    const salt = this.getDeviceSalt();
+    return CryptoJS.SHA256(password + salt).toString();
+  },
+
+  /**
+   * Get all vaults from localStorage
+   */
+  getAllVaults() {
+    if (!IS_BROWSER) return {};
+    try {
+      const vaultsJson = localStorage.getItem('unsandbox_vaults');
+      return vaultsJson ? JSON.parse(vaultsJson) : {};
+    } catch (e) {
+      return {};
+    }
+  },
+
+  /**
+   * Save all vaults to localStorage
+   */
+  saveAllVaults(vaults) {
+    if (!IS_BROWSER) return;
+    localStorage.setItem('unsandbox_vaults', JSON.stringify(vaults));
+  },
+
+  /**
+   * Check if any vaults exist
+   */
+  hasVaults() {
+    return Object.keys(this.getAllVaults()).length > 0;
+  },
+
+  /**
+   * Unlock vault with password
+   * Returns: { success, vaultId, keys, activeKeyIndex, error }
+   */
+  unlockVault(password) {
+    if (!this.isAvailable()) {
+      return { success: false, error: 'CryptoJS not available' };
+    }
+
+    const vaultId = this.getVaultId(password);
+    const vaults = this.getAllVaults();
+
+    if (!vaults[vaultId]) {
+      return { success: false, error: 'No vault found for this password' };
+    }
+
+    const decrypted = this.decrypt(vaults[vaultId].encrypted_keys, password);
+    if (!decrypted) {
+      return { success: false, error: 'Failed to decrypt vault' };
+    }
+
+    const activeIndex = vaults[vaultId].active_key_index || 0;
+    return { success: true, vaultId, keys: decrypted, activeKeyIndex: activeIndex };
+  },
+
+  /**
+   * Create new vault with password
+   * Returns: { success, vaultId, error }
+   */
+  createVault(password) {
+    if (!this.isAvailable()) {
+      return { success: false, error: 'CryptoJS not available' };
+    }
+    if (password.length < 8) {
+      return { success: false, error: 'Password must be at least 8 characters' };
+    }
+
+    const vaultId = this.getVaultId(password);
+    const vaults = this.getAllVaults();
+
+    if (vaults[vaultId]) {
+      // Vault exists, try to unlock instead
+      const decrypted = this.decrypt(vaults[vaultId].encrypted_keys, password);
+      if (decrypted) {
+        return { success: true, vaultId, keys: decrypted, unlocked: true };
+      }
+      return { success: false, error: 'Vault exists but failed to decrypt' };
+    }
+
+    const encrypted = this.encrypt([], password);
+    if (!encrypted) {
+      return { success: false, error: 'Failed to encrypt vault' };
+    }
+
+    vaults[vaultId] = {
+      encrypted_keys: encrypted,
+      created_at: new Date().toISOString(),
+      active_key_index: 0
+    };
+
+    this.saveAllVaults(vaults);
+    return { success: true, vaultId };
+  },
+
+  /**
+   * Save keys to vault
+   */
+  saveKeysToVault(vaultId, keys, password, activeIndex = 0) {
+    if (!this.isAvailable()) return false;
+
+    const vaults = this.getAllVaults();
+    if (!vaults[vaultId]) return false;
+
+    const encrypted = this.encrypt(keys, password);
+    if (!encrypted) return false;
+
+    vaults[vaultId].encrypted_keys = encrypted;
+    vaults[vaultId].active_key_index = activeIndex;
+    vaults[vaultId].updated_at = new Date().toISOString();
+
+    this.saveAllVaults(vaults);
+    return true;
+  },
+
+  /**
+   * Get active key from unlocked vault via global helper (if available)
+   * This integrates with unsandbox.com portal's vault UI
+   */
+  getActiveKey() {
+    if (!IS_BROWSER) return null;
+    // Check if portal's getActiveApiKey function is available
+    if (typeof window.getActiveApiKey === 'function') {
+      return window.getActiveApiKey();
+    }
+    return null;
+  }
+};
+
+// Make vault available globally in browser
+if (IS_BROWSER) {
+  window.UnsandboxVault = UnsandboxVault;
+}
 
 class CredentialsError extends Error {
   constructor(message) {
@@ -147,23 +344,20 @@ function loadCredentialsFromCsv(csvPath, accountIndex = 0) {
 }
 
 /**
- * Load credentials from localStorage. [Browser only]
+ * Load credentials from encrypted vault. [Browser only]
+ * Requires CryptoJS and an unlocked vault via the portal UI.
  */
 function loadCredentialsFromStorage() {
   if (!IS_BROWSER) return null;
 
   try {
-    const useUnsandbox = localStorage.getItem('useUnsandbox') === 'true';
-    if (!useUnsandbox) return null;
-
-    const publicKey = localStorage.getItem('unsandboxPublicKey');
-    const secretKey = localStorage.getItem('unsandboxSecretKey');
-
-    if (publicKey && secretKey) {
-      return [publicKey, secretKey];
+    // Get active key from vault (requires portal UI to unlock)
+    const activeKey = UnsandboxVault.getActiveKey();
+    if (activeKey && activeKey.publicKey && (activeKey.secretKey || activeKey.key)) {
+      return [activeKey.publicKey, activeKey.secretKey || activeKey.key];
     }
   } catch (e) {
-    // localStorage not available
+    // Vault not available or not unlocked
   }
 
   return null;
