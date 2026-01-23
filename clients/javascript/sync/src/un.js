@@ -2,9 +2,10 @@
  * PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
  *
  * unsandbox.com JavaScript SDK (Synchronous/Async)
+ * Isomorphic: Works in Node.js (CLI + SDK) and Browser environments
  *
- * Library Usage:
- *   const {
+ * Library Usage (ES Modules):
+ *   import {
  *     // Code execution
  *     executeCode, executeAsync, getJob, waitForJob, cancelJob, listJobs,
  *     getLanguages, detectLanguage,
@@ -26,18 +27,19 @@
  *     transferImage, spawnFromImage, cloneImage,
  *     // Key validation
  *     validateKeys,
- *   } = require('./un.js');
+ *   } from './un.js';
  *
  *   // Execute code asynchronously (returns Promise)
  *   const result = await executeCode('python', 'print("hello")', publicKey, secretKey);
  *   const jobId = await executeAsync('javascript', 'console.log("hello")', publicKey, secretKey);
  *   const result = await waitForJob(jobId, publicKey, secretKey);
  *
- * Authentication Priority (4-tier):
+ * Authentication Priority (5-tier):
  *   1. Function arguments (publicKey, secretKey)
- *   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
- *   3. ~/.unsandbox/accounts.csv (if in Node.js)
- *   4. ./accounts.csv (if in Node.js)
+ *   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY) [Node.js]
+ *   3. localStorage (unsandboxPublicKey, unsandboxSecretKey) [Browser]
+ *   4. ~/.unsandbox/accounts.csv [Node.js]
+ *   5. ./accounts.csv [Node.js]
  *
  * Request Authentication (HMAC-SHA256):
  *   Authorization: Bearer <publicKey>
@@ -48,12 +50,32 @@
  *   - Cached in ~/.unsandbox/languages.json (Node.js only)
  *   - TTL: 1 hour
  *   - Updated on successful API calls
+ *
+ * Browser Usage:
+ *   - Import as ES module: <script type="module">
+ *   - Configure credentials via localStorage:
+ *       localStorage.setItem('useUnsandbox', 'true');
+ *       localStorage.setItem('unsandboxPublicKey', 'unsb-pk-...');
+ *       localStorage.setItem('unsandboxSecretKey', 'unsb-sk-...');
+ *   - Or pass credentials directly to functions
+ *   - Uses Web Crypto API for HMAC-SHA256 signing
  */
 
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
+// Environment detection for isomorphic support (Node.js + Browser)
+const IS_BROWSER = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+const IS_NODE = typeof process !== 'undefined' && process.versions != null && process.versions.node != null;
+
+// Conditional imports for Node.js (null in browser)
+let crypto = null;
+let fs = null;
+let path = null;
+
+if (IS_NODE) {
+  // Dynamic imports for Node.js
+  crypto = await import('crypto').then(m => m.default || m);
+  fs = await import('fs').then(m => m.default || m);
+  path = await import('path').then(m => m.default || m);
+}
 
 const API_BASE = 'https://api.unsandbox.com';
 const POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000];
@@ -67,9 +89,10 @@ class CredentialsError extends Error {
 }
 
 /**
- * Get ~/.unsandbox directory path, creating if necessary.
+ * Get ~/.unsandbox directory path, creating if necessary. [Node.js only]
  */
 function getUnsandboxDir() {
+  if (!IS_NODE) return null;
   const home = process.env.HOME || process.env.USERPROFILE;
   if (!home) {
     throw new Error('Could not determine home directory');
@@ -82,9 +105,10 @@ function getUnsandboxDir() {
 }
 
 /**
- * Load credentials from CSV file (public_key,secret_key per line).
+ * Load credentials from CSV file (public_key,secret_key per line). [Node.js only]
  */
 function loadCredentialsFromCsv(csvPath, accountIndex = 0) {
+  if (!IS_NODE || !fs) return null;
   if (!fs.existsSync(csvPath)) {
     return null;
   }
@@ -113,13 +137,37 @@ function loadCredentialsFromCsv(csvPath, accountIndex = 0) {
 }
 
 /**
- * Resolve credentials from 4-tier priority system.
+ * Load credentials from localStorage. [Browser only]
+ */
+function loadCredentialsFromStorage() {
+  if (!IS_BROWSER) return null;
+
+  try {
+    const useUnsandbox = localStorage.getItem('useUnsandbox') === 'true';
+    if (!useUnsandbox) return null;
+
+    const publicKey = localStorage.getItem('unsandboxPublicKey');
+    const secretKey = localStorage.getItem('unsandboxSecretKey');
+
+    if (publicKey && secretKey) {
+      return [publicKey, secretKey];
+    }
+  } catch (e) {
+    // localStorage not available
+  }
+
+  return null;
+}
+
+/**
+ * Resolve credentials from 5-tier priority system.
  *
  * Priority:
  *   1. Function arguments
- *   2. Environment variables
- *   3. ~/.unsandbox/accounts.csv
- *   4. ./accounts.csv
+ *   2. Environment variables (Node.js)
+ *   3. localStorage (Browser)
+ *   4. ~/.unsandbox/accounts.csv (Node.js)
+ *   5. ./accounts.csv (Node.js)
  */
 function resolveCredentials(publicKey, secretKey, accountIndex) {
   // Tier 1: Function arguments
@@ -127,143 +175,165 @@ function resolveCredentials(publicKey, secretKey, accountIndex) {
     return [publicKey, secretKey];
   }
 
-  // Tier 2: Environment variables
-  const envPk = process.env.UNSANDBOX_PUBLIC_KEY;
-  const envSk = process.env.UNSANDBOX_SECRET_KEY;
-  if (envPk && envSk) {
-    return [envPk, envSk];
+  // Tier 2: Environment variables (Node.js only)
+  if (IS_NODE) {
+    const envPk = process.env.UNSANDBOX_PUBLIC_KEY;
+    const envSk = process.env.UNSANDBOX_SECRET_KEY;
+    if (envPk && envSk) {
+      return [envPk, envSk];
+    }
   }
 
-  // Determine account index
-  if (accountIndex === undefined) {
-    accountIndex = parseInt(process.env.UNSANDBOX_ACCOUNT || '0', 10);
+  // Tier 3: localStorage (Browser only)
+  if (IS_BROWSER) {
+    const storageCreds = loadCredentialsFromStorage();
+    if (storageCreds) {
+      return storageCreds;
+    }
   }
 
-  // Tier 3: ~/.unsandbox/accounts.csv
-  try {
-    const unsandboxDir = getUnsandboxDir();
-    const creds = loadCredentialsFromCsv(path.join(unsandboxDir, 'accounts.csv'), accountIndex);
+  // Tier 4 & 5: File-based credentials (Node.js only)
+  if (IS_NODE && fs && path) {
+    // Determine account index
+    if (accountIndex === undefined) {
+      accountIndex = parseInt(process.env.UNSANDBOX_ACCOUNT || '0', 10);
+    }
+
+    // Tier 4: ~/.unsandbox/accounts.csv
+    try {
+      const unsandboxDir = getUnsandboxDir();
+      const creds = loadCredentialsFromCsv(path.join(unsandboxDir, 'accounts.csv'), accountIndex);
+      if (creds) {
+        return creds;
+      }
+    } catch (e) {
+      // Continue to next tier
+    }
+
+    // Tier 5: ./accounts.csv
+    const creds = loadCredentialsFromCsv('accounts.csv', accountIndex);
     if (creds) {
       return creds;
     }
-  } catch (e) {
-    // Continue to next tier
   }
 
-  // Tier 4: ./accounts.csv
-  const creds = loadCredentialsFromCsv('accounts.csv', accountIndex);
-  if (creds) {
-    return creds;
-  }
+  const envHint = IS_NODE
+    ? '  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n' +
+      '  3. ~/.unsandbox/accounts.csv\n' +
+      '  4. ./accounts.csv'
+    : '  2. localStorage (enable "Use unsandbox.com API keys" in settings)';
 
   throw new CredentialsError(
     'No credentials found. Please provide via:\n' +
     '  1. Function arguments (publicKey, secretKey)\n' +
-    '  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n' +
-    '  3. ~/.unsandbox/accounts.csv\n' +
-    '  4. ./accounts.csv'
+    envHint
   );
 }
 
 /**
  * Sign a request using HMAC-SHA256.
+ * Isomorphic: uses Node.js crypto or Web Crypto API.
  *
  * Message format: "timestamp:METHOD:path:body"
  * Returns: 64-character hex string
  */
-function signRequest(secretKey, timestamp, method, path, body) {
+async function signRequest(secretKey, timestamp, method, urlPath, body) {
   const bodyStr = body || '';
-  const message = `${timestamp}:${method}:${path}:${bodyStr}`;
-  return crypto
-    .createHmac('sha256', secretKey)
-    .update(message)
-    .digest('hex');
+  const message = `${timestamp}:${method}:${urlPath}:${bodyStr}`;
+
+  if (IS_NODE && crypto) {
+    // Node.js: synchronous HMAC
+    return crypto
+      .createHmac('sha256', secretKey)
+      .update(message)
+      .digest('hex');
+  } else {
+    // Browser: Web Crypto API (async)
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(secretKey);
+    const messageData = encoder.encode(message);
+
+    const cryptoKey = await window.crypto.subtle.importKey(
+      'raw',
+      keyData,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await window.crypto.subtle.sign('HMAC', cryptoKey, messageData);
+    const hashArray = Array.from(new Uint8Array(signature));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
 }
 
 /**
- * Make an authenticated HTTP request to the API.
+ * Sleep for a specified number of milliseconds.
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Make an authenticated HTTP request to the API using native fetch.
  *
  * Returns: Promise<Object> (parsed JSON response)
  * Throws: Error on network errors or non-JSON response
  */
-function makeRequest(method, path, publicKey, secretKey, data) {
-  return new Promise((resolve, reject) => {
-    const url = new URL(API_BASE + path);
-    const timestamp = Math.floor(Date.now() / 1000);
-    const body = data ? JSON.stringify(data) : '';
+async function makeRequest(method, urlPath, publicKey, secretKey, data) {
+  const url = `${API_BASE}${urlPath}`;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const body = data ? JSON.stringify(data) : '';
 
-    const signature = signRequest(secretKey, timestamp, method, path, body || null);
+  const signature = await signRequest(secretKey, timestamp, method, urlPath, body || null);
 
-    const options = {
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname + url.search,
-      method: method,
-      headers: {
-        'Authorization': `Bearer ${publicKey}`,
-        'X-Timestamp': timestamp.toString(),
-        'X-Signature': signature,
-        'Content-Type': 'application/json',
-        'User-Agent': 'un-js/2.0',
-      },
-      timeout: 120000, // 120 seconds
-    };
+  const headers = {
+    'Authorization': `Bearer ${publicKey}`,
+    'X-Timestamp': timestamp.toString(),
+    'X-Signature': signature,
+    'Content-Type': 'application/json',
+    'User-Agent': 'un-js/2.0',
+  };
 
-    // Set Content-Length for methods with body
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
-      options.headers['Content-Length'] = Buffer.byteLength(body);
-    }
+  const options = {
+    method,
+    headers,
+    signal: AbortSignal.timeout(120000), // 120 seconds timeout
+  };
 
-    const req = https.request(options, (res) => {
-      let data = '';
+  // Add body for methods that support it
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
+    options.body = body;
+  }
 
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
+  const response = await fetch(url, options);
 
-      res.on('end', () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-          return;
-        }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
 
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(new Error(`Failed to parse response: ${e.message}`));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
-
-    // Write body for methods that support it
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
-      req.write(body);
-    }
-
-    req.end();
-  });
+  return response.json();
 }
 
 /**
- * Get path to languages cache file.
+ * Get path to languages cache file. [Node.js only]
  */
 function getLanguagesCachePath() {
-  return path.join(getUnsandboxDir(), 'languages.json');
+  if (!IS_NODE) return null;
+  const dir = getUnsandboxDir();
+  if (!dir) return null;
+  return path.join(dir, 'languages.json');
 }
 
 /**
- * Load languages from cache if valid (< 1 hour old).
+ * Load languages from cache if valid (< 1 hour old). [Node.js only]
  */
 function loadLanguagesCache() {
+  if (!IS_NODE || !fs) return null;
   try {
     const cachePath = getLanguagesCachePath();
-    if (!fs.existsSync(cachePath)) {
+    if (!cachePath || !fs.existsSync(cachePath)) {
       return null;
     }
 
@@ -281,11 +351,13 @@ function loadLanguagesCache() {
 }
 
 /**
- * Save languages to cache.
+ * Save languages to cache. [Node.js only]
  */
 function saveLanguagesCache(languages) {
+  if (!IS_NODE || !fs) return;
   try {
     const cachePath = getLanguagesCachePath();
+    if (!cachePath) return;
     const data = {
       languages,
       timestamp: Math.floor(Date.now() / 1000),
@@ -1343,8 +1415,80 @@ async function image(prompt, options = {}) {
   return makeRequest('POST', '/image', pk, sk, payload);
 }
 
-// Export all functions
-module.exports = {
+// ES Module exports
+export {
+  // Code execution
+  executeCode,
+  executeAsync,
+  getJob,
+  waitForJob,
+  cancelJob,
+  listJobs,
+  getLanguages,
+  detectLanguage,
+  // Session management
+  listSessions,
+  getSession,
+  createSession,
+  deleteSession,
+  freezeSession,
+  unfreezeSession,
+  boostSession,
+  unboostSession,
+  shellSession,
+  // Service management
+  listServices,
+  createService,
+  getService,
+  updateService,
+  deleteService,
+  freezeService,
+  unfreezeService,
+  lockService,
+  unlockService,
+  setUnfreezeOnDemand,
+  getServiceLogs,
+  getServiceEnv,
+  setServiceEnv,
+  deleteServiceEnv,
+  exportServiceEnv,
+  redeployService,
+  executeInService,
+  // Snapshot management
+  sessionSnapshot,
+  serviceSnapshot,
+  listSnapshots,
+  restoreSnapshot,
+  deleteSnapshot,
+  lockSnapshot,
+  unlockSnapshot,
+  cloneSnapshot,
+  // Images API (LXD container images)
+  imagePublish,
+  listImages,
+  getImage,
+  deleteImage,
+  lockImage,
+  unlockImage,
+  setImageVisibility,
+  grantImageAccess,
+  revokeImageAccess,
+  listImageTrusted,
+  transferImage,
+  spawnFromImage,
+  cloneImage,
+  // Key validation
+  validateKeys,
+  // Image generation
+  image,
+  // Errors
+  CredentialsError,
+  // CLI
+  cliMain,
+};
+
+// Default export for convenience
+export default {
   // Code execution
   executeCode,
   executeAsync,
@@ -2482,10 +2626,19 @@ async function cliMain() {
   }
 }
 
-// CLI entry point
-if (require.main === module) {
-  cliMain().catch((err) => {
-    console.error('Error:', err.message);
-    process.exit(1);
-  });
+// CLI entry point - detect if running as main module (ESM) [Node.js only]
+// In ESM, we use import.meta.url to check if this is the main module
+if (IS_NODE) {
+  const isMain = process.argv[1] && (
+    process.argv[1].endsWith('/un.js') ||
+    process.argv[1].endsWith('\\un.js') ||
+    import.meta.url === `file://${process.argv[1]}`
+  );
+
+  if (isMain) {
+    cliMain().catch((err) => {
+      console.error('Error:', err.message);
+      process.exit(1);
+    });
+  }
 }
