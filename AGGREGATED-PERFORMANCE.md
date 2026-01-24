@@ -1,13 +1,13 @@
 # UN Inception: Aggregated Performance Analysis
 
-**Analysis Date:** 1769277506.612118
-**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.3, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
+**Analysis Date:** 1769282055.7116168
+**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.24, 4.2.3, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
 
 ---
 
 ## Executive Summary
 
-Analysis of 21 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+Analysis of 22 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
 
 1. **Orchestrator placement on CPU-bound pool** (not an SRE best practice)
 2. **Resource contention** between the orchestrator & test jobs
@@ -36,7 +36,8 @@ Analysis of 21 performance reports reveals **significant variance** in execution
 | 4.2.20 | 114s | java (272s) | crystal (49s) | -37s (-24.5%) |
 | 4.2.21 | 102s | nim (215s) | erlang (22s) | -12s (-10.5%) |
 | 4.2.22 | 300s | javascript (2173s) | clojure (14s) | +198s (+194.1%) |
-| 4.2.3 | 63s | rust (142s) | v (40s) | -237s (-79.0%) |
+| 4.2.24 | 129s | python (494s) | clojure (8s) | -171s (-57.0%) |
+| 4.2.3 | 63s | rust (142s) | v (40s) | -66s (-51.2%) |
 | 4.2.4 | 70s | python (110s) | c (23s) | +7s (+11.1%) |
 | 4.2.5 | 67s | v (114s) | erlang (44s) | -3s (-4.3%) |
 | 4.2.6 | 54s | haskell (128s) | awk (23s) | -13s (-19.4%) |
@@ -73,6 +74,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.20: 87s
   - 4.2.21: 42s
   - 4.2.22: 2173s
+  - 4.2.24: 242s
   - 4.2.3: 75s
   - 4.2.4: 109s
   - 4.2.5: 60s
@@ -97,6 +99,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.20: 57s
   - 4.2.21: 24s
   - 4.2.22: 1834s
+  - 4.2.24: 434s
   - 4.2.3: 64s
   - 4.2.4: 74s
   - 4.2.5: 52s
@@ -121,6 +124,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.20: 103s
   - 4.2.21: 215s
   - 4.2.22: 1217s
+  - 4.2.24: 8s
   - 4.2.3: 52s
   - 4.2.4: 76s
   - 4.2.5: 58s
@@ -128,7 +132,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.7: 77s
   - 4.2.8: 93s
   - 4.2.9: 42s
-  - **Range:** 31s → 1217s (3825.8% variance)
+  - **Range:** 8s → 1217s (15112.5% variance)
 
 **ZIG:**
   - 4.2.0: 32s
@@ -145,6 +149,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.20: 224s
   - 4.2.21: 192s
   - 4.2.22: 1014s
+  - 4.2.24: 8s
   - 4.2.3: 61s
   - 4.2.4: 60s
   - 4.2.5: 59s
@@ -152,7 +157,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.7: 79s
   - 4.2.8: 187s
   - 4.2.9: 153s
-  - **Range:** 32s → 1014s (3068.8% variance)
+  - **Range:** 8s → 1014s (12575.0% variance)
 
 **LUA:**
   - 4.2.0: 32s
@@ -169,6 +174,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.20: 133s
   - 4.2.21: 183s
   - 4.2.22: 975s
+  - 4.2.24: 9s
   - 4.2.3: 63s
   - 4.2.4: 71s
   - 4.2.5: 52s
@@ -176,7 +182,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.7: 152s
   - 4.2.8: 84s
   - 4.2.9: 56s
-  - **Range:** 32s → 975s (2946.9% variance)
+  - **Range:** 9s → 975s (10733.3% variance)
 
 
 ---
@@ -199,6 +205,7 @@ The same language changes dramatically in rank between runs:
 4.2.20: crystal, v, deno, r, csharp
 4.2.21: erlang, r, ruby, awk, typescript
 4.2.22: powershell, clojure, scheme, objc, v
+4.2.24: zig, nim, kotlin, fortran, forth
 4.2.3: v, d, kotlin, awk, raku
 4.2.4: c, d, cobol, raku, v
 4.2.5: erlang, awk, bash, deno, tcl
@@ -223,6 +230,7 @@ The same language changes dramatically in rank between runs:
 4.2.20: java, zig, cobol, perl, haskell
 4.2.21: nim, dart, java, cpp, rust
 4.2.22: javascript, r, nim, zig, lua
+4.2.24: python, php, r, elixir, deno
 4.2.3: rust, c, python, typescript, javascript
 4.2.4: python, javascript, elixir, scheme, bash
 4.2.5: v, haskell, scheme, ocaml, powershell
@@ -315,21 +323,21 @@ JAVASCRIPT: 32s → 2173s (+6690.6%)
 
 R: 24s → 1834s (+7541.7%)
 
-NIM: 31s → 1217s (+3825.8%)
+NIM: 8s → 1217s (+15112.5%)
 
-ZIG: 32s → 1014s (+3068.8%)
+ZIG: 8s → 1014s (+12575.0%)
 
-LUA: 32s → 975s (+2946.9%)
+LUA: 9s → 975s (+10733.3%)
 
 RUBY: 30s → 825s (+2650.0%)
 
 HASKELL: 21s → 754s (+3490.5%)
 
+PYTHON: 19s → 494s (+2500.0%)
+
+PHP: 23s → 471s (+1947.8%)
+
 PERL: 26s → 468s (+1700.0%)
-
-DART: 28s → 451s (+1510.7%)
-
-JAVA: 33s → 423s (+1181.8%)
 
 
 These languages are most affected by resource contention. Likely reasons:
@@ -382,26 +390,26 @@ Keep it as-is for stress testing, but in separate test environment.
 
 | Language | Min (s) | Max (s) | Avg (s) | Range (s) | Variance % |
 |----------|---------|---------|---------|-----------|------------|
-| R | 24 | 1834 | 194.9 | 1810 | 7541.7% |
-| JAVASCRIPT | 32 | 2173 | 217.6 | 2141 | 6690.6% |
-| NIM | 31 | 1217 | 133.0 | 1186 | 3825.8% |
-| HASKELL | 21 | 754 | 125.5 | 733 | 3490.5% |
-| DOTNET | 5 | 176 | 85.6 | 171 | 3420.0% |
-| ZIG | 32 | 1014 | 161.8 | 982 | 3068.8% |
-| LUA | 32 | 975 | 158.1 | 943 | 2946.9% |
-| RUBY | 30 | 825 | 162.7 | 795 | 2650.0% |
-| CLOJURE | 14 | 310 | 105.4 | 296 | 2114.3% |
-| SCHEME | 15 | 320 | 100.0 | 305 | 2033.3% |
-| PERL | 26 | 468 | 109.2 | 442 | 1700.0% |
-| POWERSHELL | 14 | 247 | 82.9 | 233 | 1664.3% |
-| GROOVY | 23 | 393 | 94.1 | 370 | 1608.7% |
-| CRYSTAL | 24 | 397 | 113.8 | 373 | 1554.2% |
-| DART | 28 | 451 | 107.6 | 423 | 1510.7% |
-| ELIXIR | 20 | 313 | 116.8 | 293 | 1465.0% |
-| COBOL | 20 | 305 | 109.6 | 285 | 1425.0% |
-| PYTHON | 19 | 253 | 89.7 | 234 | 1231.6% |
-| AWK | 23 | 306 | 121.0 | 283 | 1230.4% |
-| CSHARP | 20 | 266 | 92.9 | 246 | 1230.0% |
+| NIM | 8 | 1217 | 127.3 | 1209 | 15112.5% |
+| ZIG | 8 | 1014 | 154.8 | 1006 | 12575.0% |
+| LUA | 9 | 975 | 151.3 | 966 | 10733.3% |
+| R | 24 | 1834 | 205.7 | 1810 | 7541.7% |
+| JAVASCRIPT | 32 | 2173 | 218.7 | 2141 | 6690.6% |
+| KOTLIN | 8 | 313 | 93.7 | 305 | 3812.5% |
+| CLOJURE | 8 | 310 | 101.0 | 302 | 3775.0% |
+| HASKELL | 21 | 754 | 123.0 | 733 | 3490.5% |
+| DOTNET | 5 | 176 | 81.1 | 171 | 3420.0% |
+| CSHARP | 8 | 266 | 89.0 | 258 | 3225.0% |
+| PROLOG | 9 | 262 | 76.7 | 253 | 2811.1% |
+| FORTH | 8 | 231 | 94.0 | 223 | 2787.5% |
+| RUBY | 30 | 825 | 160.4 | 795 | 2650.0% |
+| PYTHON | 19 | 494 | 108.1 | 475 | 2500.0% |
+| RUST | 9 | 234 | 116.9 | 225 | 2500.0% |
+| D | 8 | 203 | 82.8 | 195 | 2437.5% |
+| SCHEME | 15 | 320 | 98.9 | 305 | 2033.3% |
+| PHP | 23 | 471 | 123.0 | 448 | 1947.8% |
+| ELIXIR | 20 | 404 | 129.9 | 384 | 1920.0% |
+| FORTRAN | 8 | 161 | 71.9 | 153 | 1912.5% |
 
 
 ---
@@ -470,6 +478,7 @@ Individual Reports → Aggregation Script → Chart Generation (via UN) → Fina
 - `reports/4.2.20/perf.json` - 685 tests, generated 2026-01-23T20:41:23Z
 - `reports/4.2.21/perf.json` - 661 tests, generated 2026-01-23T21:16:07Z
 - `reports/4.2.22/perf.json` - 697 tests, generated 2026-01-24T17:57:56Z
+- `reports/4.2.24/perf.json` - 665 tests, generated 2026-01-24T19:13:51Z
 - `reports/4.2.3/perf.json` - 642 tests, generated 2026-01-19T11:58:45Z
 - `reports/4.2.4/perf.json` - 682 tests, generated 2026-01-19T12:02:14Z
 - `reports/4.2.5/perf.json` - 658 tests, generated 2026-01-19T19:10:23Z
@@ -673,5 +682,5 @@ For questions about this methodology or to report issues:
 ---
 
 **Generated by UN Inception Performance Analysis Pipeline**
-**Analysis Date:** 2026-01-24T12:58:26.732493
+**Analysis Date:** 2026-01-24T14:14:15.842875
 **Report Version:** 1.0.0
