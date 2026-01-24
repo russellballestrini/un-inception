@@ -142,6 +142,26 @@ for javafile in clients/java/sync/src/Un.java clients/kotlin/sync/src/un.kt; do
     fi
 done
 
+# 15. .NET 10 (dotnet) - const string VERSION = "X.Y.Z";
+for dotnetfile in clients/dotnet/sync/src/Un.cs clients/dotnet/async/src/Un.cs; do
+    if [ -f "$dotnetfile" ]; then
+        sed -i "s/const string VERSION = \"[0-9]\+\.[0-9]\+\.[0-9]\+\";/const string VERSION = \"$VERSION\";/" "$dotnetfile"
+        echo "  ✓ $dotnetfile"
+        UPDATED=$((UPDATED + 1))
+    fi
+done
+
+# 16. C# Mono - VERSION constant (if exists)
+for csharpfile in clients/csharp/sync/src/Un.cs clients/csharp/async/src/Un.cs; do
+    if [ -f "$csharpfile" ]; then
+        if grep -q 'VERSION.*=.*"[0-9]\+\.[0-9]\+\.[0-9]\+"' "$csharpfile"; then
+            sed -i "s/VERSION.*=.*\"[0-9]\+\.[0-9]\+\.[0-9]\+\"/VERSION = \"$VERSION\"/" "$csharpfile"
+            echo "  ✓ $csharpfile"
+            UPDATED=$((UPDATED + 1))
+        fi
+    fi
+done
+
 echo ""
 echo "Done! Updated $UPDATED files to version $VERSION"
 echo ""
