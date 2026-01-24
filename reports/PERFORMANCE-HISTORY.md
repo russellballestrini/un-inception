@@ -38,3 +38,4 @@ Tracking compile and test execution times across releases.
 >>>>>>> Stashed changes
 | 4.2.25 | 2026-01-24 | 681 | 100.0% | 97s | fortran | bash |
 | 4.2.26 | 2026-01-24 | 661 | 100.0% | 78s | cpp | python |
+| 4.2.27 | 2026-01-24 | 653 | 100.0% | 119s | commonlisp | php |
