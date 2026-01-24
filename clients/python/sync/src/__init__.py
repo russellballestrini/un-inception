@@ -27,7 +27,7 @@ from .un import (
     CredentialsError,
 )
 
-__version__ = "4.2.21"
+__version__ = "4.2.22"
 __all__ = [
     "execute_code",
     "execute_async",
