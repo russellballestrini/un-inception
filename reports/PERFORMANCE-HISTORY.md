@@ -27,3 +27,4 @@ Tracking compile and test execution times across releases.
 | 4.2.20 | 2026-01-23 | 685 | 100.0% | 114s | java | crystal |
 | 4.2.21 | 2026-01-23 | 661 | 100.0% | 102s | nim | erlang |
 | 4.2.22 | 2026-01-24 | 697 | 99.5% | 300s | javascript | clojure |
+| 4.2.24 | 2026-01-24 | 665 | 100.0% | 129s | python | clojure |
