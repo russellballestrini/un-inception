@@ -6013,7 +6013,7 @@ void print_usage(const char *prog) {
  * ============================================================================ */
 
 const char *unsandbox_version(void) {
-    return "4.2.23";
+    return "4.2.24";
 }
 
 const char *unsandbox_detect_language(const char *filename) {
