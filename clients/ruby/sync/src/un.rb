@@ -1054,6 +1054,25 @@ module Un
       make_request('PATCH', "/services/#{service_id}", pk, sk, { unfreeze_on_demand: enabled })
     end
 
+    # Set show-freeze-page for a service
+    #
+    # When enabled, frozen services show a freeze page instead of 502 error.
+    #
+    # @param service_id [String] Service ID to update
+    # @param enabled [Boolean] Whether to enable show-freeze-page
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with update confirmation
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.set_show_freeze_page(service_id, true)
+    def set_show_freeze_page(service_id, enabled, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('PATCH', "/services/#{service_id}", pk, sk, { show_freeze_page: enabled })
+    end
+
     # Get service logs (bootstrap output)
     #
     # @param service_id [String] Service ID to get logs for

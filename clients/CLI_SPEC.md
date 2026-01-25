@@ -165,6 +165,10 @@ un service --snapshot ID          # Create snapshot
 | `--destroy ID` | Delete service |
 | `--lock ID` | Prevent deletion |
 | `--unlock ID` | Allow deletion |
+| `--auto-unfreeze ID` | Enable auto-unfreeze on HTTP request |
+| `--no-auto-unfreeze ID` | Disable auto-unfreeze |
+| `--show-freeze-page ID` | Show payment page when frozen (default) |
+| `--no-show-freeze-page ID` | Return JSON error when frozen |
 | `--resize ID` | Resize (with --vcpu) |
 | `--redeploy ID` | Re-run bootstrap |
 | `--execute ID CMD` | Run command |

@@ -1325,6 +1325,24 @@ func SetUnfreezeOnDemand(creds *Credentials, serviceID string, enabled bool) <-c
 	return resultChan
 }
 
+// SetShowFreezePage enables or disables the freeze page display for a service.
+// When enabled, frozen services show a branded "waking up" page instead of an error.
+// Returns a channel that receives exactly one ServiceResult then closes.
+func SetShowFreezePage(creds *Credentials, serviceID string, enabled bool) <-chan ServiceResult {
+	resultChan := make(chan ServiceResult, 1)
+
+	go func() {
+		defer close(resultChan)
+
+		response, err := makeRequest("PATCH", fmt.Sprintf("/services/%s", serviceID), creds, map[string]interface{}{
+			"show_freeze_page": enabled,
+		})
+		resultChan <- ServiceResult{Data: response, Err: err}
+	}()
+
+	return resultChan
+}
+
 // GetServiceLogs retrieves logs from a service.
 // Returns a channel that receives exactly one ServiceResult then closes.
 //

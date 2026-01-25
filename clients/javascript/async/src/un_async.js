@@ -14,7 +14,7 @@
  *     freezeSession, unfreezeSession, boostSession, unboostSession, shellSession,
  *     // Service management
  *     listServices, createService, getService, updateService, deleteService,
- *     freezeService, unfreezeService, lockService, unlockService, setUnfreezeOnDemand,
+ *     freezeService, unfreezeService, lockService, unlockService, setUnfreezeOnDemand, setShowFreezePage,
  *     getServiceLogs, getServiceEnv, setServiceEnv, deleteServiceEnv,
  *     exportServiceEnv, redeployService, executeInService,
  *     // Snapshot management
@@ -1177,6 +1177,22 @@ async function setUnfreezeOnDemand(serviceId, enabled, publicKey, secretKey) {
 }
 
 /**
+ * Set show-freeze-page for a service.
+ *
+ * When enabled, frozen services will show a "frozen" page to visitors instead of an error.
+ *
+ * Args:
+ *   serviceId: Service ID to update
+ *   enabled: true to enable, false to disable
+ *
+ * Returns: Promise<Object> (update confirmation)
+ */
+async function setShowFreezePage(serviceId, enabled, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('PATCH', `/services/${serviceId}`, publicKey, secretKey, { show_freeze_page: enabled });
+}
+
+/**
  * Get service logs.
  *
  * Args:
@@ -1434,6 +1450,7 @@ export {
   lockService,
   unlockService,
   setUnfreezeOnDemand,
+  setShowFreezePage,
   getServiceLogs,
   getServiceEnv,
   setServiceEnv,
@@ -1493,6 +1510,7 @@ export default {
   lockService,
   unlockService,
   setUnfreezeOnDemand,
+  setShowFreezePage,
   getServiceLogs,
   getServiceEnv,
   setServiceEnv,

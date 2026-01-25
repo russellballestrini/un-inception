@@ -3411,6 +3411,67 @@ static int set_unfreeze_on_demand(const UnsandboxCredentials *creds, const char 
     return 0;
 }
 
+// Set show_freeze_page for a service (controls whether frozen services show payment page or JSON error)
+static int set_show_freeze_page(const UnsandboxCredentials *creds, const char *service_id, int enabled) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s/services/%s", API_BASE, service_id);
+
+    char path[256];
+    snprintf(path, sizeof(path), "/services/%s", service_id);
+
+    char body[128];
+    snprintf(body, sizeof(body), "{\"show_freeze_page\":%s}", enabled ? "true" : "false");
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "PATCH", path, body);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code == 404) {
+        fprintf(stderr, "Error: Service not found\n");
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code != 200) {
+        fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        if (response.data) fprintf(stderr, "%s\n", response.data);
+        free(response.data);
+        return 1;
+    }
+
+    printf("\033[32mFreeze page %s\033[0m\n", enabled ? "enabled" : "disabled");
+    free(response.data);
+    return 0;
+}
+
 // Resize a service (change vCPU/memory live)
 static int resize_service(const UnsandboxCredentials *creds, const char *service_id, int vcpu) {
     CURL *curl = curl_easy_init();
@@ -5897,6 +5958,8 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --unlock ID        Unlock a service to allow deletion\n");
     fprintf(stderr, "  --auto-unfreeze ID     Enable auto-unfreeze on HTTP request\n");
     fprintf(stderr, "  --no-auto-unfreeze ID  Disable auto-unfreeze on HTTP request\n");
+    fprintf(stderr, "  --show-freeze-page ID  Enable freeze page (show payment page when frozen)\n");
+    fprintf(stderr, "  --no-show-freeze-page ID  Disable freeze page (return JSON error when frozen)\n");
     fprintf(stderr, "  --resize ID        Resize service vCPU/memory (requires --vcpu)\n");
     fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (optional: --bootstrap or --bootstrap-file)\n");
     fprintf(stderr, "  --execute ID CMD   Run a command in a running service\n");
@@ -9068,6 +9131,8 @@ int main(int argc, char *argv[]) {
         int do_unlock = 0;
         int do_auto_unfreeze = 0;
         int do_no_auto_unfreeze = 0;
+        int do_show_freeze_page = 0;
+        int do_no_show_freeze_page = 0;
         int do_resize = 0;
         int do_redeploy = 0;
         int do_execute = 0;
@@ -9227,6 +9292,14 @@ int main(int argc, char *argv[]) {
                 service_id = argv[i];
             } else if (strcmp(argv[i], "--no-auto-unfreeze") == 0 && i + 1 < argc) {
                 do_no_auto_unfreeze = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--show-freeze-page") == 0 && i + 1 < argc) {
+                do_show_freeze_page = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--no-show-freeze-page") == 0 && i + 1 < argc) {
+                do_no_show_freeze_page = 1;
                 i++;
                 service_id = argv[i];
             } else if (strcmp(argv[i], "--resize") == 0 && i + 1 < argc) {
@@ -9426,6 +9499,10 @@ int main(int argc, char *argv[]) {
             ret = set_unfreeze_on_demand(creds, service_id, 1);
         } else if (do_no_auto_unfreeze) {
             ret = set_unfreeze_on_demand(creds, service_id, 0);
+        } else if (do_show_freeze_page) {
+            ret = set_show_freeze_page(creds, service_id, 1);
+        } else if (do_no_show_freeze_page) {
+            ret = set_show_freeze_page(creds, service_id, 0);
         } else if (do_resize) {
             if (vcpu < 1 || vcpu > 8) {
                 fprintf(stderr, "Error: --vcpu must be 1-8 for resize\n");

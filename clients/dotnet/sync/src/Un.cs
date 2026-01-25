@@ -351,6 +351,15 @@ void CmdService(Args args)
         return;
     }
 
+    if (args.ServiceShowFreezePage != null)
+    {
+        var payload = new Dictionary<string, object> { ["show_freeze_page"] = args.ServiceShowFreezePageEnabled };
+        await ApiRequestAsync($"/services/{args.ServiceShowFreezePage}", new HttpMethod("PATCH"), payload, publicKey, secretKey);
+        string status = args.ServiceShowFreezePageEnabled ? "enabled" : "disabled";
+        Console.WriteLine($"{GREEN}Show-freeze-page {status} for service: {args.ServiceShowFreezePage}{RESET}");
+        return;
+    }
+
     if (args.ServiceDestroy != null)
     {
         ApiRequest($"/services/{args.ServiceDestroy}", HttpMethod.Delete, null, publicKey, secretKey);
@@ -934,6 +943,8 @@ Args ParseArgs(string[] args)
         else if (arg == "--dump-file") result.ServiceDumpFile = args[++i];
         else if (arg == "--unfreeze-on-demand") result.ServiceUnfreezeOnDemand = args[++i];
         else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
+        else if (arg == "--show-freeze-page") result.ServiceShowFreezePage = args[++i];
+        else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
         else if (arg == "--extend") result.KeyExtend = true;
         else if (arg == "--delete")
@@ -1016,6 +1027,8 @@ Service options:
   --snapshot ID     Create snapshot from service
   --unfreeze-on-demand ID   Set unfreeze-on-demand for service
   --unfreeze-on-demand-enabled BOOL   Enable/disable (default: true)
+  --show-freeze-page ID   Set show-freeze-page for service
+  --show-freeze-page-enabled BOOL   Enable/disable (default: true)
   --with-unfreeze-on-demand   Enable unfreeze-on-demand when creating service
   --destroy ID      Destroy service
   --execute ID      Execute command in service
@@ -1081,6 +1094,8 @@ class Args
     public string? ServiceDumpBootstrap, ServiceDumpFile;
     public string? ServiceUnfreezeOnDemand;
     public bool ServiceUnfreezeOnDemandEnabled = true;
+    public string? ServiceShowFreezePage;
+    public bool ServiceShowFreezePageEnabled = true;
     public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
     public bool KeyExtend;

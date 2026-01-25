@@ -744,6 +744,17 @@ sub cmd_service {
         return;
     }
 
+    if ($options->{set_show_freeze_page}) {
+        my $enabled = ($options->{set_show_freeze_page_enabled} &&
+                       ($options->{set_show_freeze_page_enabled} eq 'true' || $options->{set_show_freeze_page_enabled} eq '1'))
+                       ? JSON::PP::true : JSON::PP::false;
+        my $payload = { show_freeze_page => $enabled };
+        api_request("/services/$options->{set_show_freeze_page}", 'PATCH', $payload, $public_key, $secret_key);
+        my $status = $enabled ? 'enabled' : 'disabled';
+        print "${GREEN}Show-freeze-page $status for service: $options->{set_show_freeze_page}${RESET}\n";
+        return;
+    }
+
     if ($options->{execute}) {
         my $payload = { command => $options->{command} };
         my $result = api_request("/services/$options->{execute}/execute", 'POST', $payload, $public_key, $secret_key);
@@ -1187,6 +1198,9 @@ sub main {
         } elsif ($arg eq '--set-unfreeze-on-demand') {
             $options{set_unfreeze_on_demand} = $ARGV[++$i];
             $options{set_unfreeze_on_demand_enabled} = $ARGV[++$i] if defined $ARGV[$i + 1];
+        } elsif ($arg eq '--set-show-freeze-page') {
+            $options{set_show_freeze_page} = $ARGV[++$i];
+            $options{set_show_freeze_page_enabled} = $ARGV[++$i] if defined $ARGV[$i + 1];
         } elsif ($arg =~ /^-/) {
             print STDERR "${RED}Unknown option: $arg${RESET}\n";
             exit 1;
@@ -1279,6 +1293,8 @@ Service options:
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script
   --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
+  --set-unfreeze-on-demand ID BOOL  Enable/disable auto-unfreeze on HTTP request
+  --set-show-freeze-page ID BOOL  Enable/disable showing freeze page when frozen
 
 Key options:
   --extend         Open browser to extend/renew key

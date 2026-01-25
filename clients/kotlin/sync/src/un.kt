@@ -105,6 +105,8 @@ data class Args(
     var serviceResize: String? = null,
     var serviceUnfreezeOnDemand: String? = null,
     var serviceUnfreezeOnDemandValue: Boolean? = null,
+    var serviceShowFreezePage: String? = null,
+    var serviceshowFreezePageValue: Boolean? = null,
     var keyExtend: Boolean = false,
     var envFile: String? = null,
     var envAction: String? = null,
@@ -373,6 +375,17 @@ fun cmdService(args: Args) {
         val payload = mapOf("unfreeze_on_demand" to args.serviceUnfreezeOnDemandValue!!)
         apiRequestPatch("/services/${args.serviceUnfreezeOnDemand}", payload, publicKey, secretKey)
         println("${GREEN}Service unfreeze_on_demand set to ${args.serviceUnfreezeOnDemandValue}: ${args.serviceUnfreezeOnDemand}${RESET}")
+        return
+    }
+
+    if (args.serviceShowFreezePage != null) {
+        if (args.serviceshowFreezePageValue == null) {
+            System.err.println("${RED}Error: --show-freeze-page requires true or false${RESET}")
+            exitProcess(1)
+        }
+        val payload = mapOf("show_freeze_page" to args.serviceshowFreezePageValue!!)
+        apiRequestPatch("/services/${args.serviceShowFreezePage}", payload, publicKey, secretKey)
+        println("${GREEN}Service show_freeze_page set to ${args.serviceshowFreezePageValue}: ${args.serviceShowFreezePage}${RESET}")
         return
     }
 
@@ -1164,6 +1177,12 @@ fun parseArgs(args: Array<String>): Args {
                     result.serviceUnfreezeOnDemandValue = args[++i].toBoolean()
                 }
             }
+            "--show-freeze-page" -> {
+                result.serviceShowFreezePage = args[++i]
+                if (i + 1 < args.size && (args[i + 1] == "true" || args[i + 1] == "false")) {
+                    result.serviceshowFreezePageValue = args[++i].toBoolean()
+                }
+            }
             "--execute" -> result.serviceExecute = args[++i]
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
@@ -1264,6 +1283,7 @@ Service options:
   --destroy ID      Destroy service
   --resize ID       Resize service (requires --vcpu N)
   --unfreeze-on-demand ID true|false  Enable/disable auto-unfreeze on HTTP request
+  --show-freeze-page ID true|false  Enable/disable showing freeze page when frozen
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script

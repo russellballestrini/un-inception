@@ -1546,6 +1546,30 @@ public class UnsandboxAsync {
     }
 
     /**
+     * Set show-freeze-page for a service.
+     *
+     * <p>When enabled, visitors to a frozen service will see a branded "frozen" page
+     * instead of an error. This improves UX for services that use unfreeze-on-demand.
+     *
+     * @param serviceId Service ID to configure
+     * @param enabled True to show freeze page, false to hide it
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return CompletableFuture containing response map with update confirmation
+     */
+    public static CompletableFuture<Map<String, Object>> setShowFreezePage(
+        String serviceId,
+        boolean enabled,
+        String publicKey,
+        String secretKey
+    ) {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("show_freeze_page", enabled);
+        return makeRequestWithMethod("PATCH", "/services/" + serviceId, creds[0], creds[1], data);
+    }
+
+    /**
      * Get bootstrap logs for a service.
      *
      * @param serviceId Service ID to get logs for

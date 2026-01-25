@@ -878,6 +878,20 @@ class UnsandboxAsync {
     }
 
     /**
+     * Set show_freeze_page flag for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param bool $enabled Whether to enable show freeze page
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return PromiseInterface Resolves to response array with update confirmation
+     */
+    public function setShowFreezePage(string $serviceId, bool $enabled, ?string $publicKey = null, ?string $secretKey = null): PromiseInterface {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('PATCH', "/services/{$serviceId}", $publicKey, $secretKey, ['show_freeze_page' => $enabled]);
+    }
+
+    /**
      * Get bootstrap logs for a service.
      *
      * @param string $serviceId Service ID

@@ -1200,6 +1200,22 @@ class Unsandbox {
     }
 
     /**
+     * Set show_freeze_page flag for a service.
+     *
+     * @param string $serviceId Service ID
+     * @param bool $enabled Whether to enable show freeze page
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with update confirmation
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function setShowFreezePage(string $serviceId, bool $enabled, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('PATCH', "/services/{$serviceId}", $publicKey, $secretKey, ['show_freeze_page' => $enabled]);
+    }
+
+    /**
      * Get bootstrap logs for a service.
      *
      * @param string $serviceId Service ID

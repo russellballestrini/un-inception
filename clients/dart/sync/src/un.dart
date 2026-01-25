@@ -104,6 +104,8 @@ class Args {
   String? serviceUnfreezeOnDemand;
   bool serviceUnfreezeOnDemandEnabled = true;
   bool serviceCreateUnfreezeOnDemand = false;
+  String? serviceShowFreezePage;
+  bool serviceShowFreezePageEnabled = true;
   bool keyExtend = false;
   String? envFile;
   String? envAction;
@@ -657,6 +659,14 @@ Future<void> cmdService(Args args) async {
     return;
   }
 
+  if (args.serviceShowFreezePage != null) {
+    final payload = {'show_freeze_page': args.serviceShowFreezePageEnabled};
+    await apiRequestCurl('/services/${args.serviceShowFreezePage}', 'PATCH', jsonEncode(payload), publicKey, secretKey);
+    final status = args.serviceShowFreezePageEnabled ? 'enabled' : 'disabled';
+    print('${green}Show-freeze-page $status for service: ${args.serviceShowFreezePage}$reset');
+    return;
+  }
+
   if (args.serviceDestroy != null) {
     await apiRequestCurl('/services/${args.serviceDestroy}', 'DELETE', null, publicKey, secretKey);
     print('${green}Service destroyed: ${args.serviceDestroy}$reset');
@@ -1114,6 +1124,12 @@ Args parseArgs(List<String> argv) {
       case '--with-unfreeze-on-demand':
         args.serviceCreateUnfreezeOnDemand = true;
         break;
+      case '--show-freeze-page':
+        args.serviceShowFreezePage = argv[++i];
+        break;
+      case '--show-freeze-page-enabled':
+        args.serviceShowFreezePageEnabled = argv[++i].toLowerCase() == 'true';
+        break;
       case '--extend':
         args.keyExtend = true;
         break;
@@ -1228,6 +1244,8 @@ Service options:
   --unfreeze-on-demand ID   Set unfreeze-on-demand for service
   --unfreeze-on-demand-enabled BOOL   Enable/disable (default: true)
   --with-unfreeze-on-demand   Enable unfreeze-on-demand when creating service
+  --show-freeze-page ID   Set show-freeze-page for service
+  --show-freeze-page-enabled BOOL   Enable/disable (default: true)
   --destroy ID      Destroy service
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)

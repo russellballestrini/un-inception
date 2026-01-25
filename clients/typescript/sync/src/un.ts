@@ -143,6 +143,8 @@ interface Args {
   imageClone: string | null;
   unfreezeOnDemand: boolean | null;
   setUnfreezeOnDemand: string | null;
+  showFreezePage: boolean | null;
+  setShowFreezePage: string | null;
 }
 
 interface ApiKeys {
@@ -697,6 +699,14 @@ async function cmdService(args: Args): Promise<void> {
     return;
   }
 
+  if (args.setShowFreezePage) {
+    const enabled = args.showFreezePage === true;
+    const payload = { show_freeze_page: enabled };
+    await apiRequest(`/services/${args.setShowFreezePage}`, "PATCH", payload, keys);
+    console.log(`${GREEN}Show freeze page ${enabled ? 'enabled' : 'disabled'} for service ${args.setShowFreezePage}${RESET}`);
+    return;
+  }
+
   if (args.execute) {
     const payload = { command: args.command_arg };
     const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, keys);
@@ -1023,6 +1033,8 @@ function parseArgs(argv: string[]): Args {
     imageClone: null,
     unfreezeOnDemand: null,
     setUnfreezeOnDemand: null,
+    showFreezePage: null,
+    setShowFreezePage: null,
   };
 
   let i = 2;
@@ -1189,6 +1201,12 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--set-unfreeze-on-demand' && i + 1 < argv.length) {
       args.setUnfreezeOnDemand = argv[++i];
       i++;
+    } else if (arg === '--show-freeze-page') {
+      args.showFreezePage = true;
+      i++;
+    } else if (arg === '--set-show-freeze-page' && i + 1 < argv.length) {
+      args.setShowFreezePage = argv[++i];
+      i++;
     } else if (!arg.startsWith('-')) {
       args.sourceFile = arg;
       i++;
@@ -1272,6 +1290,8 @@ Service options:
   --dump-file FILE     File to save bootstrap (with --dump-bootstrap)
   --unfreeze-on-demand Enable unfreeze on demand (with --name or --set-unfreeze-on-demand)
   --set-unfreeze-on-demand ID  Set unfreeze on demand for service
+  --show-freeze-page Enable show freeze page (with --name or --set-show-freeze-page)
+  --set-show-freeze-page ID  Set show freeze page for service
 
 Image options:
   --list           List all images

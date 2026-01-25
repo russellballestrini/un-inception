@@ -36,6 +36,7 @@ Library Usage:
         lock_service,
         unlock_service,
         set_unfreeze_on_demand,
+        set_show_freeze_page,
         get_service_logs,
         get_service_env,
         set_service_env,
@@ -1313,6 +1314,42 @@ async def set_unfreeze_on_demand(
         public_key,
         secret_key,
         {"unfreeze_on_demand": enabled},
+    )
+
+
+async def set_show_freeze_page(
+    service_id: str,
+    enabled: bool,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Enable or disable freeze page display for a service.
+
+    When disabled, frozen services return a JSON error response instead of
+    displaying the payment/unfreeze page to visitors.
+
+    Args:
+        service_id: Service ID to configure
+        enabled: True to show freeze page, False to return JSON error
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with update confirmation
+
+    Raises:
+        aiohttp.ClientError: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return await _make_request(
+        "PATCH",
+        f"/services/{service_id}",
+        public_key,
+        secret_key,
+        {"show_freeze_page": enabled},
     )
 
 

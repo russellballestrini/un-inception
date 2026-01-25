@@ -943,6 +943,27 @@ module UnAsync
       end
     end
 
+    # Set show-freeze-page for a service
+    #
+    # When enabled, frozen services show a freeze page instead of 502 error.
+    #
+    # @param service_id [String] Service ID to update
+    # @param enabled [Boolean] Whether to enable show-freeze-page
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Future<Hash>] Future resolving to response hash with update confirmation
+    # @raise [CredentialsError] If no credentials found (on .value)
+    # @raise [APIError] If API request fails (on .value)
+    #
+    # @example
+    #     UnAsync.set_show_freeze_page(service_id, true).value
+    def set_show_freeze_page(service_id, enabled, public_key: nil, secret_key: nil)
+      Future.new do
+        pk, sk = resolve_credentials(public_key, secret_key)
+        make_request_sync('PATCH', "/services/#{service_id}", pk, sk, { show_freeze_page: enabled })
+      end
+    end
+
     # Get service logs (bootstrap output)
     #
     # @param service_id [String] Service ID to get logs for
