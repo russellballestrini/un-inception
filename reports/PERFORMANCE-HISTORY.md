@@ -27,15 +27,8 @@ Tracking compile and test execution times across releases.
 | 4.2.20 | 2026-01-23 | 685 | 100.0% | 114s | java | crystal |
 | 4.2.21 | 2026-01-23 | 661 | 100.0% | 102s | nim | erlang |
 | 4.2.22 | 2026-01-24 | 697 | 99.5% | 300s | javascript | clojure |
+| 4.2.23 | 2026-01-24 | 713 | 100.0% | 373s | zig | perl |
 | 4.2.24 | 2026-01-24 | 665 | 100.0% | 129s | python | clojure |
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-| 4.2.23 | 2026-01-24 | 713 | 100.0% | 373s | zig | perl |
-=======
->>>>>>> Stashed changes
-=======
-| 4.2.23 | 2026-01-24 | 713 | 100.0% | 373s | zig | perl |
->>>>>>> Stashed changes
 | 4.2.25 | 2026-01-24 | 681 | 100.0% | 97s | fortran | bash |
 | 4.2.26 | 2026-01-24 | 661 | 100.0% | 78s | cpp | python |
 | 4.2.27 | 2026-01-24 | 653 | 100.0% | 119s | commonlisp | php |
