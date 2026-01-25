@@ -11,6 +11,37 @@ default:
   tags:
     - build
 
+# ============================================================================
+# MANUAL TRIGGER: Run Full Test Matrix On Demand
+# ============================================================================
+# Click the play button in GitLab UI to run the full 42-language matrix
+# without needing to create a tag. Useful for load testing & pool churn.
+manual-matrix-run:
+  stage: test
+  script:
+    - echo "Generating full test matrix..."
+    - bash scripts/generate-matrix.sh --force-all
+    - echo "Matrix generated, triggering child pipeline..."
+  artifacts:
+    paths:
+      - test-matrix.yml
+    expire_in: 1 hour
+  rules:
+    - when: manual
+      allow_failure: true
+
+manual-matrix-trigger:
+  stage: test
+  needs:
+    - manual-matrix-run
+  trigger:
+    include:
+      - artifact: test-matrix.yml
+        job: manual-matrix-run
+    strategy: depend
+  rules:
+    - when: on_success
+
 # CI variables UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY, DEPLOY_KEY
 # are configured in GitLab Settings > CI/CD > Variables
 

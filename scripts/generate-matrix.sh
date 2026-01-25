@@ -5,8 +5,13 @@
 set -e
 
 # CRITICAL: Tags ALWAYS run full test matrix, no matter what
+# Also support --force-all flag or FORCE_FULL_MATRIX env var for manual triggers
 if [ -n "$CI_COMMIT_TAG" ]; then
     echo "Tag detected ($CI_COMMIT_TAG) - forcing full test matrix"
+    TEST_ALL="true"
+    CHANGED_LANGS=""
+elif [ "$1" = "--force-all" ] || [ "$FORCE_FULL_MATRIX" = "true" ]; then
+    echo "Manual trigger - forcing full test matrix"
     TEST_ALL="true"
     CHANGED_LANGS=""
 else
