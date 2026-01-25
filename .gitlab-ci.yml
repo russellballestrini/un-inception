@@ -16,28 +16,41 @@ default:
 # ============================================================================
 # Click the play button in GitLab UI to run the full 42-language matrix
 # without needing to create a tag. Useful for load testing & pool churn.
-manual-matrix-run:
+#
+# Shows as a play button ▶️ on every pipeline - click to burn the pool!
+manual-burn-pool:
   stage: test
   script:
-    - echo "Generating full test matrix..."
-    - bash scripts/generate-matrix.sh --force-all
-    - echo "Matrix generated, triggering child pipeline..."
+    - echo "=== MANUAL POOL BURN ==="
+    - echo "Generating full 42-language test matrix..."
+    - |
+      # Create changes.json to satisfy generate-matrix.sh
+      echo '{"test_all": true, "changed_langs": []}' > changes.json
+    - FORCE_FULL_MATRIX=true bash scripts/generate-matrix.sh
+    - cat test-matrix.yml
   artifacts:
     paths:
       - test-matrix.yml
+      - changes.json
     expire_in: 1 hour
   rules:
-    - when: manual
+    - if: $CI_PIPELINE_SOURCE == "push"
+      when: manual
       allow_failure: true
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_TAG
+      when: never
 
-manual-matrix-trigger:
+manual-burn-pool-trigger:
   stage: test
   needs:
-    - manual-matrix-run
+    - manual-burn-pool
   trigger:
     include:
       - artifact: test-matrix.yml
-        job: manual-matrix-run
+        job: manual-burn-pool
     strategy: depend
   rules:
     - when: on_success
