@@ -12,6 +12,7 @@
 #   6. Snapshots endpoint
 #   7. Images endpoint
 #   8. Key validation
+#   9. QR code generation (native library or qrencode CLI fallback)
 #
 # Usage: test-sdk.sh LANGUAGE
 
@@ -124,6 +125,57 @@ int main() { NSLog(@"test-ok"); return 0; }' ;;
         dart)             echo 'void main() { print("test-ok"); }' ;;
         v)                echo 'fn main() { println("test-ok") }' ;;
         *)                echo 'print("test-ok")' ;;
+    esac
+}
+
+# Map language to QR code test file
+get_qr_file() {
+    case "$1" in
+        python)      echo "test/qr.py" ;;
+        javascript)  echo "test/qr.js" ;;
+        typescript)  echo "test/qr.ts" ;;
+        ruby)        echo "test/qr.rb" ;;
+        php)         echo "test/qr.php" ;;
+        perl)        echo "test/qr.pl" ;;
+        lua)         echo "test/qr.lua" ;;
+        bash)        echo "test/qr.sh" ;;
+        r)           echo "test/qr.r" ;;
+        awk)         echo "test/qr.awk" ;;
+        tcl)         echo "test/qr.tcl" ;;
+        scheme)      echo "test/qr.scm" ;;
+        commonlisp)  echo "test/qr.lisp" ;;
+        lisp)        echo "test/qr.lisp" ;;
+        clojure)     echo "test/qr.clj" ;;
+        elixir)      echo "test/qr.ex" ;;
+        erlang)      echo "test/qr.erl" ;;
+        groovy)      echo "test/qr.groovy" ;;
+        raku)        echo "test/qr.raku" ;;
+        julia)       echo "test/qr.jl" ;;
+        dart)        echo "test/qr.dart" ;;
+        prolog)      echo "test/qr.pro" ;;
+        forth)       echo "test/qr.forth" ;;
+        powershell)  echo "test/qr.ps1" ;;
+        objc)        echo "test/qr.m" ;;
+        v)           echo "test/qr.v" ;;
+        go)          echo "test/qr.go" ;;
+        rust)        echo "test/qr.rs" ;;
+        c)           echo "test/qr.c" ;;
+        cpp)         echo "test/qr.cpp" ;;
+        java)        echo "test/qr.java" ;;
+        kotlin)      echo "test/qr.kt" ;;
+        csharp)      echo "test/qr.cs" ;;
+        dotnet)      echo "test/qr.cs" ;;
+        fsharp)      echo "test/qr.fs" ;;
+        haskell)     echo "test/qr.hs" ;;
+        ocaml)       echo "test/qr.ml" ;;
+        d)           echo "test/qr.d" ;;
+        nim)         echo "test/qr.nim" ;;
+        zig)         echo "test/qr.zig" ;;
+        crystal)     echo "test/qr.cr" ;;
+        fortran)     echo "test/qr.f90" ;;
+        cobol)       echo "test/qr.cob" ;;
+        deno)        echo "test/qr.ts" ;;
+        *)           echo "" ;;
     esac
 }
 
@@ -440,6 +492,23 @@ run_test "sdk_exists" \
 run_test "sdk_runs" \
     "build/un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=\$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=\$UNSANDBOX_SECRET_KEY '$SDK_FILE' 2>&1 || echo 'attempted'" \
     "usage|help|unsandbox|un |version|error|Error|compile|undefined|attempted|unexpected|syntax|import|require|module|WARNING|domain|license"
+
+echo ""
+
+# ============================================================================
+# SECTION 9: QR Code Generation Tests
+# ============================================================================
+echo "--- QR Code Generation ---"
+
+QR_FILE=$(get_qr_file "$LANG")
+if [ -n "$QR_FILE" ] && [ -f "$QR_FILE" ]; then
+    # Test 9.1: QR code generation produces structured output
+    run_test "qr_generate" \
+        "build/un -s '$LANG' '$QR_FILE'" \
+        "QR:unsandbox-qr-ok:ROWS:[0-9]+"
+else
+    echo "SKIP: No QR test file for $LANG"
+fi
 
 echo ""
 
