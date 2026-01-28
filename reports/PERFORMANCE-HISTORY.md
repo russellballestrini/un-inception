@@ -34,3 +34,4 @@ Tracking compile and test execution times across releases.
 | 4.2.27 | 2026-01-24 | 653 | 100.0% | 119s | commonlisp | php |
 | 4.2.28 | 2026-01-24 | 645 | 100.0% | 116s | commonlisp | awk |
 | 4.2.29 | 2026-01-28 | 724 | 100.0% | 81s | go | groovy |
+| 4.2.30 | 2026-01-28 | 840 | 99.8% | 161s | julia | ocaml |
