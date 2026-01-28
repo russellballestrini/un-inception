@@ -1,5 +1,64 @@
 # Claude AI Instructions for un-inception
 
+## ⚠️ CRITICAL: SCIENTIFIC INTEGRITY - TESTS MUST NEVER LIE
+
+**Science is the foundation of this project.** Tests exist to tell us the truth about our code. A test that lies is worse than no test at all.
+
+### The Cardinal Rule
+
+**If a test cannot verify its assertion, it MUST FAIL or RETRY - never silently pass.**
+
+```bash
+# ❌ FORBIDDEN - Lying about results
+if api_returned_500_error; then
+    echo "PASS (API issue)"  # THIS IS A LIE - we didn't verify anything
+fi
+
+# ✅ CORRECT - Retry transient failures
+if api_returned_500_error; then
+    sleep $backoff
+    retry  # Keep trying until we get a real answer
+fi
+
+# ✅ CORRECT - Fail if we can't verify
+if api_returned_500_error && max_retries_exceeded; then
+    echo "FAIL (API unavailable after $max_retries attempts)"
+fi
+```
+
+### Why This Matters
+
+On 2026-01-28, we discovered our "100% pass rate" was a lie:
+- **780 tests "passed"** across 42 languages
+- **270 were soft passes** (35%) - masked failures
+- The test matrix was telling us everything worked when it didn't
+
+**Soft passes are scientific fraud.** They:
+- Hide real bugs in SDKs
+- Give false confidence before releases
+- Make debugging harder (you don't know what's actually broken)
+- Waste time investigating "new" failures that were always there
+
+### Test Script Requirements
+
+1. **Retry ALL transient errors** - HTTP 429, 500, 502, 503, 504, timeouts
+2. **Use exponential backoff** - Start at 2s, cap at 60s
+3. **Max retries = 10** - Then FAIL, don't fake pass
+4. **No soft passes** - If the expected output isn't there, it's a FAIL
+5. **Track retry stats** - So we can see API health over time
+
+### Acceptable Test Outcomes
+
+| Outcome | When to Use |
+|---------|-------------|
+| `PASS` | Expected output verified |
+| `FAIL` | Expected output not found after retries |
+| `SKIP` | Test not applicable (e.g., no QR file for this language) |
+
+**Never**: `PASS (API issue)`, `PASS (timeout)`, `PASS (sandbox state)`
+
+---
+
 ## ⚠️ CRITICAL: NEVER USE RAW LXC COMMANDS
 
 **ALWAYS use `un` CLI commands. NEVER use raw `lxc` commands on production.**
@@ -157,9 +216,11 @@ done
 
 ### CI Test Status
 
-**638 tests passing across 42 languages with 100% pass rate.**
+The CI runs the full inception test matrix on every tag release and smart change detection on regular pushes.
 
-The CI runs the full inception test matrix on every tag release and smart change detection on regular pushes. See [docs/INCEPTION-TESTING.md](docs/INCEPTION-TESTING.md) for details.
+**Test results must be truthful.** Prior to 2026-01-28, tests used "soft passes" that masked failures - this has been fixed. Tests now retry transient errors and fail honestly if they can't verify.
+
+See [docs/INCEPTION-TESTING.md](docs/INCEPTION-TESTING.md) for details.
 
 ## Directory Structure
 
