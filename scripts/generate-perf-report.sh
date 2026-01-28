@@ -161,6 +161,65 @@ MIN_DURATION=$(echo "$PERF_JSON" | jq '[.[].duration_seconds] | min')
 SLOWEST_LANG=$(echo "$PERF_JSON" | jq -r '.[0].language')
 FASTEST_LANG=$(echo "$PERF_JSON" | jq -r '.[-1].language')
 
+# ============================================================================
+# Collect API Health Data from Test Artifacts
+# ============================================================================
+log_info "Collecting API health data from test artifacts..."
+
+# Initialize API health counters
+TOTAL_RETRIES=0
+RETRIES_429=0
+RETRIES_5XX=0
+RETRIES_TIMEOUT=0
+RETRIES_CONN=0
+TESTS_WITH_RETRIES=0
+API_HEALTH_DATA="[]"
+
+# Download api-health.json from each test job artifact
+for job_id in $(echo "$JOBS_JSON" | jq -r '.[] | select(.name | startswith("test: [")) | .id'); do
+    LANG=$(echo "$JOBS_JSON" | jq -r ".[] | select(.id == $job_id) | .name | gsub(\"test: \\\\[|\\\\]\"; \"\")")
+
+    # Try to download the api-health.json artifact
+    ARTIFACT_URL="$GITLAB_URL/$PROJECT_PATH/-/jobs/$job_id/artifacts/raw/test-results-$LANG/api-health.json"
+    HEALTH_JSON=$(curl -s "$ARTIFACT_URL" 2>/dev/null || echo "{}")
+
+    if echo "$HEALTH_JSON" | jq -e '.retries' > /dev/null 2>&1; then
+        # Extract and accumulate retry counts
+        JOB_RETRIES=$(echo "$HEALTH_JSON" | jq -r '.retries.total // 0')
+        JOB_429=$(echo "$HEALTH_JSON" | jq -r '.retries.rate_limit_429 // 0')
+        JOB_5XX=$(echo "$HEALTH_JSON" | jq -r '.retries.server_error_5xx // 0')
+        JOB_TIMEOUT=$(echo "$HEALTH_JSON" | jq -r '.retries.timeout // 0')
+        JOB_CONN=$(echo "$HEALTH_JSON" | jq -r '.retries.connection // 0')
+        JOB_TESTS_WITH_RETRIES=$(echo "$HEALTH_JSON" | jq -r '.tests_with_retries // 0')
+
+        TOTAL_RETRIES=$((TOTAL_RETRIES + JOB_RETRIES))
+        RETRIES_429=$((RETRIES_429 + JOB_429))
+        RETRIES_5XX=$((RETRIES_5XX + JOB_5XX))
+        RETRIES_TIMEOUT=$((RETRIES_TIMEOUT + JOB_TIMEOUT))
+        RETRIES_CONN=$((RETRIES_CONN + JOB_CONN))
+        TESTS_WITH_RETRIES=$((TESTS_WITH_RETRIES + JOB_TESTS_WITH_RETRIES))
+
+        # Add to per-language health data
+        API_HEALTH_DATA=$(echo "$API_HEALTH_DATA" | jq ". + [{
+            \"language\": \"$LANG\",
+            \"retries\": $JOB_RETRIES,
+            \"rate_limit_429\": $JOB_429,
+            \"server_error_5xx\": $JOB_5XX,
+            \"timeout\": $JOB_TIMEOUT,
+            \"connection\": $JOB_CONN,
+            \"tests_with_retries\": $JOB_TESTS_WITH_RETRIES
+        }]")
+    fi
+done
+
+# Calculate API health score (100 = perfect, decreases with retries)
+API_HEALTH_SCORE=$(echo "scale=1; 100 - ($TOTAL_RETRIES * 2)" | bc 2>/dev/null || echo "100")
+if [ "$(echo "$API_HEALTH_SCORE < 0" | bc)" -eq 1 ]; then
+    API_HEALTH_SCORE="0"
+fi
+
+log_info "API Health: $TOTAL_RETRIES total retries (429: $RETRIES_429, 5xx: $RETRIES_5XX, timeout: $RETRIES_TIMEOUT, conn: $RETRIES_CONN)"
+
 # Write JSON report
 cat > "$REPORT_DIR/perf.json" << EOF
 {
@@ -179,6 +238,18 @@ cat > "$REPORT_DIR/perf.json" << EOF
         "min_duration_seconds": $MIN_DURATION,
         "slowest_language": "$SLOWEST_LANG",
         "fastest_language": "$FASTEST_LANG"
+    },
+    "api_health": {
+        "score": $API_HEALTH_SCORE,
+        "total_retries": $TOTAL_RETRIES,
+        "retries_by_type": {
+            "rate_limit_429": $RETRIES_429,
+            "server_error_5xx": $RETRIES_5XX,
+            "timeout": $RETRIES_TIMEOUT,
+            "connection": $RETRIES_CONN
+        },
+        "tests_with_retries": $TESTS_WITH_RETRIES,
+        "per_language": $API_HEALTH_DATA
     },
     "languages": $PERF_JSON
 }
@@ -207,6 +278,27 @@ cat > "$REPORT_DIR/perf.md" << EOF
 | Avg Duration | ${AVG_DURATION}s |
 | Slowest | $SLOWEST_LANG (${MAX_DURATION}s) |
 | Fastest | $FASTEST_LANG (${MIN_DURATION}s) |
+
+---
+
+## API Health
+
+Tracks transient errors encountered during test execution. Tests retry on failures to ensure accurate results.
+
+| Metric | Value |
+|--------|-------|
+| Health Score | ${API_HEALTH_SCORE}/100 |
+| Total Retries | $TOTAL_RETRIES |
+| Rate Limit (429) | $RETRIES_429 |
+| Server Error (5xx) | $RETRIES_5XX |
+| Timeout | $RETRIES_TIMEOUT |
+| Connection | $RETRIES_CONN |
+| Tests Needing Retries | $TESTS_WITH_RETRIES |
+
+**Interpretation:**
+- **Score 95-100:** API is healthy, minimal transient errors
+- **Score 80-94:** Some API instability, but tests recovered via retry
+- **Score < 80:** Significant API issues affecting test reliability
 
 ---
 

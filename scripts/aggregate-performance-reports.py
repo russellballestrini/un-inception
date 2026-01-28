@@ -69,6 +69,44 @@ def extract_language_timings(perf_data):
     return langs
 
 
+def analyze_api_health(reports):
+    """Analyze API health trends across releases"""
+    health_data = {}
+
+    for version, perf_data in reports.items():
+        api_health = perf_data.get("api_health", {})
+        if api_health:
+            health_data[version] = {
+                "score": api_health.get("score", 100),
+                "total_retries": api_health.get("total_retries", 0),
+                "rate_limit_429": api_health.get("retries_by_type", {}).get("rate_limit_429", 0),
+                "server_error_5xx": api_health.get("retries_by_type", {}).get("server_error_5xx", 0),
+                "timeout": api_health.get("retries_by_type", {}).get("timeout", 0),
+                "connection": api_health.get("retries_by_type", {}).get("connection", 0),
+                "tests_with_retries": api_health.get("tests_with_retries", 0),
+            }
+
+    if not health_data:
+        return None
+
+    # Calculate trends
+    versions = sorted(health_data.keys())
+    scores = [health_data[v]["score"] for v in versions]
+    retries = [health_data[v]["total_retries"] for v in versions]
+
+    return {
+        "per_version": health_data,
+        "versions": versions,
+        "scores": scores,
+        "avg_score": mean(scores) if scores else 100,
+        "min_score": min(scores) if scores else 100,
+        "max_score": max(scores) if scores else 100,
+        "total_retries_all_versions": sum(retries),
+        "avg_retries_per_version": mean(retries) if retries else 0,
+        "trend": "improving" if len(scores) >= 2 and scores[-1] > scores[0] else "degrading" if len(scores) >= 2 and scores[-1] < scores[0] else "stable",
+    }
+
+
 def analyze_variance(reports):
     """Analyze performance variance across releases"""
 
@@ -255,6 +293,7 @@ def generate_report(reports, output_file, analysis=None):
     if analysis is None:
         analysis = analyze_variance(reports)
     concurrency = detect_concurrency_pattern(reports)
+    api_health = analyze_api_health(reports)
 
     versions = sorted(reports.keys())
     version_dates = {v: reports[v].get("timestamp", "unknown") for v in versions}
@@ -350,6 +389,37 @@ The same language changes dramatically in rank between runs:
 - Resource availability varies dramatically
 - Each run experiences different contention patterns
 
+---
+
+### 4. API Health Trends
+
+"""
+
+    if api_health:
+        report += f"""**Overall API Health:** {api_health['avg_score']:.1f}/100 (avg across {len(api_health['versions'])} releases)
+**Trend:** {api_health['trend'].upper()}
+**Total Retries (all releases):** {api_health['total_retries_all_versions']}
+
+| Release | Health Score | Total Retries | 429 (Rate Limit) | 5xx (Server) | Timeout | Connection |
+|---------|--------------|---------------|------------------|--------------|---------|------------|
+"""
+        for v in api_health['versions']:
+            h = api_health['per_version'][v]
+            report += f"| {v} | {h['score']}/100 | {h['total_retries']} | {h['rate_limit_429']} | {h['server_error_5xx']} | {h['timeout']} | {h['connection']} |\n"
+
+        report += f"""
+**Interpretation:**
+- **Score 95-100:** API healthy, tests pass on first attempt
+- **Score 80-94:** Some transient errors, tests recovered via retry
+- **Score < 80:** Significant API instability affecting test reliability
+
+**Scientific Integrity Note:** Prior to 4.2.34, tests used "soft passes" that masked failures.
+Now tests retry transient errors and fail honestly if they can't verify results.
+"""
+    else:
+        report += "*No API health data available for analyzed releases.*\n"
+
+    report += f"""
 ---
 
 ## The Orchestrator Problem: DevOps 101
