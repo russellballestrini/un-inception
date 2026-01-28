@@ -1,0 +1,172 @@
+{
+  "summary": {
+    "total_samples": 60,
+    "collection_duration_seconds": 321,
+    "success_rate": 100.0
+  },
+  "cpu": {
+    "load1": {
+      "min": 0.0,
+      "max": 0.0,
+      "avg": 0.0,
+      "median": 0.0,
+      "stdev": 0.0
+    },
+    "load5": {
+      "min": 0.0,
+      "max": 0.0,
+      "avg": 0.0,
+      "median": 0.0,
+      "stdev": 0.0
+    },
+    "load15": {
+      "min": 0.0,
+      "max": 0.0,
+      "avg": 0.0,
+      "median": 0.0,
+      "stdev": 0.0
+    }
+  },
+  "memory": {
+    "used_gb": {
+      "min": 0.0,
+      "max": 0.0,
+      "avg": 0.0,
+      "median": 0.0,
+      "stdev": 0.0
+    },
+    "available_gb": {
+      "min": 0.0,
+      "max": 0.0,
+      "avg": 0.0,
+      "median": 0.0,
+      "stdev": 0.0
+    },
+    "used_percent": {
+      "min": 0.0,
+      "max": 0.0,
+      "avg": 0.0,
+      "median": 0.0,
+      "stdev": 0.0
+    }
+  },
+  "pool": {
+    "available": {
+      "min": 0,
+      "max": 0,
+      "avg": 0,
+      "median": 0.0,
+      "stdev": 0.0
+    },
+    "allocated": {
+      "min": 0,
+      "max": 0,
+      "avg": 0,
+      "median": 0.0,
+      "stdev": 0.0
+    },
+    "spawning": {
+      "min": 0,
+      "max": 0,
+      "avg": 0,
+      "median": 0.0,
+      "stdev": 0.0
+    }
+  },
+  "latency_ms": {
+    "min": 110,
+    "max": 881,
+    "avg": 174.88,
+    "median": 136.0,
+    "stdev": 115.78
+  },
+  "http_codes": {
+    "200": 60
+  },
+  "pools": [
+    {
+      "id": "ai-foxhop-net",
+      "host": "ai.foxhop.net",
+      "vcpu_count": null,
+      "status": "unhealthy",
+      "load1": {
+        "min": 1.16,
+        "max": 13.32,
+        "avg": 6.22,
+        "median": 6.86,
+        "stdev": 4.15
+      },
+      "load5": {
+        "min": 3.21,
+        "max": 8.26,
+        "avg": 5.22,
+        "median": 4.74,
+        "stdev": 1.7
+      },
+      "load15": {
+        "min": 3.85,
+        "max": 5.81,
+        "avg": 4.59,
+        "median": 4.35,
+        "stdev": 0.65
+      },
+      "available": {
+        "min": 22,
+        "max": 85,
+        "avg": 63.18,
+        "median": 66,
+        "stdev": 17.55
+      },
+      "total": {
+        "min": 56,
+        "max": 85,
+        "avg": 71.77,
+        "median": 72,
+        "stdev": 8.17
+      },
+      "sample_count": 39
+    },
+    {
+      "id": "cammy-foxhop-net",
+      "host": "cammy.foxhop.net",
+      "vcpu_count": null,
+      "status": "unhealthy",
+      "load1": {
+        "min": 13.6,
+        "max": 41.44,
+        "avg": 28.16,
+        "median": 29.12,
+        "stdev": 7.62
+      },
+      "load5": {
+        "min": 30.58,
+        "max": 38.73,
+        "avg": 33.05,
+        "median": 32.12,
+        "stdev": 2.18
+      },
+      "load15": {
+        "min": 26.46,
+        "max": 28.79,
+        "avg": 27.51,
+        "median": 27.5,
+        "stdev": 0.58
+      },
+      "available": {
+        "min": 277,
+        "max": 307,
+        "avg": 296.78,
+        "median": 297,
+        "stdev": 7.61
+      },
+      "total": {
+        "min": 304,
+        "max": 329,
+        "avg": 309.49,
+        "median": 307,
+        "stdev": 7.31
+      },
+      "sample_count": 41
+    }
+  ]
+}
