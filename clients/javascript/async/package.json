@@ -1,6 +1,6 @@
 {
   "name": "un-async",
-  "version": "4.2.34",
+  "version": "4.2.35",
   "description": "Unsandbox async JavaScript SDK - Execute code in 50+ languages",
   "main": "src/un_async.js",
   "type": "module",
