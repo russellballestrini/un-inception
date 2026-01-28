@@ -503,8 +503,10 @@ echo "--- QR Code Generation ---"
 QR_FILE=$(get_qr_file "$LANG")
 if [ -n "$QR_FILE" ] && [ -f "$QR_FILE" ]; then
     # Test 9.1: QR code generation produces structured output
+    # Pass file path without -s: un CLI reads the file and auto-detects language
+    # (with -s, the positional arg is treated as inline code, not a file path)
     run_test "qr_generate" \
-        "build/un -s '$LANG' '$QR_FILE'" \
+        "build/un '$QR_FILE'" \
         "QR:unsandbox-qr-ok:ROWS:[0-9]+"
 else
     echo "SKIP: No QR test file for $LANG"
