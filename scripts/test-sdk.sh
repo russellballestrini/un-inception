@@ -214,6 +214,15 @@ declare -A TEST_RESULTS
 TOTAL_TESTS=0
 FAILURES=0
 
+# Track transient errors for API health monitoring
+# SCIENTIFIC INTEGRITY: We track these to understand API reliability over time
+TOTAL_RETRIES=0
+RETRIES_429=0      # Rate limiting
+RETRIES_5XX=0      # Server errors
+RETRIES_TIMEOUT=0  # Timeouts
+RETRIES_CONN=0     # Connection issues
+declare -A TEST_RETRIES  # Track retries per test
+
 # Helper to run test and record result
 # Retries on ALL transient errors (429, 5xx, timeouts) with exponential backoff
 # SCIENTIFIC INTEGRITY: Tests must PASS, FAIL, or SKIP - never lie with soft passes
@@ -235,6 +244,7 @@ run_test() {
             if [ -n "$success_pattern" ]; then
                 if grep -qiE "$success_pattern" "$output_file"; then
                     TEST_RESULTS["$test_name"]="pass"
+                    [ $attempt -gt 0 ] && TEST_RETRIES["$test_name"]=$attempt
                     if [ "$retried" = true ]; then
                         echo "PASS (after $attempt retries)"
                     else
@@ -246,6 +256,7 @@ run_test() {
                 # No pattern required, just check non-empty output
                 if [ -s "$output_file" ]; then
                     TEST_RESULTS["$test_name"]="pass"
+                    [ $attempt -gt 0 ] && TEST_RETRIES["$test_name"]=$attempt
                     if [ "$retried" = true ]; then
                         echo "PASS (after $attempt retries)"
                     else
@@ -257,12 +268,28 @@ run_test() {
         fi
 
         # Check for transient errors that should trigger retry
-        # Includes: rate limits (429), server errors (5xx), timeouts, connection issues
-        if grep -qiE "HTTP 429|HTTP 5[0-9][0-9]|concurrency_limit|too many.*concurrent|rate.limit|server error|internal error|timeout|timed out|request failed|connection refused|connection reset|ECONNREFUSED|ETIMEDOUT" "$output_file" 2>/dev/null; then
+        # Track error type for API health monitoring
+        local error_type=""
+        if grep -qiE "HTTP 429|concurrency_limit|too many.*concurrent|rate.limit" "$output_file" 2>/dev/null; then
+            error_type="429"
+            RETRIES_429=$((RETRIES_429 + 1))
+        elif grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$output_file" 2>/dev/null; then
+            error_type="5xx"
+            RETRIES_5XX=$((RETRIES_5XX + 1))
+        elif grep -qiE "timeout|timed out|ETIMEDOUT" "$output_file" 2>/dev/null; then
+            error_type="timeout"
+            RETRIES_TIMEOUT=$((RETRIES_TIMEOUT + 1))
+        elif grep -qiE "connection refused|connection reset|ECONNREFUSED|request failed" "$output_file" 2>/dev/null; then
+            error_type="connection"
+            RETRIES_CONN=$((RETRIES_CONN + 1))
+        fi
+
+        if [ -n "$error_type" ]; then
             attempt=$((attempt + 1))
             retried=true
+            TOTAL_RETRIES=$((TOTAL_RETRIES + 1))
             if [ $attempt -lt $max_retries ]; then
-                echo -n "(retry $attempt/$max_retries)... "
+                echo -n "($error_type retry $attempt/$max_retries)... "
                 sleep $retry_delay
                 # Exponential backoff, cap at 60 seconds
                 retry_delay=$((retry_delay * 2))
@@ -280,6 +307,7 @@ run_test() {
     # If we exhausted retries on transient errors, that's still a FAIL
     # We don't lie about test results - if we couldn't verify, it failed
     TEST_RESULTS["$test_name"]="fail"
+    [ $attempt -gt 0 ] && TEST_RETRIES["$test_name"]=$attempt
     FAILURES=$((FAILURES + 1))
     if [ "$retried" = true ]; then
         echo "FAIL (after $attempt retries)"
@@ -399,10 +427,27 @@ while [ $service_attempt -lt $service_max_retries ]; do
     fi
 
     # Check for transient errors that should trigger retry
-    if grep -qiE "HTTP 429|HTTP 5[0-9][0-9]|limit|quota|no_pool|timeout|connection|ECONNREFUSED" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+    # Track error type for API health monitoring
+    local svc_error_type=""
+    if grep -qiE "HTTP 429|concurrency_limit|rate.limit" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        svc_error_type="429"
+        RETRIES_429=$((RETRIES_429 + 1))
+    elif grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        svc_error_type="5xx"
+        RETRIES_5XX=$((RETRIES_5XX + 1))
+    elif grep -qiE "timeout|timed out|ETIMEDOUT" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        svc_error_type="timeout"
+        RETRIES_TIMEOUT=$((RETRIES_TIMEOUT + 1))
+    elif grep -qiE "connection|ECONNREFUSED|limit|quota|no_pool" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        svc_error_type="connection"
+        RETRIES_CONN=$((RETRIES_CONN + 1))
+    fi
+
+    if [ -n "$svc_error_type" ]; then
         service_attempt=$((service_attempt + 1))
+        TOTAL_RETRIES=$((TOTAL_RETRIES + 1))
         if [ $service_attempt -lt $service_max_retries ]; then
-            echo -n "(retry $service_attempt/$service_max_retries)... "
+            echo -n "($svc_error_type retry $service_attempt/$service_max_retries)... "
             sleep $service_retry_delay
             service_retry_delay=$((service_retry_delay * 2))
             if [ $service_retry_delay -gt 60 ]; then
@@ -416,6 +461,7 @@ done
 
 if [ -n "$SERVICE_ID" ]; then
     TEST_RESULTS["service_create"]="pass"
+    [ $service_attempt -gt 0 ] && TEST_RETRIES["service_create"]=$service_attempt
     if [ $service_attempt -gt 0 ]; then
         echo "PASS (created $SERVICE_ID after $service_attempt retries)"
     else
@@ -545,6 +591,55 @@ fi
 echo "============================================"
 echo "=== Result: $STATUS ($PASSED/$TOTAL_TESTS passed, ${DURATION}s) ==="
 echo "============================================"
+
+# ============================================================================
+# API Health Report - Track transient errors for monitoring
+# ============================================================================
+TESTS_WITH_RETRIES=${#TEST_RETRIES[@]}
+
+echo ""
+echo "--- API Health Report ---"
+echo "Total retries: $TOTAL_RETRIES"
+echo "  Rate limit (429): $RETRIES_429"
+echo "  Server error (5xx): $RETRIES_5XX"
+echo "  Timeout: $RETRIES_TIMEOUT"
+echo "  Connection: $RETRIES_CONN"
+echo "Tests that needed retries: $TESTS_WITH_RETRIES"
+
+if [ $TESTS_WITH_RETRIES -gt 0 ]; then
+    echo "Tests with retries:"
+    for test_name in "${!TEST_RETRIES[@]}"; do
+        retries="${TEST_RETRIES[$test_name]}"
+        result="${TEST_RESULTS[$test_name]}"
+        echo "  - $test_name: $retries retries ($result)"
+    done
+fi
+
+# Write JSON report for aggregation across all SDKs
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+cat > "$RESULTS_DIR/api-health.json" << EOF
+{
+  "timestamp": "$TIMESTAMP",
+  "language": "$LANG",
+  "duration_seconds": $DURATION,
+  "tests": {
+    "total": $TOTAL_TESTS,
+    "passed": $PASSED,
+    "failed": $FAILURES
+  },
+  "retries": {
+    "total": $TOTAL_RETRIES,
+    "rate_limit_429": $RETRIES_429,
+    "server_error_5xx": $RETRIES_5XX,
+    "timeout": $RETRIES_TIMEOUT,
+    "connection": $RETRIES_CONN
+  },
+  "tests_with_retries": $TESTS_WITH_RETRIES,
+  "api_health_score": $(echo "scale=2; 100 - ($TOTAL_RETRIES * 5)" | bc 2>/dev/null || echo "100")
+}
+EOF
+
+echo ""
 
 # Generate JUnit XML
 cat > "$RESULTS_DIR/test-results.xml" << EOF
