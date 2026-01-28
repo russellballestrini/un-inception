@@ -7,7 +7,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="unsandbox-async",
-    version="4.2.31",
+    version="4.2.32",
     description="Asynchronous Python SDK for unsandbox.com code execution",
     long_description=open("README.md").read() if False else "Async Python SDK for unsandbox code execution",
     author="unsandbox.com",
