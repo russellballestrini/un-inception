@@ -10,9 +10,14 @@ type
   QRencodeString = proc(s: cstring, ver: cint, level: cint, hint: cint, cs: cint): ptr QRcode {.cdecl.}
   QRfree = proc(qr: ptr QRcode) {.cdecl.}
 
-let lib = loadLib("libqrencode.so")
+# Try versioned library names (Ubuntu 24.04 uses libqrencode.so.4)
+var lib = loadLib("libqrencode.so.4")
 if lib == nil:
-  quit("Failed to load libqrencode.so", 1)
+  lib = loadLib("libqrencode.so.3")
+if lib == nil:
+  lib = loadLib("libqrencode.so")
+if lib == nil:
+  quit("Failed to load libqrencode", 1)
 
 let encode = cast[QRencodeString](lib.symAddr("QRcode_encodeString"))
 let free_qr = cast[QRfree](lib.symAddr("QRcode_free"))

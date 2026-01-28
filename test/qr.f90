@@ -2,35 +2,76 @@ program qrcode_test
   use, intrinsic :: iso_c_binding
   implicit none
 
-  ! Direct C FFI - requires linking with -lqrencode
-  interface
-    type(c_ptr) function QRcode_encodeString(s, ver, lvl, hint, cs) bind(C, name='QRcode_encodeString')
-      import :: c_ptr, c_char, c_int
-      character(kind=c_char), dimension(*), intent(in) :: s
-      integer(c_int), value :: ver, lvl, hint, cs
-    end function
-
-    subroutine QRcode_free(qr) bind(C, name='QRcode_free')
-      import :: c_ptr
-      type(c_ptr), value :: qr
-    end subroutine
-  end interface
-
   type, bind(C) :: QRcode
     integer(c_int) :: version
     integer(c_int) :: width
     type(c_ptr)    :: data
-  end type
+  end type QRcode
 
-  type(c_ptr) :: qr_ptr
+  interface
+    type(c_ptr) function dlopen(filename, flag) bind(C, name='dlopen')
+      import :: c_ptr, c_char, c_int
+      character(kind=c_char), dimension(*), intent(in) :: filename
+      integer(c_int), value :: flag
+    end function dlopen
+
+    type(c_funptr) function dlsym(handle, symbol) bind(C, name='dlsym')
+      import :: c_ptr, c_funptr, c_char
+      type(c_ptr), value :: handle
+      character(kind=c_char), dimension(*), intent(in) :: symbol
+    end function dlsym
+
+    integer(c_int) function dlclose(handle) bind(C, name='dlclose')
+      import :: c_ptr, c_int
+      type(c_ptr), value :: handle
+    end function dlclose
+  end interface
+
+  abstract interface
+    type(c_ptr) function encode_iface(s, ver, lvl, hint, cs) bind(C)
+      import :: c_ptr, c_char, c_int
+      character(kind=c_char), dimension(*), intent(in) :: s
+      integer(c_int), value :: ver, lvl, hint, cs
+    end function encode_iface
+    subroutine free_iface(qr) bind(C)
+      import :: c_ptr
+      type(c_ptr), value :: qr
+    end subroutine free_iface
+  end interface
+
+  type(c_ptr) :: lib, qr_ptr
+  type(c_funptr) :: enc_fptr, free_fptr
+  procedure(encode_iface), pointer :: qr_encode
+  procedure(free_iface), pointer :: qr_free
   type(QRcode), pointer :: qr
+  integer(c_int) :: rc
 
-  qr_ptr = QRcode_encodeString("unsandbox-qr-ok" // c_null_char, 0, 1, 2, 1)
+  ! Try versioned library names
+  lib = dlopen("libqrencode.so.4" // c_null_char, 2)
+  if (.not. c_associated(lib)) then
+    lib = dlopen("libqrencode.so.3" // c_null_char, 2)
+  end if
+  if (.not. c_associated(lib)) then
+    lib = dlopen("libqrencode.so" // c_null_char, 2)
+  end if
+  if (.not. c_associated(lib)) then
+    write(*,'(A)') 'Failed to load libqrencode'
+    stop 1
+  end if
+
+  enc_fptr = dlsym(lib, "QRcode_encodeString" // c_null_char)
+  free_fptr = dlsym(lib, "QRcode_free" // c_null_char)
+  call c_f_procpointer(enc_fptr, qr_encode)
+  call c_f_procpointer(free_fptr, qr_free)
+
+  qr_ptr = qr_encode("unsandbox-qr-ok" // c_null_char, 0, 1, 2, 1)
   if (c_associated(qr_ptr)) then
     call c_f_pointer(qr_ptr, qr)
     write(*, '(A,I0)') 'QR:unsandbox-qr-ok:ROWS:', qr%width
-    call QRcode_free(qr_ptr)
+    call qr_free(qr_ptr)
   else
-    write(*, '(A)') 'QR encode failed'
+    write(*,'(A)') 'QR encode failed'
   end if
+
+  rc = dlclose(lib)
 end program qrcode_test
