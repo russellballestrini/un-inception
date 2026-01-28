@@ -1,3 +1,4 @@
+#!/usr/bin/env raku
 # PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 #
 # This is free public domain software for the public good of a permacomputer hosted

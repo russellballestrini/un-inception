@@ -215,15 +215,17 @@ TOTAL_TESTS=0
 FAILURES=0
 
 # Helper to run test and record result
-# Retries on HTTP 429 (rate limiting) with exponential backoff
+# Retries on ALL transient errors (429, 5xx, timeouts) with exponential backoff
+# SCIENTIFIC INTEGRITY: Tests must PASS, FAIL, or SKIP - never lie with soft passes
 run_test() {
     local test_name="$1"
     local test_cmd="$2"
     local success_pattern="$3"
     local output_file="$RESULTS_DIR/${test_name}.txt"
-    local max_retries=42
+    local max_retries=10
     local retry_delay=2
     local attempt=0
+    local retried=false
 
     echo -n "Test: $test_name... "
     TOTAL_TESTS=$((TOTAL_TESTS + 1))
@@ -233,75 +235,58 @@ run_test() {
             if [ -n "$success_pattern" ]; then
                 if grep -qiE "$success_pattern" "$output_file"; then
                     TEST_RESULTS["$test_name"]="pass"
-                    echo "PASS"
+                    if [ "$retried" = true ]; then
+                        echo "PASS (after $attempt retries)"
+                    else
+                        echo "PASS"
+                    fi
                     return 0
                 fi
             else
                 # No pattern required, just check non-empty output
                 if [ -s "$output_file" ]; then
                     TEST_RESULTS["$test_name"]="pass"
-                    echo "PASS"
+                    if [ "$retried" = true ]; then
+                        echo "PASS (after $attempt retries)"
+                    else
+                        echo "PASS"
+                    fi
                     return 0
                 fi
             fi
         fi
 
-        # Check for HTTP 429 (rate limiting) - retry with backoff
-        if grep -qiE "HTTP 429|concurrency_limit|too many.*concurrent|rate.limit" "$output_file" 2>/dev/null; then
+        # Check for transient errors that should trigger retry
+        # Includes: rate limits (429), server errors (5xx), timeouts, connection issues
+        if grep -qiE "HTTP 429|HTTP 5[0-9][0-9]|concurrency_limit|too many.*concurrent|rate.limit|server error|internal error|timeout|timed out|request failed|connection refused|connection reset|ECONNREFUSED|ETIMEDOUT" "$output_file" 2>/dev/null; then
             attempt=$((attempt + 1))
+            retried=true
             if [ $attempt -lt $max_retries ]; then
-                echo -n "(429 retry $attempt/$max_retries)... "
+                echo -n "(retry $attempt/$max_retries)... "
                 sleep $retry_delay
-                # Exponential backoff, cap at 30 seconds
+                # Exponential backoff, cap at 60 seconds
                 retry_delay=$((retry_delay * 2))
-                if [ $retry_delay -gt 30 ]; then
-                    retry_delay=30
+                if [ $retry_delay -gt 60 ]; then
+                    retry_delay=60
                 fi
                 continue
             fi
         fi
 
-        # Not a 429 error, break out of retry loop
+        # Not a transient error, break out of retry loop
         break
     done
 
-    # Check for acceptable failures (transient API/sandbox issues)
-    if grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$output_file" 2>/dev/null; then
-        TEST_RESULTS["$test_name"]="pass"
-        echo "PASS (API issue)"
-        return 0
-    fi
-
-    if grep -qiE "timeout|timed out|request failed" "$output_file" 2>/dev/null; then
-        TEST_RESULTS["$test_name"]="pass"
-        echo "PASS (timeout)"
-        return 0
-    fi
-
-    if grep -qiE "permission denied|not running|unfreeze|frozen" "$output_file" 2>/dev/null; then
-        TEST_RESULTS["$test_name"]="pass"
-        echo "PASS (sandbox state)"
-        return 0
-    fi
-
-    if grep -qiE "usage|help|not.*found|no.*file" "$output_file" 2>/dev/null; then
-        TEST_RESULTS["$test_name"]="pass"
-        echo "PASS (expected output)"
-        return 0
-    fi
-
-    # If output is empty but command didn't error, the runtime executed successfully
-    # This handles SDKs that exit cleanly without printing anything
-    if [ ! -s "$output_file" ]; then
-        TEST_RESULTS["$test_name"]="pass"
-        echo "PASS (clean exit)"
-        return 0
-    fi
-
+    # If we exhausted retries on transient errors, that's still a FAIL
+    # We don't lie about test results - if we couldn't verify, it failed
     TEST_RESULTS["$test_name"]="fail"
     FAILURES=$((FAILURES + 1))
-    echo "FAIL"
-    head -3 "$output_file" 2>/dev/null || echo "(no output)"
+    if [ "$retried" = true ]; then
+        echo "FAIL (after $attempt retries)"
+    else
+        echo "FAIL"
+    fi
+    head -5 "$output_file" 2>/dev/null || echo "(no output)"
     return 0  # Always return success to continue test execution
 }
 
@@ -393,17 +378,49 @@ run_test "service_list" \
     "build/un service --list" \
     "unsb-service|no.*service|\[\]|services"
 
-# Test 4.2: Create a service (note: syntax is --name not --create)
+# Test 4.2: Create a service with retry logic (note: syntax is --name not --create)
+# SCIENTIFIC INTEGRITY: Retry on transient errors, fail if we can't create
 SERVICE_NAME="test-$LANG-$$"
-SERVICE_OUTPUT=$(build/un service --name "$SERVICE_NAME" --bootstrap "echo service-started" 2>&1 || true)
-echo "$SERVICE_OUTPUT" > "$RESULTS_DIR/service_create.txt"
-SERVICE_ID=$(echo "$SERVICE_OUTPUT" | grep -oE "unsb-service-[a-z0-9-]+" | head -1 || true)
+SERVICE_ID=""
+service_attempt=0
+service_max_retries=10
+service_retry_delay=2
+
+echo -n "Test: service_create... "
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+
+while [ $service_attempt -lt $service_max_retries ]; do
+    SERVICE_OUTPUT=$(build/un service --name "$SERVICE_NAME" --bootstrap "echo service-started" 2>&1 || true)
+    echo "$SERVICE_OUTPUT" > "$RESULTS_DIR/service_create.txt"
+    SERVICE_ID=$(echo "$SERVICE_OUTPUT" | grep -oE "unsb-service-[a-z0-9-]+" | head -1 || true)
+
+    if [ -n "$SERVICE_ID" ]; then
+        break
+    fi
+
+    # Check for transient errors that should trigger retry
+    if grep -qiE "HTTP 429|HTTP 5[0-9][0-9]|limit|quota|no_pool|timeout|connection|ECONNREFUSED" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        service_attempt=$((service_attempt + 1))
+        if [ $service_attempt -lt $service_max_retries ]; then
+            echo -n "(retry $service_attempt/$service_max_retries)... "
+            sleep $service_retry_delay
+            service_retry_delay=$((service_retry_delay * 2))
+            if [ $service_retry_delay -gt 60 ]; then
+                service_retry_delay=60
+            fi
+            continue
+        fi
+    fi
+    break
+done
 
 if [ -n "$SERVICE_ID" ]; then
-    echo -n "Test: service_create... "
-    TOTAL_TESTS=$((TOTAL_TESTS + 1))
     TEST_RESULTS["service_create"]="pass"
-    echo "PASS (created $SERVICE_ID)"
+    if [ $service_attempt -gt 0 ]; then
+        echo "PASS (created $SERVICE_ID after $service_attempt retries)"
+    else
+        echo "PASS (created $SERVICE_ID)"
+    fi
 
     # Test 4.3: Get service info
     run_test "service_info" \
@@ -425,17 +442,15 @@ if [ -n "$SERVICE_ID" ]; then
         "build/un service --destroy '$SERVICE_ID'" \
         "destroy|deleted|success|$SERVICE_ID"
 else
-    echo -n "Test: service_create... "
-    TOTAL_TESTS=$((TOTAL_TESTS + 1))
-    if grep -qiE "HTTP 5|error|limit|quota|no_pool" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
-        TEST_RESULTS["service_create"]="pass"
-        echo "PASS (API limit/error)"
+    # SCIENTIFIC INTEGRITY: If we couldn't create a service after retries, that's a FAIL
+    TEST_RESULTS["service_create"]="fail"
+    FAILURES=$((FAILURES + 1))
+    if [ $service_attempt -gt 0 ]; then
+        echo "FAIL (after $service_attempt retries)"
     else
-        TEST_RESULTS["service_create"]="fail"
-        FAILURES=$((FAILURES + 1))
-        echo "FAIL (no service ID)"
-        head -3 "$RESULTS_DIR/service_create.txt"
+        echo "FAIL"
     fi
+    head -5 "$RESULTS_DIR/service_create.txt"
 fi
 
 echo ""
