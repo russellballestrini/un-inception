@@ -1,13 +1,22 @@
 # UN Inception: Aggregated Performance Analysis
 
+<<<<<<< Updated upstream
 **Analysis Date:** 1769632836.9671485
 **Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.23, 4.2.24, 4.2.25, 4.2.26, 4.2.27, 4.2.28, 4.2.29, 4.2.3, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
+=======
+**Analysis Date:** 1769638616.3642986
+**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.23, 4.2.24, 4.2.25, 4.2.26, 4.2.27, 4.2.28, 4.2.29, 4.2.3, 4.2.30, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
+>>>>>>> Stashed changes
 
 ---
 
 ## Executive Summary
 
+<<<<<<< Updated upstream
 Analysis of 28 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+=======
+Analysis of 29 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+>>>>>>> Stashed changes
 
 1. **Orchestrator placement on CPU-bound pool** (not an SRE best practice)
 2. **Resource contention** between the orchestrator & test jobs
@@ -44,7 +53,12 @@ Analysis of 28 performance reports reveals **significant variance** in execution
 | 4.2.28 | 116s | commonlisp (145s) | awk (102s) | -3s (-2.5%) |
 | 4.2.29 | 81s | go (144s) | groovy (38s) | -35s (-30.2%) |
 | 4.2.3 | 63s | rust (142s) | v (40s) | -18s (-22.2%) |
+<<<<<<< Updated upstream
 | 4.2.4 | 70s | python (110s) | c (23s) | +7s (+11.1%) |
+=======
+| 4.2.30 | 161s | julia (232s) | ocaml (40s) | +98s (+155.6%) |
+| 4.2.4 | 70s | python (110s) | c (23s) | -91s (-56.5%) |
+>>>>>>> Stashed changes
 | 4.2.5 | 67s | v (114s) | erlang (44s) | -3s (-4.3%) |
 | 4.2.6 | 54s | haskell (128s) | awk (23s) | -13s (-19.4%) |
 | 4.2.7 | 117s | typescript (319s) | dotnet (5s) | +63s (+116.7%) |
@@ -88,6 +102,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.28: 113s
   - 4.2.29: 62s
   - 4.2.3: 75s
+  - 4.2.30: 130s
   - 4.2.4: 109s
   - 4.2.5: 60s
   - 4.2.6: 50s
@@ -119,6 +134,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.28: 137s
   - 4.2.29: 59s
   - 4.2.3: 64s
+  - 4.2.30: 127s
   - 4.2.4: 74s
   - 4.2.5: 52s
   - 4.2.6: 47s
@@ -150,6 +166,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.28: 103s
   - 4.2.29: 110s
   - 4.2.3: 52s
+  - 4.2.30: 181s
   - 4.2.4: 76s
   - 4.2.5: 58s
   - 4.2.6: 58s
@@ -181,6 +198,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.28: 103s
   - 4.2.29: 119s
   - 4.2.3: 61s
+  - 4.2.30: 182s
   - 4.2.4: 60s
   - 4.2.5: 59s
   - 4.2.6: 59s
@@ -212,6 +230,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.28: 104s
   - 4.2.29: 108s
   - 4.2.3: 40s
+  - 4.2.30: 188s
   - 4.2.4: 49s
   - 4.2.5: 114s
   - 4.2.6: 58s
@@ -249,6 +268,7 @@ The same language changes dramatically in rank between runs:
 4.2.28: awk, zig, powershell, objc, nim
 4.2.29: groovy, raku, erlang, forth, prolog
 4.2.3: v, d, kotlin, awk, raku
+4.2.30: ocaml, python, php, perl, lua
 4.2.4: c, d, cobol, raku, v
 4.2.5: erlang, awk, bash, deno, tcl
 4.2.6: awk, powershell, crystal, raku, erlang
@@ -280,6 +300,7 @@ The same language changes dramatically in rank between runs:
 4.2.28: commonlisp, perl, lua, r, bash
 4.2.29: go, crystal, deno, cpp, java
 4.2.3: rust, c, python, typescript, javascript
+4.2.30: julia, haskell, fsharp, dart, tcl
 4.2.4: python, javascript, elixir, scheme, bash
 4.2.5: v, haskell, scheme, ocaml, powershell
 4.2.6: haskell, go, cpp, rust, forth
@@ -438,6 +459,7 @@ Keep it as-is for stress testing, but in separate test environment.
 
 | Language | Min (s) | Max (s) | Avg (s) | Range (s) | Variance % |
 |----------|---------|---------|---------|-----------|------------|
+<<<<<<< Updated upstream
 | R | 9 | 1834 | 175.6 | 1825 | 20277.8% |
 | NIM | 8 | 1217 | 128.2 | 1209 | 15112.5% |
 | ZIG | 8 | 1058 | 179.2 | 1050 | 13125.0% |
@@ -458,6 +480,28 @@ Keep it as-is for stress testing, but in separate test environment.
 | PHP | 23 | 824 | 140.3 | 801 | 3482.6% |
 | TCL | 20 | 712 | 116.4 | 692 | 3460.0% |
 | COMMONLISP | 27 | 956 | 122.5 | 929 | 3440.7% |
+=======
+| R | 9 | 1834 | 173.9 | 1825 | 20277.8% |
+| NIM | 8 | 1217 | 130.1 | 1209 | 15112.5% |
+| ZIG | 8 | 1058 | 179.3 | 1050 | 13125.0% |
+| LUA | 9 | 975 | 144.7 | 966 | 10733.3% |
+| FORTH | 8 | 628 | 112.0 | 620 | 7750.0% |
+| DOTNET | 5 | 360 | 94.4 | 355 | 7100.0% |
+| JAVASCRIPT | 32 | 2173 | 199.6 | 2141 | 6690.6% |
+| PERL | 8 | 468 | 107.0 | 460 | 5750.0% |
+| V | 21 | 1040 | 117.8 | 1019 | 4852.4% |
+| CSHARP | 8 | 385 | 102.3 | 377 | 4712.5% |
+| ELIXIR | 20 | 917 | 150.8 | 897 | 4485.0% |
+| OBJC | 17 | 693 | 111.6 | 676 | 3976.5% |
+| KOTLIN | 8 | 313 | 100.2 | 305 | 3812.5% |
+| CLOJURE | 8 | 310 | 111.0 | 302 | 3775.0% |
+| DENO | 24 | 926 | 156.6 | 902 | 3758.3% |
+| COBOL | 20 | 759 | 138.7 | 739 | 3695.0% |
+| HASKELL | 21 | 754 | 128.1 | 733 | 3490.5% |
+| PHP | 23 | 824 | 138.4 | 801 | 3482.6% |
+| TCL | 20 | 712 | 119.7 | 692 | 3460.0% |
+| COMMONLISP | 27 | 956 | 124.9 | 929 | 3440.7% |
+>>>>>>> Stashed changes
 
 
 ---
@@ -534,6 +578,7 @@ Individual Reports → Aggregation Script → Chart Generation (via UN) → Fina
 - `reports/4.2.28/perf.json` - 645 tests, generated 2026-01-24T23:31:17Z
 - `reports/4.2.29/perf.json` - 724 tests, generated 2026-01-28T20:40:04Z
 - `reports/4.2.3/perf.json` - 642 tests, generated 2026-01-19T11:58:45Z
+- `reports/4.2.30/perf.json` - 840 tests, generated 2026-01-28T22:16:15Z
 - `reports/4.2.4/perf.json` - 682 tests, generated 2026-01-19T12:02:14Z
 - `reports/4.2.5/perf.json` - 658 tests, generated 2026-01-19T19:10:23Z
 - `reports/4.2.6/perf.json` - 642 tests, generated 2026-01-19T20:22:16Z
@@ -736,5 +781,9 @@ For questions about this methodology or to report issues:
 ---
 
 **Generated by UN Inception Performance Analysis Pipeline**
+<<<<<<< Updated upstream
 **Analysis Date:** 2026-01-28T15:40:37.091730
+=======
+**Analysis Date:** 2026-01-28T17:16:56.482158
+>>>>>>> Stashed changes
 **Report Version:** 1.0.0
