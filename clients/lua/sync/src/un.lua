@@ -15,7 +15,7 @@ local ltn12 = require("ltn12")
 
 local Un = {}
 Un.API_BASE = "https://api.unsandbox.com"
-Un.VERSION = "4.2.43"
+Un.VERSION = "4.2.44"
 
 -- Credential loading
 function Un.load_accounts_csv(path)
