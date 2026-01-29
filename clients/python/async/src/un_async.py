@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 

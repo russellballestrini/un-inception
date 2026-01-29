@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
  *

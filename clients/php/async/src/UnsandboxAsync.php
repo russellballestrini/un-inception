@@ -1,3 +1,4 @@
+#!/usr/bin/env php
 <?php
 /**
  * PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
