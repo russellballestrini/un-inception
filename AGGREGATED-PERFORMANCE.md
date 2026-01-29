@@ -1,13 +1,13 @@
 # UN Inception: Aggregated Performance Analysis
 
-**Analysis Date:** 1769652273.1491952
-**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.23, 4.2.24, 4.2.25, 4.2.26, 4.2.27, 4.2.28, 4.2.29, 4.2.3, 4.2.30, 4.2.31, 4.2.32, 4.2.36, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
+**Analysis Date:** 1769694997.882417
+**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.23, 4.2.24, 4.2.25, 4.2.26, 4.2.27, 4.2.28, 4.2.29, 4.2.3, 4.2.30, 4.2.31, 4.2.32, 4.2.36, 4.2.37, 4.2.4, 4.2.5, 4.2.6, 4.2.7, 4.2.8, 4.2.9
 
 ---
 
 ## Executive Summary
 
-Analysis of 32 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+Analysis of 33 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
 
 1. **Orchestrator placement on CPU-bound pool** (not an SRE best practice)
 2. **Resource contention** between the orchestrator & test jobs
@@ -48,7 +48,8 @@ Analysis of 32 performance reports reveals **significant variance** in execution
 | 4.2.31 | 74s | go (106s) | erlang (43s) | -87s (-54.0%) |
 | 4.2.32 | 99s | kotlin (159s) | cpp (32s) | +25s (+33.8%) |
 | 4.2.36 | 1528s | scheme (1574s) | erlang (1236s) | +1429s (+1443.4%) |
-| 4.2.4 | 70s | python (110s) | c (23s) | -1458s (-95.4%) |
+| 4.2.37 | 267s | rust (721s) | powershell (41s) | -1261s (-82.5%) |
+| 4.2.4 | 70s | python (110s) | c (23s) | -197s (-73.8%) |
 | 4.2.5 | 67s | v (114s) | erlang (44s) | -3s (-4.3%) |
 | 4.2.6 | 54s | haskell (128s) | awk (23s) | -13s (-19.4%) |
 | 4.2.7 | 117s | typescript (319s) | dotnet (5s) | +63s (+116.7%) |
@@ -96,6 +97,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.31: 64s
   - 4.2.32: 81s
   - 4.2.36: 1536s
+  - 4.2.37: 504s
   - 4.2.4: 109s
   - 4.2.5: 60s
   - 4.2.6: 50s
@@ -131,6 +133,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.31: 61s
   - 4.2.32: 82s
   - 4.2.36: 1566s
+  - 4.2.37: 48s
   - 4.2.4: 74s
   - 4.2.5: 52s
   - 4.2.6: 47s
@@ -166,6 +169,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.31: 94s
   - 4.2.32: 98s
   - 4.2.36: 1574s
+  - 4.2.37: 50s
   - 4.2.4: 100s
   - 4.2.5: 102s
   - 4.2.6: 42s
@@ -201,6 +205,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.31: 70s
   - 4.2.32: 55s
   - 4.2.36: 1574s
+  - 4.2.37: 88s
   - 4.2.4: 110s
   - 4.2.5: 61s
   - 4.2.6: 52s
@@ -236,6 +241,7 @@ The same language changes dramatically in rank between runs:
   - 4.2.31: 79s
   - 4.2.32: 99s
   - 4.2.36: 1572s
+  - 4.2.37: 689s
   - 4.2.4: 96s
   - 4.2.5: 51s
   - 4.2.6: 42s
@@ -277,6 +283,7 @@ The same language changes dramatically in rank between runs:
 4.2.31: erlang, prolog, raku, dotnet, csharp
 4.2.32: cpp, c, raku, go, python
 4.2.36: erlang, awk, powershell, csharp, kotlin
+4.2.37: powershell, erlang, cpp, r, scheme
 4.2.4: c, d, cobol, raku, v
 4.2.5: erlang, awk, bash, deno, tcl
 4.2.6: awk, powershell, crystal, raku, erlang
@@ -312,6 +319,7 @@ The same language changes dramatically in rank between runs:
 4.2.31: go, rust, forth, scheme, groovy
 4.2.32: kotlin, cobol, fortran, d, zig
 4.2.36: scheme, python, tcl, elixir, r
+4.2.37: rust, ruby, php, dotnet, tcl
 4.2.4: python, javascript, elixir, scheme, bash
 4.2.5: v, haskell, scheme, ocaml, powershell
 4.2.6: haskell, go, cpp, rust, forth
@@ -328,13 +336,14 @@ The same language changes dramatically in rank between runs:
 
 ### 4. API Health Trends
 
-**Overall API Health:** 0.0/100 (avg across 1 releases)
+**Overall API Health:** 0.0/100 (avg across 2 releases)
 **Trend:** STABLE
-**Total Retries (all releases):** 2122
+**Total Retries (all releases):** 2273
 
 | Release | Health Score | Total Retries | 429 (Rate Limit) | 5xx (Server) | Timeout | Connection |
 |---------|--------------|---------------|------------------|--------------|---------|------------|
 | 4.2.36 | 0/100 | 2122 | 0 | 2122 | 0 | 0 |
+| 4.2.37 | 0/100 | 151 | 0 | 60 | 0 | 0 |
 
 **Interpretation:**
 - **Score 95-100:** API healthy, tests pass on first attempt
@@ -490,26 +499,26 @@ Keep it as-is for stress testing, but in separate test environment.
 
 | Language | Min (s) | Max (s) | Avg (s) | Range (s) | Variance % |
 |----------|---------|---------|---------|-----------|------------|
-| DOTNET | 5 | 1539 | 147.7 | 1534 | 30680.0% |
-| R | 9 | 1834 | 211.0 | 1825 | 20277.8% |
-| NIM | 8 | 1557 | 173.2 | 1549 | 19362.5% |
-| CLOJURE | 8 | 1549 | 154.2 | 1541 | 19262.5% |
-| FORTRAN | 8 | 1547 | 136.0 | 1539 | 19237.5% |
-| PERL | 8 | 1546 | 149.7 | 1538 | 19225.0% |
-| D | 8 | 1545 | 136.5 | 1537 | 19212.5% |
-| ZIG | 8 | 1542 | 218.2 | 1534 | 19175.0% |
-| FORTH | 8 | 1540 | 156.7 | 1532 | 19150.0% |
-| KOTLIN | 8 | 1536 | 146.3 | 1528 | 19100.0% |
-| CSHARP | 8 | 1534 | 146.3 | 1526 | 19075.0% |
-| LUA | 9 | 1548 | 183.6 | 1539 | 17100.0% |
+| DOTNET | 5 | 1539 | 167.1 | 1534 | 30680.0% |
+| R | 9 | 1834 | 206.1 | 1825 | 20277.8% |
+| NIM | 8 | 1557 | 172.1 | 1549 | 19362.5% |
+| CLOJURE | 8 | 1549 | 152.0 | 1541 | 19262.5% |
+| FORTRAN | 8 | 1547 | 134.8 | 1539 | 19237.5% |
+| PERL | 8 | 1546 | 153.3 | 1538 | 19225.0% |
+| D | 8 | 1545 | 135.8 | 1537 | 19212.5% |
+| ZIG | 8 | 1542 | 214.7 | 1534 | 19175.0% |
+| FORTH | 8 | 1540 | 172.8 | 1532 | 19150.0% |
+| KOTLIN | 8 | 1536 | 148.2 | 1528 | 19100.0% |
+| CSHARP | 8 | 1534 | 161.4 | 1526 | 19075.0% |
+| LUA | 9 | 1548 | 180.4 | 1539 | 17100.0% |
 | PROLOG | 9 | 1540 | 125.7 | 1531 | 17011.1% |
-| RUST | 9 | 1537 | 159.8 | 1528 | 16977.8% |
-| SCHEME | 15 | 1574 | 154.7 | 1559 | 10393.3% |
-| OBJC | 17 | 1559 | 156.3 | 1542 | 9070.6% |
-| POWERSHELL | 14 | 1269 | 123.7 | 1255 | 8964.3% |
-| PYTHON | 19 | 1574 | 146.3 | 1555 | 8184.2% |
-| OCAML | 19 | 1537 | 147.2 | 1518 | 7989.5% |
-| TCL | 20 | 1572 | 163.2 | 1552 | 7760.0% |
+| RUST | 9 | 1537 | 176.8 | 1528 | 16977.8% |
+| SCHEME | 15 | 1574 | 151.5 | 1559 | 10393.3% |
+| OBJC | 17 | 1559 | 155.0 | 1542 | 9070.6% |
+| POWERSHELL | 14 | 1269 | 121.2 | 1255 | 8964.3% |
+| PYTHON | 19 | 1574 | 144.5 | 1555 | 8184.2% |
+| OCAML | 19 | 1537 | 163.5 | 1518 | 7989.5% |
+| TCL | 20 | 1572 | 179.1 | 1552 | 7760.0% |
 
 
 ---
@@ -590,6 +599,7 @@ Individual Reports → Aggregation Script → Chart Generation (via UN) → Fina
 - `reports/4.2.31/perf.json` - 704 tests, generated 2026-01-28T22:17:41Z
 - `reports/4.2.32/perf.json` - 776 tests, generated 2026-01-28T22:23:28Z
 - `reports/4.2.36/perf.json` - 860 tests, generated 2026-01-29T02:03:51Z
+- `reports/4.2.37/perf.json` - 812 tests, generated 2026-01-29T13:55:52Z
 - `reports/4.2.4/perf.json` - 682 tests, generated 2026-01-19T12:02:14Z
 - `reports/4.2.5/perf.json` - 658 tests, generated 2026-01-19T19:10:23Z
 - `reports/4.2.6/perf.json` - 642 tests, generated 2026-01-19T20:22:16Z
@@ -792,5 +802,5 @@ For questions about this methodology or to report issues:
 ---
 
 **Generated by UN Inception Performance Analysis Pipeline**
-**Analysis Date:** 2026-01-28T21:04:33.263320
+**Analysis Date:** 2026-01-29T08:56:38.007482
 **Report Version:** 1.0.0
