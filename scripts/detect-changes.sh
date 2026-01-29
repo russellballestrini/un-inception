@@ -137,8 +137,9 @@ declare -A DIR_MAP=(
 )
 
 # Also check for changes in test files, scripts, or core infra
-if echo "$CHANGED_FILES" | grep -qE '^(tests?/|scripts/|\.gitlab-ci\.yml|clients/\{.*\}/)'; then
-    # If tests, scripts, or multi-language client templates changed, test ALL SDKs
+# VERSION and Makefile changes are release-level - test everything
+if echo "$CHANGED_FILES" | grep -qE '^(VERSION|Makefile|tests?/|scripts/|\.gitlab-ci\.yml)'; then
+    # If core infrastructure changed, test ALL SDKs
     echo '{"changed_langs": ["all"], "reason": "Core infrastructure changed", "test_all": true}'
     exit 0
 fi
