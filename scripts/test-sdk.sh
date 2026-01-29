@@ -593,28 +593,11 @@ if [ -n "$QR_FILE" ] && [ -f "$QR_FILE" ]; then
     # Test 9.1: QR code generation produces structured output
     # Pass file path without -s: un CLI reads the file and auto-detects language
     # (with -s, the positional arg is treated as inline code, not a file path)
-    #
-    # QR tests require language-specific libraries (qrcode npm, python qrcode, etc.)
-    # If the sandbox doesn't have the library, SKIP - don't FAIL.
-    QR_OUTPUT=$(build/un "$QR_FILE" 2>&1 || true)
-    echo "$QR_OUTPUT" > "$RESULTS_DIR/qr_generate.txt"
-
-    echo -n "Test: qr_generate... "
-    TOTAL_TESTS=$((TOTAL_TESTS + 1))
-
-    if echo "$QR_OUTPUT" | grep -qiE "QR:unsandbox-qr-ok:ROWS:[0-9]+"; then
-        TEST_RESULTS["qr_generate"]="pass"
-        echo "PASS"
-    elif echo "$QR_OUTPUT" | grep -qiE "Cannot find module|ModuleNotFoundError|ImportError|no such file|LoadError|require.*not found|could not find|package.*not found|install|gem.*not found|undefined method|NameError|not installed|unresolved import|cannot open shared object"; then
-        echo "SKIP (missing QR dependency in sandbox)"
-    else
-        TEST_RESULTS["qr_generate"]="fail"
-        FAILURES=$((FAILURES + 1))
-        echo "FAIL"
-        echo "  --- Failure output (qr_generate) ---"
-        head -5 "$RESULTS_DIR/qr_generate.txt"
-        echo "  ---"
-    fi
+    # QR tests use native language libraries - if the library isn't in the sandbox,
+    # the test FAILS honestly. Fix the sandbox image, don't mask the failure.
+    run_test "qr_generate" \
+        "build/un '$QR_FILE'" \
+        "QR:unsandbox-qr-ok:ROWS:[0-9]+"
 else
     echo "SKIP: No QR test file for $LANG"
 fi

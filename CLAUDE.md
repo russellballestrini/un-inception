@@ -1,5 +1,21 @@
 # Claude AI Instructions for un-inception
 
+## ⚠️ CRITICAL: QR TEST FILES USE NATIVE LIBRARIES - NEVER SHELL OUT
+
+**QR test files (`test/qr.*`) MUST use each language's native QR library.** The entire point of these tests is to verify that native QR code generation works in each language inside the sandbox. Shelling out to `qrencode` CLI defeats the purpose.
+
+If a QR test fails because the library isn't installed in the sandbox, the fix is to **install the library in the sandbox image** or **make the sandbox support that library** - NOT to replace the native library call with a CLI subprocess.
+
+```bash
+# ❌ FORBIDDEN - shelling out defeats the test
+output = subprocess.run(["qrencode", ...])  # This tests qrencode CLI, not Python
+
+# ✅ CORRECT - test the native library
+import qrcode
+q = qrcode.QRCode(border=0)
+q.add_data("unsandbox-qr-ok")
+```
+
 ## ⚠️ CRITICAL: SCIENTIFIC INTEGRITY - TESTS MUST NEVER LIE
 
 **Science is the foundation of this project.** Tests exist to tell us the truth about our code. A test that lies is worse than no test at all.
