@@ -298,9 +298,20 @@ run_test() {
                 fi
                 continue
             fi
+        else
+            # No error detected, but output didn't match expected pattern
+            # This can happen when API returns 200 but service isn't ready yet
+            # Retry a few times for service operations
+            if [ $attempt -lt 3 ]; then
+                attempt=$((attempt + 1))
+                retried=true
+                echo -n "(no-match retry $attempt/3)... "
+                sleep 2
+                continue
+            fi
         fi
 
-        # Not a transient error, break out of retry loop
+        # Exhausted retries, break out of loop
         break
     done
 
