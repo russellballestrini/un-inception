@@ -47,6 +47,7 @@ manual-burn-pool-trigger:
   stage: test
   needs:
     - manual-burn-pool
+  resource_group: inception-test-pool
   trigger:
     include:
       - artifact: test-matrix.yml
@@ -121,6 +122,7 @@ trigger-test-matrix:
   needs:
     - generate-matrix
     - build
+  resource_group: inception-test-pool
   trigger:
     include:
       - artifact: test-matrix.yml
