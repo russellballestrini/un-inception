@@ -80,10 +80,12 @@ parallel_destroy() {
         # Capture failures by writing failed IDs to a temp file
         FAIL_FILE=$(mktemp)
         echo "$IDS" | xargs -P "$PARALLEL_JOBS" -I {} sh -c "
-            if $UN_CLI $resource_type $destroy_cmd '{}' >/dev/null 2>&1; then
+            OUTPUT=\$($UN_CLI $resource_type $destroy_cmd '{}' 2>&1)
+            if [ \$? -eq 0 ] && ! echo \"\$OUTPUT\" | grep -qiE 'HTTP [45][0-9][0-9]|error|unavailable|failed'; then
                 echo 'Destroyed: {}'
             else
                 echo '{}' >> '$FAIL_FILE'
+                echo 'Failed: {} -' \$(echo \"\$OUTPUT\" | head -1)
             fi
         "
 
