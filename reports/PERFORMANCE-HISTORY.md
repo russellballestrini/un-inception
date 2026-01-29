@@ -37,3 +37,4 @@ Tracking compile and test execution times across releases.
 | 4.2.30 | 2026-01-28 | 840 | 99.8% | 161s | julia | ocaml |
 | 4.2.31 | 2026-01-28 | 704 | 99.5% | 74s | go | erlang |
 | 4.2.32 | 2026-01-28 | 776 | 100.0% | 99s | kotlin | cpp |
+| 4.2.36 | 2026-01-29 | 860 | 72.6% | 1528s | scheme | erlang |
