@@ -419,6 +419,8 @@ run_test "service_list" \
 
 # Test 4.2: Create a service with retry logic (note: syntax is --name not --create)
 # SCIENTIFIC INTEGRITY: Retry on transient errors, fail if we can't create
+# Use a single name per test run - if 5xx hides a successful create, we detect via 409
+SERVICE_NAME="test-$LANG-$$"
 SERVICE_ID=""
 service_attempt=0
 service_max_retries=5
@@ -428,8 +430,6 @@ echo -n "Test: service_create... "
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
 while [ $service_attempt -lt $service_max_retries ]; do
-    # Generate unique name per attempt (avoids 409 conflicts on retry)
-    SERVICE_NAME="test-$LANG-$$-$(date +%s)"
     SERVICE_OUTPUT=$(build/un service --name "$SERVICE_NAME" --bootstrap "echo service-started" 2>&1 || true)
     echo "$SERVICE_OUTPUT" > "$RESULTS_DIR/service_create.txt"
     SERVICE_ID=$(echo "$SERVICE_OUTPUT" | grep -oE "unsb-service-[a-z0-9-]+" | head -1 || true)
@@ -445,7 +445,14 @@ while [ $service_attempt -lt $service_max_retries ]; do
         svc_error_type="429"
         RETRIES_429=$((RETRIES_429 + 1))
     elif grep -qiE "HTTP 409|already taken|already exists" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        # 409 means a previous attempt actually created it - look up the ID
         svc_error_type="409"
+        echo -n "(409 - looking up existing)... "
+        SVC_LOOKUP=$(build/un service --list 2>/dev/null | grep "$SERVICE_NAME" || true)
+        SERVICE_ID=$(echo "$SVC_LOOKUP" | grep -oE "unsb-service-[a-z0-9-]+" | head -1 || true)
+        if [ -n "$SERVICE_ID" ]; then
+            break
+        fi
     elif grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
         svc_error_type="5xx"
         RETRIES_5XX=$((RETRIES_5XX + 1))
