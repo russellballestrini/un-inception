@@ -1,0 +1,807 @@
+{
+    "tag": "4.2.37",
+    "generated_at": "2026-01-29T13:55:52Z",
+    "parent_pipeline_id": 13441,
+    "child_pipeline_id": 13443,
+    "summary": {
+        "total_tests": 812,
+        "passed_tests": 718,
+        "failed_tests": 94,
+        "total_languages": 43,
+        "passed_languages": 8,
+        "avg_duration_seconds": 267,
+        "max_duration_seconds": 721,
+        "min_duration_seconds": 41,
+        "slowest_language": "rust",
+        "fastest_language": "powershell"
+    },
+    "api_health": {
+        "score": 0,
+        "total_retries": 151,
+        "retries_by_type": {
+            "rate_limit_429": 0,
+            "server_error_5xx": 60,
+            "timeout": 0,
+            "connection": 0
+        },
+        "tests_with_retries": 18,
+        "per_language": [
+  {
+    "language": "awk",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "bash",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "c",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "clojure",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "cobol",
+    "retries": 2,
+    "rate_limit_429": 0,
+    "server_error_5xx": 2,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 2
+  },
+  {
+    "language": "commonlisp",
+    "retries": 1,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "csharp",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "dart",
+    "retries": 2,
+    "rate_limit_429": 0,
+    "server_error_5xx": 2,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "deno",
+    "retries": 1,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "dotnet",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "elixir",
+    "retries": 5,
+    "rate_limit_429": 0,
+    "server_error_5xx": 5,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "erlang",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "forth",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "go",
+    "retries": 3,
+    "rate_limit_429": 0,
+    "server_error_5xx": 3,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "haskell",
+    "retries": 3,
+    "rate_limit_429": 0,
+    "server_error_5xx": 3,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "java",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 10,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "javascript",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 10,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "julia",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "kotlin",
+    "retries": 2,
+    "rate_limit_429": 0,
+    "server_error_5xx": 2,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 2
+  },
+  {
+    "language": "lua",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "objc",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "ocaml",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "perl",
+    "retries": 5,
+    "rate_limit_429": 0,
+    "server_error_5xx": 5,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "php",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "powershell",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "python",
+    "retries": 1,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "r",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "raku",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "ruby",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "rust",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "scheme",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "tcl",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "typescript",
+    "retries": 2,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "v",
+    "retries": 10,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "zig",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "cpp",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "crystal",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "d",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "fortran",
+    "retries": 1,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "fsharp",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "groovy",
+    "retries": 1,
+    "rate_limit_429": 0,
+    "server_error_5xx": 1,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  },
+  {
+    "language": "nim",
+    "retries": 0,
+    "rate_limit_429": 0,
+    "server_error_5xx": 0,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 0
+  },
+  {
+    "language": "prolog",
+    "retries": 2,
+    "rate_limit_429": 0,
+    "server_error_5xx": 2,
+    "timeout": 0,
+    "connection": 0,
+    "tests_with_retries": 1
+  }
+]
+    },
+    "languages": [
+  {
+    "language": "rust",
+    "status": "Failed",
+    "queued_duration": 433.004788,
+    "started_at": "2026-01-29T13:42:36Z",
+    "updated_at": "2026-01-29T13:54:37Z",
+    "job_id": 35308,
+    "duration_seconds": 721
+  },
+  {
+    "language": "ruby",
+    "status": "Failed",
+    "queued_duration": 660.760072,
+    "started_at": "2026-01-29T13:42:10Z",
+    "updated_at": "2026-01-29T13:54:02Z",
+    "job_id": 35293,
+    "duration_seconds": 712
+  },
+  {
+    "language": "php",
+    "status": "Failed",
+    "queued_duration": 663.496984,
+    "started_at": "2026-01-29T13:42:14Z",
+    "updated_at": "2026-01-29T13:54:03Z",
+    "job_id": 35295,
+    "duration_seconds": 709
+  },
+  {
+    "language": "dotnet",
+    "status": "Failed",
+    "queued_duration": 465.451719,
+    "started_at": "2026-01-29T13:42:35Z",
+    "updated_at": "2026-01-29T13:54:06Z",
+    "job_id": 35307,
+    "duration_seconds": 691
+  },
+  {
+    "language": "tcl",
+    "status": "Failed",
+    "queued_duration": 589.784629,
+    "started_at": "2026-01-29T13:42:32Z",
+    "updated_at": "2026-01-29T13:54:01Z",
+    "job_id": 35299,
+    "duration_seconds": 689
+  },
+  {
+    "language": "bash",
+    "status": "Failed",
+    "queued_duration": 581.875142,
+    "started_at": "2026-01-29T13:42:33Z",
+    "updated_at": "2026-01-29T13:54:02Z",
+    "job_id": 35300,
+    "duration_seconds": 689
+  },
+  {
+    "language": "ocaml",
+    "status": "Failed",
+    "queued_duration": 32.265744,
+    "started_at": "2026-01-29T13:42:38Z",
+    "updated_at": "2026-01-29T13:54:05Z",
+    "job_id": 35317,
+    "duration_seconds": 687
+  },
+  {
+    "language": "forth",
+    "status": "Failed",
+    "queued_duration": 411.29343,
+    "started_at": "2026-01-29T13:42:37Z",
+    "updated_at": "2026-01-29T13:54:03Z",
+    "job_id": 35309,
+    "duration_seconds": 686
+  },
+  {
+    "language": "v",
+    "status": "Failed",
+    "queued_duration": 68.425911,
+    "started_at": "2026-01-29T13:43:22Z",
+    "updated_at": "2026-01-29T13:54:08Z",
+    "job_id": 35320,
+    "duration_seconds": 646
+  },
+  {
+    "language": "csharp",
+    "status": "Failed",
+    "queued_duration": 58.15953,
+    "started_at": "2026-01-29T13:43:22Z",
+    "updated_at": "2026-01-29T13:54:06Z",
+    "job_id": 35321,
+    "duration_seconds": 644
+  },
+  {
+    "language": "java",
+    "status": "Failed",
+    "queued_duration": 583.507894,
+    "started_at": "2026-01-29T13:40:49Z",
+    "updated_at": "2026-01-29T13:49:15Z",
+    "job_id": 35289,
+    "duration_seconds": 506
+  },
+  {
+    "language": "javascript",
+    "status": "Failed",
+    "queued_duration": 585.069629,
+    "started_at": "2026-01-29T13:40:52Z",
+    "updated_at": "2026-01-29T13:49:16Z",
+    "job_id": 35290,
+    "duration_seconds": 504
+  },
+  {
+    "language": "perl",
+    "status": "Failed",
+    "queued_duration": 587.355152,
+    "started_at": "2026-01-29T13:40:55Z",
+    "updated_at": "2026-01-29T13:45:24Z",
+    "job_id": 35291,
+    "duration_seconds": 269
+  },
+  {
+    "language": "elixir",
+    "status": "Failed",
+    "queued_duration": 586.737125,
+    "started_at": "2026-01-29T13:42:28Z",
+    "updated_at": "2026-01-29T13:46:27Z",
+    "job_id": 35298,
+    "duration_seconds": 239
+  },
+  {
+    "language": "typescript",
+    "status": "Failed",
+    "queued_duration": 662.578727,
+    "started_at": "2026-01-29T13:42:24Z",
+    "updated_at": "2026-01-29T13:46:10Z",
+    "job_id": 35296,
+    "duration_seconds": 226
+  },
+  {
+    "language": "kotlin",
+    "status": "Failed",
+    "queued_duration": 29.120487,
+    "started_at": "2026-01-29T13:42:39Z",
+    "updated_at": "2026-01-29T13:46:09Z",
+    "job_id": 35318,
+    "duration_seconds": 210
+  },
+  {
+    "language": "cobol",
+    "status": "Failed",
+    "queued_duration": 36.757277,
+    "started_at": "2026-01-29T13:42:47Z",
+    "updated_at": "2026-01-29T13:46:13Z",
+    "job_id": 35319,
+    "duration_seconds": 206
+  },
+  {
+    "language": "go",
+    "status": "Failed",
+    "queued_duration": 229.000842,
+    "started_at": "2026-01-29T13:46:24Z",
+    "updated_at": "2026-01-29T13:49:35Z",
+    "job_id": 35329,
+    "duration_seconds": 191
+  },
+  {
+    "language": "haskell",
+    "status": "Failed",
+    "queued_duration": 176.424952,
+    "started_at": "2026-01-29T13:45:24Z",
+    "updated_at": "2026-01-29T13:48:27Z",
+    "job_id": 35323,
+    "duration_seconds": 183
+  },
+  {
+    "language": "nim",
+    "status": "Passed",
+    "queued_duration": 221.835754,
+    "started_at": "2026-01-29T13:46:15Z",
+    "updated_at": "2026-01-29T13:48:30Z",
+    "job_id": 35326,
+    "duration_seconds": 135
+  },
+  {
+    "language": "julia",
+    "status": "Failed",
+    "queued_duration": 226.528566,
+    "started_at": "2026-01-29T13:46:21Z",
+    "updated_at": "2026-01-29T13:48:30Z",
+    "job_id": 35328,
+    "duration_seconds": 129
+  },
+  {
+    "language": "prolog",
+    "status": "Passed",
+    "queued_duration": 217.859002,
+    "started_at": "2026-01-29T13:46:09Z",
+    "updated_at": "2026-01-29T13:48:13Z",
+    "job_id": 35324,
+    "duration_seconds": 124
+  },
+  {
+    "language": "dart",
+    "status": "Failed",
+    "queued_duration": 220.382548,
+    "started_at": "2026-01-29T13:46:12Z",
+    "updated_at": "2026-01-29T13:48:10Z",
+    "job_id": 35325,
+    "duration_seconds": 118
+  },
+  {
+    "language": "d",
+    "status": "Passed",
+    "queued_duration": 230.166567,
+    "started_at": "2026-01-29T13:46:27Z",
+    "updated_at": "2026-01-29T13:48:21Z",
+    "job_id": 35330,
+    "duration_seconds": 114
+  },
+  {
+    "language": "objc",
+    "status": "Failed",
+    "queued_duration": 224.09339,
+    "started_at": "2026-01-29T13:46:18Z",
+    "updated_at": "2026-01-29T13:48:12Z",
+    "job_id": 35327,
+    "duration_seconds": 114
+  },
+  {
+    "language": "fsharp",
+    "status": "Passed",
+    "queued_duration": 331.599325,
+    "started_at": "2026-01-29T13:48:10Z",
+    "updated_at": "2026-01-29T13:49:52Z",
+    "job_id": 35331,
+    "duration_seconds": 102
+  },
+  {
+    "language": "zig",
+    "status": "Failed",
+    "queued_duration": 325.727021,
+    "started_at": "2026-01-29T13:48:13Z",
+    "updated_at": "2026-01-29T13:49:55Z",
+    "job_id": 35332,
+    "duration_seconds": 102
+  },
+  {
+    "language": "fortran",
+    "status": "Passed",
+    "queued_duration": 135.088108,
+    "started_at": "2026-01-29T13:44:41Z",
+    "updated_at": "2026-01-29T13:46:19Z",
+    "job_id": 35322,
+    "duration_seconds": 98
+  },
+  {
+    "language": "crystal",
+    "status": "Passed",
+    "queued_duration": 324.878809,
+    "started_at": "2026-01-29T13:27:17Z",
+    "updated_at": "2026-01-29T13:28:51Z",
+    "job_id": 35243,
+    "duration_seconds": 94
+  },
+  {
+    "language": "raku",
+    "status": "Failed",
+    "queued_duration": 496.488103,
+    "started_at": "2026-01-29T13:37:57Z",
+    "updated_at": "2026-01-29T13:39:28Z",
+    "job_id": 35281,
+    "duration_seconds": 91
+  },
+  {
+    "language": "python",
+    "status": "Failed",
+    "queued_duration": 489.552793,
+    "started_at": "2026-01-29T13:38:44Z",
+    "updated_at": "2026-01-29T13:40:12Z",
+    "job_id": 35283,
+    "duration_seconds": 88
+  },
+  {
+    "language": "c",
+    "status": "Failed",
+    "queued_duration": 472.814426,
+    "started_at": "2026-01-29T13:37:57Z",
+    "updated_at": "2026-01-29T13:39:25Z",
+    "job_id": 35282,
+    "duration_seconds": 88
+  },
+  {
+    "language": "awk",
+    "status": "Failed",
+    "queued_duration": 507.296008,
+    "started_at": "2026-01-29T13:37:54Z",
+    "updated_at": "2026-01-29T13:39:20Z",
+    "job_id": 35280,
+    "duration_seconds": 86
+  },
+  {
+    "language": "clojure",
+    "status": "Failed",
+    "queued_duration": 528.781729,
+    "started_at": "2026-01-29T13:36:06Z",
+    "updated_at": "2026-01-29T13:37:27Z",
+    "job_id": 35276,
+    "duration_seconds": 81
+  },
+  {
+    "language": "commonlisp",
+    "status": "Failed",
+    "queued_duration": 529.806763,
+    "started_at": "2026-01-29T13:36:36Z",
+    "updated_at": "2026-01-29T13:37:55Z",
+    "job_id": 35277,
+    "duration_seconds": 79
+  },
+  {
+    "language": "lua",
+    "status": "Failed",
+    "queued_duration": 656.752854,
+    "started_at": "2026-01-29T13:42:06Z",
+    "updated_at": "2026-01-29T13:43:22Z",
+    "job_id": 35292,
+    "duration_seconds": 76
+  },
+  {
+    "language": "groovy",
+    "status": "Passed",
+    "queued_duration": 501.093409,
+    "started_at": "2026-01-29T13:36:40Z",
+    "updated_at": "2026-01-29T13:37:54Z",
+    "job_id": 35278,
+    "duration_seconds": 74
+  },
+  {
+    "language": "deno",
+    "status": "Failed",
+    "queued_duration": 466.588047,
+    "started_at": "2026-01-29T13:36:49Z",
+    "updated_at": "2026-01-29T13:37:56Z",
+    "job_id": 35279,
+    "duration_seconds": 67
+  },
+  {
+    "language": "scheme",
+    "status": "Failed",
+    "queued_duration": 560.626732,
+    "started_at": "2026-01-29T13:35:46Z",
+    "updated_at": "2026-01-29T13:36:36Z",
+    "job_id": 35274,
+    "duration_seconds": 50
+  },
+  {
+    "language": "r",
+    "status": "Failed",
+    "queued_duration": 578.224163,
+    "started_at": "2026-01-29T13:42:34Z",
+    "updated_at": "2026-01-29T13:43:22Z",
+    "job_id": 35301,
+    "duration_seconds": 48
+  },
+  {
+    "language": "cpp",
+    "status": "Passed",
+    "queued_duration": 465.803546,
+    "started_at": "2026-01-29T13:29:41Z",
+    "updated_at": "2026-01-29T13:30:27Z",
+    "job_id": 35249,
+    "duration_seconds": 46
+  },
+  {
+    "language": "erlang",
+    "status": "Failed",
+    "queued_duration": 550.28807,
+    "started_at": "2026-01-29T13:40:12Z",
+    "updated_at": "2026-01-29T13:40:55Z",
+    "job_id": 35287,
+    "duration_seconds": 43
+  },
+  {
+    "language": "powershell",
+    "status": "Failed",
+    "queued_duration": 552.853937,
+    "started_at": "2026-01-29T13:35:59Z",
+    "updated_at": "2026-01-29T13:36:40Z",
+    "job_id": 35275,
+    "duration_seconds": 41
+  }
+]
+}
