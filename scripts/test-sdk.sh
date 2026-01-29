@@ -291,10 +291,10 @@ run_test() {
             if [ $attempt -lt $max_retries ]; then
                 echo -n "($error_type retry $attempt/$max_retries)... "
                 sleep $retry_delay
-                # Exponential backoff, cap at 60 seconds
+                # Exponential backoff, cap at 10 seconds
                 retry_delay=$((retry_delay * 2))
-                if [ $retry_delay -gt 60 ]; then
-                    retry_delay=60
+                if [ $retry_delay -gt 10 ]; then
+                    retry_delay=10
                 fi
                 continue
             fi
@@ -419,16 +419,17 @@ run_test "service_list" \
 
 # Test 4.2: Create a service with retry logic (note: syntax is --name not --create)
 # SCIENTIFIC INTEGRITY: Retry on transient errors, fail if we can't create
-SERVICE_NAME="test-$LANG-$$"
 SERVICE_ID=""
 service_attempt=0
-service_max_retries=10
+service_max_retries=5
 service_retry_delay=2
 
 echo -n "Test: service_create... "
 TOTAL_TESTS=$((TOTAL_TESTS + 1))
 
 while [ $service_attempt -lt $service_max_retries ]; do
+    # Generate unique name per attempt (avoids 409 conflicts on retry)
+    SERVICE_NAME="test-$LANG-$$-$(date +%s)"
     SERVICE_OUTPUT=$(build/un service --name "$SERVICE_NAME" --bootstrap "echo service-started" 2>&1 || true)
     echo "$SERVICE_OUTPUT" > "$RESULTS_DIR/service_create.txt"
     SERVICE_ID=$(echo "$SERVICE_OUTPUT" | grep -oE "unsb-service-[a-z0-9-]+" | head -1 || true)
@@ -439,10 +440,13 @@ while [ $service_attempt -lt $service_max_retries ]; do
 
     # Check for transient errors that should trigger retry
     # Track error type for API health monitoring
-    local svc_error_type=""
+    svc_error_type=""
     if grep -qiE "HTTP 429|concurrency_limit|rate.limit" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
         svc_error_type="429"
         RETRIES_429=$((RETRIES_429 + 1))
+    elif grep -qiE "HTTP 409|already taken|already exists" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
+        # Name conflict - retry will use new timestamp-based name
+        svc_error_type="409"
     elif grep -qiE "HTTP 5[0-9][0-9]|server error|internal error" "$RESULTS_DIR/service_create.txt" 2>/dev/null; then
         svc_error_type="5xx"
         RETRIES_5XX=$((RETRIES_5XX + 1))
@@ -461,8 +465,8 @@ while [ $service_attempt -lt $service_max_retries ]; do
             echo -n "($svc_error_type retry $service_attempt/$service_max_retries)... "
             sleep $service_retry_delay
             service_retry_delay=$((service_retry_delay * 2))
-            if [ $service_retry_delay -gt 60 ]; then
-                service_retry_delay=60
+            if [ $service_retry_delay -gt 10 ]; then
+                service_retry_delay=10
             fi
             continue
         fi
