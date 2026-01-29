@@ -1,6 +1,6 @@
 {
   "name": "un-sync",
-  "version": "4.2.46",
+  "version": "4.2.48",
   "description": "unsandbox.com JavaScript SDK (Isomorphic - Node.js + Browser)",
   "type": "module",
   "main": "src/un.js",
