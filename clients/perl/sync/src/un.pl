@@ -47,7 +47,7 @@ use Digest::HMAC_SHA256 qw(hmac_sha256_hex);
 use File::HomeDir;
 use Time::HiRes qw(time sleep);
 
-our $VERSION = "4.2.48";
+our $VERSION = "4.2.49";
 our $API_BASE = 'https://api.unsandbox.com';
 
 # Credential system
