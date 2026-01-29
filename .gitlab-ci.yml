@@ -25,11 +25,7 @@ manual-cleanup:
     - echo "Running parallel cleanup..."
     - bash scripts/cleanup-test-resources.sh
   rules:
-    - if: $CI_PIPELINE_SOURCE == "push"
-      when: manual
-      allow_failure: true
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: manual
+    - when: manual
       allow_failure: true
 
 # ============================================================================
