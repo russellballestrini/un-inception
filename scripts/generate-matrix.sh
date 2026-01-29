@@ -86,69 +86,13 @@ build-cli:
 
 # Cleanup orphaned test resources before fan-out to avoid concurrency limits
 # ONLY targets resources with "test-" in the name to avoid destroying real services
+# Uses parallel cleanup script for speed
 cleanup-services:
   stage: cleanup
   needs:
     - build-cli
   script:
-    - echo "=== Cleaning up orphaned test resources ==="
-    - |
-      # Cleanup test services (test-python-*, test-javascript-*, etc.)
-      echo "Checking for orphaned test services..."
-      SERVICES=$(build/un service --list 2>/dev/null | grep -E "test-[a-z]+-[0-9]+" || true)
-      if [ -n "$SERVICES" ]; then
-        echo "$SERVICES" | while read -r line; do
-          SVC=$(echo "$line" | grep -oE 'unsb-service-[a-f0-9]+' || true)
-          if [ -n "$SVC" ]; then
-            echo "Destroying test service: $SVC"
-            build/un service --destroy "$SVC" || true
-          fi
-        done
-      fi
-      echo "Service cleanup complete"
-    - |
-      # Cleanup test sessions
-      echo "Checking for orphaned test sessions..."
-      SESSIONS=$(build/un session --list 2>/dev/null | grep -E "test-[a-z]+-[0-9]+" || true)
-      if [ -n "$SESSIONS" ]; then
-        echo "$SESSIONS" | while read -r line; do
-          SESS=$(echo "$line" | grep -oE 'unsb-session-[a-f0-9-]+' || true)
-          if [ -n "$SESS" ]; then
-            echo "Killing test session: $SESS"
-            build/un session --kill "$SESS" || true
-          fi
-        done
-      fi
-      echo "Session cleanup complete"
-    - |
-      # Cleanup test snapshots
-      echo "Checking for orphaned test snapshots..."
-      SNAPSHOTS=$(build/un snapshot --list 2>/dev/null | grep -E "test-[a-z]+-[0-9]+" || true)
-      if [ -n "$SNAPSHOTS" ]; then
-        echo "$SNAPSHOTS" | while read -r line; do
-          SNAP=$(echo "$line" | grep -oE 'unsb-snapshot-[a-f0-9-]+' || true)
-          if [ -n "$SNAP" ]; then
-            echo "Deleting test snapshot: $SNAP"
-            build/un snapshot --delete "$SNAP" || true
-          fi
-        done
-      fi
-      echo "Snapshot cleanup complete"
-    - |
-      # Cleanup test images
-      echo "Checking for orphaned test images..."
-      IMAGES=$(build/un image --list 2>/dev/null | grep -E "test-[a-z]+-[0-9]+" || true)
-      if [ -n "$IMAGES" ]; then
-        echo "$IMAGES" | while read -r line; do
-          IMG=$(echo "$line" | grep -oE 'unsb-image-[a-f0-9-]+' || true)
-          if [ -n "$IMG" ]; then
-            echo "Deleting test image: $IMG"
-            build/un image --delete "$IMG" || true
-          fi
-        done
-      fi
-      echo "Image cleanup complete"
-    - echo "=== Cleanup complete ==="
+    - bash scripts/cleanup-test-resources.sh
   allow_failure: true
 
 test:

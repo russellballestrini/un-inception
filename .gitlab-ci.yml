@@ -12,6 +12,27 @@ default:
     - build
 
 # ============================================================================
+# MANUAL TRIGGER: Emergency Cleanup
+# ============================================================================
+# Click play to clean up orphaned test resources (services, sessions, etc.)
+# Runs in parallel for speed - useful when system is hosed
+manual-cleanup:
+  stage: pre
+  script:
+    - echo "=== Emergency Cleanup ==="
+    - echo "Building un CLI first..."
+    - bash scripts/build-clients.sh
+    - echo "Running parallel cleanup..."
+    - bash scripts/cleanup-test-resources.sh
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      when: manual
+      allow_failure: true
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+      allow_failure: true
+
+# ============================================================================
 # MANUAL TRIGGER: Run Full Test Matrix On Demand
 # ============================================================================
 # Click the play button in GitLab UI to run the full 42-language matrix
