@@ -4,11 +4,13 @@
 #
 # Cleans up resources matching pattern: test-{lang}-{pid}-{timestamp}
 # Runs destroys in parallel for speed (up to 10 concurrent)
+# Retries failed destroys up to 3 times with backoff
 
 set -e
 
 DRY_RUN=false
 PARALLEL_JOBS=10
+MAX_ROUNDS=3
 
 if [ "$1" = "--dry-run" ]; then
     DRY_RUN=true
@@ -31,7 +33,7 @@ echo "Using: $UN_CLI"
 echo "Parallel jobs: $PARALLEL_JOBS"
 echo ""
 
-# Function to destroy in parallel
+# Function to destroy in parallel with retry rounds
 parallel_destroy() {
     local resource_type="$1"
     local destroy_cmd="$2"
@@ -40,33 +42,76 @@ parallel_destroy() {
 
     echo "--- Cleaning $resource_type ---"
 
-    # Get list of matching resources
-    RESOURCES=$($UN_CLI $resource_type --list 2>/dev/null | grep -E "$pattern" || true)
+    local round=1
+    local total_destroyed=0
 
-    if [ -z "$RESOURCES" ]; then
-        echo "No orphaned $resource_type found"
-        return 0
-    fi
+    while [ $round -le $MAX_ROUNDS ]; do
+        # Get list of matching resources
+        RESOURCES=$($UN_CLI $resource_type --list 2>/dev/null | grep -E "$pattern" || true)
 
-    # Extract IDs
-    IDS=$(echo "$RESOURCES" | grep -oE "$id_pattern" | sort -u || true)
-    COUNT=$(echo "$IDS" | grep -c . || echo 0)
+        if [ -z "$RESOURCES" ]; then
+            if [ $round -eq 1 ]; then
+                echo "No orphaned $resource_type found"
+            fi
+            break
+        fi
 
-    echo "Found $COUNT orphaned $resource_type"
+        # Extract IDs
+        IDS=$(echo "$RESOURCES" | grep -oE "$id_pattern" | sort -u || true)
+        COUNT=$(echo "$IDS" | grep -c . || echo 0)
 
-    if [ "$DRY_RUN" = true ]; then
-        echo "$IDS" | head -10
-        [ "$COUNT" -gt 10 ] && echo "... and $((COUNT - 10)) more"
-        return 0
-    fi
+        if [ "$COUNT" -eq 0 ]; then
+            break
+        fi
 
-    # Destroy in parallel using xargs
-    echo "$IDS" | xargs -P "$PARALLEL_JOBS" -I {} sh -c "
-        echo 'Destroying: {}'
-        $UN_CLI $resource_type $destroy_cmd '{}' 2>&1 || echo 'Failed: {}'
-    "
+        if [ $round -eq 1 ]; then
+            echo "Found $COUNT orphaned $resource_type"
+        else
+            echo "Round $round: $COUNT remaining"
+        fi
 
-    echo "$resource_type cleanup complete ($COUNT destroyed)"
+        if [ "$DRY_RUN" = true ]; then
+            echo "$IDS" | head -10
+            [ "$COUNT" -gt 10 ] && echo "... and $((COUNT - 10)) more"
+            return 0
+        fi
+
+        # Destroy in parallel using xargs
+        # Capture failures by writing failed IDs to a temp file
+        FAIL_FILE=$(mktemp)
+        echo "$IDS" | xargs -P "$PARALLEL_JOBS" -I {} sh -c "
+            if $UN_CLI $resource_type $destroy_cmd '{}' >/dev/null 2>&1; then
+                echo 'Destroyed: {}'
+            else
+                echo '{}' >> '$FAIL_FILE'
+            fi
+        "
+
+        FAILED_COUNT=0
+        if [ -s "$FAIL_FILE" ]; then
+            FAILED_COUNT=$(wc -l < "$FAIL_FILE")
+        fi
+        rm -f "$FAIL_FILE"
+
+        SUCCEEDED=$((COUNT - FAILED_COUNT))
+        total_destroyed=$((total_destroyed + SUCCEEDED))
+
+        if [ "$FAILED_COUNT" -eq 0 ]; then
+            break
+        fi
+
+        echo "Round $round: $SUCCEEDED destroyed, $FAILED_COUNT failed"
+
+        if [ $round -lt $MAX_ROUNDS ]; then
+            BACKOFF=$((round * 5))
+            echo "Waiting ${BACKOFF}s before retry..."
+            sleep $BACKOFF
+        fi
+
+        round=$((round + 1))
+    done
+
+    echo "$resource_type cleanup complete ($total_destroyed destroyed)"
 }
 
 # Cleanup services (test-python-12345-1706000000, etc.)
