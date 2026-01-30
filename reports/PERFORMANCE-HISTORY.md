@@ -41,3 +41,4 @@ Tracking compile and test execution times across releases.
 | 4.2.37 | 2026-01-29 | 812 | 88.4% | 267s | rust | powershell |
 | 4.2.38 | 2026-01-29 | 832 | 90.8% | 396s | php | awk |
 | 4.2.46 | 2026-01-29 | 860 | 93.2% | 224s | raku | prolog |
+| 4.2.50 | 2026-01-30 | 860 | 93.0% | 183s | go | fortran |
