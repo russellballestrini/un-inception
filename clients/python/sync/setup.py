@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="unsandbox",
-    version="4.2.50",
+    version="4.2.51",
     author="Unsandbox",
     description="Synchronous Python SDK for unsandbox.com code execution",
     long_description=long_description,
