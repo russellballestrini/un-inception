@@ -1055,7 +1055,7 @@ def list_services(
 
 def create_service(
     name: str,
-    ports: List[int],
+    ports: Optional[List[int]] = None,
     bootstrap: Optional[str] = None,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
@@ -1095,9 +1095,10 @@ def create_service(
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
     data: Dict[str, Any] = {
         "name": name,
-        "ports": ports,
         "network_mode": network_mode,
     }
+    if ports:
+        data["ports"] = ports
     if bootstrap:
         # Check if it looks like a URL
         if bootstrap.startswith("http://") or bootstrap.startswith("https://"):
