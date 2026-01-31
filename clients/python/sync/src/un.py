@@ -1064,6 +1064,8 @@ def create_service(
     vcpu: int = 1,
     service_type: Optional[str] = None,
     unfreeze_on_demand: bool = False,
+    golden_image: Optional[str] = None,
+    input_files: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new persistent service.
@@ -1079,6 +1081,8 @@ def create_service(
         vcpu: Number of vCPUs (1-8, default 1)
         service_type: Optional service type for SRV records (e.g., "minecraft")
         unfreeze_on_demand: If True, automatically unfreeze service on incoming requests
+        golden_image: Optional LXD image alias (e.g., "golden-alpine-3.21")
+        input_files: Optional list of dicts with "filename" and "content" (base64)
 
     Returns:
         Response dict containing service_id, etc.
@@ -1108,6 +1112,10 @@ def create_service(
         data["service_type"] = service_type
     if unfreeze_on_demand:
         data["unfreeze_on_demand"] = unfreeze_on_demand
+    if golden_image:
+        data["golden_image"] = golden_image
+    if input_files:
+        data["input_files"] = input_files
 
     return _make_request("POST", "/services", public_key, secret_key, data)
 
@@ -2379,6 +2387,11 @@ Examples:
                                 help="Name for snapshot")
     service_parser.add_argument("--hot", action="store_true",
                                 help="Live snapshot (no freeze)")
+    service_parser.add_argument("--golden-image", metavar="IMAGE",
+                                help="LXD image alias (e.g., golden-alpine-3.21)")
+    service_parser.add_argument("-f", "--file", action="append", dest="files",
+                                metavar="FILE",
+                                help="Input file to upload (written to /tmp/ in container)")
 
     # Service env subcommand
     service_env_parser = subparsers.add_parser("service-env",
@@ -2710,6 +2723,19 @@ def _handle_service_command(args, public_key: str, secret_key: str):
         if args.domains:
             custom_domains = [d.strip() for d in args.domains.split(",")]
 
+        # Build input_files from -f args
+        service_input_files = None
+        if getattr(args, 'files', None):
+            import base64 as _b64
+            service_input_files = []
+            for fpath in args.files:
+                with open(fpath, "rb") as ff:
+                    encoded = _b64.b64encode(ff.read()).decode("ascii")
+                service_input_files.append({
+                    "filename": os.path.basename(fpath),
+                    "content": encoded,
+                })
+
         result = create_service(
             name=args.name,
             ports=ports,
@@ -2719,6 +2745,8 @@ def _handle_service_command(args, public_key: str, secret_key: str):
             custom_domains=custom_domains,
             vcpu=getattr(args, 'vcpu', 1) or 1,
             service_type=args.service_type,
+            golden_image=getattr(args, 'golden_image', None),
+            input_files=service_input_files,
         )
 
         service_id = result.get("service_id", result.get("id", ""))
