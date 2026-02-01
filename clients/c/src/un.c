@@ -304,13 +304,17 @@ static UnsandboxCredentials* load_credentials_from_csv(int account_index) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
-        // Parse CSV: public_key,secret_key
+        // Parse CSV: public_key,secret_key[,comment]
         char *comma = strchr(line, ',');
         if (!comma) continue;
 
         *comma = '\0';
         char *pk = line;
         char *sk = comma + 1;
+
+        // Strip optional 3rd field (comment) after second comma
+        char *comma2 = strchr(sk, ',');
+        if (comma2) *comma2 = '\0';
 
         // Validate key prefixes
         if (strncmp(pk, "unsb-pk-", 8) != 0) continue;
@@ -2645,6 +2649,308 @@ static char* get_service_logs(const UnsandboxCredentials *creds, const char *ser
     char *log = extract_json_string(response.data, "log");
     free(response.data);
     return log;
+}
+
+// ============================================================================
+// PaaS Logs (fetch and stream production logs from portal)
+// ============================================================================
+
+// Volatile flag for SIGINT handling during SSE streaming (forward declaration)
+static volatile int stream_interrupted = 0;
+
+// Streaming write callback — prints SSE data lines to stdout as they arrive
+static size_t stream_sse_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    // Buffer for partial SSE events across calls
+    static char sse_buf[65536];
+    static size_t sse_buf_len = 0;
+    (void)userp;
+
+    // Append new data to buffer
+    size_t space = sizeof(sse_buf) - sse_buf_len - 1;
+    size_t copy = realsize < space ? realsize : space;
+    memcpy(sse_buf + sse_buf_len, contents, copy);
+    sse_buf_len += copy;
+    sse_buf[sse_buf_len] = 0;
+
+    // Process complete SSE events (delimited by \n\n)
+    char *pos = sse_buf;
+    char *event_end;
+    while ((event_end = strstr(pos, "\n\n")) != NULL) {
+        *event_end = 0;
+        // Parse each line in the event
+        char *line = pos;
+        while (*line) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+
+            if (strncmp(line, "data: ", 6) == 0) {
+                const char *payload = line + 6;
+                if (strcmp(payload, ":keepalive") != 0) {
+                    // Try to extract source + line from JSON
+                    // Format: {"source":"api","line":"..."}
+                    char *source = extract_json_string(payload, "source");
+                    char *logline = extract_json_string(payload, "line");
+                    if (source && logline) {
+                        printf("\033[36m%-12s\033[0m %s\n", source, logline);
+                        fflush(stdout);
+                    } else if (logline) {
+                        printf("%s\n", logline);
+                        fflush(stdout);
+                    } else {
+                        // Plain text payload
+                        printf("%s\n", payload);
+                        fflush(stdout);
+                    }
+                    free(source);
+                    free(logline);
+                }
+            }
+
+            if (nl) line = nl + 1;
+            else break;
+        }
+        pos = event_end + 2;
+    }
+
+    // Move remaining partial data to front of buffer
+    if (pos > sse_buf) {
+        sse_buf_len = strlen(pos);
+        memmove(sse_buf, pos, sse_buf_len + 1);
+    }
+
+    if (stream_interrupted) return 0;
+    return realsize;
+}
+
+// Fetch PaaS logs (batch) — returns 0 on success
+static int fetch_paas_logs(const UnsandboxCredentials *creds,
+                           const char *source, int lines,
+                           const char *since, const char *grep,
+                           int json_output, const char *level) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    // Build path: /logs/{source}
+    char path[256];
+    if (strcmp(source, "all") == 0)
+        snprintf(path, sizeof(path), "/logs/all");
+    else
+        snprintf(path, sizeof(path), "/logs/%s", source);
+
+    // Build full URL with query params
+    char url[1024];
+    int off = snprintf(url, sizeof(url), "%s%s?lines=%d", PORTAL_BASE, path, lines);
+    if (since && since[0])
+        off += snprintf(url + off, sizeof(url) - off, "&since=%s", since);
+    if (grep && grep[0])
+        off += snprintf(url + off, sizeof(url) - off, "&grep=%s", grep);
+    if (level && level[0])
+        off += snprintf(url + off, sizeof(url) - off, "&level=%s", level);
+
+    // HMAC signs path only (no query string) — matches server conn.request_path
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: Network error fetching logs: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code != 200) {
+        char *error = extract_json_string(response.data, "error");
+        fprintf(stderr, "Error: HTTP %ld", http_code);
+        if (error) { fprintf(stderr, " — %s", error); free(error); }
+        fprintf(stderr, "\n");
+        free(response.data);
+        return 1;
+    }
+
+    if (json_output) {
+        // Raw JSON output
+        printf("%s\n", response.data);
+        free(response.data);
+        return 0;
+    }
+
+    // Check if this is an "all" response (has "sources" key)
+    int is_all = (strstr(response.data, "\"sources\"") != NULL);
+
+    if (is_all) {
+        // Parse merged lines: "lines":[{"source":"api","line":"..."},...]
+        const char *lines_start = strstr(response.data, "\"lines\":[");
+        if (!lines_start) {
+            fprintf(stderr, "Error: Invalid response format\n");
+            free(response.data);
+            return 1;
+        }
+        const char *p = strchr(lines_start, '[');
+        if (!p) { free(response.data); return 1; }
+        p++; // skip '['
+
+        // Walk through array of objects
+        while (*p) {
+            // Find next object
+            const char *obj_start = strchr(p, '{');
+            if (!obj_start) break;
+
+            // Find matching close brace (simple — no nested objects in log entries)
+            const char *obj_end = strchr(obj_start, '}');
+            if (!obj_end) break;
+
+            // Extract source and line from this object
+            size_t obj_len = obj_end - obj_start + 1;
+            char *obj = malloc(obj_len + 1);
+            memcpy(obj, obj_start, obj_len);
+            obj[obj_len] = 0;
+
+            char *src = extract_json_string(obj, "source");
+            char *line = extract_json_string(obj, "line");
+
+            if (src && line) {
+                printf("\033[36m%-12s\033[0m %s\n", src, line);
+            } else if (line) {
+                printf("%s\n", line);
+            }
+
+            free(src);
+            free(line);
+            free(obj);
+            p = obj_end + 1;
+        }
+    } else {
+        // Single source: "lines":["line1","line2",...]
+        const char *lines_start = strstr(response.data, "\"lines\":[");
+        if (!lines_start) {
+            fprintf(stderr, "Error: Invalid response format\n");
+            free(response.data);
+            return 1;
+        }
+        const char *arr_start = strchr(lines_start, '[');
+        if (!arr_start) { free(response.data); return 1; }
+
+        // Parse string array
+        const char *p = arr_start + 1;
+        while (*p && *p != ']') {
+            if (*p == '"') {
+                p++;
+                // Find end of string (handle escaped quotes)
+                const char *end = p;
+                while (*end && !(*end == '"' && *(end - 1) != '\\')) end++;
+                printf("%.*s\n", (int)(end - p), p);
+                p = end + 1;
+            } else {
+                p++;
+            }
+        }
+    }
+
+    free(response.data);
+    return 0;
+}
+
+static void stream_sigint_handler(int sig) {
+    (void)sig;
+    stream_interrupted = 1;
+}
+
+// Stream PaaS logs (SSE) — blocks until Ctrl+C or server closes
+static int stream_paas_logs(const UnsandboxCredentials *creds,
+                            const char *source, const char *grep,
+                            const char *level) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    // Build path: /logs/{source}/stream
+    char path[256];
+    if (strcmp(source, "all") == 0)
+        snprintf(path, sizeof(path), "/logs/all/stream");
+    else
+        snprintf(path, sizeof(path), "/logs/%s/stream", source);
+
+    // Build URL with optional query params
+    char url[1024];
+    int off = snprintf(url, sizeof(url), "%s%s", PORTAL_BASE, path);
+    char sep = '?';
+    if (grep && grep[0]) {
+        off += snprintf(url + off, sizeof(url) - off, "%cgrep=%s", sep, grep);
+        sep = '&';
+    }
+    if (level && level[0]) {
+        off += snprintf(url + off, sizeof(url) - off, "%clevel=%s", sep, level);
+        sep = '&';
+    }
+    (void)sep;
+
+    // HMAC signs path only
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_sse_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, NULL);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+    // No timeout — stream until interrupted
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+    // Low-speed limit to detect dead connections (10 bytes in 120s accounts for keepalives)
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 120L);
+
+    // Install SIGINT handler for clean shutdown
+    stream_interrupted = 0;
+    struct sigaction sa, old_sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = stream_sigint_handler;
+    sigaction(SIGINT, &sa, &old_sa);
+
+    fprintf(stderr, "Streaming %s logs... (Ctrl+C to stop)\n", source);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    // Restore original handler
+    sigaction(SIGINT, &old_sa, NULL);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (stream_interrupted) {
+        fprintf(stderr, "\nStream stopped.\n");
+        return 0;
+    }
+
+    if (res != CURLE_OK && res != CURLE_WRITE_ERROR) {
+        fprintf(stderr, "Error: Stream error: %s\n", curl_easy_strerror(res));
+        return 1;
+    }
+
+    if (http_code != 200) {
+        fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        return 1;
+    }
+
+    return 0;
 }
 
 // Create a service via HTTP API
@@ -5899,6 +6205,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "       %s snapshot [options]\n", prog);
     fprintf(stderr, "       %s image [options]\n", prog);
     fprintf(stderr, "       %s languages [--json]\n", prog);
+    fprintf(stderr, "       %s paas <command> [options]\n", prog);
     fprintf(stderr, "       %s key\n\n", prog);
     fprintf(stderr, "Commands:\n");
     fprintf(stderr, "  (default)        Execute source file in sandbox\n");
@@ -5907,6 +6214,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  snapshot         Manage container snapshots\n");
     fprintf(stderr, "  image            Manage images (publish, spawn, clone)\n");
     fprintf(stderr, "  languages        List available languages (--json for JSON output)\n");
+    fprintf(stderr, "  paas             PaaS platform management (logs, etc.)\n");
     fprintf(stderr, "  key              Check API key validity and expiration\n");
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -s, --shell LANG Specify language (default: bash if arg is not a file)\n");
@@ -6059,6 +6367,13 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s snapshot --info unsb-snapshot-xxxx  # get snapshot details\n", prog);
     fprintf(stderr, "  %s snapshot --delete unsb-snapshot-xxxx  # delete a snapshot\n", prog);
     fprintf(stderr, "  %s snapshot --clone unsb-snapshot-xxxx --type service --name myapp\n", prog);
+    fprintf(stderr, "  %s paas logs                             # last 100 lines from all sources\n", prog);
+    fprintf(stderr, "  %s paas logs --api -n 500               # last 500 API log lines\n", prog);
+    fprintf(stderr, "  %s paas logs --portal --grep error       # portal logs matching 'error'\n", prog);
+    fprintf(stderr, "  %s paas logs --pool cammy --since 1h     # cammy pool logs from last hour\n", prog);
+    fprintf(stderr, "  %s paas logs -l warning                  # warnings and above\n", prog);
+    fprintf(stderr, "  %s paas logs --follow                    # follow all logs in real-time\n", prog);
+    fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", prog);
     fprintf(stderr, "  %s key                             # check API key validity\n", prog);
     fprintf(stderr, "  %s key --extend                    # open portal to extend key\n", prog);
     fprintf(stderr, "\nAuthentication:\n");
@@ -6438,6 +6753,172 @@ unsandbox_key_info_t *unsandbox_validate_keys(const char *public_key, const char
 
     free_credentials(creds);
     return info;
+}
+
+/* ============================================================================
+ * PaaS Logs Library Implementation
+ * ============================================================================ */
+
+char *unsandbox_logs_fetch(
+    const char *source,
+    int lines,
+    const char *since,
+    const char *grep,
+    const char *public_key, const char *secret_key) {
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) { set_last_error("No credentials"); return NULL; }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { free_credentials(creds); set_last_error("curl init failed"); return NULL; }
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char path[256];
+    if (!source || strcmp(source, "all") == 0)
+        snprintf(path, sizeof(path), "/logs/all");
+    else
+        snprintf(path, sizeof(path), "/logs/%s", source);
+
+    char url[1024];
+    int off = snprintf(url, sizeof(url), "%s%s?lines=%d", PORTAL_BASE, path, lines > 0 ? lines : 100);
+    if (since && since[0])
+        off += snprintf(url + off, sizeof(url) - off, "&since=%s", since);
+    if (grep && grep[0])
+        off += snprintf(url + off, sizeof(url) - off, "&grep=%s", grep);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK || http_code != 200) {
+        char errbuf[256];
+        snprintf(errbuf, sizeof(errbuf), "HTTP %ld: %s", http_code,
+                 res != CURLE_OK ? curl_easy_strerror(res) : "request failed");
+        set_last_error(errbuf);
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data; // caller frees
+}
+
+// Streaming callback context for library API
+struct StreamCallbackCtx {
+    unsandbox_log_callback_t callback;
+    void *userdata;
+};
+
+static size_t stream_lib_sse_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct StreamCallbackCtx *ctx = (struct StreamCallbackCtx *)userp;
+    static char buf[65536];
+    static size_t buf_len = 0;
+
+    size_t space = sizeof(buf) - buf_len - 1;
+    size_t copy = realsize < space ? realsize : space;
+    memcpy(buf + buf_len, contents, copy);
+    buf_len += copy;
+    buf[buf_len] = 0;
+
+    char *pos = buf;
+    char *event_end;
+    while ((event_end = strstr(pos, "\n\n")) != NULL) {
+        *event_end = 0;
+        char *line = pos;
+        while (*line) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            if (strncmp(line, "data: ", 6) == 0) {
+                const char *payload = line + 6;
+                if (strcmp(payload, ":keepalive") != 0 && ctx->callback) {
+                    char *source = extract_json_string(payload, "source");
+                    char *logline = extract_json_string(payload, "line");
+                    ctx->callback(source, logline ? logline : payload, ctx->userdata);
+                    free(source);
+                    free(logline);
+                }
+            }
+            if (nl) line = nl + 1;
+            else break;
+        }
+        pos = event_end + 2;
+    }
+
+    if (pos > buf) {
+        buf_len = strlen(pos);
+        memmove(buf, pos, buf_len + 1);
+    }
+
+    if (stream_interrupted) return 0; // abort
+    return realsize;
+}
+
+int unsandbox_logs_stream(
+    const char *source,
+    const char *grep,
+    unsandbox_log_callback_t callback,
+    void *userdata,
+    const char *public_key, const char *secret_key) {
+
+    UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
+    if (!creds) { set_last_error("No credentials"); return 1; }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { free_credentials(creds); set_last_error("curl init failed"); return 1; }
+
+    char path[256];
+    if (!source || strcmp(source, "all") == 0)
+        snprintf(path, sizeof(path), "/logs/all/stream");
+    else
+        snprintf(path, sizeof(path), "/logs/%s/stream", source);
+
+    char url[1024];
+    if (grep && grep[0])
+        snprintf(url, sizeof(url), "%s%s?grep=%s", PORTAL_BASE, path, grep);
+    else
+        snprintf(url, sizeof(url), "%s%s", PORTAL_BASE, path);
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+    struct StreamCallbackCtx ctx = { callback, userdata };
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_lib_sse_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 120L);
+
+    stream_interrupted = 0;
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free_credentials(creds);
+
+    if (res != CURLE_OK && res != CURLE_WRITE_ERROR) {
+        set_last_error(curl_easy_strerror(res));
+        return 1;
+    }
+
+    return 0;
 }
 
 /* ============================================================================
@@ -9656,6 +10137,142 @@ int main(int argc, char *argv[]) {
         curl_global_cleanup();
         free_credentials(creds);
         return ret;
+    }
+
+    // Check for paas command (PaaS platform management)
+    if (argc >= 2 && strcmp(argv[1], "paas") == 0) {
+        // paas requires a sub-subcommand
+        if (argc < 3) {
+            fprintf(stderr, "Usage: %s paas <command> [options]\n\n", argv[0]);
+            fprintf(stderr, "Commands:\n");
+            fprintf(stderr, "  logs    Fetch or stream production logs\n");
+            fprintf(stderr, "\nRun '%s paas <command> -h' for help on a specific command.\n", argv[0]);
+            return 1;
+        }
+
+        // paas logs
+        if (strcmp(argv[2], "logs") == 0) {
+            const char *source = "all";
+            int lines = 100;
+            const char *since = "5m";
+            const char *grep_filter = NULL;
+            const char *level = NULL;
+            int do_stream = 0;
+            int json_output = 0;
+            int show_help = 0;
+
+            // Parse options (start at argv[3])
+            for (int i = 3; i < argc; i++) {
+                if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+                    i++;
+                    cli_public_key = argv[i];
+                } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
+                    i++;
+                    cli_secret_key = argv[i];
+                } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
+                    i++;
+                    cli_account_index = atoi(argv[i]);
+                } else if (strcmp(argv[i], "--source") == 0 && i + 1 < argc) {
+                    i++;
+                    source = argv[i];
+                } else if (strcmp(argv[i], "--all") == 0) {
+                    source = "all";
+                } else if (strcmp(argv[i], "--api") == 0) {
+                    source = "api";
+                } else if (strcmp(argv[i], "--portal") == 0) {
+                    source = "portal";
+                } else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc) {
+                    i++;
+                    static char pool_source[128];
+                    snprintf(pool_source, sizeof(pool_source), "pool/%s", argv[i]);
+                    source = pool_source;
+                } else if (strcmp(argv[i], "--lines") == 0 && i + 1 < argc) {
+                    i++;
+                    lines = atoi(argv[i]);
+                    if (lines < 1) lines = 1;
+                    if (lines > 10000) lines = 10000;
+                } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+                    i++;
+                    lines = atoi(argv[i]);
+                    if (lines < 1) lines = 1;
+                    if (lines > 10000) lines = 10000;
+                } else if (strcmp(argv[i], "--since") == 0 && i + 1 < argc) {
+                    i++;
+                    since = argv[i];
+                } else if (strcmp(argv[i], "--grep") == 0 && i + 1 < argc) {
+                    i++;
+                    grep_filter = argv[i];
+                } else if ((strcmp(argv[i], "--level") == 0 || strcmp(argv[i], "-l") == 0) && i + 1 < argc) {
+                    i++;
+                    level = argv[i];
+                } else if (strcmp(argv[i], "--follow") == 0 || strcmp(argv[i], "-f") == 0) {
+                    do_stream = 1;
+                } else if (strcmp(argv[i], "--json") == 0) {
+                    json_output = 1;
+                } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                    show_help = 1;
+                }
+            }
+
+            if (show_help) {
+                fprintf(stderr, "Usage: %s paas logs [options]\n\n", argv[0]);
+                fprintf(stderr, "Fetch or stream PaaS production logs.\n\n");
+                fprintf(stderr, "Sources:\n");
+                fprintf(stderr, "  --all              All sources (default)\n");
+                fprintf(stderr, "  --api              API server logs\n");
+                fprintf(stderr, "  --portal           Portal server logs\n");
+                fprintf(stderr, "  --pool NODE        Pool node logs (e.g., cammy, ai)\n");
+                fprintf(stderr, "  --source SOURCE    Source string (api, portal, pool/cammy, all)\n");
+                fprintf(stderr, "\nOptions:\n");
+                fprintf(stderr, "  --lines N, -n N    Number of lines (default: 100, max: 10000)\n");
+                fprintf(stderr, "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)\n");
+                fprintf(stderr, "  --grep PATTERN     Filter log lines by pattern\n");
+                fprintf(stderr, "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit\n");
+                fprintf(stderr, "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)\n");
+                fprintf(stderr, "  --json             Output raw JSON response\n");
+                fprintf(stderr, "  -p KEY             Public key\n");
+                fprintf(stderr, "  -k KEY             Secret key\n");
+                fprintf(stderr, "  -h                 Show this help\n");
+                fprintf(stderr, "\nExamples:\n");
+                fprintf(stderr, "  %s paas logs                             # last 100 lines from all sources\n", argv[0]);
+                fprintf(stderr, "  %s paas logs --api --lines 500           # last 500 API log lines\n", argv[0]);
+                fprintf(stderr, "  %s paas logs --portal --grep error       # portal logs matching 'error'\n", argv[0]);
+                fprintf(stderr, "  %s paas logs --pool cammy --since 1h     # cammy pool logs from last hour\n", argv[0]);
+                fprintf(stderr, "  %s paas logs -l warning                  # warnings and above from all sources\n", argv[0]);
+                fprintf(stderr, "  %s paas logs --follow                    # follow all logs in real-time\n", argv[0]);
+                fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", argv[0]);
+                fprintf(stderr, "\nRequires a partner API key with log access enabled.\n");
+                return 0;
+            }
+
+            // Get credentials
+            UnsandboxCredentials *creds = get_credentials(cli_public_key, cli_secret_key, cli_account_index);
+
+            if (!creds || !creds->public_key || strlen(creds->public_key) == 0) {
+                fprintf(stderr, "Error: API credentials required.\n");
+                fprintf(stderr, "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n");
+                fprintf(stderr, "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n");
+                fprintf(stderr, "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n");
+                free_credentials(creds);
+                return 1;
+            }
+
+            curl_global_init(CURL_GLOBAL_DEFAULT);
+            int ret;
+            if (do_stream) {
+                ret = stream_paas_logs(creds, source, grep_filter, level);
+            } else {
+                ret = fetch_paas_logs(creds, source, lines, since, grep_filter, json_output, level);
+            }
+            curl_global_cleanup();
+            free_credentials(creds);
+            return ret;
+        }
+
+        // Unknown paas subcommand
+        fprintf(stderr, "Error: Unknown paas command '%s'\n", argv[2]);
+        fprintf(stderr, "Run '%s paas' for available commands.\n", argv[0]);
+        return 1;
     }
 
     // Check for session command

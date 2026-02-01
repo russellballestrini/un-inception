@@ -429,6 +429,34 @@ char *unsandbox_image_clone(
     const char *public_key, const char *secret_key);
 
 /* ============================================================================
+ * PaaS Logs (2)
+ * ============================================================================ */
+
+/* Fetch batch logs from portal. Returns JSON string (caller must free).
+ * source: "all", "api", "portal", "pool/cammy", "pool/ai"
+ * lines: number of lines (1-10000)
+ * since: time window ("1m", "5m", "1h", "1d")
+ * grep: optional filter pattern (NULL for no filter) */
+char *unsandbox_logs_fetch(
+    const char *source,
+    int lines,
+    const char *since,
+    const char *grep,
+    const char *public_key, const char *secret_key);
+
+/* Stream logs via SSE. Blocks until interrupted or server closes.
+ * Calls callback for each log line received.
+ * Returns 0 on clean shutdown, 1 on error. */
+typedef void (*unsandbox_log_callback_t)(const char *source, const char *line, void *userdata);
+
+int unsandbox_logs_stream(
+    const char *source,
+    const char *grep,
+    unsandbox_log_callback_t callback,
+    void *userdata,
+    const char *public_key, const char *secret_key);
+
+/* ============================================================================
  * Key Validation (1)
  * ============================================================================ */
 
