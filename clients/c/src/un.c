@@ -2655,8 +2655,62 @@ static char* get_service_logs(const UnsandboxCredentials *creds, const char *ser
 // PaaS Logs (fetch and stream production logs from portal)
 // ============================================================================
 
+// Log cursor: ~/.unsandbox/log_cursor stores last fetch time as Unix timestamp.
+// Used to fetch only new logs since last call (ops semaphore).
+
+static const char *get_log_cursor_path(void) {
+    static char path[512];
+    const char *home = getenv("HOME");
+    if (!home) return NULL;
+    snprintf(path, sizeof(path), "%s/.unsandbox/paas_log_cursor", home);
+    return path;
+}
+
+// Read cursor: returns seconds-ago string like "42s", or NULL if no cursor
+static char *read_log_cursor(void) {
+    const char *path = get_log_cursor_path();
+    if (!path) return NULL;
+
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+
+    char buf[64];
+    if (!fgets(buf, sizeof(buf), f)) { fclose(f); return NULL; }
+    fclose(f);
+
+    long ts = atol(buf);
+    if (ts <= 0) return NULL;
+
+    long ago = (long)time(NULL) - ts;
+    if (ago < 5) ago = 5;  // minimum 5s to avoid empty results
+
+    static char since_str[32];
+    snprintf(since_str, sizeof(since_str), "%lds", ago);
+    return since_str;
+}
+
+// Write cursor: store current Unix timestamp
+static void write_log_cursor(void) {
+    const char *path = get_log_cursor_path();
+    if (!path) return;
+
+    // Ensure ~/.unsandbox/ exists
+    char dir[512];
+    const char *home = getenv("HOME");
+    if (!home) return;
+    snprintf(dir, sizeof(dir), "%s/.unsandbox", home);
+    mkdir(dir, 0700);  // ignore error if exists
+
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "%ld\n", (long)time(NULL));
+    fclose(f);
+}
+
 // Volatile flag for SIGINT handling during SSE streaming (forward declaration)
 static volatile int stream_interrupted = 0;
+// Track last received log time for reconnect deduplication
+static volatile time_t stream_last_recv_time = 0;
 
 // Streaming write callback — prints SSE data lines to stdout as they arrive
 static size_t stream_sse_callback(void *contents, size_t size, size_t nmemb, void *userp) {
@@ -2694,13 +2748,16 @@ static size_t stream_sse_callback(void *contents, size_t size, size_t nmemb, voi
                     if (source && logline) {
                         printf("\033[36m%-12s\033[0m %s\n", source, logline);
                         fflush(stdout);
+                        stream_last_recv_time = time(NULL);
                     } else if (logline) {
                         printf("%s\n", logline);
                         fflush(stdout);
+                        stream_last_recv_time = time(NULL);
                     } else {
                         // Plain text payload
                         printf("%s\n", payload);
                         fflush(stdout);
+                        stream_last_recv_time = time(NULL);
                     }
                     free(source);
                     free(logline);
@@ -2783,6 +2840,9 @@ static int fetch_paas_logs(const UnsandboxCredentials *creds,
         free(response.data);
         return 1;
     }
+
+    // Update cursor on success
+    write_log_cursor();
 
     if (json_output) {
         // Raw JSON output
@@ -2872,13 +2932,10 @@ static void stream_sigint_handler(int sig) {
     stream_interrupted = 1;
 }
 
-// Stream PaaS logs (SSE) — blocks until Ctrl+C or server closes
+// Stream PaaS logs (SSE) — blocks until Ctrl+C, auto-reconnects on drop
 static int stream_paas_logs(const UnsandboxCredentials *creds,
                             const char *source, const char *grep,
                             const char *level) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return 1;
-
     // Build path: /logs/{source}/stream
     char path[256];
     if (strcmp(source, "all") == 0)
@@ -2900,23 +2957,6 @@ static int stream_paas_logs(const UnsandboxCredentials *creds,
     }
     (void)sep;
 
-    // HMAC signs path only
-    struct curl_slist *headers = NULL;
-    headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_sse_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, NULL);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
-    // Force HTTP/1.1 — SSE streaming breaks with HTTP/2 framing
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-    // No timeout — stream until interrupted
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    // Low-speed limit to detect dead connections (10 bytes in 120s accounts for keepalives)
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 120L);
-
     // Install SIGINT handler for clean shutdown
     stream_interrupted = 0;
     struct sigaction sa, old_sa;
@@ -2926,32 +2966,100 @@ static int stream_paas_logs(const UnsandboxCredentials *creds,
 
     fprintf(stderr, "Streaming %s logs... (Ctrl+C to stop)\n", source);
 
-    CURLcode res = curl_easy_perform(curl);
+    int reconnect_delay = 2;  // Start at 2s, cap at 30s
+    int is_reconnect = 0;
+    stream_last_recv_time = 0;
 
-    // Restore original handler
+    while (!stream_interrupted) {
+        CURL *curl = curl_easy_init();
+        if (!curl) { sigaction(SIGINT, &old_sa, NULL); return 1; }
+
+        // Fresh HMAC headers each connection (timestamps expire)
+        struct curl_slist *headers = NULL;
+        headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
+
+        // On reconnect, add since= to pick up where we left off
+        char reconnect_url[2048];
+        if (is_reconnect && stream_last_recv_time > 0) {
+            int gap = (int)(time(NULL) - stream_last_recv_time) + 5;  // +5s overlap buffer
+            if (gap < 10) gap = 10;
+            snprintf(reconnect_url, sizeof(reconnect_url), "%s%csince=%ds",
+                     url, strchr(url, '?') ? '&' : '?', gap);
+        } else {
+            snprintf(reconnect_url, sizeof(reconnect_url), "%s", url);
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, reconnect_url);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_sse_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, NULL);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+        // Force HTTP/1.1 — SSE streaming breaks with HTTP/2 framing
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
+        // No timeout — stream until interrupted
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+        // Low-speed limit to detect dead connections (10 bytes in 120s accounts for keepalives)
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 120L);
+
+        time_t connect_time = time(NULL);
+        CURLcode res = curl_easy_perform(curl);
+
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        // Reset backoff if we were connected for >30s (healthy connection)
+        if (time(NULL) - connect_time > 30) reconnect_delay = 2;
+
+        if (stream_interrupted) {
+            break;
+        }
+
+        // Fatal errors — don't reconnect
+        if (http_code == 401 || http_code == 403) {
+            fprintf(stderr, "Error: HTTP %ld (auth failed)\n", http_code);
+            sigaction(SIGINT, &old_sa, NULL);
+            return 1;
+        }
+
+        // Recoverable: partial file, connection reset, low-speed timeout
+        if (res == CURLE_PARTIAL_FILE || res == CURLE_RECV_ERROR ||
+            res == CURLE_OPERATION_TIMEDOUT || res == CURLE_GOT_NOTHING ||
+            (res == CURLE_OK && http_code == 200)) {
+            // Silent reconnect — don't pollute output
+            sleep(reconnect_delay);
+            if (reconnect_delay < 30) reconnect_delay = reconnect_delay * 2;
+            if (reconnect_delay > 30) reconnect_delay = 30;
+            is_reconnect = 1;
+            continue;
+        }
+
+        // Transient HTTP errors (502, 503, 504) — silent reconnect
+        if (http_code >= 500) {
+            sleep(reconnect_delay);
+            if (reconnect_delay < 30) reconnect_delay = reconnect_delay * 2;
+            if (reconnect_delay > 30) reconnect_delay = 30;
+            is_reconnect = 1;
+            continue;
+        }
+
+        // Non-recoverable curl error
+        if (res != CURLE_OK && res != CURLE_WRITE_ERROR) {
+            fprintf(stderr, "Error: Stream error: %s\n", curl_easy_strerror(res));
+            sigaction(SIGINT, &old_sa, NULL);
+            return 1;
+        }
+
+        // CURLE_WRITE_ERROR from our callback returning 0 (shouldn't happen without interrupt)
+        break;
+    }
+
     sigaction(SIGINT, &old_sa, NULL);
-
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (stream_interrupted) {
-        fprintf(stderr, "\nStream stopped.\n");
-        return 0;
-    }
-
-    if (res != CURLE_OK && res != CURLE_WRITE_ERROR) {
-        fprintf(stderr, "Error: Stream error: %s\n", curl_easy_strerror(res));
-        return 1;
-    }
-
-    if (http_code != 200) {
-        fprintf(stderr, "Error: HTTP %ld\n", http_code);
-        return 1;
-    }
-
+    write_log_cursor();
+    fprintf(stderr, "\nStream stopped.\n");
     return 0;
 }
 
@@ -10156,7 +10264,8 @@ int main(int argc, char *argv[]) {
         if (strcmp(argv[2], "logs") == 0) {
             const char *source = "all";
             int lines = 100;
-            const char *since = "5m";
+            const char *since = NULL;
+            int since_explicit = 0;  // whether user passed --since
             const char *grep_filter = NULL;
             const char *level = NULL;
             int do_stream = 0;
@@ -10201,6 +10310,7 @@ int main(int argc, char *argv[]) {
                 } else if (strcmp(argv[i], "--since") == 0 && i + 1 < argc) {
                     i++;
                     since = argv[i];
+                    since_explicit = 1;
                 } else if (strcmp(argv[i], "--grep") == 0 && i + 1 < argc) {
                     i++;
                     grep_filter = argv[i];
@@ -10257,6 +10367,16 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n");
                 free_credentials(creds);
                 return 1;
+            }
+
+            // Resolve since: explicit --since > cursor > default 5m
+            if (!since_explicit) {
+                char *cursor = read_log_cursor();
+                if (cursor) {
+                    since = cursor;
+                } else {
+                    since = "5m";
+                }
             }
 
             curl_global_init(CURL_GLOBAL_DEFAULT);
