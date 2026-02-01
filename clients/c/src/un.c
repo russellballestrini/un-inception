@@ -2909,6 +2909,8 @@ static int stream_paas_logs(const UnsandboxCredentials *creds,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream_sse_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, NULL);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+    // Force HTTP/1.1 — SSE streaming breaks with HTTP/2 framing
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
     // No timeout — stream until interrupted
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
     // Low-speed limit to detect dead connections (10 bytes in 120s accounts for keepalives)
