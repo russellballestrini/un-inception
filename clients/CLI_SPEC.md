@@ -140,6 +140,9 @@ un service --unfreeze ID          # Resume service
 un service --destroy ID           # Delete service
 un service --lock ID              # Prevent deletion
 un service --unlock ID            # Allow deletion
+un service --add-domain ID --domains example.com      # Add domains
+un service --remove-domain ID --domains example.com   # Remove domains
+un service --set-domains ID --domains a.com,b.com     # Replace all domains
 un service --execute ID 'cmd'     # Run command in service
 un service --redeploy ID          # Re-run bootstrap
 un service --snapshot ID          # Create snapshot
@@ -165,6 +168,9 @@ un service --snapshot ID          # Create snapshot
 | `--destroy ID` | Delete service |
 | `--lock ID` | Prevent deletion |
 | `--unlock ID` | Allow deletion |
+| `--add-domain ID` | Add domains (requires --domains) |
+| `--remove-domain ID` | Remove domains (requires --domains) |
+| `--set-domains ID` | Replace all domains (requires --domains) |
 | `--auto-unfreeze ID` | Enable auto-unfreeze on HTTP request |
 | `--no-auto-unfreeze ID` | Disable auto-unfreeze |
 | `--show-freeze-page ID` | Show payment page when frozen (default) |

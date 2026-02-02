@@ -3766,6 +3766,115 @@ static int unlock_service(const UnsandboxCredentials *creds, const char *service
     return 0;
 }
 
+// Update custom domains for a service
+// action: "custom_domains" (full replace), "add", or "remove"
+// domains: comma-separated domain list
+static int update_service_domains(const UnsandboxCredentials *creds, const char *service_id, const char *action, const char *domains) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s/services/%s/domains", API_BASE, service_id);
+
+    char path[256];
+    snprintf(path, sizeof(path), "/services/%s/domains", service_id);
+
+    // Build JSON payload: {"action": ["domain1", "domain2"]}
+    size_t payload_size = strlen(domains) * 2 + 256;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        curl_easy_cleanup(curl);
+        return 1;
+    }
+    char *p = payload;
+    p += sprintf(p, "{\"%s\":[", action);
+
+    char *domains_copy = strdup(domains);
+    char *token = strtok(domains_copy, ",");
+    int first = 1;
+    while (token) {
+        while (*token == ' ') token++;
+        char *end = token + strlen(token) - 1;
+        while (end > token && *end == ' ') *end-- = '\0';
+        if (!first) p += sprintf(p, ",");
+        char *esc = escape_json_string(token);
+        p += sprintf(p, "\"%s\"", esc);
+        free(esc);
+        first = 0;
+        token = strtok(NULL, ",");
+    }
+    free(domains_copy);
+    p += sprintf(p, "]}");
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, "PUT", path, payload);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(payload);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code == 404) {
+        fprintf(stderr, "Error: Service not found\n");
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code == 403) {
+        fprintf(stderr, "Error: Not authorized to modify this service\n");
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code != 200) {
+        fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        if (response.data) fprintf(stderr, "%s\n", response.data);
+        free(response.data);
+        return 1;
+    }
+
+    printf("\033[32mCustom domains updated successfully\033[0m\n");
+    // Print resulting domains from response
+    if (response.data) {
+        // Quick parse for custom_domains array
+        char *cd = strstr(response.data, "\"custom_domains\"");
+        if (cd) {
+            char *start = strchr(cd, '[');
+            char *end = start ? strchr(start, ']') : NULL;
+            if (start && end) {
+                char tmp = *(end + 1);
+                *(end + 1) = '\0';
+                printf("Domains: %s\n", start);
+                *(end + 1) = tmp;
+            }
+        }
+    }
+    free(response.data);
+    return 0;
+}
+
 // Set unfreeze_on_demand for a service
 static int set_unfreeze_on_demand(const UnsandboxCredentials *creds, const char *service_id, int enabled) {
     CURL *curl = curl_easy_init();
@@ -9735,6 +9844,9 @@ int main(int argc, char *argv[]) {
         const char *restore_snapshot_id = NULL;
         const char *snapshot_name = NULL;
         int hot_snapshot = 0;
+        int do_add_domain = 0;
+        int do_remove_domain = 0;
+        int do_set_domains = 0;
         int create_unfreeze_on_demand = 0;  // For --unfreeze-on-demand flag on create
 
         // Environment variables for service create
@@ -9875,6 +9987,18 @@ int main(int argc, char *argv[]) {
                 service_id = argv[i];
             } else if (strcmp(argv[i], "--unlock") == 0 && i + 1 < argc) {
                 do_unlock = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--add-domain") == 0 && i + 1 < argc) {
+                do_add_domain = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--remove-domain") == 0 && i + 1 < argc) {
+                do_remove_domain = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--set-domains") == 0 && i + 1 < argc) {
+                do_set_domains = 1;
                 i++;
                 service_id = argv[i];
             } else if (strcmp(argv[i], "--auto-unfreeze") == 0 && i + 1 < argc) {
@@ -10086,6 +10210,30 @@ int main(int argc, char *argv[]) {
             ret = lock_service(creds, service_id);
         } else if (do_unlock) {
             ret = unlock_service(creds, service_id);
+        } else if (do_add_domain) {
+            if (!service_domains) {
+                fprintf(stderr, "Error: --domains required with --add-domain\n");
+                curl_global_cleanup();
+                free_credentials(creds);
+                return 2;
+            }
+            ret = update_service_domains(creds, service_id, "add", service_domains);
+        } else if (do_remove_domain) {
+            if (!service_domains) {
+                fprintf(stderr, "Error: --domains required with --remove-domain\n");
+                curl_global_cleanup();
+                free_credentials(creds);
+                return 2;
+            }
+            ret = update_service_domains(creds, service_id, "remove", service_domains);
+        } else if (do_set_domains) {
+            if (!service_domains) {
+                fprintf(stderr, "Error: --domains required with --set-domains\n");
+                curl_global_cleanup();
+                free_credentials(creds);
+                return 2;
+            }
+            ret = update_service_domains(creds, service_id, "custom_domains", service_domains);
         } else if (do_auto_unfreeze) {
             ret = set_unfreeze_on_demand(creds, service_id, 1);
         } else if (do_no_auto_unfreeze) {

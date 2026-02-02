@@ -1305,6 +1305,30 @@ def unlock_service(
     return _make_request("POST", f"/services/{service_id}/unlock", public_key, secret_key, {})
 
 
+def update_service_domains(
+    service_id: str,
+    domains: list,
+    action: str = "custom_domains",
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Update custom domains for a service.
+
+    Args:
+        service_id: Service ID
+        domains: List of domain strings
+        action: "custom_domains" (replace), "add" (merge), or "remove" (subtract)
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with updated domains
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("PUT", f"/services/{service_id}/domains", public_key, secret_key, {action: domains})
+
+
 def set_unfreeze_on_demand(
     service_id: str,
     enabled: bool,
@@ -2362,6 +2386,12 @@ Examples:
                                help="Prevent deletion")
     service_group.add_argument("--unlock", metavar="ID",
                                help="Allow deletion")
+    service_group.add_argument("--add-domain", metavar="ID",
+                               help="Add domains (with --domains)")
+    service_group.add_argument("--remove-domain", metavar="ID",
+                               help="Remove domains (with --domains)")
+    service_group.add_argument("--set-domains", metavar="ID",
+                               help="Replace all domains (with --domains)")
     service_group.add_argument("--resize", metavar="ID",
                                help="Resize service (with --vcpu)")
     service_group.add_argument("--redeploy", metavar="ID",
@@ -2667,6 +2697,30 @@ def _handle_service_command(args, public_key: str, secret_key: str):
     elif args.unlock:
         result = unlock_service(args.unlock, public_key, secret_key)
         print(f"Service {args.unlock} unlocked")
+    elif getattr(args, 'add_domain', None):
+        if not args.domains:
+            print("Error: --domains required with --add-domain", file=sys.stderr)
+            sys.exit(2)
+        domains = [d.strip() for d in args.domains.split(",")]
+        result = update_service_domains(args.add_domain, domains, "add", public_key, secret_key)
+        print(f"Domains added to {args.add_domain}")
+        print(f"Domains: {result.get('custom_domains', [])}")
+    elif getattr(args, 'remove_domain', None):
+        if not args.domains:
+            print("Error: --domains required with --remove-domain", file=sys.stderr)
+            sys.exit(2)
+        domains = [d.strip() for d in args.domains.split(",")]
+        result = update_service_domains(args.remove_domain, domains, "remove", public_key, secret_key)
+        print(f"Domains removed from {args.remove_domain}")
+        print(f"Domains: {result.get('custom_domains', [])}")
+    elif getattr(args, 'set_domains', None):
+        if not args.domains:
+            print("Error: --domains required with --set-domains", file=sys.stderr)
+            sys.exit(2)
+        domains = [d.strip() for d in args.domains.split(",")]
+        result = update_service_domains(args.set_domains, domains, "custom_domains", public_key, secret_key)
+        print(f"Domains set for {args.set_domains}")
+        print(f"Domains: {result.get('custom_domains', [])}")
     elif args.resize:
         vcpu = getattr(args, 'vcpu', 1) or 1
         result = update_service(args.resize, public_key, secret_key, vcpu=vcpu)
