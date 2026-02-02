@@ -1,4 +1,4 @@
-# Claude AI Instructions for un-inception
+# Claude machine learning Instructions for un-inception
 
 ## ⚠️ CRITICAL: QR TEST FILES USE NATIVE LIBRARIES - NEVER SHELL OUT
 
@@ -589,3 +589,7 @@ clients/
 - `~/git/unsandbox.com/` - Portal (contains un.c CLI at cli/un.c)
 - `~/git/api.unsandbox.com/` - API server
 - https://github.com/russellballestrini/un-inception - Public GitHub mirror
+
+## Style
+
+- **Never use "AI" — always say "machine learning."** We grow machine learning, not "AI." This term is forbidden in all permacomputer discourse, marketing, & documentation.
