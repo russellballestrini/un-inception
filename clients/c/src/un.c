@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <time.h>
+#include <limits.h>
 #include <curl/curl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -4839,7 +4840,7 @@ static int execute_service(const UnsandboxCredentials *creds, const char *servic
     snprintf(job_path, sizeof(job_path), "/jobs/%s", job_id);
 
     int poll_count = 0;
-    int max_polls = (timeout_ms / 1000) + 10;  // timeout + 10 extra seconds
+    int max_polls = timeout_ms == 0 ? INT_MAX : (timeout_ms / 1000) + 10;  // 0 = unlimited
 
     while (poll_count < max_polls) {
         usleep(500000);  // 500ms between polls
@@ -6706,7 +6707,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --resize ID        Resize service vCPU/memory (requires --vcpu)\n");
     fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (optional: --bootstrap or --bootstrap-file)\n");
     fprintf(stderr, "  --execute ID CMD   Run a command in a running service (use -f to upload files first)\n");
-    fprintf(stderr, "  -t, --timeout SEC  Timeout for --execute in seconds (default: 30, max: 600)\n");
+    fprintf(stderr, "  -t, --timeout SEC  Timeout for --execute in seconds (default: 30, 0=unlimited)\n");
     fprintf(stderr, "  --dump-bootstrap ID [FILE]  Dump bootstrap script (for migrations)\n");
     fprintf(stderr, "  --snapshot ID      Create snapshot of service (paid tiers only)\n");
     fprintf(stderr, "  --restore SNAPSHOT Restore service from snapshot\n");
@@ -10253,8 +10254,8 @@ int main(int argc, char *argv[]) {
             } else if ((strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--timeout") == 0) && i + 1 < argc) {
                 i++;
                 execute_timeout = atoi(argv[i]) * 1000;  // Convert seconds to ms
-                if (execute_timeout < 1000) execute_timeout = 1000;  // Min 1 second
-                if (execute_timeout > 600000) execute_timeout = 600000;  // Max 10 minutes
+                if (execute_timeout < 0) execute_timeout = 0;  // 0 = unlimited
+                // No max cap - let it run as long as needed
             } else if (strcmp(argv[i], "--dump-bootstrap") == 0 && i + 1 < argc) {
                 do_dump_bootstrap = 1;
                 i++;
