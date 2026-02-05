@@ -1391,6 +1391,12 @@ static char* find_session_by_container(const UnsandboxCredentials *creds, const 
     return NULL;
 }
 
+// Forward declaration for sudo challenge handler (defined after destroy_service)
+static int handle_sudo_challenge(const char *response_data,
+                                  const UnsandboxCredentials *creds,
+                                  const char *method, const char *url,
+                                  const char *path, const char *body);
+
 // Kill a session by ID or container name
 static int kill_session(const UnsandboxCredentials *creds, const char *session_id_or_container) {
     char *session_id = NULL;
@@ -1463,6 +1469,12 @@ static int kill_session(const UnsandboxCredentials *creds, const char *session_i
         free(response.data);
         free(session_id);
         return 1;
+    } else if (http_code == 428) {
+        fprintf(stderr, "\n");
+        int result = handle_sudo_challenge(response.data, creds, "DELETE", url, path, NULL);
+        free(response.data);
+        free(session_id);
+        return result;
     } else {
         fprintf(stderr, " failed\nError: HTTP %ld\n", http_code);
         if (response.data) fprintf(stderr, "%s\n", response.data);
@@ -3592,6 +3604,110 @@ static int unfreeze_service(const UnsandboxCredentials *creds, const char *servi
     return 0;
 }
 
+// Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+static int handle_sudo_challenge(const char *response_data,
+                                  const UnsandboxCredentials *creds,
+                                  const char *method, const char *url,
+                                  const char *path, const char *body) {
+    // Extract challenge_id from response
+    char *challenge_id = extract_json_string(response_data, "challenge_id");
+
+    fprintf(stderr, "\033[33mConfirmation required. Check your email for a one-time code.\033[0m\n");
+    fprintf(stderr, "Enter OTP: ");
+
+    char otp[32];
+    if (!fgets(otp, sizeof(otp), stdin)) {
+        fprintf(stderr, "Error: Failed to read OTP\n");
+        if (challenge_id) free(challenge_id);
+        return 1;
+    }
+    // Strip newline
+    size_t otp_len = strlen(otp);
+    if (otp_len > 0 && otp[otp_len - 1] == '\n') otp[otp_len - 1] = '\0';
+    otp_len = strlen(otp);
+    if (otp_len > 0 && otp[otp_len - 1] == '\r') otp[otp_len - 1] = '\0';
+
+    if (strlen(otp) == 0) {
+        fprintf(stderr, "Error: Operation cancelled\n");
+        if (challenge_id) free(challenge_id);
+        return 1;
+    }
+
+    // Retry the request with sudo headers
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        if (challenge_id) free(challenge_id);
+        return 1;
+    }
+
+    struct ResponseBuffer retry_response = {0};
+    retry_response.data = malloc(1);
+    retry_response.size = 0;
+
+    struct curl_slist *headers = NULL;
+    headers = add_hmac_auth_headers(headers, creds, method, path, body);
+
+    // Add sudo headers
+    char otp_header[64];
+    snprintf(otp_header, sizeof(otp_header), "X-Sudo-OTP: %s", otp);
+    headers = curl_slist_append(headers, otp_header);
+
+    if (challenge_id) {
+        char challenge_header[256];
+        snprintf(challenge_header, sizeof(challenge_header), "X-Sudo-Challenge: %s", challenge_id);
+        headers = curl_slist_append(headers, challenge_header);
+        free(challenge_id);
+    }
+
+    if (body) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    if (strcmp(method, "DELETE") == 0) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    } else if (strcmp(method, "POST") == 0) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
+    }
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &retry_response);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(retry_response.data);
+        return 1;
+    }
+
+    if (http_code >= 200 && http_code < 300) {
+        printf("\033[32mOperation completed successfully\033[0m\n");
+        free(retry_response.data);
+        return 0;
+    }
+
+    fprintf(stderr, "Error: HTTP %ld\n", http_code);
+    if (retry_response.data) {
+        char *error = extract_json_string(retry_response.data, "error");
+        if (error) {
+            fprintf(stderr, "%s\n", error);
+            free(error);
+        } else {
+            fprintf(stderr, "%s\n", retry_response.data);
+        }
+    }
+    free(retry_response.data);
+    return 1;
+}
+
 // Destroy a service
 static int destroy_service(const UnsandboxCredentials *creds, const char *service_id) {
     CURL *curl = curl_easy_init();
@@ -3634,6 +3750,12 @@ static int destroy_service(const UnsandboxCredentials *creds, const char *servic
         fprintf(stderr, "Error: Service not found\n");
         free(response.data);
         return 1;
+    }
+
+    if (http_code == 428) {
+        int result = handle_sudo_challenge(response.data, creds, "DELETE", url, path, NULL);
+        free(response.data);
+        return result;
     }
 
     if (http_code != 200) {
@@ -3752,6 +3874,12 @@ static int unlock_service(const UnsandboxCredentials *creds, const char *service
         fprintf(stderr, "Error: Service not found\n");
         free(response.data);
         return 1;
+    }
+
+    if (http_code == 428) {
+        int result = handle_sudo_challenge(response.data, creds, "POST", url, path, body);
+        free(response.data);
+        return result;
     }
 
     if (http_code != 200) {
@@ -4595,7 +4723,8 @@ static int redeploy_service(const UnsandboxCredentials *creds, const char *servi
 
 // Execute a command in a running service container
 // Uses async job polling for long-running commands
-static int execute_service(const UnsandboxCredentials *creds, const char *service_id, const char *command, int timeout_ms) {
+// Optional input_files: files to upload before executing (written to /tmp/input/)
+static int execute_service(const UnsandboxCredentials *creds, const char *service_id, const char *command, int timeout_ms, struct InputFile *input_files, int input_file_count) {
     CURL *curl = curl_easy_init();
     if (!curl) return 1;
 
@@ -4617,9 +4746,37 @@ static int execute_service(const UnsandboxCredentials *creds, const char *servic
         return 1;
     }
 
-    char payload[8192];
-    snprintf(payload, sizeof(payload), "{\"command\":\"%s\",\"timeout\":%d}", esc_command, timeout_ms);
+    // Calculate payload size (base + files)
+    size_t payload_size = 8192;
+    for (int i = 0; i < input_file_count; i++) {
+        payload_size += strlen(input_files[i].content_base64) + 256;
+    }
+
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        free(esc_command);
+        curl_easy_cleanup(curl);
+        free(response.data);
+        return 1;
+    }
+
+    char *p = payload;
+    p += sprintf(p, "{\"command\":\"%s\",\"timeout\":%d", esc_command, timeout_ms);
     free(esc_command);
+
+    // Add input files if provided
+    if (input_file_count > 0) {
+        p += sprintf(p, ",\"input_files\":[");
+        for (int i = 0; i < input_file_count; i++) {
+            if (i > 0) *p++ = ',';
+            char *esc_filename = escape_json_string(input_files[i].filename);
+            p += sprintf(p, "{\"filename\":\"%s\",\"content\":\"%s\"}",
+                        esc_filename, input_files[i].content_base64);
+            free(esc_filename);
+        }
+        p += sprintf(p, "]");
+    }
+    p += sprintf(p, "}");
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -4638,6 +4795,7 @@ static int execute_service(const UnsandboxCredentials *creds, const char *servic
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    free(payload);
 
     if (res != CURLE_OK) {
         fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
@@ -5130,6 +5288,12 @@ static int delete_snapshot(const UnsandboxCredentials *creds, const char *snapsh
         return 1;
     }
 
+    if (http_code == 428) {
+        int result = handle_sudo_challenge(response.data, creds, "DELETE", url, path, NULL);
+        free(response.data);
+        return result;
+    }
+
     if (http_code != 200) {
         fprintf(stderr, "Error: HTTP %ld\n", http_code);
         if (response.data) fprintf(stderr, "%s\n", response.data);
@@ -5246,6 +5410,12 @@ static int unlock_snapshot(const UnsandboxCredentials *creds, const char *snapsh
         fprintf(stderr, "Error: Snapshot not found\n");
         free(response.data);
         return 1;
+    }
+
+    if (http_code == 428) {
+        int result = handle_sudo_challenge(response.data, creds, "POST", url, path, body);
+        free(response.data);
+        return result;
     }
 
     if (http_code != 200) {
@@ -5799,11 +5969,34 @@ static int delete_image(const UnsandboxCredentials *creds, const char *image_id)
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
     CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code == 428) {
+        int result = handle_sudo_challenge(response.data, creds, "DELETE", url, path, NULL);
+        free(response.data);
+        return result;
+    }
+
+    if (http_code != 200) {
+        fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        if (response.data) fprintf(stderr, "%s\n", response.data);
+        free(response.data);
+        return 1;
+    }
+
     free(response.data);
-    return (res == CURLE_OK) ? 0 : 1;
+    return 0;
 }
 
 // Lock an image
@@ -5871,11 +6064,34 @@ static int unlock_image(const UnsandboxCredentials *creds, const char *image_id)
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
     CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code == 428) {
+        int result = handle_sudo_challenge(response.data, creds, "POST", url, path, "{}");
+        free(response.data);
+        return result;
+    }
+
+    if (http_code != 200) {
+        fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        if (response.data) fprintf(stderr, "%s\n", response.data);
+        free(response.data);
+        return 1;
+    }
+
     free(response.data);
-    return (res == CURLE_OK) ? 0 : 1;
+    return 0;
 }
 
 // Set image visibility (private, unlisted, public)
@@ -6489,7 +6705,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --no-show-freeze-page ID  Disable freeze page (return JSON error when frozen)\n");
     fprintf(stderr, "  --resize ID        Resize service vCPU/memory (requires --vcpu)\n");
     fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (optional: --bootstrap or --bootstrap-file)\n");
-    fprintf(stderr, "  --execute ID CMD   Run a command in a running service\n");
+    fprintf(stderr, "  --execute ID CMD   Run a command in a running service (use -f to upload files first)\n");
     fprintf(stderr, "  --dump-bootstrap ID [FILE]  Dump bootstrap script (for migrations)\n");
     fprintf(stderr, "  --snapshot ID      Create snapshot of service (paid tiers only)\n");
     fprintf(stderr, "  --restore SNAPSHOT Restore service from snapshot\n");
@@ -6568,6 +6784,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s service --redeploy abc123 --bootstrap-file ./script.sh\n", prog);
     fprintf(stderr, "  %s service --redeploy abc123       # uses stored encrypted bootstrap\n", prog);
     fprintf(stderr, "  %s service --execute maldoror 'journalctl -u myapp -n 50'\n", prog);
+    fprintf(stderr, "  %s service -f data.txt --execute myapp 'cat /tmp/input/data.txt'  # upload then run\n", prog);
     fprintf(stderr, "  %s service --dump-bootstrap maldoror  # print bootstrap to stdout\n", prog);
     fprintf(stderr, "  %s service --dump-bootstrap maldoror backup.sh  # save to file\n", prog);
     fprintf(stderr, "  %s service --name app -e API_KEY=secret -e DEBUG=1  # with env vars\n", prog);
@@ -10258,7 +10475,13 @@ int main(int argc, char *argv[]) {
             ret = redeploy_service(creds, service_id, bootstrap_to_use);
         } else if (do_execute) {
             // Default timeout 30 seconds (30000ms)
-            ret = execute_service(creds, service_id, execute_command, 30000);
+            // Pass input files if provided (written to /tmp/input/ before command runs)
+            ret = execute_service(creds, service_id, execute_command, 30000, service_input_files, service_input_file_count);
+            // Free input file memory
+            for (int i = 0; i < service_input_file_count; i++) {
+                free(service_input_files[i].filename);
+                free(service_input_files[i].content_base64);
+            }
         } else if (do_dump_bootstrap) {
             // Dump bootstrap script from /tmp/bootstrap.sh inside the service
             // This is useful for migrations - the bootstrap is stored at the same path on all instances
