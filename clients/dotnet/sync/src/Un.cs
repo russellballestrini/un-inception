@@ -362,7 +362,7 @@ void CmdService(Args args)
 
     if (args.ServiceDestroy != null)
     {
-        ApiRequest($"/services/{args.ServiceDestroy}", HttpMethod.Delete, null, publicKey, secretKey);
+        ApiRequestWithSudo($"/services/{args.ServiceDestroy}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service destroyed: {args.ServiceDestroy}{RESET}");
         return;
     }
@@ -376,7 +376,7 @@ void CmdService(Args args)
 
     if (args.ServiceUnlock != null)
     {
-        ApiRequest($"/services/{args.ServiceUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
+        ApiRequestWithSudo($"/services/{args.ServiceUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service unlocked: {args.ServiceUnlock}{RESET}");
         return;
     }
@@ -544,7 +544,7 @@ void CmdSnapshot(Args args)
 
     if (args.SnapshotDelete != null)
     {
-        ApiRequest($"/snapshots/{args.SnapshotDelete}", HttpMethod.Delete, null, publicKey, secretKey);
+        ApiRequestWithSudo($"/snapshots/{args.SnapshotDelete}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Snapshot deleted: {args.SnapshotDelete}{RESET}");
         return;
     }
@@ -558,7 +558,7 @@ void CmdSnapshot(Args args)
 
     if (args.SnapshotUnlock != null)
     {
-        ApiRequest($"/snapshots/{args.SnapshotUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
+        ApiRequestWithSudo($"/snapshots/{args.SnapshotUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Snapshot unlocked: {args.SnapshotUnlock}{RESET}");
         return;
     }
@@ -608,7 +608,7 @@ void CmdImage(Args args)
 
     if (args.ImageDelete != null)
     {
-        ApiRequest($"/images/{args.ImageDelete}", HttpMethod.Delete, null, publicKey, secretKey);
+        ApiRequestWithSudo($"/images/{args.ImageDelete}", HttpMethod.Delete, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Image deleted: {args.ImageDelete}{RESET}");
         return;
     }
@@ -622,7 +622,7 @@ void CmdImage(Args args)
 
     if (args.ImageUnlock != null)
     {
-        ApiRequest($"/images/{args.ImageUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
+        ApiRequestWithSudo($"/images/{args.ImageUnlock}/unlock", HttpMethod.Post, null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Image unlocked: {args.ImageUnlock}{RESET}");
         return;
     }
@@ -731,7 +731,19 @@ void CmdLanguages(Args args)
             Console.WriteLine(lang);
 }
 
-Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey)
+// HTTP exception with status code for sudo handling
+class HttpStatusException : Exception
+{
+    public int StatusCode { get; }
+    public string ResponseBody { get; }
+    public HttpStatusException(int statusCode, string responseBody) : base($"HTTP {statusCode}: {responseBody}")
+    {
+        StatusCode = statusCode;
+        ResponseBody = responseBody;
+    }
+}
+
+Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey, string? sudoOtp = null, string? sudoChallengeId = null)
 {
     var body = data != null ? JsonSerializer.Serialize(data, jsonOptions) : "";
 
@@ -754,6 +766,12 @@ Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictio
         request.Headers.Add("Authorization", $"Bearer {publicKey}");
     }
 
+    // Add sudo OTP headers if provided
+    if (!string.IsNullOrEmpty(sudoOtp))
+        request.Headers.Add("X-Sudo-OTP", sudoOtp);
+    if (!string.IsNullOrEmpty(sudoChallengeId))
+        request.Headers.Add("X-Sudo-Challenge", sudoChallengeId);
+
     // Synchronous HTTP call
     var response = httpClient.Send(request);
     using var reader = new StreamReader(response.Content.ReadAsStream());
@@ -767,7 +785,7 @@ Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictio
             Console.Error.WriteLine($"{YELLOW}Your computer's clock may have drifted.{RESET}");
             Environment.Exit(1);
         }
-        throw new Exception($"HTTP {(int)response.StatusCode}: {responseBody}");
+        throw new HttpStatusException((int)response.StatusCode, responseBody);
     }
 
     if (string.IsNullOrWhiteSpace(responseBody)) return new Dictionary<string, object>();
@@ -780,6 +798,41 @@ Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictio
     catch
     {
         return new Dictionary<string, object> { ["raw"] = responseBody };
+    }
+}
+
+// Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+Dictionary<string, object> HandleSudoChallenge(string responseBody, string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey)
+{
+    string? challengeId = null;
+    try
+    {
+        var doc = JsonDocument.Parse(responseBody);
+        if (doc.RootElement.TryGetProperty("challenge_id", out var cid))
+            challengeId = cid.GetString();
+    }
+    catch { }
+
+    Console.Error.WriteLine($"{YELLOW}Confirmation required. Check your email for a one-time code.{RESET}");
+    Console.Error.Write("Enter OTP: ");
+
+    var otp = Console.ReadLine()?.Trim();
+    if (string.IsNullOrEmpty(otp))
+        throw new Exception("Operation cancelled");
+
+    return ApiRequest(endpoint, method, data, publicKey, secretKey, otp, challengeId);
+}
+
+// Wrapper for destructive operations that may require 428 sudo OTP
+Dictionary<string, object> ApiRequestWithSudo(string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey)
+{
+    try
+    {
+        return ApiRequest(endpoint, method, data, publicKey, secretKey);
+    }
+    catch (HttpStatusException ex) when (ex.StatusCode == 428)
+    {
+        return HandleSudoChallenge(ex.ResponseBody, endpoint, method, data, publicKey, secretKey);
     }
 }
 

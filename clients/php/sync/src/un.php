@@ -440,7 +440,7 @@ class Unsandbox {
      */
     public function deleteSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('DELETE', "/snapshots/{$snapshotId}", $publicKey, $secretKey);
+        return $this->makeRequestWithSudo('DELETE', "/snapshots/{$snapshotId}", $publicKey, $secretKey);
     }
 
     /**
@@ -470,7 +470,7 @@ class Unsandbox {
      */
     public function unlockSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('POST', "/snapshots/{$snapshotId}/unlock", $publicKey, $secretKey, []);
+        return $this->makeRequestWithSudo('POST', "/snapshots/{$snapshotId}/unlock", $publicKey, $secretKey, []);
     }
 
     /**
@@ -597,7 +597,7 @@ class Unsandbox {
      */
     public function deleteImage(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('DELETE', "/images/{$imageId}", $publicKey, $secretKey);
+        return $this->makeRequestWithSudo('DELETE', "/images/{$imageId}", $publicKey, $secretKey);
     }
 
     /**
@@ -627,7 +627,7 @@ class Unsandbox {
      */
     public function unlockImage(string $imageId, ?string $publicKey = null, ?string $secretKey = null): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('POST', "/images/{$imageId}/unlock", $publicKey, $secretKey, []);
+        return $this->makeRequestWithSudo('POST', "/images/{$imageId}/unlock", $publicKey, $secretKey, []);
     }
 
     /**
@@ -1121,7 +1121,7 @@ class Unsandbox {
      */
     public function deleteService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('DELETE', "/services/{$serviceId}", $publicKey, $secretKey);
+        return $this->makeRequestWithSudo('DELETE', "/services/{$serviceId}", $publicKey, $secretKey);
     }
 
     /**
@@ -1181,7 +1181,7 @@ class Unsandbox {
      */
     public function unlockService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('POST', "/services/{$serviceId}/unlock", $publicKey, $secretKey, []);
+        return $this->makeRequestWithSudo('POST', "/services/{$serviceId}/unlock", $publicKey, $secretKey, []);
     }
 
     /**
@@ -1618,6 +1618,158 @@ class Unsandbox {
 
         if ($response === false) {
             throw new ApiException("cURL error: {$error}");
+        }
+
+        $decoded = json_decode($response, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            throw new ApiException("Invalid JSON response: " . json_last_error_msg());
+        }
+
+        if ($httpCode >= 400) {
+            $errorMessage = $decoded['error'] ?? $decoded['message'] ?? "HTTP {$httpCode}";
+            throw new ApiException($errorMessage, $httpCode, $decoded);
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Make an authenticated HTTP request with sudo OTP challenge handling.
+     *
+     * If the server returns 428 (Precondition Required), prompts for OTP
+     * and retries the request with X-Sudo-OTP and X-Sudo-Challenge headers.
+     *
+     * Used for destructive operations: service destroy/unlock, snapshot delete/unlock,
+     * image delete/unlock.
+     *
+     * @param string $method HTTP method (GET, POST, DELETE, etc.)
+     * @param string $path API endpoint path
+     * @param string $publicKey API public key
+     * @param string $secretKey API secret key
+     * @param array|null $data Request data (optional)
+     * @return array Decoded JSON response
+     * @throws ApiException On network errors or non-2xx response
+     */
+    private function makeRequestWithSudo(string $method, string $path, string $publicKey, string $secretKey, ?array $data = null): array {
+        $url = self::API_BASE . $path;
+        $timestamp = time();
+        $body = $data !== null ? json_encode($data) : '';
+
+        $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $data !== null ? $body : null);
+
+        $headers = [
+            'Authorization: Bearer ' . $publicKey,
+            'X-Timestamp: ' . $timestamp,
+            'X-Signature: ' . $signature,
+            'Content-Type: application/json',
+        ];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+
+        switch ($method) {
+            case 'POST':
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                break;
+            case 'PUT':
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                break;
+            case 'PATCH':
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PATCH');
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                break;
+            case 'DELETE':
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                break;
+            case 'GET':
+            default:
+                break;
+        }
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($response === false) {
+            throw new ApiException("cURL error: {$error}");
+        }
+
+        // Handle 428 sudo OTP challenge
+        if ($httpCode === 428) {
+            $challengeId = '';
+            $challengeData = json_decode($response, true);
+            if ($challengeData !== null && isset($challengeData['challenge_id'])) {
+                $challengeId = $challengeData['challenge_id'];
+            }
+
+            fwrite(STDERR, "\033[33mConfirmation required. Check your email for a one-time code.\033[0m\n");
+            fwrite(STDERR, "Enter OTP: ");
+
+            $otp = '';
+            if (stream_isatty(STDIN)) {
+                $otp = trim(fgets(STDIN));
+            } else {
+                throw new ApiException("Cannot read OTP in non-interactive mode");
+            }
+
+            if (empty($otp)) {
+                throw new ApiException("Operation cancelled");
+            }
+
+            // Retry with sudo headers
+            $retryTimestamp = time();
+            $retrySignature = $this->signRequest($secretKey, $retryTimestamp, $method, $path, $data !== null ? $body : null);
+
+            $retryHeaders = [
+                'Authorization: Bearer ' . $publicKey,
+                'X-Timestamp: ' . $retryTimestamp,
+                'X-Signature: ' . $retrySignature,
+                'Content-Type: application/json',
+                'X-Sudo-OTP: ' . $otp,
+                'X-Sudo-Challenge: ' . $challengeId,
+            ];
+
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $retryHeaders);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+
+            switch ($method) {
+                case 'POST':
+                    curl_setopt($ch, CURLOPT_POST, true);
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                    break;
+                case 'PUT':
+                    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                    break;
+                case 'PATCH':
+                    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PATCH');
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                    break;
+                case 'DELETE':
+                    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                    break;
+                case 'GET':
+                default:
+                    break;
+            }
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            if ($response === false) {
+                throw new ApiException("cURL error: {$error}");
+            }
         }
 
         $decoded = json_decode($response, true);

@@ -246,7 +246,70 @@ build_auth_headers <- function(method, endpoint, body, public_key, secret_key) {
     }
 }
 
-api_request <- function(endpoint, public_key, secret_key, method = "GET", data = NULL) {
+api_request <- function(endpoint, public_key, secret_key, method = "GET", data = NULL,
+                        sudo_otp = NULL, sudo_challenge = NULL) {
+    url <- paste0(API_BASE, endpoint)
+
+    body_content <- ""
+    if (!is.null(data)) {
+        body_content <- toJSON(data, auto_unbox = TRUE)
+    }
+
+    headers <- build_auth_headers(method, endpoint, body_content, public_key, secret_key)
+
+    # Add sudo headers if provided
+    if (!is.null(sudo_otp)) {
+        headers <- c(headers, add_headers(`X-Sudo-OTP` = sudo_otp))
+    }
+    if (!is.null(sudo_challenge)) {
+        headers <- c(headers, add_headers(`X-Sudo-Challenge` = sudo_challenge))
+    }
+
+    tryCatch({
+        if (method == "GET") {
+            response <- GET(url, headers, timeout(300))
+        } else if (method == "POST") {
+            response <- POST(url, headers, body = body_content, encode = "raw", timeout(300))
+        } else if (method == "DELETE") {
+            response <- DELETE(url, headers, timeout(300))
+        } else if (method == "PATCH") {
+            response <- PATCH(url, headers, body = body_content, encode = "raw", timeout(300))
+        } else {
+            stop(paste("Unsupported method:", method))
+        }
+
+        response_text <- content(response, "text", encoding = "UTF-8")
+        check_clock_drift(response_text)
+        result <- fromJSON(response_text)
+        return(result)
+    }, error = function(e) {
+        cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
+        quit(status = 1)
+    })
+}
+
+# Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+handle_sudo_challenge <- function(endpoint, public_key, secret_key, method, data, response_body) {
+    # Extract challenge_id from response
+    parsed <- fromJSON(response_body)
+    challenge_id <- parsed$challenge_id
+
+    cat(sprintf("%sConfirmation required. Check your email for a one-time code.%s\n", YELLOW, RESET), file = stderr())
+    cat("Enter OTP: ", file = stderr())
+    otp <- trimws(readLines(stdin(), n = 1))
+
+    if (nchar(otp) == 0) {
+        cat(sprintf("%sError: Operation cancelled%s\n", RED, RESET), file = stderr())
+        quit(status = 1)
+    }
+
+    # Retry the request with sudo headers
+    return(api_request(endpoint, public_key, secret_key, method = method, data = data,
+                       sudo_otp = otp, sudo_challenge = challenge_id))
+}
+
+# API request that handles 428 sudo challenges for destructive operations
+api_request_with_sudo <- function(endpoint, public_key, secret_key, method = "DELETE", data = NULL) {
     url <- paste0(API_BASE, endpoint)
 
     body_content <- ""
@@ -270,7 +333,20 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
         }
 
         response_text <- content(response, "text", encoding = "UTF-8")
-        check_clock_drift(response_text)
+        status <- status_code(response)
+
+        # Handle 428 - sudo OTP required
+        if (status == 428) {
+            return(handle_sudo_challenge(endpoint, public_key, secret_key, method, data, response_text))
+        }
+
+        # Handle other errors
+        if (status >= 400) {
+            check_clock_drift(response_text)
+            cat(sprintf("%sError: HTTP %d - %s%s\n", RED, status, response_text, RESET), file = stderr())
+            quit(status = 1)
+        }
+
         result <- fromJSON(response_text)
         return(result)
     }, error = function(e) {
@@ -1238,7 +1314,7 @@ cmd_snapshot <- function(args) {
     }
 
     if (!is.null(args$delete)) {
-        result <- api_request(paste0("/snapshots/", args$delete), public_key, secret_key, method = "DELETE")
+        result <- api_request_with_sudo(paste0("/snapshots/", args$delete), public_key, secret_key, method = "DELETE")
         cat(sprintf("%sSnapshot deleted successfully%s\n", GREEN, RESET))
         return()
     }
@@ -1315,7 +1391,7 @@ cmd_image <- function(args) {
     }
 
     if (!is.null(args$image_delete)) {
-        result <- api_request(paste0("/images/", args$image_delete), public_key, secret_key, method = "DELETE")
+        result <- api_request_with_sudo(paste0("/images/", args$image_delete), public_key, secret_key, method = "DELETE")
         cat(sprintf("%sImage deleted successfully%s\n", GREEN, RESET))
         return()
     }
@@ -1327,7 +1403,7 @@ cmd_image <- function(args) {
     }
 
     if (!is.null(args$image_unlock)) {
-        result <- api_request(paste0("/images/", args$image_unlock, "/unlock"), public_key, secret_key, method = "POST", data = list())
+        result <- api_request_with_sudo(paste0("/images/", args$image_unlock, "/unlock"), public_key, secret_key, method = "POST", data = list())
         cat(sprintf("%sImage unlocked successfully%s\n", GREEN, RESET))
         return()
     }
@@ -1444,7 +1520,7 @@ cmd_service <- function(args) {
     }
 
     if (!is.null(args$destroy)) {
-        result <- api_request(paste0("/services/", args$destroy), public_key, secret_key, method = "DELETE")
+        result <- api_request_with_sudo(paste0("/services/", args$destroy), public_key, secret_key, method = "DELETE")
         cat(sprintf("%sService destroyed: %s%s\n", GREEN, args$destroy, RESET))
         return()
     }

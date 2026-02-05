@@ -128,6 +128,111 @@ function Invoke-Api {
     }
 }
 
+# Internal API request function that returns status code info for sudo handling
+function Invoke-ApiInternal {
+    param($Endpoint, $Method = "GET", $Body = $null, $SudoOtp = $null, $SudoChallengeId = $null)
+
+    $publicKey, $secretKey = Get-ApiKeys
+    $headers = @{
+        "Authorization" = "Bearer $publicKey"
+        "Content-Type" = "application/json"
+    }
+
+    # Add HMAC signature if secret key exists
+    if ($secretKey) {
+        $timestamp = [int][double]::Parse((Get-Date -UFormat %s))
+        $bodyContent = if ($Body) { $Body } else { "" }
+        $sigInput = "${timestamp}:${Method}:${Endpoint}:${bodyContent}"
+
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($secretKey)
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sigInput))
+        $signature = [System.BitConverter]::ToString($hash).Replace("-", "").ToLower()
+
+        $headers["X-Timestamp"] = $timestamp.ToString()
+        $headers["X-Signature"] = $signature
+    }
+
+    # Add sudo OTP headers if provided
+    if ($SudoOtp) {
+        $headers["X-Sudo-OTP"] = $SudoOtp
+    }
+    if ($SudoChallengeId) {
+        $headers["X-Sudo-Challenge"] = $SudoChallengeId
+    }
+
+    $uri = "$API_BASE$Endpoint"
+
+    try {
+        if ($Body) {
+            $response = Invoke-RestMethod -Uri $uri -Method $Method -Headers $headers -Body $Body
+        } else {
+            $response = Invoke-RestMethod -Uri $uri -Method $Method -Headers $headers
+        }
+        return @{ Success = $true; Response = $response; StatusCode = 200 }
+    } catch {
+        $statusCode = 0
+        $responseBody = ""
+
+        if ($_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+            $stream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $responseBody = $reader.ReadToEnd()
+        }
+
+        return @{ Success = $false; StatusCode = $statusCode; ResponseBody = $responseBody; Error = $_.Exception.Message }
+    }
+}
+
+# Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+function Invoke-SudoChallenge {
+    param($ResponseBody, $Endpoint, $Method, $Body)
+
+    # Extract challenge_id from response
+    $challengeId = $null
+    try {
+        $parsed = $ResponseBody | ConvertFrom-Json
+        $challengeId = $parsed.challenge_id
+    } catch {}
+
+    Write-Host "`e[33mConfirmation required. Check your email for a one-time code.`e[0m" -ForegroundColor Yellow
+    $otp = Read-Host "Enter OTP"
+
+    if (-not $otp) {
+        Write-Error "Operation cancelled"
+        exit 1
+    }
+
+    $otp = $otp.Trim()
+
+    # Retry the request with sudo headers
+    return Invoke-ApiInternal -Endpoint $Endpoint -Method $Method -Body $Body -SudoOtp $otp -SudoChallengeId $challengeId
+}
+
+# Wrapper for destructive operations that may require 428 sudo OTP
+function Invoke-ApiWithSudo {
+    param($Endpoint, $Method = "GET", $Body = $null)
+
+    $result = Invoke-ApiInternal -Endpoint $Endpoint -Method $Method -Body $Body
+
+    if (-not $result.Success -and $result.StatusCode -eq 428) {
+        $retryResult = Invoke-SudoChallenge -ResponseBody $result.ResponseBody -Endpoint $Endpoint -Method $Method -Body $Body
+        if (-not $retryResult.Success) {
+            Write-Error "Error: $($retryResult.Error)"
+            exit 1
+        }
+        return $retryResult.Response
+    }
+
+    if (-not $result.Success) {
+        Write-Error "Error: $($result.Error)"
+        exit 1
+    }
+
+    return $result.Response
+}
+
 function Invoke-ApiText {
     param($Endpoint, $Method, $Body, $BaseUrl = $null)
 
@@ -583,7 +688,7 @@ function Invoke-Image {
     }
 
     if ($deleteId) {
-        Invoke-Api -Endpoint "/images/$deleteId" -Method "DELETE"
+        Invoke-ApiWithSudo -Endpoint "/images/$deleteId" -Method "DELETE"
         Write-Host "`e[32mImage deleted: $deleteId`e[0m"
         return
     }
@@ -595,7 +700,7 @@ function Invoke-Image {
     }
 
     if ($unlockId) {
-        Invoke-Api -Endpoint "/images/$unlockId/unlock" -Method "POST" -Body "{}"
+        Invoke-ApiWithSudo -Endpoint "/images/$unlockId/unlock" -Method "POST" -Body "{}"
         Write-Host "`e[32mImage unlocked: $unlockId`e[0m"
         return
     }
@@ -731,7 +836,7 @@ function Invoke-Service {
     if ($Args -contains "--destroy") {
         $idx = [array]::IndexOf($Args, "--destroy")
         $serviceId = $Args[$idx + 1]
-        Invoke-Api -Endpoint "/services/$serviceId" -Method "DELETE"
+        Invoke-ApiWithSudo -Endpoint "/services/$serviceId" -Method "DELETE"
         Write-Host "`e[32mService destroyed: $serviceId`e[0m"
         return
     }

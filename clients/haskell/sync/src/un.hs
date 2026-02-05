@@ -59,7 +59,7 @@ import System.Environment (getArgs, getEnv, lookupEnv)
 import System.Exit (exitWith, ExitCode(..), exitFailure)
 import System.FilePath (takeExtension, takeFileName)
 import System.Process (readProcessWithExitCode)
-import System.IO (hPutStrLn, stderr)
+import System.IO (hPutStrLn, hPutStr, hFlush, stderr, stdout)
 import System.Directory (createDirectoryIfMissing, setPermissions, getPermissions, setOwnerExecutable)
 import Data.List (isPrefixOf, intercalate)
 import Data.Char (isDigit, ord)
@@ -548,8 +548,13 @@ serviceCommand opts = do
       (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/unfreeze") "{}"
       putStrLn $ green ++ "Service unfreezing: " ++ sid ++ reset
     ServiceDestroy sid -> do
-      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/services/" ++ sid)
-      putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset
+      result <- curlDeleteWithSudo apiKey ("https://api.unsandbox.com/services/" ++ sid)
+      case result of
+        SudoSuccess _ -> putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset
+        SudoCancelled -> exitFailure
+        SudoError msg -> do
+          hPutStrLn stderr $ red ++ "Error: " ++ msg ++ reset
+          exitFailure
     ServiceResize sid -> do
       case svcVcpu opts of
         Nothing -> do
@@ -790,6 +795,99 @@ curlPut apiKey url body = do
   checkClockDriftError stdout
   return (exitCode, stdout, stderr)
 
+-- Result type for sudo challenge operations
+data SudoResult = SudoSuccess String | SudoError String | SudoCancelled
+
+-- Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+handleSudoChallenge :: String -> String -> String -> String -> IO SudoResult
+handleSudoChallenge response method endpoint body = do
+  let challengeId = extractJsonString response "challenge_id"
+
+  hPutStrLn stderr $ yellow ++ "Confirmation required. Check your email for a one-time code." ++ reset
+  hPutStr stderr "Enter OTP: "
+  hFlush stderr
+
+  otpRaw <- getLine
+  let otp = filter (/= '\n') $ filter (/= '\r') otpRaw
+
+  if null otp
+    then do
+      hPutStrLn stderr $ red ++ "Error: Operation cancelled" ++ reset
+      return SudoCancelled
+    else do
+      -- Retry the request with sudo headers
+      (publicKey, secretKey) <- getApiKeys
+      authHeaders <- buildAuthHeaders publicKey secretKey method endpoint body
+
+      -- Build sudo headers
+      let sudoHeaders = ["-H", "X-Sudo-OTP: " ++ otp] ++
+                        case challengeId of
+                          Just cid -> ["-H", "X-Sudo-Challenge: " ++ cid]
+                          Nothing -> []
+
+      let baseArgs = case method of
+            "DELETE" -> ["-s", "-X", "DELETE", apiBase ++ endpoint]
+            "POST" -> ["-s", "-X", "POST", apiBase ++ endpoint, "-H", "Content-Type: application/json", "-d", body]
+            _ -> ["-s", apiBase ++ endpoint]
+
+      (exitCode, retryStdout, _) <- readProcessWithExitCode "curl"
+        (baseArgs ++ authHeaders ++ sudoHeaders) ""
+
+      if exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') retryStdout)
+        then return $ SudoSuccess retryStdout
+        else return $ SudoError retryStdout
+
+-- Curl DELETE with 428 handling
+curlDeleteWithSudo :: String -> String -> IO SudoResult
+curlDeleteWithSudo apiKey url = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "DELETE" path ""
+
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
+    ([ "-s", "-X", "DELETE", "-w", "\n%{http_code}", url ] ++ authHeaders) ""
+
+  -- Split response and status code
+  let allLines = lines stdout
+  let (bodyLines, statusLines) = splitAt (length allLines - 1) allLines
+  let body = intercalate "\n" bodyLines
+  let httpCode = case statusLines of
+        [s] -> read (filter (`elem` "0123456789") s) :: Int
+        _ -> 200
+
+  checkClockDriftError body
+
+  if httpCode == 428
+    then handleSudoChallenge body "DELETE" path ""
+    else return $ SudoSuccess body
+
+-- Curl POST with 428 handling
+curlPostWithSudo :: String -> String -> String -> IO SudoResult
+curlPostWithSudo apiKey url body = do
+  (publicKey, secretKey) <- getApiKeys
+  let path = drop (length "https://api.unsandbox.com") url
+  authHeaders <- buildAuthHeaders publicKey secretKey "POST" path body
+
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
+    ([ "-s", "-X", "POST", "-w", "\n%{http_code}"
+     , url
+     , "-H", "Content-Type: application/json"
+     ] ++ authHeaders ++ ["-d", body]) ""
+
+  -- Split response and status code
+  let allLines = lines stdout
+  let (bodyLines, statusLines) = splitAt (length allLines - 1) allLines
+  let bodyStr = intercalate "\n" bodyLines
+  let httpCode = case statusLines of
+        [s] -> read (filter (`elem` "0123456789") s) :: Int
+        _ -> 200
+
+  checkClockDriftError bodyStr
+
+  if httpCode == 428
+    then handleSudoChallenge bodyStr "POST" path body
+    else return $ SudoSuccess bodyStr
+
 -- Vault helper functions
 maxEnvContentSize :: Int
 maxEnvContentSize = 65536
@@ -930,8 +1028,13 @@ snapshotCommand opts = do
       (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
       putStrLn stdout
     SnapshotDelete sid -> do
-      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
-      putStrLn $ green ++ "Snapshot deleted: " ++ sid ++ reset
+      result <- curlDeleteWithSudo apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
+      case result of
+        SudoSuccess _ -> putStrLn $ green ++ "Snapshot deleted: " ++ sid ++ reset
+        SudoCancelled -> exitFailure
+        SudoError msg -> do
+          hPutStrLn stderr $ red ++ "Error: " ++ msg ++ reset
+          exitFailure
     SnapshotClone sid -> do
       case snapCloneType opts of
         Nothing -> do
@@ -958,14 +1061,24 @@ imageCommand opts = do
       (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/images/" ++ iid)
       putStrLn stdout
     ImageDelete iid -> do
-      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/images/" ++ iid)
-      putStrLn $ green ++ "Image deleted: " ++ iid ++ reset
+      result <- curlDeleteWithSudo apiKey ("https://api.unsandbox.com/images/" ++ iid)
+      case result of
+        SudoSuccess _ -> putStrLn $ green ++ "Image deleted: " ++ iid ++ reset
+        SudoCancelled -> exitFailure
+        SudoError msg -> do
+          hPutStrLn stderr $ red ++ "Error: " ++ msg ++ reset
+          exitFailure
     ImageLock iid -> do
       (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/lock") "{}"
       putStrLn $ green ++ "Image locked: " ++ iid ++ reset
     ImageUnlock iid -> do
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/unlock") "{}"
-      putStrLn $ green ++ "Image unlocked: " ++ iid ++ reset
+      result <- curlPostWithSudo apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/unlock") "{}"
+      case result of
+        SudoSuccess _ -> putStrLn $ green ++ "Image unlocked: " ++ iid ++ reset
+        SudoCancelled -> exitFailure
+        SudoError msg -> do
+          hPutStrLn stderr $ red ++ "Error: " ++ msg ++ reset
+          exitFailure
     ImagePublish sourceId -> do
       case imgSourceType opts of
         Nothing -> do

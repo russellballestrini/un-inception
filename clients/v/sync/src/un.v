@@ -158,6 +158,100 @@ fn extract_json_string(json string, key string) string {
 	return ''
 }
 
+fn handle_sudo_challenge(response_data string, meth string, endpoint string, body string, public_key string, secret_key string) bool {
+	challenge_id := extract_json_string(response_data, 'challenge_id')
+
+	eprintln('${yellow}Confirmation required. Check your email for a one-time code.${reset}')
+	eprint('Enter OTP: ')
+
+	// Read OTP from stdin
+	mut otp := ''
+	mut buf := []u8{len: 64}
+	n := C.read(0, buf.data, buf.len)
+	if n > 0 {
+		otp = buf[..n].bytestr().trim_space()
+	}
+
+	if otp.len == 0 {
+		eprintln('${red}Error: Operation cancelled${reset}')
+		return false
+	}
+
+	// Build sudo headers
+	mut otp_header := "-H 'X-Sudo-OTP: ${otp}'"
+	mut challenge_header := ''
+	if challenge_id != '' {
+		challenge_header = " -H 'X-Sudo-Challenge: ${challenge_id}'"
+	}
+
+	// Retry with sudo headers
+	mut cmd := ''
+	if meth == 'DELETE' {
+		cmd = "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:${endpoint}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -o /dev/null -w '%{http_code}' -X DELETE '${api_base}${endpoint}' -H 'Authorization: Bearer ${public_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" ${otp_header}${challenge_header}"
+	} else if meth == 'POST' {
+		cmd = "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:${endpoint}:${body}\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -o /dev/null -w '%{http_code}' -X POST '${api_base}${endpoint}' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${public_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" ${otp_header}${challenge_header} -d '${body}'"
+	} else {
+		return false
+	}
+
+	result := os.execute(cmd)
+	status := result.output.trim_space().int()
+	if status >= 200 && status < 300 {
+		println('${green}Operation completed successfully${reset}')
+		return true
+	}
+	eprintln('${red}Error: HTTP ${status}${reset}')
+	return false
+}
+
+fn exec_curl_delete_with_sudo(endpoint string, public_key string, secret_key string) int {
+	cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:${endpoint}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -w '\\n%{http_code}' -X DELETE '${api_base}${endpoint}' -H 'Authorization: Bearer ${public_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+	result := os.execute(cmd)
+	output := result.output.trim_space()
+
+	// Parse response body and status code
+	lines := output.split('\n')
+	if lines.len < 1 {
+		return 500
+	}
+
+	status_line := lines[lines.len - 1]
+	response_body := if lines.len > 1 { lines[..lines.len - 1].join('\n') } else { '' }
+
+	status := status_line.int()
+	if status == 428 {
+		if handle_sudo_challenge(response_body, 'DELETE', endpoint, '', public_key, secret_key) {
+			return 200
+		}
+		return 428
+	}
+	return status
+}
+
+fn exec_curl_post_with_sudo(endpoint string, body string, public_key string, secret_key string) int {
+	cmd := "BODY='${body}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:${endpoint}:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -w '\\n%{http_code}' -X POST '${api_base}${endpoint}' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${public_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+	result := os.execute(cmd)
+	output := result.output.trim_space()
+
+	// Parse response body and status code
+	lines := output.split('\n')
+	if lines.len < 1 {
+		return 500
+	}
+
+	status_line := lines[lines.len - 1]
+	response_body := if lines.len > 1 { lines[..lines.len - 1].join('\n') } else { '' }
+
+	status := status_line.int()
+	if status == 428 {
+		if handle_sudo_challenge(response_body, 'POST', endpoint, body, public_key, secret_key) {
+			return 200
+		}
+		return 428
+	}
+	return status
+}
+
 fn read_env_file(filename string) string {
 	content := os.read_file(filename) or {
 		eprintln('${red}Error: Cannot read env file: ${filename}${reset}')
@@ -454,9 +548,14 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 	}
 
 	if destroy != '' {
-		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:/services/${destroy}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/services/${destroy}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
-		exec_curl(cmd)
-		println('${green}Service destroyed: ${destroy}${reset}')
+		endpoint := '/services/${destroy}'
+		status := exec_curl_delete_with_sudo(endpoint, pub_key, secret_key)
+		if status >= 200 && status < 300 {
+			println('${green}Service destroyed: ${destroy}${reset}')
+		} else if status != 428 {
+			eprintln('${red}Error: Failed to destroy service${reset}')
+			exit(1)
+		}
 		return
 	}
 
@@ -630,9 +729,14 @@ fn cmd_image(list bool, info string, delete string, lock string, unlock string, 
 	}
 
 	if delete != '' {
-		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:DELETE:/images/${delete}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X DELETE '${api_base}/images/${delete}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
-		exec_curl(cmd)
-		println('${green}Image deleted: ${delete}${reset}')
+		endpoint := '/images/${delete}'
+		status := exec_curl_delete_with_sudo(endpoint, pub_key, secret_key)
+		if status >= 200 && status < 300 {
+			println('${green}Image deleted: ${delete}${reset}')
+		} else if status != 428 {
+			eprintln('${red}Error: Failed to delete image${reset}')
+			exit(1)
+		}
 		return
 	}
 
@@ -644,9 +748,14 @@ fn cmd_image(list bool, info string, delete string, lock string, unlock string, 
 	}
 
 	if unlock != '' {
-		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${unlock}/unlock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${unlock}/unlock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
-		exec_curl(cmd)
-		println('${green}Image unlocked: ${unlock}${reset}')
+		endpoint := '/images/${unlock}/unlock'
+		status := exec_curl_post_with_sudo(endpoint, '{}', pub_key, secret_key)
+		if status >= 200 && status < 300 {
+			println('${green}Image unlocked: ${unlock}${reset}')
+		} else if status != 428 {
+			eprintln('${red}Error: Failed to unlock image${reset}')
+			exit(1)
+		}
 		return
 	}
 

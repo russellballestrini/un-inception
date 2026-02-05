@@ -218,8 +218,17 @@ service_command(["--unfreeze", ServiceId | _]) ->
 
 service_command(["--destroy", ServiceId | _]) ->
     ApiKey = get_api_key(),
-    _ = curl_delete(ApiKey, "/services/" ++ ServiceId),
-    io:format("\033[32mService destroyed: ~s\033[0m~n", [ServiceId]);
+    case curl_delete_with_sudo(ApiKey, "/services/" ++ ServiceId) of
+        {ok, _, _} ->
+            io:format("\033[32mService destroyed: ~s\033[0m~n", [ServiceId]);
+        {ok, _} ->
+            io:format("\033[32mService destroyed: ~s\033[0m~n", [ServiceId]);
+        {error, cancelled} ->
+            halt(1);
+        {error, Msg} ->
+            io:format(standard_error, "\033[31mError: ~s\033[0m~n", [Msg]),
+            halt(1)
+    end;
 
 service_command(["--resize", ServiceId, "--vcpu", VcpuStr | _]) ->
     service_resize(ServiceId, VcpuStr);
@@ -395,8 +404,17 @@ snapshot_command(["--info", SnapshotId | _]) ->
 
 snapshot_command(["--delete", SnapshotId | _]) ->
     ApiKey = get_api_key(),
-    _ = curl_delete(ApiKey, "/snapshots/" ++ SnapshotId),
-    io:format("\033[32mSnapshot deleted: ~s\033[0m~n", [SnapshotId]);
+    case curl_delete_with_sudo(ApiKey, "/snapshots/" ++ SnapshotId) of
+        {ok, _, _} ->
+            io:format("\033[32mSnapshot deleted: ~s\033[0m~n", [SnapshotId]);
+        {ok, _} ->
+            io:format("\033[32mSnapshot deleted: ~s\033[0m~n", [SnapshotId]);
+        {error, cancelled} ->
+            halt(1);
+        {error, Msg} ->
+            io:format(standard_error, "\033[31mError: ~s\033[0m~n", [Msg]),
+            halt(1)
+    end;
 
 snapshot_command(["--clone", SnapshotId | Rest]) ->
     ApiKey = get_api_key(),
@@ -466,10 +484,20 @@ image_command(["--info", ImageId | _]) ->
     halt(0);
 
 image_command(["--delete", ImageId | _]) ->
-    {PublicKey, SecretKey} = get_api_keys(),
-    api_request("/images/" ++ ImageId, "DELETE", "", PublicKey, SecretKey),
-    io:format("\033[32mImage deleted: ~s\033[0m~n", [ImageId]),
-    halt(0);
+    ApiKey = get_api_key(),
+    case curl_delete_with_sudo(ApiKey, "/images/" ++ ImageId) of
+        {ok, _, _} ->
+            io:format("\033[32mImage deleted: ~s\033[0m~n", [ImageId]),
+            halt(0);
+        {ok, _} ->
+            io:format("\033[32mImage deleted: ~s\033[0m~n", [ImageId]),
+            halt(0);
+        {error, cancelled} ->
+            halt(1);
+        {error, Msg} ->
+            io:format(standard_error, "\033[31mError: ~s\033[0m~n", [Msg]),
+            halt(1)
+    end;
 
 image_command(["--lock", ImageId | _]) ->
     {PublicKey, SecretKey} = get_api_keys(),
@@ -478,10 +506,20 @@ image_command(["--lock", ImageId | _]) ->
     halt(0);
 
 image_command(["--unlock", ImageId | _]) ->
-    {PublicKey, SecretKey} = get_api_keys(),
-    api_request("/images/" ++ ImageId ++ "/unlock", "POST", "", PublicKey, SecretKey),
-    io:format("\033[32mImage unlocked: ~s\033[0m~n", [ImageId]),
-    halt(0);
+    ApiKey = get_api_key(),
+    case curl_post_with_sudo(ApiKey, "/images/" ++ ImageId ++ "/unlock", "{}") of
+        {ok, _, _} ->
+            io:format("\033[32mImage unlocked: ~s\033[0m~n", [ImageId]),
+            halt(0);
+        {ok, _} ->
+            io:format("\033[32mImage unlocked: ~s\033[0m~n", [ImageId]),
+            halt(0);
+        {error, cancelled} ->
+            halt(1);
+        {error, Msg} ->
+            io:format(standard_error, "\033[31mError: ~s\033[0m~n", [Msg]),
+            halt(1)
+    end;
 
 image_command(["--publish", SourceId | Rest]) ->
     SourceType = get_image_source_type(Rest),
@@ -917,6 +955,101 @@ curl_delete(ApiKey, Endpoint) ->
     Result = os:cmd(Cmd),
     check_clock_drift_error(Result),
     Result.
+
+%% Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+handle_sudo_challenge(Response, Method, Endpoint, Body) ->
+    ChallengeId = extract_json_field(Response, "challenge_id"),
+    io:format(standard_error, "\033[33mConfirmation required. Check your email for a one-time code.\033[0m~n", []),
+    io:format(standard_error, "Enter OTP: ", []),
+    case io:get_line("") of
+        eof ->
+            io:format(standard_error, "Error: Failed to read OTP~n", []),
+            {error, cancelled};
+        OtpRaw ->
+            Otp = string:trim(OtpRaw),
+            case Otp of
+                "" ->
+                    io:format(standard_error, "Error: Operation cancelled~n", []),
+                    {error, cancelled};
+                _ ->
+                    %% Retry the request with sudo headers
+                    {PublicKey, SecretKey} = get_api_keys(),
+                    AuthHeaders = build_auth_headers(PublicKey, SecretKey, Method, Endpoint, Body),
+                    SudoHeaders = " -H 'X-Sudo-OTP: " ++ Otp ++ "'",
+                    ChallengeHeader = case ChallengeId of
+                        "" -> "";
+                        _ -> " -H 'X-Sudo-Challenge: " ++ ChallengeId ++ "'"
+                    end,
+                    Cmd = case Method of
+                        "DELETE" ->
+                            "curl -s -X DELETE https://api.unsandbox.com" ++ Endpoint ++
+                            AuthHeaders ++ SudoHeaders ++ ChallengeHeader;
+                        "POST" ->
+                            TmpFile = write_temp_file(Body),
+                            Result = "curl -s -X POST https://api.unsandbox.com" ++ Endpoint ++
+                                " -H 'Content-Type: application/json'" ++
+                                AuthHeaders ++ SudoHeaders ++ ChallengeHeader ++
+                                " -d @" ++ TmpFile,
+                            file:delete(TmpFile),
+                            Result;
+                        _ ->
+                            "curl -s https://api.unsandbox.com" ++ Endpoint ++
+                            AuthHeaders ++ SudoHeaders ++ ChallengeHeader
+                    end,
+                    RetryResult = os:cmd(Cmd),
+                    case string:str(RetryResult, "\"error\"") of
+                        0 -> {ok, RetryResult};
+                        _ -> {error, RetryResult}
+                    end
+            end
+    end.
+
+%% Curl with 428 handling for destructive operations
+curl_delete_with_sudo(ApiKey, Endpoint) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
+    Cmd = "curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com" ++ Endpoint ++
+          AuthHeaders,
+    Result = os:cmd(Cmd),
+    %% Split response and status code
+    Lines = string:split(Result, "\n", all),
+    case lists:reverse(Lines) of
+        [StatusCodeStr | BodyLinesRev] ->
+            StatusCode = list_to_integer(string:trim(StatusCodeStr)),
+            Body = string:join(lists:reverse(BodyLinesRev), "\n"),
+            check_clock_drift_error(Body),
+            case StatusCode of
+                428 -> handle_sudo_challenge(Body, "DELETE", Endpoint, "");
+                _ -> {ok, Body, StatusCode}
+            end;
+        _ ->
+            {ok, Result, 200}
+    end.
+
+curl_post_with_sudo(ApiKey, Endpoint, Json) ->
+    TmpFile = write_temp_file(Json),
+    {PublicKey, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
+    Cmd = "curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com" ++ Endpoint ++
+          " -H 'Content-Type: application/json'" ++
+          AuthHeaders ++
+          " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    %% Split response and status code
+    Lines = string:split(Result, "\n", all),
+    case lists:reverse(Lines) of
+        [StatusCodeStr | BodyLinesRev] ->
+            StatusCode = list_to_integer(string:trim(StatusCodeStr)),
+            Body = string:join(lists:reverse(BodyLinesRev), "\n"),
+            check_clock_drift_error(Body),
+            case StatusCode of
+                428 -> handle_sudo_challenge(Body, "POST", Endpoint, Json);
+                _ -> {ok, Body, StatusCode}
+            end;
+        _ ->
+            {ok, Result, 200}
+    end.
 
 curl_patch(ApiKey, Endpoint, TmpFile) ->
     {ok, Body} = file:read_file(TmpFile),

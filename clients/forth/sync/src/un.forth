@@ -355,9 +355,30 @@
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
     s" MESSAGE=\"$TIMESTAMP:DELETE:/services/$SERVICE_ID:\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X DELETE https://api.unsandbox.com/services/$SERVICE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService destroyed: " r@ write-file throw
+    s" RESP=$(curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com/services/$SERVICE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
+    s" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"428\" ]; then" r@ write-line throw
+    s"   CHALLENGE_ID=$(echo \"$BODY\" | grep -o '\"challenge_id\":\"[^\"]*\"' | cut -d'\"' -f4)" r@ write-line throw
+    s"   echo -e '\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m' >&2" r@ write-line throw
+    s"   echo -n 'Enter OTP: ' >&2" r@ write-line throw
+    s"   read OTP" r@ write-line throw
+    s"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
+    s"   TIMESTAMP=$(date +%s)" r@ write-line throw
+    s"   MESSAGE=\"$TIMESTAMP:DELETE:/services/$SERVICE_ID:\"" r@ write-line throw
+    s"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s"   RESP=$(curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com/services/$SERVICE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\")" r@ write-line throw
+    s"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"200\" ]; then" r@ write-line throw
+    s"   echo -e '\\x1b[32mService destroyed: " r@ write-file throw
     r@ write-file throw
     s" \\x1b[0m'" r@ write-line throw
+    s" else" r@ write-line throw
+    s"   echo -e \"\\x1b[31mError: HTTP $HTTP_CODE\\x1b[0m\" >&2" r@ write-line throw
+    s"   echo \"$BODY\" >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
     r> close-file throw
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
@@ -1120,9 +1141,30 @@
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
     s" MESSAGE=\"$TIMESTAMP:DELETE:/images/$IMAGE_ID:\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X DELETE https://api.unsandbox.com/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mImage deleted: " r@ write-file throw
+    s" RESP=$(curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
+    s" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"428\" ]; then" r@ write-line throw
+    s"   CHALLENGE_ID=$(echo \"$BODY\" | grep -o '\"challenge_id\":\"[^\"]*\"' | cut -d'\"' -f4)" r@ write-line throw
+    s"   echo -e '\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m' >&2" r@ write-line throw
+    s"   echo -n 'Enter OTP: ' >&2" r@ write-line throw
+    s"   read OTP" r@ write-line throw
+    s"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
+    s"   TIMESTAMP=$(date +%s)" r@ write-line throw
+    s"   MESSAGE=\"$TIMESTAMP:DELETE:/images/$IMAGE_ID:\"" r@ write-line throw
+    s"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s"   RESP=$(curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\")" r@ write-line throw
+    s"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"200\" ]; then" r@ write-line throw
+    s"   echo -e '\\x1b[32mImage deleted: " r@ write-file throw
     r@ write-file throw
     s" \\x1b[0m'" r@ write-line throw
+    s" else" r@ write-line throw
+    s"   echo -e \"\\x1b[31mError: HTTP $HTTP_CODE\\x1b[0m\" >&2" r@ write-line throw
+    s"   echo \"$BODY\" >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
     r> close-file throw
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;
@@ -1166,11 +1208,32 @@
     get-secret-key r@ write-file throw
     s" '" r@ write-line throw
     s" TIMESTAMP=$(date +%s)" r@ write-line throw
-    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/unlock:\"" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/unlock:{}\"" r@ write-line throw
     s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
-    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mImage unlocked: " r@ write-file throw
+    s" RESP=$(curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com/images/$IMAGE_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -d '{}')" r@ write-line throw
+    s" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"428\" ]; then" r@ write-line throw
+    s"   CHALLENGE_ID=$(echo \"$BODY\" | grep -o '\"challenge_id\":\"[^\"]*\"' | cut -d'\"' -f4)" r@ write-line throw
+    s"   echo -e '\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m' >&2" r@ write-line throw
+    s"   echo -n 'Enter OTP: ' >&2" r@ write-line throw
+    s"   read OTP" r@ write-line throw
+    s"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
+    s"   TIMESTAMP=$(date +%s)" r@ write-line throw
+    s"   MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/unlock:{}\"" r@ write-line throw
+    s"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s"   RESP=$(curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com/images/$IMAGE_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\" -d '{}')" r@ write-line throw
+    s"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"200\" ]; then" r@ write-line throw
+    s"   echo -e '\\x1b[32mImage unlocked: " r@ write-file throw
     r@ write-file throw
     s" \\x1b[0m'" r@ write-line throw
+    s" else" r@ write-line throw
+    s"   echo -e \"\\x1b[31mError: HTTP $HTTP_CODE\\x1b[0m\" >&2" r@ write-line throw
+    s"   echo \"$BODY\" >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
     r> close-file throw
     s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
 ;

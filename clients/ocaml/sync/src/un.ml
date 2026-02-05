@@ -466,6 +466,150 @@ let api_delete ?public_key ?secret_key endpoint =
   check_clock_drift output;
   output
 
+(** Result type for sudo challenge operations *)
+type sudo_result = SudoSuccess of string | SudoError of string | SudoCancelled
+
+(** Handle 428 sudo OTP challenge - prompts user for OTP and retries the request *)
+let handle_sudo_challenge response method_ endpoint body =
+  let challenge_id = extract_json_value response "challenge_id" in
+
+  Printf.fprintf stderr "%sConfirmation required. Check your email for a one-time code.%s\n" yellow reset;
+  Printf.fprintf stderr "Enter OTP: ";
+  flush stderr;
+
+  let otp_raw = try input_line stdin with End_of_file -> "" in
+  let otp = String.trim otp_raw in
+
+  if otp = "" then begin
+    Printf.fprintf stderr "%sError: Operation cancelled%s\n" red reset;
+    SudoCancelled
+  end else begin
+    (* Retry the request with sudo headers *)
+    let (pk, sk) = get_credentials () in
+    let auth_headers = build_auth_headers pk sk method_ endpoint body in
+
+    let sudo_headers = Printf.sprintf " -H 'X-Sudo-OTP: %s'" otp in
+    let challenge_header = match challenge_id with
+      | Some cid -> Printf.sprintf " -H 'X-Sudo-Challenge: %s'" cid
+      | None -> ""
+    in
+
+    let cmd = match method_ with
+      | "DELETE" ->
+        Printf.sprintf "curl -s -X DELETE %s%s%s%s%s" api_base endpoint auth_headers sudo_headers challenge_header
+      | "POST" ->
+        let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+        let oc = open_out tmp_file in
+        output_string oc body;
+        close_out oc;
+        let result = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s%s%s -d @%s"
+          api_base endpoint auth_headers sudo_headers challenge_header tmp_file in
+        result
+      | _ ->
+        Printf.sprintf "curl -s %s%s%s%s%s" api_base endpoint auth_headers sudo_headers challenge_header
+    in
+
+    let ic = Unix.open_process_in cmd in
+    let rec read_all acc =
+      try let line = input_line ic in read_all (acc ^ line ^ "\n")
+      with End_of_file -> acc
+    in
+    let retry_output = read_all "" in
+    let _ = Unix.close_process_in ic in
+
+    (* Clean up temp file for POST *)
+    (if method_ = "POST" then
+      try Sys.remove (Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999)) with _ -> ());
+
+    let contains_error s =
+      try let _ = Str.search_forward (Str.regexp_string "\"error\"") s 0 in true
+      with Not_found -> false
+    in
+
+    if not (contains_error retry_output) then
+      SudoSuccess retry_output
+    else
+      SudoError retry_output
+  end
+
+(** Make authenticated DELETE request with 428 handling *)
+let api_delete_with_sudo ?public_key ?secret_key endpoint =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "DELETE" endpoint "" in
+  let cmd = Printf.sprintf "curl -s -w '\\n%%{http_code}' -X DELETE %s%s%s" api_base endpoint auth_headers in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let output = read_all "" in
+  let _ = Unix.close_process_in ic in
+
+  (* Split response and status code *)
+  let lines = String.split_on_char '\n' output in
+  let lines_filtered = List.filter (fun s -> String.trim s <> "") lines in
+  let (body_lines, status_lines) =
+    let n = List.length lines_filtered in
+    if n > 0 then
+      (List.filteri (fun i _ -> i < n - 1) lines_filtered,
+       [List.nth lines_filtered (n - 1)])
+    else ([], [])
+  in
+  let body = String.concat "\n" body_lines in
+  let http_code = match status_lines with
+    | [s] -> (try int_of_string (String.trim s) with _ -> 200)
+    | _ -> 200
+  in
+
+  check_clock_drift body;
+
+  if http_code = 428 then
+    handle_sudo_challenge body "DELETE" endpoint ""
+  else
+    SudoSuccess body
+
+(** Make authenticated POST request with 428 handling *)
+let api_post_with_sudo ?public_key ?secret_key endpoint json =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let auth_headers = build_auth_headers pk sk "POST" endpoint json in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -w '\\n%%{http_code}' -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let output = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+
+  (* Split response and status code *)
+  let lines = String.split_on_char '\n' output in
+  let lines_filtered = List.filter (fun s -> String.trim s <> "") lines in
+  let (body_lines, status_lines) =
+    let n = List.length lines_filtered in
+    if n > 0 then
+      (List.filteri (fun i _ -> i < n - 1) lines_filtered,
+       [List.nth lines_filtered (n - 1)])
+    else ([], [])
+  in
+  let body = String.concat "\n" body_lines in
+  let http_code = match status_lines with
+    | [s] -> (try int_of_string (String.trim s) with _ -> 200)
+    | _ -> 200
+  in
+
+  check_clock_drift body;
+
+  if http_code = 428 then
+    handle_sudo_challenge body "POST" endpoint json
+  else
+    SudoSuccess body
+
 (** Make authenticated POST request to portal *)
 let portal_post ?public_key ?secret_key endpoint json =
   let (pk, sk) = get_credentials ?public_key ?secret_key () in
@@ -1247,8 +1391,12 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
   | "destroy" ->
     (match name with
      | Some sid ->
-       let _ = curl_delete api_key ("/services/" ^ sid) in
-       Printf.printf "%sService destroyed: %s%s\n" green sid reset
+       (match api_delete_with_sudo ("/services/" ^ sid) with
+        | SudoSuccess _ -> Printf.printf "%sService destroyed: %s%s\n" green sid reset
+        | SudoCancelled -> exit 1
+        | SudoError msg ->
+          Printf.fprintf stderr "%sError: %s%s\n" red msg reset;
+          exit 1)
      | None ->
        Printf.fprintf stderr "Error: --destroy requires service ID\n";
        exit 1)
@@ -1429,16 +1577,24 @@ let image_command args =
         Printf.printf "%s\n" response
       end
       else if delete_id <> "" then begin
-        let _ = curl_delete api_key (Printf.sprintf "/images/%s" delete_id) in
-        Printf.printf "%sImage deleted: %s%s\n" green delete_id reset
+        (match api_delete_with_sudo (Printf.sprintf "/images/%s" delete_id) with
+         | SudoSuccess _ -> Printf.printf "%sImage deleted: %s%s\n" green delete_id reset
+         | SudoCancelled -> exit 1
+         | SudoError msg ->
+           Printf.fprintf stderr "%sError: %s%s\n" red msg reset;
+           exit 1)
       end
       else if lock_id <> "" then begin
         let _ = curl_post api_key (Printf.sprintf "/images/%s/lock" lock_id) "{}" in
         Printf.printf "%sImage locked: %s%s\n" green lock_id reset
       end
       else if unlock_id <> "" then begin
-        let _ = curl_post api_key (Printf.sprintf "/images/%s/unlock" unlock_id) "{}" in
-        Printf.printf "%sImage unlocked: %s%s\n" green unlock_id reset
+        (match api_post_with_sudo (Printf.sprintf "/images/%s/unlock" unlock_id) "{}" with
+         | SudoSuccess _ -> Printf.printf "%sImage unlocked: %s%s\n" green unlock_id reset
+         | SudoCancelled -> exit 1
+         | SudoError msg ->
+           Printf.fprintf stderr "%sError: %s%s\n" red msg reset;
+           exit 1)
       end
       else if publish_id <> "" then begin
         if source_type = "" then begin

@@ -65,7 +65,7 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -838,6 +838,168 @@ fn make_request<T: for<'de> Deserialize<'de>>(
     Ok(result)
 }
 
+/// Make an authenticated HTTP request that may require sudo OTP confirmation
+fn make_destructive_request<T: for<'de> Deserialize<'de>>(
+    method: &str,
+    path: &str,
+    creds: &Credentials,
+    body: Option<&impl Serialize>,
+) -> Result<T> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
+
+    let url = format!("{}{}", API_BASE, path);
+    let timestamp = get_timestamp();
+
+    let body_str = match body {
+        Some(b) => serde_json::to_string(b)?,
+        None => String::new(),
+    };
+
+    let signature = sign_request(&creds.secret_key, timestamp, method, path, &body_str);
+
+    let mut request = match method {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PATCH" => client.patch(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        _ => client.get(&url),
+    };
+
+    request = request
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "un-rust-sync/2.0");
+
+    if !body_str.is_empty() {
+        request = request.body(body_str.clone());
+    }
+
+    let response = request.send()?;
+    let status = response.status().as_u16();
+    let response_text = response.text()?;
+
+    // Handle 428 sudo challenge
+    if status == 428 {
+        return handle_sudo_challenge(method, path, creds, body, &response_text);
+    }
+
+    if status < 200 || status >= 300 {
+        return Err(UnsandboxError::ApiError {
+            status,
+            message: response_text,
+        });
+    }
+
+    let result: T = serde_json::from_str(&response_text)?;
+    Ok(result)
+}
+
+/// Handle 428 sudo OTP challenge - prompts user for OTP and retries request
+fn handle_sudo_challenge<T: for<'de> Deserialize<'de>>(
+    method: &str,
+    path: &str,
+    creds: &Credentials,
+    body: Option<&impl Serialize>,
+    response_text: &str,
+) -> Result<T> {
+    // Extract challenge_id from response
+    #[derive(Deserialize)]
+    struct ChallengeResponse {
+        challenge_id: Option<String>,
+    }
+
+    let challenge: ChallengeResponse = serde_json::from_str(response_text)
+        .unwrap_or(ChallengeResponse { challenge_id: None });
+
+    let challenge_id = challenge.challenge_id.unwrap_or_default();
+
+    // Prompt user for OTP
+    eprintln!("\x1b[33mConfirmation required. Check your email for a one-time code.\x1b[0m");
+    eprint!("Enter OTP: ");
+    io::stderr().flush().ok();
+
+    let mut otp = String::new();
+    io::stdin().read_line(&mut otp).map_err(|e| UnsandboxError::IoError(e))?;
+    let otp = otp.trim();
+
+    if otp.is_empty() {
+        return Err(UnsandboxError::ApiError {
+            status: 428,
+            message: "Operation cancelled".to_string(),
+        });
+    }
+
+    // Retry the request with sudo headers
+    let client = Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
+
+    let url = format!("{}{}", API_BASE, path);
+    let timestamp = get_timestamp();
+
+    let body_str = match body {
+        Some(b) => serde_json::to_string(b)?,
+        None => String::new(),
+    };
+
+    let signature = sign_request(&creds.secret_key, timestamp, method, path, &body_str);
+
+    let mut request = match method {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PATCH" => client.patch(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        _ => client.get(&url),
+    };
+
+    request = request
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "un-rust-sync/2.0")
+        .header("X-Sudo-OTP", otp)
+        .header("X-Sudo-Challenge", &challenge_id);
+
+    if !body_str.is_empty() {
+        request = request.body(body_str);
+    }
+
+    let response = request.send()?;
+    let status = response.status().as_u16();
+    let response_text = response.text()?;
+
+    if status < 200 || status >= 300 {
+        // Try to extract error message
+        #[derive(Deserialize)]
+        struct ErrorResponse {
+            error: Option<String>,
+        }
+        if let Ok(err_resp) = serde_json::from_str::<ErrorResponse>(&response_text) {
+            if let Some(err_msg) = err_resp.error {
+                return Err(UnsandboxError::ApiError {
+                    status,
+                    message: err_msg,
+                });
+            }
+        }
+        return Err(UnsandboxError::ApiError {
+            status,
+            message: response_text,
+        });
+    }
+
+    eprintln!("\x1b[32mOperation completed successfully\x1b[0m");
+    let result: T = serde_json::from_str(&response_text)?;
+    Ok(result)
+}
+
 // =============================================================================
 // Languages Cache
 // =============================================================================
@@ -1156,12 +1318,14 @@ pub fn restore_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Restor
 
 /// Delete a snapshot.
 ///
+/// This operation may require sudo OTP confirmation (428 response handling).
+///
 /// # Arguments
 /// * `snapshot_id` - Snapshot ID to delete
 /// * `creds` - API credentials
 pub fn delete_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<()> {
     let path = format!("/snapshots/{}", snapshot_id);
-    let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>)?;
+    let _: serde_json::Value = make_destructive_request("DELETE", &path, creds, None::<&()>)?;
     Ok(())
 }
 
@@ -1181,6 +1345,8 @@ pub fn lock_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Snapshot>
 
 /// Unlock a snapshot to allow deletion.
 ///
+/// This operation may require sudo OTP confirmation (428 response handling).
+///
 /// # Arguments
 /// * `snapshot_id` - Snapshot ID to unlock
 /// * `creds` - API credentials
@@ -1190,7 +1356,7 @@ pub fn lock_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Snapshot>
 pub fn unlock_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Snapshot> {
     let path = format!("/snapshots/{}/unlock", snapshot_id);
     let body = serde_json::json!({});
-    make_request("POST", &path, creds, Some(&body))
+    make_destructive_request("POST", &path, creds, Some(&body))
 }
 
 /// Clone a snapshot to create a new snapshot with a different name.
@@ -1306,13 +1472,14 @@ pub fn get_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
 /// Delete an LXD container image.
 ///
 /// The image must be unlocked to be deleted.
+/// This operation may require sudo OTP confirmation (428 response handling).
 ///
 /// # Arguments
 /// * `image_id` - Image ID to delete
 /// * `creds` - API credentials
 pub fn delete_image(image_id: &str, creds: &Credentials) -> Result<()> {
     let path = format!("/images/{}", image_id);
-    let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>)?;
+    let _: serde_json::Value = make_destructive_request("DELETE", &path, creds, None::<&()>)?;
     Ok(())
 }
 
@@ -1332,6 +1499,8 @@ pub fn lock_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
 
 /// Unlock an LXD container image to allow modification or deletion.
 ///
+/// This operation may require sudo OTP confirmation (428 response handling).
+///
 /// # Arguments
 /// * `image_id` - Image ID to unlock
 /// * `creds` - API credentials
@@ -1341,7 +1510,7 @@ pub fn lock_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
 pub fn unlock_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
     let path = format!("/images/{}/unlock", image_id);
     let body = serde_json::json!({});
-    make_request("POST", &path, creds, Some(&body))
+    make_destructive_request("POST", &path, creds, Some(&body))
 }
 
 /// Set the visibility of an LXD container image.
@@ -1868,12 +2037,14 @@ pub fn update_service(
 
 /// Delete (destroy) a service.
 ///
+/// This operation may require sudo OTP confirmation (428 response handling).
+///
 /// # Arguments
 /// * `service_id` - Service ID to delete
 /// * `creds` - API credentials
 pub fn delete_service(service_id: &str, creds: &Credentials) -> Result<()> {
     let path = format!("/services/{}", service_id);
-    let _: serde_json::Value = make_request("DELETE", &path, creds, None::<&()>)?;
+    let _: serde_json::Value = make_destructive_request("DELETE", &path, creds, None::<&()>)?;
     Ok(())
 }
 
@@ -1921,6 +2092,8 @@ pub fn lock_service(service_id: &str, creds: &Credentials) -> Result<Service> {
 
 /// Unlock a service to allow modifications.
 ///
+/// This operation may require sudo OTP confirmation (428 response handling).
+///
 /// # Arguments
 /// * `service_id` - Service ID to unlock
 /// * `creds` - API credentials
@@ -1930,7 +2103,7 @@ pub fn lock_service(service_id: &str, creds: &Credentials) -> Result<Service> {
 pub fn unlock_service(service_id: &str, creds: &Credentials) -> Result<Service> {
     let path = format!("/services/{}/unlock", service_id);
     let body = serde_json::json!({});
-    make_request("POST", &path, creds, Some(&body))
+    make_destructive_request("POST", &path, creds, Some(&body))
 }
 
 /// Set the unfreeze_on_demand flag for a service.

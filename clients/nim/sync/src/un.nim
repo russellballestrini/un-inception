@@ -273,6 +273,106 @@ proc extractJsonField(response, field: string): string =
       return response[start..<endPos]
   return ""
 
+proc execCurlWithStatus(cmd: string): (int, string) =
+  # Execute curl and capture HTTP status code and response body
+  let result = execProcess(cmd)
+  return (0, result)  # For non-status commands, we parse response
+
+proc handleSudoChallenge(responseData, meth, endpoint, body, publicKey, secretKey: string): bool =
+  # Extract challenge_id from response
+  let challengeId = extractJsonField(responseData, "challenge_id")
+
+  stderr.writeLine(YELLOW & "Confirmation required. Check your email for a one-time code." & RESET)
+  stderr.write("Enter OTP: ")
+
+  var otp = ""
+  try:
+    otp = stdin.readLine().strip()
+  except:
+    stderr.writeLine(RED & "Error: Failed to read OTP" & RESET)
+    return false
+
+  if otp.len == 0:
+    stderr.writeLine(RED & "Error: Operation cancelled" & RESET)
+    return false
+
+  # Build retry command with sudo headers
+  var otpHeader = fmt"-H 'X-Sudo-OTP: {otp}'"
+  var challengeHeader = ""
+  if challengeId != "":
+    challengeHeader = fmt" -H 'X-Sudo-Challenge: {challengeId}'"
+
+  let authHeaders = buildAuthHeaders(meth, endpoint, body, publicKey, secretKey)
+  var cmd: string
+  if meth == "DELETE":
+    cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X DELETE '{API_BASE}{endpoint}' {authHeaders} {otpHeader}{challengeHeader}"""
+  elif meth == "POST":
+    let contentType = if body != "": "-H 'Content-Type: application/json'" else: ""
+    cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X POST '{API_BASE}{endpoint}' {contentType} {authHeaders} {otpHeader}{challengeHeader} -d '{body}'"""
+  else:
+    return false
+
+  let output = execProcess(cmd).strip()
+  try:
+    let status = parseInt(output)
+    if status >= 200 and status < 300:
+      echo GREEN & "Operation completed successfully" & RESET
+      return true
+    else:
+      stderr.writeLine(RED & "Error: HTTP " & $status & RESET)
+      return false
+  except:
+    stderr.writeLine(RED & "Error: Failed to retry operation" & RESET)
+    return false
+
+proc execCurlDeleteWithSudo(endpoint, publicKey, secretKey: string): int =
+  let authHeaders = buildAuthHeaders("DELETE", endpoint, "", publicKey, secretKey)
+  let cmd = fmt"""curl -s -w '\n%{{http_code}}' -X DELETE '{API_BASE}{endpoint}' {authHeaders}"""
+  let output = execProcess(cmd)
+
+  # Parse response body and status code
+  let lines = output.strip().split('\n')
+  if lines.len < 1:
+    return 500
+
+  let statusLine = lines[^1]
+  let responseBody = if lines.len > 1: lines[0..^2].join("\n") else: ""
+
+  try:
+    let status = parseInt(statusLine)
+    if status == 428:
+      if handleSudoChallenge(responseBody, "DELETE", endpoint, "", publicKey, secretKey):
+        return 200
+      else:
+        return 428
+    return status
+  except:
+    return 500
+
+proc execCurlPostWithSudo(endpoint, body, publicKey, secretKey: string): int =
+  let authHeaders = buildAuthHeaders("POST", endpoint, body, publicKey, secretKey)
+  let cmd = fmt"""curl -s -w '\n%{{http_code}}' -X POST '{API_BASE}{endpoint}' -H 'Content-Type: application/json' {authHeaders} -d '{body}'"""
+  let output = execProcess(cmd)
+
+  # Parse response body and status code
+  let lines = output.strip().split('\n')
+  if lines.len < 1:
+    return 500
+
+  let statusLine = lines[^1]
+  let responseBody = if lines.len > 1: lines[0..^2].join("\n") else: ""
+
+  try:
+    let status = parseInt(statusLine)
+    if status == 428:
+      if handleSudoChallenge(responseBody, "POST", endpoint, body, publicKey, secretKey):
+        return 200
+      else:
+        return 428
+    return status
+  except:
+    return 500
+
 proc cmdServiceEnv(action, target: string, envs: seq[string], envFile, publicKey, secretKey: string) =
   case action
   of "status":
@@ -443,10 +543,12 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
 
   if destroy != "":
     let path = fmt"/services/{destroy}"
-    let authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/services/{destroy}' {authHeaders}"""
-    discard execCurl(cmd)
-    echo GREEN & "Service destroyed: " & destroy & RESET
+    let status = execCurlDeleteWithSudo(path, publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Service destroyed: " & destroy & RESET
+    elif status != 428:  # 428 already handled in execCurlDeleteWithSudo
+      stderr.writeLine(RED & "Error: Failed to destroy service" & RESET)
+      quit(1)
     return
 
   if resize != "":
@@ -737,10 +839,12 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
 
   if deleteId != "":
     let path = fmt"/images/{deleteId}"
-    let authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -X DELETE '{API_BASE}/images/{deleteId}' {authHeaders}"""
-    discard execCurl(cmd)
-    echo GREEN & "Image deleted: " & deleteId & RESET
+    let status = execCurlDeleteWithSudo(path, publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Image deleted: " & deleteId & RESET
+    elif status != 428:  # 428 already handled
+      stderr.writeLine(RED & "Error: Failed to delete image" & RESET)
+      quit(1)
     return
 
   if lockId != "":
@@ -753,10 +857,12 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
 
   if unlockId != "":
     let path = fmt"/images/{unlockId}/unlock"
-    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{unlockId}/unlock' {authHeaders}"""
-    discard execCurl(cmd)
-    echo GREEN & "Image unlocked: " & unlockId & RESET
+    let status = execCurlPostWithSudo(path, "{}", publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Image unlocked: " & unlockId & RESET
+    elif status != 428:  # 428 already handled
+      stderr.writeLine(RED & "Error: Failed to unlock image" & RESET)
+      quit(1)
     return
 
   if publishId != "":

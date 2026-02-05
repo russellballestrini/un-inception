@@ -361,6 +361,177 @@ def apiRequestPatch(endpoint, data, publicKey, secretKey) {
     return apiRequest(endpoint, 'PATCH', data, publicKey, secretKey)
 }
 
+/**
+ * Exception for 428 Sudo Challenge requiring OTP confirmation.
+ */
+class SudoChallengeError extends UnsandboxError {
+    String challengeId
+    String responseBody
+
+    SudoChallengeError(String challengeId, String responseBody) {
+        super("Sudo challenge required")
+        this.challengeId = challengeId
+        this.responseBody = responseBody
+    }
+}
+
+/**
+ * Make API request for destructive operations with 428 handling.
+ * Uses curl with -w to capture HTTP status code.
+ */
+def apiRequestDestructive(String endpoint, String method, data, String publicKey, String secretKey) {
+    def tempFile = File.createTempFile('un_request_', '.json')
+    def statusFile = File.createTempFile('un_status_', '.txt')
+    try {
+        def body = ""
+        if (data) {
+            body = data instanceof Map ? JsonOutput.toJson(data) : data.toString()
+            tempFile.text = body
+        }
+
+        def timestamp = (System.currentTimeMillis() / 1000) as long
+        def signature = signRequest(secretKey, timestamp, method, endpoint, body)
+
+        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
+                       '-H', "Content-Type: application/json",
+                       '-H', "Authorization: Bearer ${publicKey}",
+                       '-H', "X-Timestamp: ${timestamp}",
+                       '-H', "X-Signature: ${signature}",
+                       '-w', '\\n%{http_code}',
+                       '-o', statusFile.absolutePath]
+
+        if (data) {
+            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+        }
+
+        def proc = curlCmd.execute()
+        def statusOutput = proc.text.trim()
+        proc.waitFor()
+
+        def responseBody = statusFile.exists() ? statusFile.text : ""
+        def httpCode = 0
+        try {
+            httpCode = statusOutput.toInteger()
+        } catch (Exception e) {
+            // Failed to parse status code
+        }
+
+        if (httpCode == 428) {
+            // Extract challenge_id from response
+            def challengeId = null
+            try {
+                def parsed = new JsonSlurper().parseText(responseBody)
+                challengeId = parsed?.challenge_id
+            } catch (Exception e) {
+                // Ignore parse errors
+            }
+            throw new SudoChallengeError(challengeId, responseBody)
+        }
+
+        if (httpCode < 200 || httpCode >= 300) {
+            throw new APIError("HTTP ${httpCode} - ${responseBody}", httpCode, responseBody)
+        }
+
+        try {
+            return new JsonSlurper().parseText(responseBody)
+        } catch (Exception e) {
+            return [raw: responseBody]
+        }
+    } finally {
+        tempFile.delete()
+        statusFile.delete()
+    }
+}
+
+/**
+ * Make API request with sudo OTP headers.
+ */
+def apiRequestWithSudo(String endpoint, String method, data, String publicKey, String secretKey, String otp, String challengeId) {
+    def tempFile = File.createTempFile('un_request_', '.json')
+    def statusFile = File.createTempFile('un_status_', '.txt')
+    try {
+        def body = ""
+        if (data) {
+            body = data instanceof Map ? JsonOutput.toJson(data) : data.toString()
+            tempFile.text = body
+        }
+
+        def timestamp = (System.currentTimeMillis() / 1000) as long
+        def signature = signRequest(secretKey, timestamp, method, endpoint, body)
+
+        def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
+                       '-H', "Content-Type: application/json",
+                       '-H', "Authorization: Bearer ${publicKey}",
+                       '-H', "X-Timestamp: ${timestamp}",
+                       '-H', "X-Signature: ${signature}",
+                       '-H', "X-Sudo-OTP: ${otp}",
+                       '-w', '\\n%{http_code}',
+                       '-o', statusFile.absolutePath]
+
+        if (challengeId) {
+            curlCmd += ['-H', "X-Sudo-Challenge: ${challengeId}"]
+        }
+
+        if (data) {
+            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+        }
+
+        def proc = curlCmd.execute()
+        def statusOutput = proc.text.trim()
+        proc.waitFor()
+
+        def responseBody = statusFile.exists() ? statusFile.text : ""
+        def httpCode = 0
+        try {
+            httpCode = statusOutput.toInteger()
+        } catch (Exception e) {
+            // Failed to parse status code
+        }
+
+        if (httpCode < 200 || httpCode >= 300) {
+            throw new APIError("HTTP ${httpCode} - ${responseBody}", httpCode, responseBody)
+        }
+
+        try {
+            return new JsonSlurper().parseText(responseBody)
+        } catch (Exception e) {
+            return [raw: responseBody]
+        }
+    } finally {
+        tempFile.delete()
+        statusFile.delete()
+    }
+}
+
+/**
+ * Handle sudo challenge by prompting for OTP and retrying.
+ */
+def handleSudoChallenge(String challengeId, String method, String endpoint, data, String publicKey, String secretKey) {
+    System.err.println("${YELLOW}Confirmation required. Check your email for a one-time code.${RESET}")
+    System.err.print("Enter OTP: ")
+    System.err.flush()
+
+    def reader = new BufferedReader(new InputStreamReader(System.in))
+    def otp = reader.readLine()?.trim()
+
+    if (!otp) {
+        throw new RuntimeException("Operation cancelled - no OTP provided")
+    }
+
+    return apiRequestWithSudo(endpoint, method, data, publicKey, secretKey, otp, challengeId)
+}
+
+/**
+ * Execute a destructive operation with 428 sudo challenge handling.
+ */
+def executeDestructive(String endpoint, String method, data, String publicKey, String secretKey) {
+    try {
+        return apiRequestDestructive(endpoint, method, data, publicKey, secretKey)
+    } catch (SudoChallengeError e) {
+        return handleSudoChallenge(e.challengeId, method, endpoint, data, publicKey, secretKey)
+    }
+}
+
 def apiRequestText(endpoint, method, body, publicKey, secretKey) {
     def tempFile = File.createTempFile('un_env_', '.txt')
     try {
@@ -1286,7 +1457,7 @@ def cmdSnapshot(args) {
     }
 
     if (args.snapshotDelete) {
-        apiRequest("/snapshots/${args.snapshotDelete}", 'DELETE', null, publicKey, secretKey)
+        executeDestructive("/snapshots/${args.snapshotDelete}", 'DELETE', null, publicKey, secretKey)
         println("${GREEN}Snapshot deleted: ${args.snapshotDelete}${RESET}")
         return
     }
@@ -1326,7 +1497,7 @@ def cmdImage(args) {
     }
 
     if (args.imageDelete) {
-        apiRequest("/images/${args.imageDelete}", 'DELETE', null, publicKey, secretKey)
+        executeDestructive("/images/${args.imageDelete}", 'DELETE', null, publicKey, secretKey)
         println("${GREEN}Image deleted: ${args.imageDelete}${RESET}")
         return
     }
@@ -1338,7 +1509,7 @@ def cmdImage(args) {
     }
 
     if (args.imageUnlock) {
-        apiRequest("/images/${args.imageUnlock}/unlock", 'POST', null, publicKey, secretKey)
+        executeDestructive("/images/${args.imageUnlock}/unlock", 'POST', null, publicKey, secretKey)
         println("${GREEN}Image unlocked: ${args.imageUnlock}${RESET}")
         return
     }
@@ -1545,7 +1716,7 @@ def cmdService(args) {
     }
 
     if (args.serviceDestroy) {
-        apiRequest("/services/${args.serviceDestroy}", 'DELETE', null, publicKey, secretKey)
+        executeDestructive("/services/${args.serviceDestroy}", 'DELETE', null, publicKey, secretKey)
         println("${GREEN}Service destroyed: ${args.serviceDestroy}${RESET}")
         return
     }

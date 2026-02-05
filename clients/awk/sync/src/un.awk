@@ -258,7 +258,77 @@ function service_list(    timestamp, sig_headers, signature, sig_input, sig_cmd)
     close(cmd)
 }
 
-function service_destroy(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+# Handle 428 Sudo OTP challenge - prompt user for OTP and retry
+function handle_sudo_challenge(response, method, endpoint, body    , otp, challenge_id, timestamp, sig_headers, signature, sig_input, sig_cmd, cmd, retry_response, line, sudo_headers) {
+    # Extract challenge_id from response
+    challenge_id = ""
+    if (match(response, /"challenge_id":"([^"]+)"/, arr)) {
+        challenge_id = arr[1]
+    }
+
+    print YELLOW "Confirmation required. Check your email for a one-time code." RESET > "/dev/stderr"
+    printf "Enter OTP: " > "/dev/stderr"
+
+    # Read OTP from stdin
+    if ((getline otp < "/dev/stdin") <= 0 || otp == "") {
+        print RED "Error: Operation cancelled" RESET > "/dev/stderr"
+        return 0
+    }
+    # Strip newline/carriage return
+    gsub(/[\r\n]/, "", otp)
+
+    if (otp == "") {
+        print RED "Error: Operation cancelled" RESET > "/dev/stderr"
+        return 0
+    }
+
+    # Retry with sudo headers
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":" method ":" endpoint ":" (body != "" ? body : "")
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+
+    sudo_headers = "-H 'X-Sudo-OTP: " otp "' "
+    if (challenge_id != "") {
+        sudo_headers = sudo_headers "-H 'X-Sudo-Challenge: " challenge_id "' "
+    }
+
+    if (method == "DELETE") {
+        cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' " \
+              "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+              sig_headers sudo_headers
+    } else {
+        cmd = "curl -s -w '\\n%{http_code}' -X " method " '" API_BASE endpoint "' " \
+              "-H 'Content-Type: application/json' " \
+              "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+              sig_headers sudo_headers \
+              (body != "" ? "-d '" body "'" : "")
+    }
+
+    retry_response = ""
+    while ((cmd | getline line) > 0) {
+        retry_response = retry_response line "\n"
+    }
+    close(cmd)
+
+    # Check if successful (last line is HTTP code)
+    if (match(retry_response, /\n([0-9]+)\n?$/, arr)) {
+        if (arr[1] >= 200 && arr[1] < 300) {
+            print GREEN "Operation completed successfully" RESET
+            return 1
+        }
+    }
+
+    print RED "Error: OTP verification failed" RESET > "/dev/stderr"
+    return 0
+}
+
+function service_destroy(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, cmd, response, line, http_code) {
     get_api_keys()
     endpoint = "/services/" id
     timestamp = systime()
@@ -270,8 +340,34 @@ function service_destroy(id    , timestamp, sig_headers, signature, sig_input, s
         close(sig_cmd)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
-    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
-    system(cmd)
+    cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line "\n"
+    }
+    close(cmd)
+
+    # Extract HTTP code from last line
+    http_code = 0
+    if (match(response, /\n([0-9]+)\n?$/, arr)) {
+        http_code = arr[1]
+    }
+
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if (http_code == 428) {
+        if (handle_sudo_challenge(response, "DELETE", endpoint, "")) {
+            return
+        }
+        exit 1
+    }
+
+    if (http_code != 200) {
+        print RED "Error: HTTP " http_code RESET > "/dev/stderr"
+        print response > "/dev/stderr"
+        exit 1
+    }
+
     print GREEN "Service destroyed: " id RESET
 }
 
@@ -829,7 +925,7 @@ function snapshot_info(id    , timestamp, sig_headers, signature, sig_input, sig
     close(cmd)
 }
 
-function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, cmd, response, line, http_code) {
     get_api_keys()
     endpoint = "/snapshots/" id
     timestamp = systime()
@@ -841,8 +937,33 @@ function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, s
         close(sig_cmd)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
-    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
-    system(cmd)
+    cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line "\n"
+    }
+    close(cmd)
+
+    # Extract HTTP code from last line
+    http_code = 0
+    if (match(response, /\n([0-9]+)\n?$/, arr)) {
+        http_code = arr[1]
+    }
+
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if (http_code == 428) {
+        if (handle_sudo_challenge(response, "DELETE", endpoint, "")) {
+            return
+        }
+        exit 1
+    }
+
+    if (http_code != 200) {
+        print RED "Error: HTTP " http_code RESET > "/dev/stderr"
+        exit 1
+    }
+
     print GREEN "Snapshot deleted: " id RESET
 }
 
@@ -880,7 +1001,7 @@ function image_info(id    , timestamp, sig_headers, signature, sig_input, sig_cm
     close(cmd)
 }
 
-function image_delete(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+function image_delete(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, cmd, response, line, http_code) {
     get_api_keys()
     endpoint = "/images/" id
     timestamp = systime()
@@ -892,8 +1013,33 @@ function image_delete(id    , timestamp, sig_headers, signature, sig_input, sig_
         close(sig_cmd)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
-    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
-    system(cmd)
+    cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line "\n"
+    }
+    close(cmd)
+
+    # Extract HTTP code from last line
+    http_code = 0
+    if (match(response, /\n([0-9]+)\n?$/, arr)) {
+        http_code = arr[1]
+    }
+
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if (http_code == 428) {
+        if (handle_sudo_challenge(response, "DELETE", endpoint, "")) {
+            return
+        }
+        exit 1
+    }
+
+    if (http_code != 200) {
+        print RED "Error: HTTP " http_code RESET > "/dev/stderr"
+        exit 1
+    }
+
     print GREEN "Image deleted: " id RESET
 }
 
@@ -923,7 +1069,7 @@ function image_lock(id    , endpoint, json, tmp, timestamp, sig_headers, signatu
     print GREEN "Image locked: " id RESET
 }
 
-function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd) {
+function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, cmd, response, line, http_code) {
     get_api_keys()
     endpoint = "/images/" id "/unlock"
     json = "{}"
@@ -939,13 +1085,38 @@ function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signa
         close(sig_cmd)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' " \
+    cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE endpoint "' " \
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
           "-d '@" tmp "'"
-    system(cmd " > /dev/null")
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line "\n"
+    }
+    close(cmd)
     system("rm -f " tmp)
+
+    # Extract HTTP code from last line
+    http_code = 0
+    if (match(response, /\n([0-9]+)\n?$/, arr)) {
+        http_code = arr[1]
+    }
+
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if (http_code == 428) {
+        if (handle_sudo_challenge(response, "POST", endpoint, json)) {
+            return
+        }
+        exit 1
+    }
+
+    if (http_code != 200) {
+        print RED "Error: HTTP " http_code RESET > "/dev/stderr"
+        exit 1
+    }
+
     print GREEN "Image unlocked: " id RESET
 }
 

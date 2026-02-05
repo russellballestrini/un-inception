@@ -373,7 +373,7 @@ module Un
     #     Un.delete_snapshot(snapshot_id)
     def delete_snapshot(snapshot_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      make_request('DELETE', "/snapshots/#{snapshot_id}", pk, sk)
+      make_request_with_sudo('DELETE', "/snapshots/#{snapshot_id}", pk, sk)
     end
 
     # Lock a snapshot to prevent deletion
@@ -405,7 +405,7 @@ module Un
     #     Un.unlock_snapshot(snapshot_id)
     def unlock_snapshot(snapshot_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      make_request('POST', "/snapshots/#{snapshot_id}/unlock", pk, sk, {})
+      make_request_with_sudo('POST', "/snapshots/#{snapshot_id}/unlock", pk, sk, {})
     end
 
     # Clone a snapshot to create a new session or service
@@ -523,7 +523,7 @@ module Un
     #     Un.delete_image(image_id)
     def delete_image(image_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      make_request('DELETE', "/images/#{image_id}", pk, sk)
+      make_request_with_sudo('DELETE', "/images/#{image_id}", pk, sk)
     end
 
     # Lock an image to prevent deletion
@@ -555,7 +555,7 @@ module Un
     #     Un.unlock_image(image_id)
     def unlock_image(image_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      make_request('POST', "/images/#{image_id}/unlock", pk, sk, {})
+      make_request_with_sudo('POST', "/images/#{image_id}/unlock", pk, sk, {})
     end
 
     # Set image visibility (private, public, or shared)
@@ -969,7 +969,7 @@ module Un
     #     Un.delete_service(service_id)
     def delete_service(service_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      make_request('DELETE', "/services/#{service_id}", pk, sk)
+      make_request_with_sudo('DELETE', "/services/#{service_id}", pk, sk)
     end
 
     # Freeze a service (stop container, reduce resource usage)
@@ -1033,7 +1033,7 @@ module Un
     #     Un.unlock_service(service_id)
     def unlock_service(service_id, public_key: nil, secret_key: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      make_request('POST', "/services/#{service_id}/unlock", pk, sk, {})
+      make_request_with_sudo('POST', "/services/#{service_id}/unlock", pk, sk, {})
     end
 
     # Set unfreeze-on-demand for a service
@@ -1460,6 +1460,123 @@ module Un
                  else
                    raise APIError, "Unsupported HTTP method: #{method}"
                  end
+
+      unless response.is_a?(Net::HTTPSuccess)
+        raise APIError.new(
+          "API request failed: #{response.code} #{response.message}",
+          status_code: response.code.to_i,
+          response_body: response.body
+        )
+      end
+
+      JSON.parse(response.body)
+    rescue JSON::ParserError => e
+      raise APIError, "Invalid JSON response: #{e.message}"
+    rescue Net::OpenTimeout, Net::ReadTimeout => e
+      raise APIError, "Request timeout: #{e.message}"
+    rescue StandardError => e
+      raise APIError, "Request failed: #{e.message}" unless e.is_a?(APIError)
+
+      raise
+    end
+
+    # Make an authenticated HTTP request with sudo OTP challenge handling.
+    #
+    # If the server returns 428 (Precondition Required), prompts for OTP
+    # and retries the request with X-Sudo-OTP and X-Sudo-Challenge headers.
+    #
+    # Used for destructive operations: service destroy/unlock, snapshot delete/unlock,
+    # image delete/unlock.
+    #
+    # @param method [String] HTTP method (GET, POST, DELETE)
+    # @param path [String] API path
+    # @param public_key [String] API public key
+    # @param secret_key [String] API secret key
+    # @param data [Hash, nil] Request body data
+    # @return [Hash] Parsed JSON response
+    # @raise [APIError] If request fails
+    def make_request_with_sudo(method, path, public_key, secret_key, data = nil)
+      uri = URI.parse("#{API_BASE}#{path}")
+      timestamp = Time.now.to_i
+      body = data ? JSON.generate(data) : ''
+
+      signature = sign_request(secret_key, timestamp, method, path, data ? body : nil)
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.open_timeout = REQUEST_TIMEOUT
+      http.read_timeout = REQUEST_TIMEOUT
+
+      headers = {
+        'Authorization' => "Bearer #{public_key}",
+        'X-Timestamp' => timestamp.to_s,
+        'X-Signature' => signature,
+        'Content-Type' => 'application/json'
+      }
+
+      response = case method
+                 when 'GET'
+                   http.get(uri.request_uri, headers)
+                 when 'POST'
+                   http.post(uri.request_uri, body, headers)
+                 when 'PATCH'
+                   http.patch(uri.request_uri, body, headers)
+                 when 'PUT'
+                   http.put(uri.request_uri, body, headers)
+                 when 'DELETE'
+                   req = Net::HTTP::Delete.new(uri.request_uri, headers)
+                   req.body = body if data
+                   http.request(req)
+                 else
+                   raise APIError, "Unsupported HTTP method: #{method}"
+                 end
+
+      # Handle 428 sudo OTP challenge
+      if response.code.to_i == 428
+        challenge_id = ''
+        begin
+          challenge_data = JSON.parse(response.body)
+          challenge_id = challenge_data['challenge_id'] || ''
+        rescue JSON::ParserError
+          # Ignore JSON parse errors
+        end
+
+        $stderr.puts "\e[33mConfirmation required. Check your email for a one-time code.\e[0m"
+        $stderr.print 'Enter OTP: '
+        otp = $stdin.gets&.strip
+
+        raise APIError, 'Operation cancelled' if otp.nil? || otp.empty?
+
+        # Retry with sudo headers
+        retry_timestamp = Time.now.to_i
+        retry_signature = sign_request(secret_key, retry_timestamp, method, path, data ? body : nil)
+
+        retry_headers = {
+          'Authorization' => "Bearer #{public_key}",
+          'X-Timestamp' => retry_timestamp.to_s,
+          'X-Signature' => retry_signature,
+          'Content-Type' => 'application/json',
+          'X-Sudo-OTP' => otp,
+          'X-Sudo-Challenge' => challenge_id
+        }
+
+        response = case method
+                   when 'GET'
+                     http.get(uri.request_uri, retry_headers)
+                   when 'POST'
+                     http.post(uri.request_uri, body, retry_headers)
+                   when 'PATCH'
+                     http.patch(uri.request_uri, body, retry_headers)
+                   when 'PUT'
+                     http.put(uri.request_uri, body, retry_headers)
+                   when 'DELETE'
+                     req = Net::HTTP::Delete.new(uri.request_uri, retry_headers)
+                     req.body = body if data
+                     http.request(req)
+                   else
+                     raise APIError, "Unsupported HTTP method: #{method}"
+                   end
+      end
 
       unless response.is_a?(Net::HTTPSuccess)
         raise APIError.new(

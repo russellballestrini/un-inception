@@ -433,7 +433,7 @@ class Un
 
         if (args.ServiceDestroy != null)
         {
-            ApiRequest($"/services/{args.ServiceDestroy}", "DELETE", null, publicKey, secretKey);
+            ApiRequestWithSudo($"/services/{args.ServiceDestroy}", "DELETE", null, publicKey, secretKey);
             Console.WriteLine($"{GREEN}Service destroyed: {args.ServiceDestroy}{RESET}");
             return;
         }
@@ -597,7 +597,7 @@ class Un
         return ExtMap[ext];
     }
 
-    static Dictionary<string, object> ApiRequest(string endpoint, string method, Dictionary<string, object> data, string publicKey, string secretKey)
+    static Dictionary<string, object> ApiRequest(string endpoint, string method, Dictionary<string, object> data, string publicKey, string secretKey, string sudoOtp = null, string sudoChallengeId = null)
     {
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
 
@@ -632,6 +632,16 @@ class Un
         {
             // Legacy API key authentication
             request.Headers.Add("Authorization", $"Bearer {publicKey}");
+        }
+
+        // Add sudo OTP headers if provided
+        if (!string.IsNullOrEmpty(sudoOtp))
+        {
+            request.Headers.Add("X-Sudo-OTP", sudoOtp);
+        }
+        if (!string.IsNullOrEmpty(sudoChallengeId))
+        {
+            request.Headers.Add("X-Sudo-Challenge", sudoChallengeId);
         }
 
         if (data != null)
@@ -683,7 +693,53 @@ class Un
                 Environment.Exit(1);
             }
 
-            throw new Exception($"HTTP error - {error}");
+            throw new HttpException(statusCode, error);
+        }
+    }
+
+    // Custom exception to preserve HTTP status code
+    class HttpException : Exception
+    {
+        public int StatusCode { get; }
+        public string ResponseBody { get; }
+        public HttpException(int statusCode, string responseBody) : base($"HTTP {statusCode}: {responseBody}")
+        {
+            StatusCode = statusCode;
+            ResponseBody = responseBody;
+        }
+    }
+
+    // Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+    static Dictionary<string, object> HandleSudoChallenge(string responseBody, string endpoint, string method, Dictionary<string, object> data, string publicKey, string secretKey)
+    {
+        var response = ParseJson(responseBody);
+        string challengeId = response.ContainsKey("challenge_id") ? (string)response["challenge_id"] : null;
+
+        Console.Error.WriteLine($"{YELLOW}Confirmation required. Check your email for a one-time code.{RESET}");
+        Console.Error.Write("Enter OTP: ");
+
+        string otp = Console.ReadLine();
+        if (string.IsNullOrEmpty(otp))
+        {
+            throw new Exception("Operation cancelled");
+        }
+
+        otp = otp.Trim();
+
+        // Retry the request with sudo headers
+        return ApiRequest(endpoint, method, data, publicKey, secretKey, otp, challengeId);
+    }
+
+    // Wrapper for destructive operations that may require 428 sudo OTP
+    static Dictionary<string, object> ApiRequestWithSudo(string endpoint, string method, Dictionary<string, object> data, string publicKey, string secretKey)
+    {
+        try
+        {
+            return ApiRequest(endpoint, method, data, publicKey, secretKey);
+        }
+        catch (HttpException ex) when (ex.StatusCode == 428)
+        {
+            return HandleSudoChallenge(ex.ResponseBody, endpoint, method, data, publicKey, secretKey);
         }
     }
 

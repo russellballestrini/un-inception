@@ -191,6 +191,113 @@ fn extractJsonField(json: []const u8, field: []const u8) ?[]const u8 {
     return null;
 }
 
+const CurlResult = struct {
+    body: []const u8,
+    status: i32,
+};
+
+fn execCurlWithStatus(allocator: std.mem.Allocator, method: []const u8, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8, extra_headers: []const u8) !CurlResult {
+    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ API_BASE, endpoint });
+    defer allocator.free(url);
+
+    const auth_headers = try buildAuthCmd(allocator, method, endpoint, body, public_key, secret_key);
+    defer allocator.free(auth_headers);
+
+    const response_file = "/tmp/unsandbox_curl_response.txt";
+    const status_file = "/tmp/unsandbox_curl_status.txt";
+
+    // Build curl command with status code output
+    const cmd = if (body.len > 0) blk: {
+        const body_file = "/tmp/unsandbox_curl_body.txt";
+        const file = try fs.cwd().createFile(body_file, .{});
+        try file.writeAll(body);
+        file.close();
+
+        break :blk try std.fmt.allocPrint(allocator, "curl -s -X {s} '{s}' -H 'Content-Type: application/json' {s} {s} --data-binary @{s} -o {s} -w '%{{http_code}}' > {s}", .{ method, url, auth_headers, extra_headers, body_file, response_file, status_file });
+    } else blk: {
+        break :blk try std.fmt.allocPrint(allocator, "curl -s -X {s} '{s}' {s} {s} -o {s} -w '%{{http_code}}' > {s}", .{ method, url, auth_headers, extra_headers, response_file, status_file });
+    };
+    defer allocator.free(cmd);
+
+    _ = std.c.system(cmd.ptr);
+
+    // Read response body
+    const response_body = fs.cwd().readFileAlloc(allocator, response_file, 1024 * 1024) catch try allocator.dupe(u8, "");
+    fs.cwd().deleteFile(response_file) catch {};
+
+    // Read status code
+    const status_str = fs.cwd().readFileAlloc(allocator, status_file, 16) catch try allocator.dupe(u8, "0");
+    defer allocator.free(status_str);
+    fs.cwd().deleteFile(status_file) catch {};
+
+    const trimmed_status = mem.trim(u8, status_str, &std.ascii.whitespace);
+    const status = std.fmt.parseInt(i32, trimmed_status, 10) catch 0;
+
+    return CurlResult{
+        .body = response_body,
+        .status = status,
+    };
+}
+
+fn handleSudoChallenge(allocator: std.mem.Allocator, method: []const u8, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8, challenge_response: []const u8) !bool {
+    // Extract challenge_id from response
+    const challenge_id = extractJsonField(challenge_response, "challenge_id") orelse {
+        std.debug.print("{s}Error: No challenge_id in 428 response{s}\n", .{ RED, RESET });
+        return false;
+    };
+
+    // Prompt for OTP
+    std.debug.print("{s}Confirmation required. Check your email for a one-time code.{s}\n", .{ YELLOW, RESET });
+    std.debug.print("Enter OTP: ", .{});
+
+    // Read OTP from stdin
+    const stdin = std.io.getStdIn().reader();
+    var otp_buf: [64]u8 = undefined;
+    const otp_line = stdin.readUntilDelimiterOrEof(&otp_buf, '\n') catch null;
+    if (otp_line == null or otp_line.?.len == 0) {
+        std.debug.print("{s}Error: No OTP provided{s}\n", .{ RED, RESET });
+        return false;
+    }
+    const otp = mem.trim(u8, otp_line.?, &std.ascii.whitespace);
+
+    // Build sudo headers
+    const sudo_headers = try std.fmt.allocPrint(allocator, "-H 'X-Sudo-OTP: {s}' -H 'X-Sudo-Challenge: {s}'", .{ otp, challenge_id });
+    defer allocator.free(sudo_headers);
+
+    // Retry with sudo headers
+    const result = try execCurlWithStatus(allocator, method, endpoint, body, public_key, secret_key, sudo_headers);
+    defer allocator.free(result.body);
+
+    if (result.status >= 200 and result.status < 300) {
+        return true;
+    } else {
+        std.debug.print("{s}", .{result.body});
+        return false;
+    }
+}
+
+fn execDestructiveCurl(allocator: std.mem.Allocator, method: []const u8, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8, success_msg: []const u8) !bool {
+    const result = try execCurlWithStatus(allocator, method, endpoint, body, public_key, secret_key, "");
+
+    if (result.status == 428) {
+        // Handle sudo challenge
+        const success = try handleSudoChallenge(allocator, method, endpoint, body, public_key, secret_key, result.body);
+        allocator.free(result.body);
+        if (success) {
+            std.debug.print("{s}{s}{s}\n", .{ GREEN, success_msg, RESET });
+        }
+        return success;
+    } else if (result.status >= 200 and result.status < 300) {
+        allocator.free(result.body);
+        std.debug.print("{s}{s}{s}\n", .{ GREEN, success_msg, RESET });
+        return true;
+    } else {
+        std.debug.print("{s}\n", .{result.body});
+        allocator.free(result.body);
+        return false;
+    }
+}
+
 fn execCurlPut(allocator: std.mem.Allocator, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8) !bool {
     const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ API_BASE, endpoint });
     defer allocator.free(url);
@@ -978,12 +1085,9 @@ pub fn main() !u8 {
         } else if (delete) |del_id| {
             const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{del_id});
             defer allocator.free(path);
-            const auth_headers = try buildAuthCmd(allocator, "DELETE", path, "", public_key, secret_key);
-            defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}/images/{s}' {s}", .{ API_BASE, del_id, auth_headers });
-            defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
-            std.debug.print("\n{s}Image deleted: {s}{s}\n", .{ GREEN, del_id, RESET });
+            const success_msg = try std.fmt.allocPrint(allocator, "Image deleted: {s}", .{del_id});
+            defer allocator.free(success_msg);
+            _ = try execDestructiveCurl(allocator, "DELETE", path, "", public_key, secret_key, success_msg);
         } else if (lock) |lock_id| {
             const path = try std.fmt.allocPrint(allocator, "/images/{s}/lock", .{lock_id});
             defer allocator.free(path);
@@ -996,12 +1100,9 @@ pub fn main() !u8 {
         } else if (unlock) |unlock_id| {
             const path = try std.fmt.allocPrint(allocator, "/images/{s}/unlock", .{unlock_id});
             defer allocator.free(path);
-            const auth_headers = try buildAuthCmd(allocator, "POST", path, "", public_key, secret_key);
-            defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/unlock' {s}", .{ API_BASE, unlock_id, auth_headers });
-            defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
-            std.debug.print("\n{s}Image unlocked: {s}{s}\n", .{ GREEN, unlock_id, RESET });
+            const success_msg = try std.fmt.allocPrint(allocator, "Image unlocked: {s}", .{unlock_id});
+            defer allocator.free(success_msg);
+            _ = try execDestructiveCurl(allocator, "POST", path, "", public_key, secret_key, success_msg);
         } else if (publish) |pub_id| {
             if (source_type == null) {
                 std.debug.print("{s}Error: --publish requires --source-type (service or snapshot){s}\n", .{ RED, RESET });

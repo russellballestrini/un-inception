@@ -271,6 +271,91 @@ def _make_request(
     return response.json()
 
 
+def _make_request_with_sudo(
+    method: str,
+    path: str,
+    public_key: str,
+    secret_key: str,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Make an authenticated HTTP request with sudo OTP challenge handling.
+
+    If the server returns 428 (Precondition Required), prompts for OTP
+    and retries the request with X-Sudo-OTP and X-Sudo-Challenge headers.
+
+    Used for destructive operations: service destroy/unlock, snapshot delete/unlock,
+    image delete/unlock.
+    """
+    import sys
+
+    url = f"{API_BASE}{path}"
+    timestamp = int(time.time())
+    body = json.dumps(data) if data else ""
+
+    signature = _sign_request(secret_key, timestamp, method, path, body if data else None)
+
+    headers = {
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": str(timestamp),
+        "X-Signature": signature,
+        "Content-Type": "application/json",
+    }
+
+    if method == "GET":
+        response = requests.get(url, headers=headers, timeout=120)
+    elif method == "POST":
+        response = requests.post(url, headers=headers, json=data, timeout=120)
+    elif method == "PATCH":
+        response = requests.patch(url, headers=headers, json=data, timeout=120)
+    elif method == "DELETE":
+        response = requests.delete(url, headers=headers, timeout=120)
+    else:
+        raise ValueError(f"Unsupported HTTP method: {method}")
+
+    # Handle 428 sudo OTP challenge
+    if response.status_code == 428:
+        try:
+            challenge_data = response.json()
+            challenge_id = challenge_data.get("challenge_id", "")
+        except (ValueError, KeyError):
+            challenge_id = ""
+
+        print("\033[33mConfirmation required. Check your email for a one-time code.\033[0m", file=sys.stderr)
+        try:
+            otp = input("Enter OTP: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise ValueError("Operation cancelled")
+
+        if not otp:
+            raise ValueError("Operation cancelled")
+
+        # Retry with sudo headers
+        retry_timestamp = int(time.time())
+        retry_signature = _sign_request(secret_key, retry_timestamp, method, path, body if data else None)
+
+        retry_headers = {
+            "Authorization": f"Bearer {public_key}",
+            "X-Timestamp": str(retry_timestamp),
+            "X-Signature": retry_signature,
+            "Content-Type": "application/json",
+            "X-Sudo-OTP": otp,
+            "X-Sudo-Challenge": challenge_id,
+        }
+
+        if method == "GET":
+            response = requests.get(url, headers=retry_headers, timeout=120)
+        elif method == "POST":
+            response = requests.post(url, headers=retry_headers, json=data, timeout=120)
+        elif method == "PATCH":
+            response = requests.patch(url, headers=retry_headers, json=data, timeout=120)
+        elif method == "DELETE":
+            response = requests.delete(url, headers=retry_headers, timeout=120)
+
+    response.raise_for_status()
+    return response.json()
+
+
 def _get_languages_cache_path() -> Path:
     """Get path to languages cache file."""
     return _get_unsandbox_dir() / "languages.json"
@@ -758,7 +843,7 @@ def delete_snapshot(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    return _make_request("DELETE", f"/snapshots/{snapshot_id}", public_key, secret_key)
+    return _make_request_with_sudo("DELETE", f"/snapshots/{snapshot_id}", public_key, secret_key)
 
 
 # =============================================================================
@@ -1202,7 +1287,7 @@ def delete_service(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    return _make_request("DELETE", f"/services/{service_id}", public_key, secret_key)
+    return _make_request_with_sudo("DELETE", f"/services/{service_id}", public_key, secret_key)
 
 
 def freeze_service(
@@ -1302,7 +1387,7 @@ def unlock_service(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    return _make_request("POST", f"/services/{service_id}/unlock", public_key, secret_key, {})
+    return _make_request_with_sudo("POST", f"/services/{service_id}/unlock", public_key, secret_key, {})
 
 
 def update_service_domains(
@@ -1682,7 +1767,7 @@ def unlock_snapshot(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    return _make_request("POST", f"/snapshots/{snapshot_id}/unlock", public_key, secret_key, {})
+    return _make_request_with_sudo("POST", f"/snapshots/{snapshot_id}/unlock", public_key, secret_key, {})
 
 
 def clone_snapshot(
@@ -1849,7 +1934,7 @@ def delete_image(
         Response dict with deletion confirmation
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    return _make_request("DELETE", f"/images/{image_id}", public_key, secret_key)
+    return _make_request_with_sudo("DELETE", f"/images/{image_id}", public_key, secret_key)
 
 
 def lock_image(
@@ -1889,7 +1974,7 @@ def unlock_image(
         Response dict with unlock confirmation
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    return _make_request("POST", f"/images/{image_id}/unlock", public_key, secret_key, {})
+    return _make_request_with_sudo("POST", f"/images/{image_id}/unlock", public_key, secret_key, {})
 
 
 def set_image_visibility(

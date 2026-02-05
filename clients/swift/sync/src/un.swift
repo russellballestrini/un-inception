@@ -216,6 +216,162 @@ func signRequest(secretKey: String, timestamp: Int, method: String, path: String
     return hmac.map { String(format: "%02x", $0) }.joined()
 }
 
+// MARK: - Sudo OTP Challenge Handling
+
+/// Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+func handleSudoChallenge(responseData: [String: Any], publicKey: String, secretKey: String, method: String, path: String, body: String?) throws -> [String: Any] {
+    let challengeId = responseData["challenge_id"] as? String
+
+    fputs("\u{001B}[33mConfirmation required. Check your email for a one-time code.\u{001B}[0m\n", stderr)
+    fputs("Enter OTP: ", stderr)
+
+    guard let otp = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !otp.isEmpty else {
+        fputs("\u{001B}[31mError: Operation cancelled\u{001B}[0m\n", stderr)
+        throw UnsandboxError.invalidArgument("Operation cancelled - no OTP provided")
+    }
+
+    let url = URL(string: "\(API_BASE)\(path)")!
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    request.timeoutInterval = 120
+
+    let timestamp = Int(Date().timeIntervalSince1970)
+    let bodyStr = body ?? ""
+    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: method != "GET" && method != "DELETE" ? bodyStr : nil)
+
+    request.setValue("Bearer \(publicKey)", forHTTPHeaderField: "Authorization")
+    request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
+    request.setValue(signature, forHTTPHeaderField: "X-Signature")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue(otp, forHTTPHeaderField: "X-Sudo-OTP")
+    if let challengeId = challengeId {
+        request.setValue(challengeId, forHTTPHeaderField: "X-Sudo-Challenge")
+    }
+
+    if let body = body, !body.isEmpty {
+        request.httpBody = body.data(using: .utf8)
+    }
+
+    var result: [String: Any]?
+    var requestError: Error?
+
+    let semaphore = DispatchSemaphore(value: 0)
+
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { semaphore.signal() }
+
+        if let error = error {
+            requestError = UnsandboxError.networkError(error.localizedDescription)
+            return
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            requestError = UnsandboxError.invalidResponse("No HTTP response")
+            return
+        }
+
+        guard let data = data else {
+            requestError = UnsandboxError.invalidResponse("No data received")
+            return
+        }
+
+        if httpResponse.statusCode >= 200 && httpResponse.statusCode < 300 {
+            fputs("\u{001B}[32mOperation completed successfully\u{001B}[0m\n", stderr)
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    result = json
+                } else {
+                    result = [:]
+                }
+            } catch {
+                result = [:]
+            }
+        } else {
+            let body = String(data: data, encoding: .utf8) ?? "Unknown error"
+            requestError = UnsandboxError.apiError(httpResponse.statusCode, body)
+        }
+    }
+
+    task.resume()
+    semaphore.wait()
+
+    if let error = requestError {
+        throw error
+    }
+
+    return result ?? [:]
+}
+
+/// Make an authenticated HTTP request that may require sudo OTP, returns (statusCode, response)
+func makeRequestWithSudo(method: String, path: String, publicKey: String, secretKey: String, data: [String: Any]? = nil) throws -> (Int, [String: Any]) {
+    let url = URL(string: "\(API_BASE)\(path)")!
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    request.timeoutInterval = 120
+
+    let timestamp = Int(Date().timeIntervalSince1970)
+    var bodyStr: String? = nil
+
+    if let data = data {
+        let jsonData = try JSONSerialization.data(withJSONObject: data)
+        bodyStr = String(data: jsonData, encoding: .utf8)
+        request.httpBody = jsonData
+    }
+
+    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: method != "GET" && method != "DELETE" ? bodyStr : nil)
+
+    request.setValue("Bearer \(publicKey)", forHTTPHeaderField: "Authorization")
+    request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
+    request.setValue(signature, forHTTPHeaderField: "X-Signature")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+    var statusCode: Int = 0
+    var result: [String: Any]?
+    var requestError: Error?
+
+    let semaphore = DispatchSemaphore(value: 0)
+
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { semaphore.signal() }
+
+        if let error = error {
+            requestError = UnsandboxError.networkError(error.localizedDescription)
+            return
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            requestError = UnsandboxError.invalidResponse("No HTTP response")
+            return
+        }
+
+        statusCode = httpResponse.statusCode
+
+        guard let data = data else {
+            result = [:]
+            return
+        }
+
+        do {
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                result = json
+            } else {
+                result = [:]
+            }
+        } catch {
+            result = [:]
+        }
+    }
+
+    task.resume()
+    semaphore.wait()
+
+    if let error = requestError {
+        throw error
+    }
+
+    return (statusCode, result ?? [:])
+}
+
 // MARK: - HTTP Client
 
 /// Make an authenticated HTTP request to the API
@@ -688,10 +844,20 @@ func updateService(_ serviceId: String, vcpu: Int? = nil, publicKey: String? = n
     return try makeRequest(method: "PATCH", path: "/services/\(serviceId)", publicKey: pk, secretKey: sk, data: data)
 }
 
-/// Delete/destroy a service
+/// Delete/destroy a service (handles 428 sudo OTP challenge)
 func deleteService(_ serviceId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "DELETE", path: "/services/\(serviceId)", publicKey: pk, secretKey: sk)
+    let path = "/services/\(serviceId)"
+    let (statusCode, response) = try makeRequestWithSudo(method: "DELETE", path: path, publicKey: pk, secretKey: sk)
+
+    if statusCode == 428 {
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "DELETE", path: path, body: nil)
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 /// Freeze a service (pause execution, preserve state)
@@ -712,10 +878,20 @@ func lockService(_ serviceId: String, publicKey: String? = nil, secretKey: Strin
     return try makeRequest(method: "POST", path: "/services/\(serviceId)/lock", publicKey: pk, secretKey: sk, data: [:])
 }
 
-/// Unlock a service to allow deletion
+/// Unlock a service to allow deletion (handles 428 sudo OTP challenge)
 func unlockService(_ serviceId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "POST", path: "/services/\(serviceId)/unlock", publicKey: pk, secretKey: sk, data: [:])
+    let path = "/services/\(serviceId)/unlock"
+    let (statusCode, response) = try makeRequestWithSudo(method: "POST", path: path, publicKey: pk, secretKey: sk, data: [:])
+
+    if statusCode == 428 {
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "POST", path: path, body: "{}")
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 /// Enable or disable automatic unfreezing on incoming requests
@@ -816,10 +992,20 @@ func restoreSnapshot(_ snapshotId: String, publicKey: String? = nil, secretKey: 
     return try makeRequest(method: "POST", path: "/snapshots/\(snapshotId)/restore", publicKey: pk, secretKey: sk, data: [:])
 }
 
-/// Delete a snapshot
+/// Delete a snapshot (handles 428 sudo OTP challenge)
 func deleteSnapshot(_ snapshotId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "DELETE", path: "/snapshots/\(snapshotId)", publicKey: pk, secretKey: sk)
+    let path = "/snapshots/\(snapshotId)"
+    let (statusCode, response) = try makeRequestWithSudo(method: "DELETE", path: path, publicKey: pk, secretKey: sk)
+
+    if statusCode == 428 {
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "DELETE", path: path, body: nil)
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 /// Lock a snapshot to prevent accidental deletion
@@ -828,10 +1014,20 @@ func lockSnapshot(_ snapshotId: String, publicKey: String? = nil, secretKey: Str
     return try makeRequest(method: "POST", path: "/snapshots/\(snapshotId)/lock", publicKey: pk, secretKey: sk, data: [:])
 }
 
-/// Unlock a snapshot to allow deletion
+/// Unlock a snapshot to allow deletion (handles 428 sudo OTP challenge)
 func unlockSnapshot(_ snapshotId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "POST", path: "/snapshots/\(snapshotId)/unlock", publicKey: pk, secretKey: sk, data: [:])
+    let path = "/snapshots/\(snapshotId)/unlock"
+    let (statusCode, response) = try makeRequestWithSudo(method: "POST", path: path, publicKey: pk, secretKey: sk, data: [:])
+
+    if statusCode == 428 {
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "POST", path: path, body: "{}")
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 /// Clone a snapshot to create a new session or service
@@ -896,10 +1092,20 @@ func getImage(_ imageId: String, publicKey: String? = nil, secretKey: String? = 
     return try makeRequest(method: "GET", path: "/images/\(imageId)", publicKey: pk, secretKey: sk)
 }
 
-/// Delete an image
+/// Delete an image (handles 428 sudo OTP challenge)
 func deleteImage(_ imageId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "DELETE", path: "/images/\(imageId)", publicKey: pk, secretKey: sk)
+    let path = "/images/\(imageId)"
+    let (statusCode, response) = try makeRequestWithSudo(method: "DELETE", path: path, publicKey: pk, secretKey: sk)
+
+    if statusCode == 428 {
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "DELETE", path: path, body: nil)
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 /// Lock an image to prevent accidental deletion
@@ -908,10 +1114,20 @@ func lockImage(_ imageId: String, publicKey: String? = nil, secretKey: String? =
     return try makeRequest(method: "POST", path: "/images/\(imageId)/lock", publicKey: pk, secretKey: sk, data: [:])
 }
 
-/// Unlock an image to allow deletion
+/// Unlock an image to allow deletion (handles 428 sudo OTP challenge)
 func unlockImage(_ imageId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "POST", path: "/images/\(imageId)/unlock", publicKey: pk, secretKey: sk, data: [:])
+    let path = "/images/\(imageId)/unlock"
+    let (statusCode, response) = try makeRequestWithSudo(method: "POST", path: path, publicKey: pk, secretKey: sk, data: [:])
+
+    if statusCode == 428 {
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "POST", path: path, body: "{}")
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 /// Set image visibility

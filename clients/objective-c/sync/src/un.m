@@ -912,6 +912,132 @@ NSDictionary* UNLanguages(void) {
 // CLI Helper Functions
 // ============================================================================
 
+// ============================================================================
+// Sudo OTP Challenge Handling
+// ============================================================================
+
+/**
+ * Handle 428 sudo OTP challenge - prompts user for OTP and retries the request.
+ *
+ * @param responseData The JSON response containing challenge_id
+ * @param meth HTTP method (DELETE, POST, etc.)
+ * @param endpoint API endpoint path
+ * @param body Request body (or nil for DELETE)
+ * @param publicKey API public key
+ * @param secretKey API secret key
+ * @return YES on success, NO on failure
+ */
+BOOL handleSudoChallenge(NSDictionary* responseData, NSString* meth, NSString* endpoint, NSString* body, NSString* publicKey, NSString* secretKey) {
+    NSString* challengeId = responseData[@"challenge_id"];
+
+    fprintf(stderr, "%sConfirmation required. Check your email for a one-time code.%s\n",
+            [YELLOW UTF8String], [RESET UTF8String]);
+    fprintf(stderr, "Enter OTP: ");
+
+    char otpBuffer[64];
+    if (!fgets(otpBuffer, sizeof(otpBuffer), stdin)) {
+        fprintf(stderr, "%sError: Failed to read OTP%s\n", [RED UTF8String], [RESET UTF8String]);
+        return NO;
+    }
+
+    // Strip newline
+    NSString* otp = [[NSString stringWithUTF8String:otpBuffer] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if ([otp length] == 0) {
+        fprintf(stderr, "%sError: Operation cancelled%s\n", [RED UTF8String], [RESET UTF8String]);
+        return NO;
+    }
+
+    // Build retry request with sudo headers
+    NSString* urlString = [UN_API_BASE stringByAppendingString:endpoint];
+    NSURL* url = [NSURL URLWithString:urlString];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    [request setHTTPMethod:meth];
+    [request setTimeoutInterval:UN_DEFAULT_TIMEOUT];
+
+    NSString* bodyString = body ?: @"";
+    if (body && [body length] > 0) {
+        [request setHTTPBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
+    }
+
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    NSString* signature = UNComputeSignature(secretKey, timestamp, meth, endpoint, bodyString);
+
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+    [request setValue:signature forHTTPHeaderField:@"X-Signature"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:otp forHTTPHeaderField:@"X-Sudo-OTP"];
+    if (challengeId) {
+        [request setValue:challengeId forHTTPHeaderField:@"X-Sudo-Challenge"];
+    }
+
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* responseData2 = [NSURLConnection sendSynchronousRequest:request
+                                                  returningResponse:&response
+                                                              error:&error];
+
+    if (error || [response statusCode] < 200 || [response statusCode] >= 300) {
+        fprintf(stderr, "%sError: HTTP %ld%s\n",
+                [RED UTF8String], (long)[response statusCode], [RESET UTF8String]);
+        if (responseData2) {
+            NSString* errMsg = [[NSString alloc] initWithData:responseData2 encoding:NSUTF8StringEncoding];
+            fprintf(stderr, "%s\n", [errMsg UTF8String]);
+        }
+        return NO;
+    }
+
+    fprintf(stderr, "%sOperation completed successfully%s\n", [GREEN UTF8String], [RESET UTF8String]);
+    return YES;
+}
+
+/**
+ * Make an API request that returns status code and response (for 428 handling).
+ */
+NSDictionary* apiRequestWithStatusCLI(NSString* endpoint, NSString* method, NSDictionary* data, NSString* publicKey, NSString* secretKey, NSInteger* outStatusCode) {
+    NSString* urlString = [UN_API_BASE stringByAppendingString:endpoint];
+    NSURL* url = [NSURL URLWithString:urlString];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    [request setHTTPMethod:method];
+    [request setTimeoutInterval:UN_DEFAULT_TIMEOUT];
+
+    NSString* bodyString = @"";
+    if (data) {
+        NSError* error = nil;
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:data options:0 error:&error];
+        if (error) {
+            *outStatusCode = 500;
+            return @{@"error": [error localizedDescription]};
+        }
+        bodyString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        [request setHTTPBody:jsonData];
+    }
+
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    NSString* signature = UNComputeSignature(secretKey, timestamp, method, endpoint, bodyString);
+
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+    [request setValue:signature forHTTPHeaderField:@"X-Signature"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* responseData = [NSURLConnection sendSynchronousRequest:request
+                                                 returningResponse:&response
+                                                             error:&error];
+
+    *outStatusCode = [response statusCode];
+
+    if (error) {
+        return @{@"error": [error localizedDescription]};
+    }
+
+    NSDictionary* result = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:&error];
+    return result ?: @{};
+}
+
 NSDictionary* apiRequestCLI(NSString* endpoint, NSString* method, NSDictionary* data, NSString* publicKey, NSString* secretKey) {
     NSString* urlString = [UN_API_BASE stringByAppendingString:endpoint];
     NSURL* url = [NSURL URLWithString:urlString];
@@ -1435,8 +1561,21 @@ void cmdService(NSArray* args) {
 
     if (destroyId) {
         NSString* endpoint = [NSString stringWithFormat:@"/services/%@", destroyId];
-        apiRequestCLI(endpoint, @"DELETE", nil, publicKey, secretKey);
-        printf("%sService destroyed: %s%s\n", [GREEN UTF8String], [destroyId UTF8String], [RESET UTF8String]);
+        NSInteger statusCode = 0;
+        NSDictionary* response = apiRequestWithStatusCLI(endpoint, @"DELETE", nil, publicKey, secretKey, &statusCode);
+
+        if (statusCode == 428) {
+            if (handleSudoChallenge(response, @"DELETE", endpoint, nil, publicKey, secretKey)) {
+                printf("%sService destroyed: %s%s\n", [GREEN UTF8String], [destroyId UTF8String], [RESET UTF8String]);
+            } else {
+                exit(1);
+            }
+        } else if (statusCode >= 200 && statusCode < 300) {
+            printf("%sService destroyed: %s%s\n", [GREEN UTF8String], [destroyId UTF8String], [RESET UTF8String]);
+        } else {
+            fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+            exit(1);
+        }
         return;
     }
 
@@ -1585,8 +1724,21 @@ void cmdImage(NSArray* args) {
 
     if (deleteId) {
         NSString* endpoint = [NSString stringWithFormat:@"/images/%@", deleteId];
-        apiRequestCLI(endpoint, @"DELETE", nil, publicKey, secretKey);
-        printf("%sImage deleted: %s%s\n", [GREEN UTF8String], [deleteId UTF8String], [RESET UTF8String]);
+        NSInteger statusCode = 0;
+        NSDictionary* response = apiRequestWithStatusCLI(endpoint, @"DELETE", nil, publicKey, secretKey, &statusCode);
+
+        if (statusCode == 428) {
+            if (handleSudoChallenge(response, @"DELETE", endpoint, nil, publicKey, secretKey)) {
+                printf("%sImage deleted: %s%s\n", [GREEN UTF8String], [deleteId UTF8String], [RESET UTF8String]);
+            } else {
+                exit(1);
+            }
+        } else if (statusCode >= 200 && statusCode < 300) {
+            printf("%sImage deleted: %s%s\n", [GREEN UTF8String], [deleteId UTF8String], [RESET UTF8String]);
+        } else {
+            fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+            exit(1);
+        }
         return;
     }
 
@@ -1599,8 +1751,21 @@ void cmdImage(NSArray* args) {
 
     if (unlockId) {
         NSString* endpoint = [NSString stringWithFormat:@"/images/%@/unlock", unlockId];
-        apiRequestCLI(endpoint, @"POST", nil, publicKey, secretKey);
-        printf("%sImage unlocked: %s%s\n", [GREEN UTF8String], [unlockId UTF8String], [RESET UTF8String]);
+        NSInteger statusCode = 0;
+        NSDictionary* response = apiRequestWithStatusCLI(endpoint, @"POST", @{}, publicKey, secretKey, &statusCode);
+
+        if (statusCode == 428) {
+            if (handleSudoChallenge(response, @"POST", endpoint, @"{}", publicKey, secretKey)) {
+                printf("%sImage unlocked: %s%s\n", [GREEN UTF8String], [unlockId UTF8String], [RESET UTF8String]);
+            } else {
+                exit(1);
+            }
+        } else if (statusCode >= 200 && statusCode < 300) {
+            printf("%sImage unlocked: %s%s\n", [GREEN UTF8String], [unlockId UTF8String], [RESET UTF8String]);
+        } else {
+            fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+            exit(1);
+        }
         return;
     }
 

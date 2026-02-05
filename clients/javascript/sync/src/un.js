@@ -534,6 +534,111 @@ async function makeRequest(method, urlPath, publicKey, secretKey, data) {
 }
 
 /**
+ * Make an authenticated HTTP request with sudo OTP challenge handling.
+ *
+ * If the server returns 428 (Precondition Required), prompts for OTP
+ * and retries the request with X-Sudo-OTP and X-Sudo-Challenge headers.
+ *
+ * Used for destructive operations: service destroy/unlock, snapshot delete/unlock,
+ * image delete/unlock.
+ */
+async function makeRequestWithSudo(method, urlPath, publicKey, secretKey, data) {
+  const url = `${API_BASE}${urlPath}`;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const body = data ? JSON.stringify(data) : '';
+
+  const signature = await signRequest(secretKey, timestamp, method, urlPath, body || null);
+
+  const headers = {
+    'Authorization': `Bearer ${publicKey}`,
+    'X-Timestamp': timestamp.toString(),
+    'X-Signature': signature,
+    'Content-Type': 'application/json',
+    'User-Agent': 'un-js/2.0',
+  };
+
+  const options = {
+    method,
+    headers,
+    signal: AbortSignal.timeout(120000),
+  };
+
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
+    options.body = body;
+  }
+
+  let response = await fetch(url, options);
+
+  // Handle 428 sudo OTP challenge
+  if (response.status === 428) {
+    let challengeId = '';
+    try {
+      const challengeData = await response.json();
+      challengeId = challengeData.challenge_id || '';
+    } catch (e) {
+      // Ignore JSON parse errors
+    }
+
+    console.error('\x1b[33mConfirmation required. Check your email for a one-time code.\x1b[0m');
+
+    // Prompt for OTP (Node.js only)
+    if (!IS_NODE) {
+      throw new Error('Sudo OTP challenge not supported in browser environment');
+    }
+
+    const readline = require('readline');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr
+    });
+
+    const otp = await new Promise((resolve) => {
+      rl.question('Enter OTP: ', (answer) => {
+        rl.close();
+        resolve(answer.trim());
+      });
+    });
+
+    if (!otp) {
+      throw new Error('Operation cancelled');
+    }
+
+    // Retry with sudo headers
+    const retryTimestamp = Math.floor(Date.now() / 1000);
+    const retrySignature = await signRequest(secretKey, retryTimestamp, method, urlPath, body || null);
+
+    const retryHeaders = {
+      'Authorization': `Bearer ${publicKey}`,
+      'X-Timestamp': retryTimestamp.toString(),
+      'X-Signature': retrySignature,
+      'Content-Type': 'application/json',
+      'User-Agent': 'un-js/2.0',
+      'X-Sudo-OTP': otp,
+      'X-Sudo-Challenge': challengeId,
+    };
+
+    const retryOptions = {
+      method,
+      headers: retryHeaders,
+      signal: AbortSignal.timeout(120000),
+    };
+
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
+      retryOptions.body = body;
+    }
+
+    response = await fetch(url, retryOptions);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
+
+  return response.json();
+}
+
+/**
  * Get path to languages cache file. [Node.js only]
  */
 function getLanguagesCachePath() {
@@ -855,7 +960,7 @@ async function restoreSnapshot(snapshotId, publicKey, secretKey) {
  */
 async function deleteSnapshot(snapshotId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  return makeRequest('DELETE', `/snapshots/${snapshotId}`, publicKey, secretKey);
+  return makeRequestWithSudo('DELETE', `/snapshots/${snapshotId}`, publicKey, secretKey);
 }
 
 // ============================================================================
@@ -1090,7 +1195,7 @@ async function updateService(serviceId, opts = {}, publicKey, secretKey) {
  */
 async function deleteService(serviceId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  return makeRequest('DELETE', `/services/${serviceId}`, publicKey, secretKey);
+  return makeRequestWithSudo('DELETE', `/services/${serviceId}`, publicKey, secretKey);
 }
 
 /**
@@ -1142,7 +1247,7 @@ async function lockService(serviceId, publicKey, secretKey) {
  */
 async function unlockService(serviceId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  return makeRequest('POST', `/services/${serviceId}/unlock`, publicKey, secretKey, {});
+  return makeRequestWithSudo('POST', `/services/${serviceId}/unlock`, publicKey, secretKey, {});
 }
 
 /**
@@ -1332,7 +1437,7 @@ async function lockSnapshot(snapshotId, publicKey, secretKey) {
  */
 async function unlockSnapshot(snapshotId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  return makeRequest('POST', `/snapshots/${snapshotId}/unlock`, publicKey, secretKey, {});
+  return makeRequestWithSudo('POST', `/snapshots/${snapshotId}/unlock`, publicKey, secretKey, {});
 }
 
 /**
@@ -1434,7 +1539,7 @@ async function getImage(imageId, publicKey, secretKey) {
  */
 async function deleteImage(imageId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  return makeRequest('DELETE', `/images/${imageId}`, publicKey, secretKey);
+  return makeRequestWithSudo('DELETE', `/images/${imageId}`, publicKey, secretKey);
 }
 
 /**
@@ -1464,7 +1569,7 @@ async function lockImage(imageId, publicKey, secretKey) {
  */
 async function unlockImage(imageId, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  return makeRequest('POST', `/images/${imageId}/unlock`, publicKey, secretKey, {});
+  return makeRequestWithSudo('POST', `/images/${imageId}/unlock`, publicKey, secretKey, {});
 }
 
 /**

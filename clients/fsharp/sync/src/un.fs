@@ -272,7 +272,10 @@ let parseJson (json: string) =
 
         result |> Seq.map (fun (k, v) -> k, v) |> Map.ofSeq
 
-let apiRequest (endpoint: string) (method: string) (data: (string * obj) list option) (publicKey: string) (secretKey: string) =
+// Custom exception for HTTP errors with status code
+exception HttpException of int * string
+
+let apiRequestWithHeaders (endpoint: string) (method: string) (data: (string * obj) list option) (publicKey: string) (secretKey: string) (sudoOtp: string option) (sudoChallengeId: string option) =
     ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
 
     let request = WebRequest.Create(apiBase + endpoint) :?> HttpWebRequest
@@ -298,6 +301,15 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
         // Legacy API key authentication
         request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
 
+    // Add sudo OTP headers if provided
+    match sudoOtp with
+    | Some otp -> request.Headers.Add("X-Sudo-OTP", otp)
+    | None -> ()
+
+    match sudoChallengeId with
+    | Some cid -> request.Headers.Add("X-Sudo-Challenge", cid)
+    | None -> ()
+
     match data with
     | Some d ->
         let bytes = Encoding.UTF8.GetBytes(body)
@@ -322,6 +334,13 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
             else
                 ex.Message
 
+        let statusCode =
+            if ex.Response <> null then
+                let httpResponse = ex.Response :?> HttpWebResponse
+                int httpResponse.StatusCode
+            else
+                0
+
         // Check for clock drift error
         if errorMsg.Contains("timestamp") && (errorMsg.Contains("401") || errorMsg.Contains("expired") || errorMsg.Contains("invalid")) then
             eprintfn "%sError: Request timestamp expired (must be within 5 minutes of server time)%s" red reset
@@ -332,6 +351,35 @@ let apiRequest (endpoint: string) (method: string) (data: (string * obj) list op
             eprintfn "  Windows: w32tm /resync%s" reset
             exit 1
 
+        raise (HttpException(statusCode, errorMsg))
+
+let apiRequest (endpoint: string) (method: string) (data: (string * obj) list option) (publicKey: string) (secretKey: string) =
+    apiRequestWithHeaders endpoint method data publicKey secretKey None None
+
+// Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+let handleSudoChallenge (responseBody: string) (endpoint: string) (method: string) (data: (string * obj) list option) (publicKey: string) (secretKey: string) =
+    let challengeId = extractJsonValue responseBody "challenge_id"
+
+    eprintfn "%sConfirmation required. Check your email for a one-time code.%s" yellow reset
+    eprintf "Enter OTP: "
+
+    let otp = Console.ReadLine()
+    if String.IsNullOrEmpty(otp) then
+        failwith "Operation cancelled"
+
+    let otp = otp.Trim()
+
+    // Retry the request with sudo headers
+    apiRequestWithHeaders endpoint method data publicKey secretKey (Some otp) challengeId
+
+// Wrapper for destructive operations that may require 428 sudo OTP
+let apiRequestWithSudo (endpoint: string) (method: string) (data: (string * obj) list option) (publicKey: string) (secretKey: string) =
+    try
+        apiRequest endpoint method data publicKey secretKey
+    with
+    | HttpException(428, responseBody) ->
+        handleSudoChallenge responseBody endpoint method data publicKey secretKey
+    | HttpException(_, errorMsg) ->
         failwithf "HTTP error - %s" errorMsg
 
 let apiRequestPatch (endpoint: string) (data: (string * obj) list) (publicKey: string) (secretKey: string) =
@@ -833,13 +881,13 @@ let cmdImage (args: Args) =
         let result = apiRequest (sprintf "/images/%s" args.ImageInfo.Value) "GET" None publicKey secretKey
         printfn "%s" (toJson (box result))
     elif args.ImageDelete.IsSome then
-        let result = apiRequest (sprintf "/images/%s" args.ImageDelete.Value) "DELETE" None publicKey secretKey
+        let result = apiRequestWithSudo (sprintf "/images/%s" args.ImageDelete.Value) "DELETE" None publicKey secretKey
         printfn "%sImage deleted: %s%s" green args.ImageDelete.Value reset
     elif args.ImageLock.IsSome then
         let result = apiRequest (sprintf "/images/%s/lock" args.ImageLock.Value) "POST" None publicKey secretKey
         printfn "%sImage locked: %s%s" green args.ImageLock.Value reset
     elif args.ImageUnlock.IsSome then
-        let result = apiRequest (sprintf "/images/%s/unlock" args.ImageUnlock.Value) "POST" None publicKey secretKey
+        let result = apiRequestWithSudo (sprintf "/images/%s/unlock" args.ImageUnlock.Value) "POST" None publicKey secretKey
         printfn "%sImage unlocked: %s%s" green args.ImageUnlock.Value reset
     elif args.ImagePublish.IsSome then
         if args.ImageSourceType.IsNone then
@@ -889,7 +937,7 @@ let cmdSnapshot (args: Args) =
         let result = apiRequest (sprintf "/snapshots/%s" args.SnapshotInfo.Value) "GET" None publicKey secretKey
         printfn "%s" (toJson (box result))
     elif args.SnapshotDelete.IsSome then
-        let result = apiRequest (sprintf "/snapshots/%s" args.SnapshotDelete.Value) "DELETE" None publicKey secretKey
+        let result = apiRequestWithSudo (sprintf "/snapshots/%s" args.SnapshotDelete.Value) "DELETE" None publicKey secretKey
         printfn "%sSnapshot deleted: %s%s" green args.SnapshotDelete.Value reset
     elif args.SnapshotClone.IsSome then
         if args.SnapshotType.IsNone then
@@ -954,7 +1002,7 @@ let cmdService (args: Args) =
         let result = apiRequest (sprintf "/services/%s/unfreeze" args.ServiceWake.Value) "POST" None publicKey secretKey
         printfn "%sService unfreezing: %s%s" green args.ServiceWake.Value reset
     elif args.ServiceDestroy.IsSome then
-        let result = apiRequest (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None publicKey secretKey
+        let result = apiRequestWithSudo (sprintf "/services/%s" args.ServiceDestroy.Value) "DELETE" None publicKey secretKey
         printfn "%sService destroyed: %s%s" green args.ServiceDestroy.Value reset
     elif args.ServiceResize.IsSome then
         if args.Vcpu <= 0 then

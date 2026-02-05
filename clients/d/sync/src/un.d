@@ -248,6 +248,145 @@ string execCurl(string cmd) {
     return output;
 }
 
+// Execute curl and get HTTP status code along with response body
+struct CurlResult {
+    string body;
+    int status;
+}
+
+CurlResult execCurlWithStatus(string cmd) {
+    // Modify cmd to include status code output
+    string fullCmd = cmd ~ " -w '\\n%{http_code}'";
+    auto result = executeShell(fullCmd);
+    string output = result.output.strip();
+
+    // Find the last line (status code)
+    import std.algorithm : findSplitAfter;
+    auto lastNewline = output.findSplitAfter("\n");
+
+    // Walk backwards to find status code at end
+    string statusStr = "";
+    string bodyStr = output;
+    if (output.length >= 3) {
+        // Try to parse last 3 chars as status
+        size_t i = output.length;
+        while (i > 0 && output[i-1] >= '0' && output[i-1] <= '9') i--;
+        if (i < output.length) {
+            statusStr = output[i..$];
+            bodyStr = output[0..i].strip();
+        }
+    }
+
+    int status = 0;
+    try {
+        status = to!int(statusStr);
+    } catch (Exception e) {
+        status = 0;
+    }
+
+    return CurlResult(bodyStr, status);
+}
+
+// Handle 428 sudo OTP challenge - prompts user for OTP and retries request
+bool handleSudoChallenge(string method, string path, string bodyContent, string publicKey, string secretKey, string response) {
+    // Extract challenge_id from response
+    string challengeId = extractJsonField(response, "challenge_id");
+
+    stderr.writefln("%sConfirmation required. Check your email for a one-time code.%s", YELLOW, RESET);
+    stderr.write("Enter OTP: ");
+    stderr.flush();
+
+    import std.stdio : stdin;
+    string otp;
+    try {
+        otp = stdin.readln();
+        if (otp is null) {
+            stderr.writefln("%sError: Failed to read OTP%s", RED, RESET);
+            return false;
+        }
+        otp = otp.strip();
+    } catch (Exception e) {
+        stderr.writefln("%sError: Failed to read OTP%s", RED, RESET);
+        return false;
+    }
+
+    if (otp.empty) {
+        stderr.writefln("%sError: Operation cancelled%s", RED, RESET);
+        return false;
+    }
+
+    // Retry the request with sudo headers
+    string authHeaders = buildAuthHeaders(method, path, bodyContent, publicKey, secretKey);
+    authHeaders ~= format(" -H 'X-Sudo-OTP: %s'", otp);
+    if (!challengeId.empty) {
+        authHeaders ~= format(" -H 'X-Sudo-Challenge: %s'", challengeId);
+    }
+
+    string cmd;
+    if (method == "DELETE") {
+        cmd = format(`curl -s -X DELETE '%s%s' %s`, API_BASE, path, authHeaders);
+    } else if (method == "POST") {
+        cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, bodyContent);
+    } else {
+        cmd = format(`curl -s -X %s '%s%s' %s`, method, API_BASE, path, authHeaders);
+    }
+
+    auto retryResult = execCurlWithStatus(cmd);
+
+    if (retryResult.status >= 200 && retryResult.status < 300) {
+        writefln("%sOperation completed successfully%s", GREEN, RESET);
+        return true;
+    }
+
+    // Extract error message if available
+    string errorMsg = extractJsonField(retryResult.body, "error");
+    if (!errorMsg.empty) {
+        stderr.writefln("%sError: %s%s", RED, errorMsg, RESET);
+    } else {
+        stderr.writefln("%sError: HTTP %d%s", RED, retryResult.status, RESET);
+        if (!retryResult.body.empty) stderr.writeln(retryResult.body);
+    }
+    return false;
+}
+
+// Execute a destructive operation that may require sudo OTP confirmation
+bool execDestructiveCurl(string method, string path, string bodyContent, string publicKey, string secretKey, string successMsg) {
+    string authHeaders = buildAuthHeaders(method, path, bodyContent, publicKey, secretKey);
+
+    string cmd;
+    if (method == "DELETE") {
+        cmd = format(`curl -s -X DELETE '%s%s' %s`, API_BASE, path, authHeaders);
+    } else if (method == "POST" && !bodyContent.empty) {
+        cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, bodyContent);
+    } else if (method == "POST") {
+        cmd = format(`curl -s -X POST '%s%s' %s`, API_BASE, path, authHeaders);
+    } else {
+        cmd = format(`curl -s -X %s '%s%s' %s`, method, API_BASE, path, authHeaders);
+    }
+
+    auto result = execCurlWithStatus(cmd);
+
+    // Handle 428 sudo challenge
+    if (result.status == 428) {
+        return handleSudoChallenge(method, path, bodyContent, publicKey, secretKey, result.body);
+    }
+
+    if (result.status >= 200 && result.status < 300) {
+        if (!successMsg.empty) {
+            writefln("%s%s%s", GREEN, successMsg, RESET);
+        }
+        return true;
+    }
+
+    if (result.status == 404) {
+        stderr.writefln("%sError: Not found%s", RED, RESET);
+    } else {
+        stderr.writefln("%sError: HTTP %d%s", RED, result.status, RESET);
+        if (!result.body.empty) stderr.writeln(result.body);
+    }
+    return false;
+}
+
 bool execCurlPut(string endpoint, string body, string publicKey, string secretKey) {
     import std.file : write, remove;
     import std.random : uniform;
@@ -527,10 +666,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
 
     if (!destroy.empty) {
         string path = format("/services/%s", destroy);
-        string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
-        string cmd = format(`curl -s -X DELETE '%s/services/%s' %s`, API_BASE, destroy, authHeaders);
-        execCurl(cmd);
-        writefln("%sService destroyed: %s%s", GREEN, destroy, RESET);
+        execDestructiveCurl("DELETE", path, "", publicKey, secretKey, format("Service destroyed: %s", destroy));
         return;
     }
 
@@ -690,10 +826,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
 
     if (!del.empty) {
         string path = format("/images/%s", del);
-        string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
-        string cmd = format(`curl -s -X DELETE '%s/images/%s' %s`, API_BASE, del, authHeaders);
-        execCurl(cmd);
-        writefln("%sImage deleted: %s%s", GREEN, del, RESET);
+        execDestructiveCurl("DELETE", path, "", publicKey, secretKey, format("Image deleted: %s", del));
         return;
     }
 
@@ -709,11 +842,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
 
     if (!unlock.empty) {
         string path = format("/images/%s/unlock", unlock);
-        string json = "{}";
-        string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/images/%s/unlock' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, unlock, authHeaders, json);
-        execCurl(cmd);
-        writefln("%sImage unlocked: %s%s", GREEN, unlock, RESET);
+        execDestructiveCurl("POST", path, "{}", publicKey, secretKey, format("Image unlocked: %s", unlock));
         return;
     }
 

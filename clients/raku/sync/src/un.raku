@@ -250,6 +250,127 @@ sub api-request(
     return from-json($resp-body);
 }
 
+#| Make authenticated API request returning both status code and body
+sub api-request-with-status(
+    Str $endpoint,
+    Str $method = 'GET',
+    %data?,
+    Str :$body-text,
+    Str :$content-type = 'application/json',
+    Str :$public-key,
+    Str :$secret-key,
+    Int :$timeout = $DEFAULT_TIMEOUT,
+    Str :$sudo-otp,
+    Str :$sudo-challenge
+) returns List is export {
+    my ($pk, $sk) = get-credentials(:$public-key, :$secret-key);
+
+    my $url = $API_BASE ~ $endpoint;
+    my @args = 'curl', '-s', '-w', '%{http_code}', '--max-time', $timeout.Str;
+    my $body = '';
+
+    if $method eq 'GET' {
+        @args.append: '-X', 'GET';
+    } elsif $method eq 'DELETE' {
+        @args.append: '-X', 'DELETE';
+    } elsif $method eq 'POST' || $method eq 'PUT' || $method eq 'PATCH' {
+        @args.append: '-X', $method;
+        @args.append: '-H', "Content-Type: $content-type";
+        if $body-text.defined {
+            $body = $body-text;
+            @args.append: '-d', $body;
+        } elsif %data {
+            $body = to-json(%data);
+            @args.append: '-d', $body;
+        }
+    }
+
+    @args.append: '-H', "Authorization: Bearer $pk";
+
+    # Add HMAC signature
+    my $timestamp = now.Int;
+    my $signature = sign-request($sk, $timestamp, $method, $endpoint, $body);
+    @args.append: '-H', "X-Timestamp: $timestamp";
+    @args.append: '-H', "X-Signature: $signature";
+
+    # Add sudo OTP headers if provided
+    if $sudo-otp.defined && $sudo-challenge.defined {
+        @args.append: '-H', "X-Sudo-OTP: $sudo-otp";
+        @args.append: '-H', "X-Sudo-Challenge: $sudo-challenge";
+    }
+
+    @args.append: $url;
+
+    my $proc = run |@args, :out, :err;
+    my $output = $proc.out.slurp;
+    my $err = $proc.err.slurp;
+
+    if $proc.exitcode != 0 {
+        die APIError.new("API request failed: $err", :status-code(0), :response($err));
+    }
+
+    # Extract status code from end of output
+    my $status-code = 0;
+    my $resp-body = $output;
+    if $output.chars >= 3 {
+        my $code-str = $output.substr($output.chars - 3);
+        $status-code = $code-str.Int // 0;
+        $resp-body = $output.substr(0, $output.chars - 3);
+    }
+
+    return ($status-code, $resp-body);
+}
+
+#| Handle HTTP 428 sudo OTP challenge
+#| Returns True if retry succeeded, False otherwise
+sub handle-sudo-challenge(
+    Str $response-body,
+    Str $endpoint,
+    Str $method,
+    Str :$body-text,
+    %data?,
+    Str :$public-key,
+    Str :$secret-key,
+    Int :$timeout = $DEFAULT_TIMEOUT
+) returns Bool is export {
+    # Extract challenge_id from response
+    my $challenge-id = '';
+    try {
+        my %resp = from-json($response-body);
+        $challenge-id = %resp<challenge_id> // '';
+    }
+
+    unless $challenge-id {
+        note "{$RED}Error: Could not extract challenge_id from response{$RESET}";
+        return False;
+    }
+
+    # Prompt user for OTP
+    note "{$YELLOW}Confirmation required. Check your email for a one-time code.{$RESET}";
+    $*ERR.print("Enter OTP: ");
+    my $otp = $*IN.get.trim;
+
+    unless $otp {
+        note "{$RED}Error: No OTP provided{$RESET}";
+        return False;
+    }
+
+    # Retry request with sudo headers
+    my ($status, $body) = api-request-with-status(
+        $endpoint, $method, %data,
+        :$body-text,
+        :$public-key, :$secret-key, :$timeout,
+        :sudo-otp($otp), :sudo-challenge($challenge-id)
+    );
+
+    if $status >= 200 && $status < 300 {
+        return True;
+    } else {
+        note "{$RED}Error: OTP verification failed{$RESET}";
+        return False;
+    }
+}
+
 # ============================================================================
 # Core Execution Functions
 # ============================================================================
@@ -1056,8 +1177,20 @@ sub cmd-service(@args) {
     }
 
     if $destroy-id {
-        api-request("/services/$destroy-id", 'DELETE', :$public-key, :$secret-key);
-        say "{$GREEN}Service destroyed: $destroy-id{$RESET}";
+        my ($status, $body) = api-request-with-status("/services/$destroy-id", 'DELETE', :$public-key, :$secret-key);
+        if $status == 428 {
+            if handle-sudo-challenge($body, "/services/$destroy-id", 'DELETE', :$public-key, :$secret-key) {
+                say "{$GREEN}Service destroyed: $destroy-id{$RESET}";
+            } else {
+                note "{$RED}Error: Failed to destroy service (OTP verification failed){$RESET}";
+                exit 1;
+            }
+        } elsif $status >= 200 && $status < 300 {
+            say "{$GREEN}Service destroyed: $destroy-id{$RESET}";
+        } else {
+            note "{$RED}Error: Failed to destroy service (HTTP $status){$RESET}";
+            exit 1;
+        }
         return;
     }
 
@@ -1325,8 +1458,20 @@ sub cmd-image(@args) {
     }
 
     if $delete-id {
-        api-request("/images/$delete-id", 'DELETE', :$public-key, :$secret-key);
-        say "{$GREEN}Image deleted successfully{$RESET}";
+        my ($status, $body) = api-request-with-status("/images/$delete-id", 'DELETE', :$public-key, :$secret-key);
+        if $status == 428 {
+            if handle-sudo-challenge($body, "/images/$delete-id", 'DELETE', :$public-key, :$secret-key) {
+                say "{$GREEN}Image deleted successfully{$RESET}";
+            } else {
+                note "{$RED}Error: Failed to delete image (OTP verification failed){$RESET}";
+                exit 1;
+            }
+        } elsif $status >= 200 && $status < 300 {
+            say "{$GREEN}Image deleted successfully{$RESET}";
+        } else {
+            note "{$RED}Error: Failed to delete image (HTTP $status){$RESET}";
+            exit 1;
+        }
         return;
     }
 
@@ -1337,8 +1482,20 @@ sub cmd-image(@args) {
     }
 
     if $unlock-id {
-        api-request("/images/$unlock-id/unlock", 'POST', :$public-key, :$secret-key);
-        say "{$GREEN}Image unlocked successfully{$RESET}";
+        my ($status, $body) = api-request-with-status("/images/$unlock-id/unlock", 'POST', :$public-key, :$secret-key);
+        if $status == 428 {
+            if handle-sudo-challenge($body, "/images/$unlock-id/unlock", 'POST', :$public-key, :$secret-key) {
+                say "{$GREEN}Image unlocked successfully{$RESET}";
+            } else {
+                note "{$RED}Error: Failed to unlock image (OTP verification failed){$RESET}";
+                exit 1;
+            }
+        } elsif $status >= 200 && $status < 300 {
+            say "{$GREEN}Image unlocked successfully{$RESET}";
+        } else {
+            note "{$RED}Error: Failed to unlock image (HTTP $status){$RESET}";
+            exit 1;
+        }
         return;
     }
 

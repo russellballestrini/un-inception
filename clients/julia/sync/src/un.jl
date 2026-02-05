@@ -112,7 +112,7 @@ function compute_signature(secret_key::String, timestamp::Int64, method::String,
     return hmac_sha256_hex(secret_key, message)
 end
 
-function api_request(endpoint::String, public_key::String, secret_key::String; method="GET", data=nothing)
+function api_request(endpoint::String, public_key::String, secret_key::String; method="GET", data=nothing, sudo_otp=nothing, sudo_challenge=nothing)
     url = API_BASE * endpoint
 
     # Prepare body
@@ -128,6 +128,14 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
         "X-Signature" => signature,
         "Content-Type" => "application/json"
     ]
+
+    # Add sudo headers if provided
+    if sudo_otp !== nothing
+        push!(headers, "X-Sudo-OTP" => sudo_otp)
+    end
+    if sudo_challenge !== nothing
+        push!(headers, "X-Sudo-Challenge" => sudo_challenge)
+    end
 
     try
         if method == "GET"
@@ -157,6 +165,83 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
         else
             println(stderr, "$(RED)Error: Request failed: $e$(RESET)")
         end
+        exit(1)
+    end
+end
+
+# Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+function handle_sudo_challenge(endpoint::String, public_key::String, secret_key::String, method::String, data, response_body::String)
+    # Extract challenge_id from response
+    parsed = JSON.parse(response_body)
+    challenge_id = get(parsed, "challenge_id", nothing)
+
+    println(stderr, "$(YELLOW)Confirmation required. Check your email for a one-time code.$(RESET)")
+    print(stderr, "Enter OTP: ")
+    otp = readline()
+
+    if isempty(strip(otp))
+        println(stderr, "$(RED)Error: Operation cancelled$(RESET)")
+        exit(1)
+    end
+
+    # Retry the request with sudo headers
+    return api_request(endpoint, public_key, secret_key, method=method, data=data, sudo_otp=strip(otp), sudo_challenge=challenge_id)
+end
+
+# API request that handles 428 sudo challenges for destructive operations
+function api_request_with_sudo(endpoint::String, public_key::String, secret_key::String; method="DELETE", data=nothing)
+    url = API_BASE * endpoint
+
+    # Prepare body
+    body = data !== nothing ? JSON.json(data) : ""
+
+    # Generate timestamp and signature
+    timestamp = Int64(floor(time()))
+    signature = compute_signature(secret_key, timestamp, method, endpoint, body)
+
+    headers = [
+        "Authorization" => "Bearer $public_key",
+        "X-Timestamp" => string(timestamp),
+        "X-Signature" => signature,
+        "Content-Type" => "application/json"
+    ]
+
+    try
+        if method == "GET"
+            response = HTTP.get(url, headers, readtimeout=300, status_exception=false)
+        elseif method == "POST"
+            response = HTTP.post(url, headers, body, readtimeout=300, status_exception=false)
+        elseif method == "DELETE"
+            response = HTTP.delete(url, headers, readtimeout=300, status_exception=false)
+        else
+            error("Unsupported method: $method")
+        end
+
+        response_body = String(response.body)
+
+        # Handle 428 - sudo OTP required
+        if response.status == 428
+            return handle_sudo_challenge(endpoint, public_key, secret_key, method, data, response_body)
+        end
+
+        # Handle other errors
+        if response.status >= 400
+            if response.status == 401 && occursin("timestamp", lowercase(response_body))
+                println(stderr, "$(RED)Error: Request timestamp expired (must be within 5 minutes of server time)$(RESET)")
+                println(stderr, "$(YELLOW)Your computer's clock may have drifted.$(RESET)")
+                println(stderr, "Check your system time and sync with NTP if needed:")
+                println(stderr, "  Linux:   sudo ntpdate -s time.nist.gov")
+                println(stderr, "  macOS:   sudo sntp -sS time.apple.com")
+                println(stderr, "  Windows: w32tm /resync")
+            else
+                println(stderr, "$(RED)Error: HTTP $(response.status) - $(response_body)$(RESET)")
+            end
+            exit(1)
+        end
+
+        return JSON.parse(response_body)
+    catch e
+        println(stderr, "$(RED)Error: Request failed: $e$(RESET)")
         exit(1)
     end
 end
@@ -545,7 +630,7 @@ function cmd_service(args)
     end
 
     if args["destroy"] !== nothing
-        api_request("/services/$(args["destroy"])", public_key, secret_key, method="DELETE")
+        api_request_with_sudo("/services/$(args["destroy"])", public_key, secret_key, method="DELETE")
         println("$(GREEN)Service destroyed: $(args["destroy"])$(RESET)")
         return
     end
@@ -1136,7 +1221,7 @@ function cmd_image(args)
     end
 
     if args["delete"] !== nothing
-        api_request("/images/$(args["delete"])", public_key, secret_key, method="DELETE")
+        api_request_with_sudo("/images/$(args["delete"])", public_key, secret_key, method="DELETE")
         println("$(GREEN)Image deleted: $(args["delete"])$(RESET)")
         return
     end
@@ -1148,7 +1233,7 @@ function cmd_image(args)
     end
 
     if args["unlock"] !== nothing
-        api_request("/images/$(args["unlock"])/unlock", public_key, secret_key, method="POST")
+        api_request_with_sudo("/images/$(args["unlock"])/unlock", public_key, secret_key, method="POST", data=Dict())
         println("$(GREEN)Image unlocked: $(args["unlock"])$(RESET)")
         return
     end

@@ -281,6 +281,114 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
   }
 }
 
+/// Make authenticated API request returning status code and body
+Future<(int, String)> apiRequestCurlWithStatus(String endpoint, String method, String? jsonData, String publicKey, String? secretKey, {String? baseUrl, String? sudoOtp, String? sudoChallenge}) async {
+  final base = baseUrl ?? apiBase;
+  final tempFile = await File('${Directory.systemTemp.path}/un_request_${DateTime.now().millisecondsSinceEpoch}.json').create();
+
+  try {
+    final body = jsonData ?? '';
+    if (jsonData != null) {
+      await tempFile.writeAsString(jsonData);
+    }
+
+    final args = ['curl', '-s', '-w', '%{http_code}', '-X', method, '$base$endpoint',
+                  '-H', 'Content-Type: application/json'];
+
+    // Add HMAC authentication headers if secretKey is provided
+    if (secretKey != null && secretKey.isNotEmpty) {
+      final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      final message = '$timestamp:$method:$endpoint:$body';
+
+      final key = utf8.encode(secretKey);
+      final bytes = utf8.encode(message);
+      final hmacSha256 = Hmac(sha256, key);
+      final digest = hmacSha256.convert(bytes);
+      final signature = digest.toString();
+
+      args.addAll(['-H', 'Authorization: Bearer $publicKey']);
+      args.addAll(['-H', 'X-Timestamp: $timestamp']);
+      args.addAll(['-H', 'X-Signature: $signature']);
+    } else {
+      // Legacy API key authentication
+      args.addAll(['-H', 'Authorization: Bearer $publicKey']);
+    }
+
+    // Add sudo OTP headers if provided
+    if (sudoOtp != null && sudoChallenge != null) {
+      args.addAll(['-H', 'X-Sudo-OTP: $sudoOtp']);
+      args.addAll(['-H', 'X-Sudo-Challenge: $sudoChallenge']);
+    }
+
+    if (jsonData != null) {
+      args.addAll(['-d', '@${tempFile.path}']);
+    }
+
+    final result = await Process.run(args[0], args.sublist(1));
+
+    if (result.exitCode != 0) {
+      throw Exception('curl failed: ${result.stderr}');
+    }
+
+    final output = result.stdout as String;
+
+    // Extract status code from end of output (last 3 chars)
+    int statusCode = 0;
+    String responseBody = output;
+    if (output.length >= 3) {
+      final codeStr = output.substring(output.length - 3);
+      statusCode = int.tryParse(codeStr) ?? 0;
+      responseBody = output.substring(0, output.length - 3);
+    }
+
+    return (statusCode, responseBody);
+  } finally {
+    await tempFile.delete();
+  }
+}
+
+/// Handle HTTP 428 sudo OTP challenge
+/// Returns true if retry succeeded, false otherwise
+Future<bool> handleSudoChallenge(String responseBody, String endpoint, String method, String? jsonData, String publicKey, String? secretKey) async {
+  // Extract challenge_id from response
+  String? challengeId;
+  try {
+    final resp = jsonDecode(responseBody) as Map<String, dynamic>;
+    challengeId = resp['challenge_id'] as String?;
+  } catch (e) {
+    stderr.writeln('${red}Error: Could not parse challenge response$reset');
+    return false;
+  }
+
+  if (challengeId == null || challengeId.isEmpty) {
+    stderr.writeln('${red}Error: Could not extract challenge_id from response$reset');
+    return false;
+  }
+
+  // Prompt user for OTP
+  stderr.writeln('${yellow}Confirmation required. Check your email for a one-time code.$reset');
+  stderr.write('Enter OTP: ');
+  final otp = stdin.readLineSync()?.trim();
+
+  if (otp == null || otp.isEmpty) {
+    stderr.writeln('${red}Error: No OTP provided$reset');
+    return false;
+  }
+
+  // Retry request with sudo headers
+  final (statusCode, _) = await apiRequestCurlWithStatus(
+    endpoint, method, jsonData, publicKey, secretKey,
+    sudoOtp: otp, sudoChallenge: challengeId
+  );
+
+  if (statusCode >= 200 && statusCode < 300) {
+    return true;
+  } else {
+    stderr.writeln('${red}Error: OTP verification failed$reset');
+    return false;
+  }
+}
+
 Future<Map<String, dynamic>?> apiRequestTextCurl(String endpoint, String method, String body, String publicKey, String? secretKey) async {
   final tempFile = await File('${Directory.systemTemp.path}/un_request_${DateTime.now().millisecondsSinceEpoch}.txt').create();
 
@@ -668,8 +776,20 @@ Future<void> cmdService(Args args) async {
   }
 
   if (args.serviceDestroy != null) {
-    await apiRequestCurl('/services/${args.serviceDestroy}', 'DELETE', null, publicKey, secretKey);
-    print('${green}Service destroyed: ${args.serviceDestroy}$reset');
+    final (statusCode, responseBody) = await apiRequestCurlWithStatus('/services/${args.serviceDestroy}', 'DELETE', null, publicKey, secretKey);
+    if (statusCode == 428) {
+      if (await handleSudoChallenge(responseBody, '/services/${args.serviceDestroy}', 'DELETE', null, publicKey, secretKey)) {
+        print('${green}Service destroyed: ${args.serviceDestroy}$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to destroy service (OTP verification failed)$reset');
+        exit(1);
+      }
+    } else if (statusCode >= 200 && statusCode < 300) {
+      print('${green}Service destroyed: ${args.serviceDestroy}$reset');
+    } else {
+      stderr.writeln('${red}Error: Failed to destroy service (HTTP $statusCode)$reset');
+      exit(1);
+    }
     return;
   }
 
@@ -855,8 +975,20 @@ Future<void> cmdImage(Args args) async {
   }
 
   if (args.imageDelete != null) {
-    await apiRequestCurl('/images/${args.imageDelete}', 'DELETE', null, publicKey, secretKey);
-    print('${green}Image deleted: ${args.imageDelete}$reset');
+    final (statusCode, responseBody) = await apiRequestCurlWithStatus('/images/${args.imageDelete}', 'DELETE', null, publicKey, secretKey);
+    if (statusCode == 428) {
+      if (await handleSudoChallenge(responseBody, '/images/${args.imageDelete}', 'DELETE', null, publicKey, secretKey)) {
+        print('${green}Image deleted: ${args.imageDelete}$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to delete image (OTP verification failed)$reset');
+        exit(1);
+      }
+    } else if (statusCode >= 200 && statusCode < 300) {
+      print('${green}Image deleted: ${args.imageDelete}$reset');
+    } else {
+      stderr.writeln('${red}Error: Failed to delete image (HTTP $statusCode)$reset');
+      exit(1);
+    }
     return;
   }
 
@@ -867,8 +999,20 @@ Future<void> cmdImage(Args args) async {
   }
 
   if (args.imageUnlock != null) {
-    await apiRequestCurl('/images/${args.imageUnlock}/unlock', 'POST', null, publicKey, secretKey);
-    print('${green}Image unlocked: ${args.imageUnlock}$reset');
+    final (statusCode, responseBody) = await apiRequestCurlWithStatus('/images/${args.imageUnlock}/unlock', 'POST', null, publicKey, secretKey);
+    if (statusCode == 428) {
+      if (await handleSudoChallenge(responseBody, '/images/${args.imageUnlock}/unlock', 'POST', null, publicKey, secretKey)) {
+        print('${green}Image unlocked: ${args.imageUnlock}$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to unlock image (OTP verification failed)$reset');
+        exit(1);
+      }
+    } else if (statusCode >= 200 && statusCode < 300) {
+      print('${green}Image unlocked: ${args.imageUnlock}$reset');
+    } else {
+      stderr.writeln('${red}Error: Failed to unlock image (HTTP $statusCode)$reset');
+      exit(1);
+    }
     return;
   }
 

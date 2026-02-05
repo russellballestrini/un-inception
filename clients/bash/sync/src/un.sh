@@ -54,6 +54,7 @@ api_request() {
     local method="$1"
     local endpoint="$2"
     local body="$3"
+    local extra_headers="${4:-}"
 
     local creds=$(get_credentials)
     local pk=$(echo "$creds" | cut -d: -f1)
@@ -63,12 +64,114 @@ api_request() {
     local body_str="${body:-{}}"
     local signature=$(sign_request "$sk" "$timestamp" "$method" "$endpoint" "$body_str")
 
-    curl -s -X "$method" "$API_BASE$endpoint" \
+    local curl_cmd=(curl -s -X "$method" "$API_BASE$endpoint"
+        -H "Authorization: Bearer $pk"
+        -H "X-Timestamp: $timestamp"
+        -H "X-Signature: $signature"
+        -H "Content-Type: application/json"
+        -d "$body_str")
+
+    # Add extra headers if provided
+    if [ -n "$extra_headers" ]; then
+        eval "curl_cmd+=($extra_headers)"
+    fi
+
+    "${curl_cmd[@]}"
+}
+
+# Handle 428 Sudo OTP challenge - prompt user for OTP and retry
+handle_sudo_challenge() {
+    local response="$1"
+    local method="$2"
+    local endpoint="$3"
+    local body="$4"
+
+    # Extract challenge_id from response
+    local challenge_id=$(echo "$response" | jq -r '.challenge_id // empty' 2>/dev/null)
+
+    echo -e "\033[33mConfirmation required. Check your email for a one-time code.\033[0m" >&2
+    echo -n "Enter OTP: " >&2
+    read -r otp
+
+    if [ -z "$otp" ]; then
+        echo -e "\033[31mError: Operation cancelled\033[0m" >&2
+        return 1
+    fi
+
+    # Retry with sudo headers
+    local extra_headers="-H 'X-Sudo-OTP: $otp'"
+    if [ -n "$challenge_id" ]; then
+        extra_headers="$extra_headers -H 'X-Sudo-Challenge: $challenge_id'"
+    fi
+
+    local creds=$(get_credentials)
+    local pk=$(echo "$creds" | cut -d: -f1)
+    local sk=$(echo "$creds" | cut -d: -f2)
+
+    local timestamp=$(date +%s)
+    local body_str="${body:-{}}"
+    local signature=$(sign_request "$sk" "$timestamp" "$method" "$endpoint" "$body_str")
+
+    local retry_result
+    retry_result=$(curl -s -w '\n%{http_code}' -X "$method" "$API_BASE$endpoint" \
         -H "Authorization: Bearer $pk" \
         -H "X-Timestamp: $timestamp" \
         -H "X-Signature: $signature" \
         -H "Content-Type: application/json" \
-        -d "$body_str"
+        -H "X-Sudo-OTP: $otp" \
+        ${challenge_id:+-H "X-Sudo-Challenge: $challenge_id"} \
+        -d "$body_str")
+
+    local http_code=$(echo "$retry_result" | tail -1)
+    local response_body=$(echo "$retry_result" | sed '$d')
+
+    if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+        echo -e "\033[32mOperation completed successfully\033[0m"
+        return 0
+    else
+        echo -e "\033[31mError: OTP verification failed (HTTP $http_code)\033[0m" >&2
+        return 1
+    fi
+}
+
+# API request with 428 sudo handling for destructive operations
+api_request_with_sudo() {
+    local method="$1"
+    local endpoint="$2"
+    local body="$3"
+
+    local creds=$(get_credentials)
+    local pk=$(echo "$creds" | cut -d: -f1)
+    local sk=$(echo "$creds" | cut -d: -f2)
+
+    local timestamp=$(date +%s)
+    local body_str="${body:-{}}"
+    local signature=$(sign_request "$sk" "$timestamp" "$method" "$endpoint" "$body_str")
+
+    local result
+    result=$(curl -s -w '\n%{http_code}' -X "$method" "$API_BASE$endpoint" \
+        -H "Authorization: Bearer $pk" \
+        -H "X-Timestamp: $timestamp" \
+        -H "X-Signature: $signature" \
+        -H "Content-Type: application/json" \
+        -d "$body_str")
+
+    local http_code=$(echo "$result" | tail -1)
+    local response_body=$(echo "$result" | sed '$d')
+
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if [ "$http_code" = "428" ]; then
+        handle_sudo_challenge "$response_body" "$method" "$endpoint" "$body"
+        return $?
+    fi
+
+    if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+        echo -e "\033[31mError: HTTP $http_code\033[0m" >&2
+        echo "$response_body" >&2
+        return 1
+    fi
+
+    echo "$response_body"
 }
 
 # Languages with cache
@@ -318,7 +421,7 @@ cmd_image() {
             echo "$result" | jq .
             ;;
         delete)
-            api_request "DELETE" "/images/$id" ""
+            api_request_with_sudo "DELETE" "/images/$id" ""
             echo "Image deleted successfully"
             ;;
         lock)
@@ -326,7 +429,7 @@ cmd_image() {
             echo "Image locked successfully"
             ;;
         unlock)
-            api_request "POST" "/images/$id/unlock" "{}"
+            api_request_with_sudo "POST" "/images/$id/unlock" "{}"
             echo "Image unlocked successfully"
             ;;
         publish)

@@ -350,7 +350,7 @@ fun cmdService(args: Args) {
     }
 
     if (args.serviceDestroy != null) {
-        apiRequest("/services/${args.serviceDestroy}", "DELETE", null, publicKey, secretKey)
+        apiRequestDestructive("/services/${args.serviceDestroy}", "DELETE", null, publicKey, secretKey)
         println("${GREEN}Service destroyed: ${args.serviceDestroy}${RESET}")
         return
     }
@@ -578,7 +578,7 @@ fun cmdImage(args: Args) {
     }
 
     if (args.imageDelete != null) {
-        apiRequest("/images/${args.imageDelete}", "DELETE", null, publicKey, secretKey)
+        apiRequestDestructive("/images/${args.imageDelete}", "DELETE", null, publicKey, secretKey)
         println("${GREEN}Image deleted: ${args.imageDelete}${RESET}")
         return
     }
@@ -590,7 +590,7 @@ fun cmdImage(args: Args) {
     }
 
     if (args.imageUnlock != null) {
-        apiRequest("/images/${args.imageUnlock}/unlock", "POST", null, publicKey, secretKey)
+        apiRequestDestructive("/images/${args.imageUnlock}/unlock", "POST", null, publicKey, secretKey)
         println("${GREEN}Image unlocked: ${args.imageUnlock}${RESET}")
         return
     }
@@ -776,6 +776,9 @@ fun detectLanguage(filename: String): String {
     return EXT_MAP[".$ext"] ?: throw RuntimeException("Unsupported file extension: .$ext")
 }
 
+// Exception for 428 Sudo Challenge
+class SudoChallengeException(val challengeId: String?, val responseBody: String) : RuntimeException("Sudo challenge required")
+
 fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, publicKey: String?, secretKey: String): Map<String, Any> {
     val timestamp = System.currentTimeMillis() / 1000
     val body = if (data != null) toJson(data) else ""
@@ -800,6 +803,17 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
 
     if (connection.responseCode !in 200..299) {
         val error = connection.errorStream?.bufferedReader()?.readText() ?: ""
+        if (connection.responseCode == 428) {
+            // Extract challenge_id from response
+            var challengeId: String? = null
+            try {
+                val errorJson = parseJson(error)
+                challengeId = errorJson["challenge_id"]?.toString()
+            } catch (e: Exception) {
+                // Ignore parse errors
+            }
+            throw SudoChallengeException(challengeId, error)
+        }
         if (connection.responseCode == 401 && error.lowercase().contains("timestamp")) {
             System.err.println("${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}")
             System.err.println("${YELLOW}Your computer's clock may have drifted.${RESET}")
@@ -814,6 +828,64 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
 
     val response = connection.inputStream.bufferedReader().readText()
     return parseJson(response)
+}
+
+fun apiRequestWithSudo(endpoint: String, method: String, data: Map<String, Any>?, publicKey: String?, secretKey: String, otp: String, challengeId: String?): Map<String, Any> {
+    val timestamp = System.currentTimeMillis() / 1000
+    val body = if (data != null) toJson(data) else ""
+    val signatureData = "$timestamp:$method:$endpoint:$body"
+    val signature = hmacSha256(secretKey, signatureData)
+
+    val url = URL(API_BASE + endpoint)
+    val connection = url.openConnection() as HttpURLConnection
+
+    connection.requestMethod = method
+    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("X-Timestamp", timestamp.toString())
+    connection.setRequestProperty("X-Signature", signature)
+    connection.setRequestProperty("Content-Type", "application/json")
+    connection.setRequestProperty("X-Sudo-OTP", otp)
+    if (challengeId != null) {
+        connection.setRequestProperty("X-Sudo-Challenge", challengeId)
+    }
+    connection.connectTimeout = 30000
+    connection.readTimeout = 300000
+
+    if (data != null) {
+        connection.doOutput = true
+        connection.outputStream.use { it.write(body.toByteArray()) }
+    }
+
+    if (connection.responseCode !in 200..299) {
+        val error = connection.errorStream?.bufferedReader()?.readText() ?: ""
+        throw RuntimeException("HTTP ${connection.responseCode} - $error")
+    }
+
+    val response = connection.inputStream.bufferedReader().readText()
+    return parseJson(response)
+}
+
+fun handleSudoChallenge(challengeId: String?, method: String, endpoint: String, data: Map<String, Any>?, publicKey: String?, secretKey: String): Map<String, Any> {
+    System.err.println("${YELLOW}Confirmation required. Check your email for a one-time code.${RESET}")
+    System.err.print("Enter OTP: ")
+    System.err.flush()
+
+    val reader = java.io.BufferedReader(java.io.InputStreamReader(System.`in`))
+    val otp = reader.readLine()?.trim()
+
+    if (otp.isNullOrEmpty()) {
+        throw RuntimeException("Operation cancelled - no OTP provided")
+    }
+
+    return apiRequestWithSudo(endpoint, method, data, publicKey, secretKey, otp, challengeId)
+}
+
+fun apiRequestDestructive(endpoint: String, method: String, data: Map<String, Any>?, publicKey: String?, secretKey: String): Map<String, Any> {
+    return try {
+        apiRequest(endpoint, method, data, publicKey, secretKey)
+    } catch (e: SudoChallengeException) {
+        handleSudoChallenge(e.challengeId, method, endpoint, data, publicKey, secretKey)
+    }
 }
 
 fun apiRequestPatch(endpoint: String, data: Map<String, Any>, publicKey: String?, secretKey: String): Map<String, Any> {

@@ -252,6 +252,146 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
   });
 }
 
+/**
+ * Make an authenticated HTTP request with sudo OTP challenge handling.
+ * If the server returns 428, prompts for OTP and retries with sudo headers.
+ */
+function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any = null, keys: ApiKeys): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(API_BASE + endpoint);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = data ? JSON.stringify(data) : '';
+    const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
+    const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
+
+    const options: https.RequestOptions = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: method,
+      headers: {
+        'Authorization': `Bearer ${keys.publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
+        'Content-Type': 'application/json'
+      },
+      timeout: 300000
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', chunk => responseBody += chunk);
+      res.on('end', async () => {
+        // Handle 428 sudo OTP challenge
+        if (res.statusCode === 428) {
+          let challengeId = '';
+          try {
+            const challengeData = JSON.parse(responseBody);
+            challengeId = challengeData.challenge_id || '';
+          } catch (e) {
+            // Ignore JSON parse errors
+          }
+
+          console.error(`${YELLOW}Confirmation required. Check your email for a one-time code.${RESET}`);
+
+          const readline = require('readline');
+          const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stderr
+          });
+
+          rl.question('Enter OTP: ', (otp: string) => {
+            rl.close();
+            otp = otp.trim();
+
+            if (!otp) {
+              console.error(`${RED}Error: Operation cancelled${RESET}`);
+              process.exit(1);
+            }
+
+            // Retry with sudo headers
+            const retryTimestamp = Math.floor(Date.now() / 1000).toString();
+            const retryMessage = `${retryTimestamp}:${method}:${url.pathname}${url.search}:${body}`;
+            const retrySignature = crypto.createHmac('sha256', keys.secretKey).update(retryMessage).digest('hex');
+
+            const retryOptions: https.RequestOptions = {
+              hostname: url.hostname,
+              path: url.pathname + url.search,
+              method: method,
+              headers: {
+                'Authorization': `Bearer ${keys.publicKey}`,
+                'X-Timestamp': retryTimestamp,
+                'X-Signature': retrySignature,
+                'Content-Type': 'application/json',
+                'X-Sudo-OTP': otp,
+                'X-Sudo-Challenge': challengeId
+              },
+              timeout: 300000
+            };
+
+            const retryReq = https.request(retryOptions, (retryRes) => {
+              let retryBody = '';
+              retryRes.on('data', chunk => retryBody += chunk);
+              retryRes.on('end', () => {
+                if (retryRes.statusCode && retryRes.statusCode >= 200 && retryRes.statusCode < 300) {
+                  try {
+                    resolve(JSON.parse(retryBody));
+                  } catch (e) {
+                    resolve(retryBody);
+                  }
+                } else {
+                  console.error(`${RED}Error: HTTP ${retryRes.statusCode} - ${retryBody}${RESET}`);
+                  process.exit(1);
+                }
+              });
+            });
+
+            retryReq.on('error', (e) => {
+              console.error(`${RED}Error: ${e.message}${RESET}`);
+              process.exit(1);
+            });
+
+            if (data) {
+              retryReq.write(body);
+            }
+            retryReq.end();
+          });
+          return;
+        }
+
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(responseBody));
+          } catch (e) {
+            resolve(responseBody);
+          }
+        } else {
+          if (res.statusCode === 401 && responseBody.toLowerCase().includes('timestamp')) {
+            console.error(`${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}`);
+            console.error(`${YELLOW}Your computer's clock may have drifted.${RESET}`);
+            console.error("Check your system time and sync with NTP if needed:");
+            console.error("  Linux:   sudo ntpdate -s time.nist.gov");
+            console.error("  macOS:   sudo sntp -sS time.apple.com");
+            console.error("  Windows: w32tm /resync");
+          } else {
+            console.error(`${RED}Error: HTTP ${res.statusCode} - ${responseBody}${RESET}`);
+          }
+          process.exit(1);
+        }
+      });
+    });
+
+    req.on('error', (e) => {
+      console.error(`${RED}Error: ${e.message}${RESET}`);
+      process.exit(1);
+    });
+
+    if (data) {
+      req.write(body);
+    }
+    req.end();
+  });
+}
+
 function portalRequest(endpoint: string, method: string = "GET", data: any = null, keys: ApiKeys): Promise<any> {
   return new Promise((resolve, reject) => {
     const url = new URL(PORTAL_BASE + endpoint);
@@ -675,7 +815,7 @@ async function cmdService(args: Args): Promise<void> {
   }
 
   if (args.destroy) {
-    await apiRequest(`/services/${args.destroy}`, "DELETE", null, keys);
+    await apiRequestWithSudo(`/services/${args.destroy}`, "DELETE", null, keys);
     console.log(`${GREEN}Service destroyed: ${args.destroy}${RESET}`);
     return;
   }
@@ -912,7 +1052,7 @@ async function cmdImage(args: Args): Promise<void> {
   }
 
   if (args.imageDelete) {
-    await apiRequest(`/images/${args.imageDelete}`, "DELETE", null, keys);
+    await apiRequestWithSudo(`/images/${args.imageDelete}`, "DELETE", null, keys);
     console.log(`${GREEN}Image deleted successfully${RESET}`);
     return;
   }
@@ -924,7 +1064,7 @@ async function cmdImage(args: Args): Promise<void> {
   }
 
   if (args.imageUnlock) {
-    await apiRequest(`/images/${args.imageUnlock}/unlock`, "POST", {}, keys);
+    await apiRequestWithSudo(`/images/${args.imageUnlock}/unlock`, "POST", {}, keys);
     console.log(`${GREEN}Image unlocked successfully${RESET}`);
     return;
   }

@@ -121,7 +121,98 @@ proc detect_language {filename} {
     exit 1
 }
 
-proc api_request {endpoint method data public_key secret_key} {
+proc api_request {endpoint method data public_key secret_key {extra_headers {}}} {
+    set url "${::API_BASE}${endpoint}"
+    set headers [list Authorization "Bearer $public_key" Content-Type "application/json"]
+
+    set json_data ""
+    if {$method ne "GET" && $method ne "DELETE" && [llength $data] > 0} {
+        set json_data [::json::write object {*}$data]
+    }
+
+    # Add HMAC signature if secret_key is present
+    if {$secret_key ne ""} {
+        set timestamp [clock seconds]
+        set sig_input "${timestamp}:${method}:${endpoint}:${json_data}"
+        set signature [::sha2::hmac -hex -key $secret_key $sig_input]
+        lappend headers X-Timestamp $timestamp
+        lappend headers X-Signature $signature
+    }
+
+    # Add extra headers (for sudo OTP)
+    foreach {k v} $extra_headers {
+        lappend headers $k $v
+    }
+
+    if {$method eq "GET"} {
+        set token [::http::geturl $url -headers $headers -timeout 300000]
+    } elseif {$method eq "DELETE"} {
+        set token [::http::geturl $url -method DELETE -headers $headers -timeout 300000]
+    } else {
+        set token [::http::geturl $url -method $method -headers $headers -query $json_data -timeout 300000]
+    }
+
+    set status [::http::status $token]
+    set ncode [::http::ncode $token]
+    set body [::http::data $token]
+    ::http::cleanup $token
+
+    if {$status ne "ok" || ($ncode != 200 && $ncode != 201)} {
+        if {$ncode == 401 && [string match -nocase "*timestamp*" $body]} {
+            puts stderr "${::RED}Error: Request timestamp expired (must be within 5 minutes of server time)${::RESET}"
+            puts stderr "${::YELLOW}Your computer's clock may have drifted.${::RESET}"
+            puts stderr "Check your system time and sync with NTP if needed:"
+            puts stderr "  Linux:   sudo ntpdate -s time.nist.gov"
+            puts stderr "  macOS:   sudo sntp -sS time.apple.com"
+            puts stderr "  Windows: w32tm /resync"
+        } else {
+            puts stderr "${::RED}Error: HTTP $ncode${::RESET}"
+            puts stderr $body
+        }
+        exit 1
+    }
+
+    return [::json::json2dict $body]
+}
+
+# Handle 428 Sudo OTP challenge - prompt user for OTP and retry
+proc handle_sudo_challenge {response_body endpoint method data public_key secret_key} {
+    # Extract challenge_id from response
+    set challenge_id ""
+    if {[catch {set response_data [::json::json2dict $response_body]}] == 0} {
+        if {[dict exists $response_data challenge_id]} {
+            set challenge_id [dict get $response_data challenge_id]
+        }
+    }
+
+    puts stderr "${::YELLOW}Confirmation required. Check your email for a one-time code.${::RESET}"
+    puts -nonewline stderr "Enter OTP: "
+    flush stderr
+
+    gets stdin otp
+    set otp [string trim $otp]
+
+    if {$otp eq ""} {
+        puts stderr "${::RED}Error: Operation cancelled${::RESET}"
+        return 0
+    }
+
+    # Retry with sudo headers
+    set extra_headers [list X-Sudo-OTP $otp]
+    if {$challenge_id ne ""} {
+        lappend extra_headers X-Sudo-Challenge $challenge_id
+    }
+
+    if {[catch {api_request $endpoint $method $data $public_key $secret_key $extra_headers} result]} {
+        return 0
+    }
+
+    puts "${::GREEN}Operation completed successfully${::RESET}"
+    return 1
+}
+
+# API request with 428 sudo handling for destructive operations
+proc api_request_with_sudo {endpoint method data public_key secret_key} {
     set url "${::API_BASE}${endpoint}"
     set headers [list Authorization "Bearer $public_key" Content-Type "application/json"]
 
@@ -152,18 +243,14 @@ proc api_request {endpoint method data public_key secret_key} {
     set body [::http::data $token]
     ::http::cleanup $token
 
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if {$ncode == 428} {
+        return [handle_sudo_challenge $body $endpoint $method $data $public_key $secret_key]
+    }
+
     if {$status ne "ok" || ($ncode != 200 && $ncode != 201)} {
-        if {$ncode == 401 && [string match -nocase "*timestamp*" $body]} {
-            puts stderr "${::RED}Error: Request timestamp expired (must be within 5 minutes of server time)${::RESET}"
-            puts stderr "${::YELLOW}Your computer's clock may have drifted.${::RESET}"
-            puts stderr "Check your system time and sync with NTP if needed:"
-            puts stderr "  Linux:   sudo ntpdate -s time.nist.gov"
-            puts stderr "  macOS:   sudo sntp -sS time.apple.com"
-            puts stderr "  Windows: w32tm /resync"
-        } else {
-            puts stderr "${::RED}Error: HTTP $ncode${::RESET}"
-            puts stderr $body
-        }
+        puts stderr "${::RED}Error: HTTP $ncode${::RESET}"
+        puts stderr $body
         exit 1
     }
 
@@ -879,7 +966,7 @@ proc cmd_image {args} {
     }
 
     if {$delete_id ne ""} {
-        api_request "/images/$delete_id" "DELETE" {} $public_key $secret_key
+        api_request_with_sudo "/images/$delete_id" "DELETE" {} $public_key $secret_key
         puts "${::GREEN}Image deleted successfully${::RESET}"
         return
     }
@@ -891,7 +978,7 @@ proc cmd_image {args} {
     }
 
     if {$unlock_id ne ""} {
-        api_request "/images/$unlock_id/unlock" "POST" {} $public_key $secret_key
+        api_request_with_sudo "/images/$unlock_id/unlock" "POST" {} $public_key $secret_key
         puts "${::GREEN}Image unlocked successfully${::RESET}"
         return
     }
@@ -1156,7 +1243,7 @@ proc cmd_service {args} {
     }
 
     if {$destroy_id ne ""} {
-        api_request "/services/$destroy_id" "DELETE" {} $public_key $secret_key
+        api_request_with_sudo "/services/$destroy_id" "DELETE" {} $public_key $secret_key
         puts "${::GREEN}Service destroyed: $destroy_id${::RESET}"
         return
     }

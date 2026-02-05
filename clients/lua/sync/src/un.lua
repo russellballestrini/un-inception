@@ -69,7 +69,80 @@ function Un.sign_request(secret, timestamp, method, endpoint, body)
 end
 
 -- API request
-function Un.api_request(method, endpoint, body, opts)
+function Un.api_request(method, endpoint, body, opts, extra_headers)
+    opts = opts or {}
+    extra_headers = extra_headers or {}
+    local pk, sk = Un.get_credentials(opts)
+
+    local timestamp = tostring(os.time())
+    local url = Un.API_BASE .. endpoint
+    local body_str = body and json.encode(body) or "{}"
+    local signature = Un.sign_request(sk, timestamp, method, endpoint, body_str)
+
+    local headers = {
+        ["Authorization"] = "Bearer " .. pk,
+        ["X-Timestamp"] = timestamp,
+        ["X-Signature"] = signature,
+        ["Content-Type"] = "application/json"
+    }
+
+    -- Add extra headers (for sudo OTP)
+    for k, v in pairs(extra_headers) do
+        headers[k] = v
+    end
+
+    local resp_body = {}
+    local resp, status = https.request({
+        url = url,
+        method = method,
+        headers = headers,
+        source = body_str and ltn12.source.string(body_str),
+        sink = ltn12.sink.table(resp_body)
+    })
+
+    if status ~= 200 then error("API error (" .. status .. ")") end
+    return json.decode(table.concat(resp_body)), status
+end
+
+-- Handle 428 Sudo OTP challenge - prompt user for OTP and retry
+function Un.handle_sudo_challenge(response_body, method, endpoint, body, opts)
+    -- Extract challenge_id from response
+    local response_data = {}
+    if response_body and response_body ~= "" then
+        pcall(function() response_data = json.decode(response_body) end)
+    end
+    local challenge_id = response_data.challenge_id or ""
+
+    io.stderr:write("\027[33mConfirmation required. Check your email for a one-time code.\027[0m\n")
+    io.stderr:write("Enter OTP: ")
+    io.stderr:flush()
+
+    local otp = io.read("*line")
+    if not otp or otp == "" then
+        io.stderr:write("\027[31mError: Operation cancelled\027[0m\n")
+        return false
+    end
+
+    -- Retry with sudo headers
+    local extra_headers = {["X-Sudo-OTP"] = otp}
+    if challenge_id ~= "" then
+        extra_headers["X-Sudo-Challenge"] = challenge_id
+    end
+
+    local ok, result = pcall(function()
+        return Un.api_request(method, endpoint, body, opts, extra_headers)
+    end)
+
+    if ok then
+        print("\027[32mOperation completed successfully\027[0m")
+        return true
+    else
+        return false
+    end
+end
+
+-- API request with 428 sudo handling for destructive operations
+function Un.api_request_with_sudo(method, endpoint, body, opts)
     opts = opts or {}
     local pk, sk = Un.get_credentials(opts)
 
@@ -93,6 +166,11 @@ function Un.api_request(method, endpoint, body, opts)
         source = body_str and ltn12.source.string(body_str),
         sink = ltn12.sink.table(resp_body)
     })
+
+    -- Handle 428 Precondition Required (sudo OTP needed)
+    if status == 428 then
+        return Un.handle_sudo_challenge(table.concat(resp_body), method, endpoint, body, opts)
+    end
 
     if status ~= 200 then error("API error (" .. status .. ")") end
     return json.decode(table.concat(resp_body))
@@ -202,7 +280,7 @@ end
 
 function Un.image_delete(image_id, opts)
     opts = opts or {}
-    return Un.api_request("DELETE", "/images/" .. image_id, nil, opts)
+    return Un.api_request_with_sudo("DELETE", "/images/" .. image_id, nil, opts)
 end
 
 function Un.image_lock(image_id, opts)
@@ -212,7 +290,7 @@ end
 
 function Un.image_unlock(image_id, opts)
     opts = opts or {}
-    return Un.api_request("POST", "/images/" .. image_id .. "/unlock", {}, opts)
+    return Un.api_request_with_sudo("POST", "/images/" .. image_id .. "/unlock", {}, opts)
 end
 
 function Un.image_publish(source_id, source_type, name, opts)

@@ -240,8 +240,17 @@ defmodule Un do
 
   defp service_command(["--destroy", service_id | _]) do
     api_key = get_api_key()
-    curl_delete(api_key, "/services/#{service_id}")
-    IO.puts("#{@green}Service destroyed: #{service_id}#{@reset}")
+    case curl_delete_with_sudo(api_key, "/services/#{service_id}") do
+      {:ok, _, _} ->
+        IO.puts("#{@green}Service destroyed: #{service_id}#{@reset}")
+      {:ok, _} ->
+        IO.puts("#{@green}Service destroyed: #{service_id}#{@reset}")
+      {:error, :cancelled} ->
+        System.halt(1)
+      {:error, msg} ->
+        IO.puts(:stderr, "#{@red}Error: #{msg}#{@reset}")
+        System.halt(1)
+    end
   end
 
   defp service_command(["--resize", service_id | rest]) do
@@ -461,8 +470,17 @@ defmodule Un do
 
   defp snapshot_command(["--delete", snapshot_id | _]) do
     api_key = get_api_key()
-    curl_delete(api_key, "/snapshots/#{snapshot_id}")
-    IO.puts("#{@green}Snapshot deleted: #{snapshot_id}#{@reset}")
+    case curl_delete_with_sudo(api_key, "/snapshots/#{snapshot_id}") do
+      {:ok, _, _} ->
+        IO.puts("#{@green}Snapshot deleted: #{snapshot_id}#{@reset}")
+      {:ok, _} ->
+        IO.puts("#{@green}Snapshot deleted: #{snapshot_id}#{@reset}")
+      {:error, :cancelled} ->
+        System.halt(1)
+      {:error, msg} ->
+        IO.puts(:stderr, "#{@red}Error: #{msg}#{@reset}")
+        System.halt(1)
+    end
   end
 
   defp snapshot_command(["--clone", snapshot_id | rest]) do
@@ -512,8 +530,17 @@ defmodule Un do
 
   defp image_command(["--delete", image_id | _]) do
     api_key = get_api_key()
-    curl_delete(api_key, "/images/#{image_id}")
-    IO.puts("#{@green}Image deleted: #{image_id}#{@reset}")
+    case curl_delete_with_sudo(api_key, "/images/#{image_id}") do
+      {:ok, _, _} ->
+        IO.puts("#{@green}Image deleted: #{image_id}#{@reset}")
+      {:ok, _} ->
+        IO.puts("#{@green}Image deleted: #{image_id}#{@reset}")
+      {:error, :cancelled} ->
+        System.halt(1)
+      {:error, msg} ->
+        IO.puts(:stderr, "#{@red}Error: #{msg}#{@reset}")
+        System.halt(1)
+    end
   end
 
   defp image_command(["--lock", image_id | _]) do
@@ -524,8 +551,17 @@ defmodule Un do
 
   defp image_command(["--unlock", image_id | _]) do
     api_key = get_api_key()
-    curl_post(api_key, "/images/#{image_id}/unlock", "{}")
-    IO.puts("#{@green}Image unlocked: #{image_id}#{@reset}")
+    case curl_post_with_sudo(api_key, "/images/#{image_id}/unlock", "{}") do
+      {:ok, _, _} ->
+        IO.puts("#{@green}Image unlocked: #{image_id}#{@reset}")
+      {:ok, _} ->
+        IO.puts("#{@green}Image unlocked: #{image_id}#{@reset}")
+      {:error, :cancelled} ->
+        System.halt(1)
+      {:error, msg} ->
+        IO.puts(:stderr, "#{@red}Error: #{msg}#{@reset}")
+        System.halt(1)
+    end
   end
 
   defp image_command(["--publish", source_id | rest]) do
@@ -1139,6 +1175,116 @@ defmodule Un do
       IO.puts(:stderr, "  macOS:   sudo sntp -sS time.apple.com")
       IO.puts(:stderr, "  Windows: w32tm /resync#{@reset}")
       System.halt(1)
+    end
+  end
+
+  # Handle 428 sudo OTP challenge - prompts user for OTP and retries the request
+  defp handle_sudo_challenge(response, method, endpoint, body) do
+    challenge_id = extract_json_value(response, "challenge_id")
+
+    IO.puts(:stderr, "#{@yellow}Confirmation required. Check your email for a one-time code.#{@reset}")
+    IO.write(:stderr, "Enter OTP: ")
+
+    otp = IO.gets("") |> String.trim()
+
+    if otp == "" do
+      IO.puts(:stderr, "#{@red}Error: Operation cancelled#{@reset}")
+      {:error, :cancelled}
+    else
+      # Retry the request with sudo headers
+      {public_key, secret_key} = get_api_keys()
+      body_str = body || ""
+      headers = build_auth_headers(public_key, secret_key, method, endpoint, body_str)
+
+      # Add sudo headers
+      sudo_headers = ["-H", "X-Sudo-OTP: #{otp}"]
+      sudo_headers = if challenge_id do
+        sudo_headers ++ ["-H", "X-Sudo-Challenge: #{challenge_id}"]
+      else
+        sudo_headers
+      end
+
+      args = case method do
+        "DELETE" ->
+          ["-s", "-X", "DELETE", "https://api.unsandbox.com#{endpoint}"] ++ headers ++ sudo_headers
+        "POST" ->
+          tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+          File.write!(tmp_file, body_str)
+          result = ["-s", "-X", "POST", "https://api.unsandbox.com#{endpoint}",
+                   "-H", "Content-Type: application/json"] ++ headers ++ sudo_headers ++ ["-d", "@#{tmp_file}"]
+          result
+        _ ->
+          ["-s", "https://api.unsandbox.com#{endpoint}"] ++ headers ++ sudo_headers
+      end
+
+      {output, exit_code} = System.cmd("curl", args, stderr_to_stdout: true)
+
+      # Clean up temp file for POST requests
+      if method == "POST" do
+        tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+        File.rm(tmp_file)
+      end
+
+      if exit_code == 0 and not String.contains?(output, "\"error\"") do
+        {:ok, output}
+      else
+        {:error, output}
+      end
+    end
+  end
+
+  # Curl with 428 handling for destructive operations
+  defp curl_delete_with_sudo(api_key, endpoint) do
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
+
+    args = ["-s", "-X", "DELETE", "-w", "\n%{http_code}",
+            "https://api.unsandbox.com#{endpoint}"] ++ headers
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    # Split response body and status code
+    lines = String.split(output, "\n")
+    {body_lines, [status_code]} = Enum.split(lines, -1)
+    body = Enum.join(body_lines, "\n")
+    http_code = String.to_integer(String.trim(status_code))
+
+    check_clock_drift(body)
+
+    if http_code == 428 do
+      handle_sudo_challenge(body, "DELETE", endpoint, nil)
+    else
+      {:ok, body, http_code}
+    end
+  end
+
+  defp curl_post_with_sudo(api_key, endpoint, json) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+    File.write!(tmp_file, json)
+
+    {public_key, secret_key} = get_api_keys()
+    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
+
+    args = ["-s", "-X", "POST", "-w", "\n%{http_code}",
+            "https://api.unsandbox.com#{endpoint}",
+            "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
+
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+
+    # Split response body and status code
+    lines = String.split(output, "\n")
+    {body_lines, [status_code]} = Enum.split(lines, -1)
+    body = Enum.join(body_lines, "\n")
+    http_code = String.to_integer(String.trim(status_code))
+
+    check_clock_drift(body)
+
+    if http_code == 428 do
+      handle_sudo_challenge(body, "POST", endpoint, json)
+    else
+      {:ok, body, http_code}
     end
   end
 end

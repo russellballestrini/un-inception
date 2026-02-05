@@ -543,13 +543,61 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-DESTROY.
-           STRING "curl -s -X DELETE "
-               "https://api.unsandbox.com/services/"
-               FUNCTION TRIM(WS-ID) " "
-               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' >/dev/null && "
-               "echo -e '\x1b[32mService destroyed: "
-               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:DELETE:/services/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP=$(curl -s -w '\\n%{http_code}' -X DELETE "
+               "'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG); "
+               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
+               "BODY=$(echo \"$RESP\" | sed '$d'); "
+               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
+               "CHALLENGE_ID=$(echo \"$BODY\" | jq -r '.challenge_id // empty'); "
+               "echo -e '\\x1b[33mConfirmation required. Check your email "
+               "for a one-time code.\\x1b[0m' >&2; "
+               "echo -n 'Enter OTP: ' >&2; read OTP; "
+               "if [ -z \"$OTP\" ]; then "
+               "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
+               "exit 1; fi; "
+               "TS2=$(date +%s); "
+               "SIG2=$(echo -n \"$TS2:DELETE:/services/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP2=$(curl -s -w '\\n%{http_code}' -X DELETE "
+               "'https://api.unsandbox.com/services/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS2 "
+               "-H 'X-Signature: '$SIG2 "
+               "-H 'X-Sudo-OTP: '$OTP "
+               "-H 'X-Sudo-Challenge: '$CHALLENGE_ID); "
+               "HTTP_CODE2=$(echo \"$RESP2\" | tail -n1); "
+               "if [ \"$HTTP_CODE2\" = \"200\" ] || "
+               "[ \"$HTTP_CODE2\" = \"204\" ]; then "
+               "echo -e '\\x1b[32mService destroyed: "
+               FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
+               "else echo \"$RESP2\" | sed '$d' | jq . 2>/dev/null || "
+               "echo \"$RESP2\" | sed '$d'; exit 1; fi; "
+               "elif [ \"$HTTP_CODE\" = \"200\" ] || "
+               "[ \"$HTTP_CODE\" = \"204\" ]; then "
+               "echo -e '\\x1b[32mService destroyed: "
+               FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
+               "else echo \"$BODY\" | jq . 2>/dev/null || "
+               "echo \"$BODY\"; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
@@ -1277,16 +1325,55 @@
                ":\" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X DELETE 'https://api.unsandbox.com/images/"
+               "RESP=$(curl -s -w '\\n%{http_code}' -X DELETE "
+               "'https://api.unsandbox.com/images/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
                "' "
                "-H 'X-Timestamp: '$TS "
-               "-H 'X-Signature: '$SIG >/dev/null && "
-               "echo -e '\x1b[32mImage deleted: "
-               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               "-H 'X-Signature: '$SIG); "
+               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
+               "BODY=$(echo \"$RESP\" | sed '$d'); "
+               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
+               "CHALLENGE_ID=$(echo \"$BODY\" | jq -r '.challenge_id // empty'); "
+               "echo -e '\\x1b[33mConfirmation required. Check your email "
+               "for a one-time code.\\x1b[0m' >&2; "
+               "echo -n 'Enter OTP: ' >&2; read OTP; "
+               "if [ -z \"$OTP\" ]; then "
+               "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
+               "exit 1; fi; "
+               "TS2=$(date +%s); "
+               "SIG2=$(echo -n \"$TS2:DELETE:/images/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP2=$(curl -s -w '\\n%{http_code}' -X DELETE "
+               "'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS2 "
+               "-H 'X-Signature: '$SIG2 "
+               "-H 'X-Sudo-OTP: '$OTP "
+               "-H 'X-Sudo-Challenge: '$CHALLENGE_ID); "
+               "HTTP_CODE2=$(echo \"$RESP2\" | tail -n1); "
+               "if [ \"$HTTP_CODE2\" = \"200\" ] || "
+               "[ \"$HTTP_CODE2\" = \"204\" ]; then "
+               "echo -e '\\x1b[32mImage deleted: "
+               FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
+               "else echo \"$RESP2\" | sed '$d' | jq . 2>/dev/null || "
+               "echo \"$RESP2\" | sed '$d'; exit 1; fi; "
+               "elif [ \"$HTTP_CODE\" = \"200\" ] || "
+               "[ \"$HTTP_CODE\" = \"204\" ]; then "
+               "echo -e '\\x1b[32mImage deleted: "
+               FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
+               "else echo \"$BODY\" | jq . 2>/dev/null || "
+               "echo \"$BODY\"; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
@@ -1325,7 +1412,8 @@
                "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               "RESP=$(curl -s -w '\\n%{http_code}' -X POST "
+               "'https://api.unsandbox.com/images/"
                FUNCTION TRIM(WS-ID)
                "/unlock' "
                "-H 'Content-Type: application/json' "
@@ -1334,9 +1422,49 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" >/dev/null && "
-               "echo -e '\x1b[32mImage unlocked: "
-               FUNCTION TRIM(WS-ID) "\x1b[0m'"
+               "-d \"$BODY\"); "
+               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
+               "RESP_BODY=$(echo \"$RESP\" | sed '$d'); "
+               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
+               "CHALLENGE_ID=$(echo \"$RESP_BODY\" | jq -r '.challenge_id // empty'); "
+               "echo -e '\\x1b[33mConfirmation required. Check your email "
+               "for a one-time code.\\x1b[0m' >&2; "
+               "echo -n 'Enter OTP: ' >&2; read OTP; "
+               "if [ -z \"$OTP\" ]; then "
+               "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
+               "exit 1; fi; "
+               "TS2=$(date +%s); "
+               "SIG2=$(echo -n \"$TS2:POST:/images/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP2=$(curl -s -w '\\n%{http_code}' -X POST "
+               "'https://api.unsandbox.com/images/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS2 "
+               "-H 'X-Signature: '$SIG2 "
+               "-H 'X-Sudo-OTP: '$OTP "
+               "-H 'X-Sudo-Challenge: '$CHALLENGE_ID "
+               "-d \"$BODY\"); "
+               "HTTP_CODE2=$(echo \"$RESP2\" | tail -n1); "
+               "if [ \"$HTTP_CODE2\" = \"200\" ] || "
+               "[ \"$HTTP_CODE2\" = \"204\" ]; then "
+               "echo -e '\\x1b[32mImage unlocked: "
+               FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
+               "else echo \"$RESP2\" | sed '$d' | jq . 2>/dev/null || "
+               "echo \"$RESP2\" | sed '$d'; exit 1; fi; "
+               "elif [ \"$HTTP_CODE\" = \"200\" ] || "
+               "[ \"$HTTP_CODE\" = \"204\" ]; then "
+               "echo -e '\\x1b[32mImage unlocked: "
+               FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
+               "else echo \"$RESP_BODY\" | jq . 2>/dev/null || "
+               "echo \"$RESP_BODY\"; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

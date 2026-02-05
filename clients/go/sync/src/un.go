@@ -80,6 +80,7 @@ Languages Cache:
 package un
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -340,6 +341,136 @@ func makeRequest(method, path string, creds *Credentials, data interface{}) (map
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	return result, nil
+}
+
+// SudoChallengeError represents a 428 response requiring OTP confirmation
+type SudoChallengeError struct {
+	ChallengeID string
+	Message     string
+	StatusCode  int
+	Body        []byte
+}
+
+func (e *SudoChallengeError) Error() string {
+	return fmt.Sprintf("HTTP 428: sudo challenge required (challenge_id: %s)", e.ChallengeID)
+}
+
+// makeRequestWithSudo makes an authenticated HTTP request with optional sudo headers
+func makeRequestWithSudo(method, path string, creds *Credentials, data interface{}, sudoOTP, sudoChallengeID string) (map[string]interface{}, int, []byte, error) {
+	url := APIBase + path
+	timestamp := time.Now().Unix()
+
+	var body []byte
+	var err error
+	if data != nil {
+		body, err = json.Marshal(data)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+	}
+
+	signature := signRequest(creds.SecretKey, timestamp, method, path, body)
+
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", creds.PublicKey))
+	req.Header.Set("X-Timestamp", fmt.Sprintf("%d", timestamp))
+	req.Header.Set("X-Signature", signature)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "un-go/2.0")
+
+	// Add sudo headers if provided
+	if sudoOTP != "" {
+		req.Header.Set("X-Sudo-OTP", sudoOTP)
+	}
+	if sudoChallengeID != "" {
+		req.Header.Set("X-Sudo-Challenge", sudoChallengeID)
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, respBody, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, resp.StatusCode, respBody, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return result, resp.StatusCode, respBody, nil
+}
+
+// handleSudoChallenge handles 428 sudo OTP challenge - prompts user for OTP and retries request
+func handleSudoChallenge(method, path string, creds *Credentials, data interface{}, responseBody []byte) (map[string]interface{}, error) {
+	// Extract challenge_id from response
+	var resp map[string]interface{}
+	if err := json.Unmarshal(responseBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse 428 response: %w", err)
+	}
+
+	challengeID, _ := resp["challenge_id"].(string)
+
+	// Prompt user for OTP
+	fmt.Fprintf(os.Stderr, "\033[33mConfirmation required. Check your email for a one-time code.\033[0m\n")
+	fmt.Fprintf(os.Stderr, "Enter OTP: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	otp, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("failed to read OTP: %w", err)
+	}
+	otp = strings.TrimSpace(otp)
+
+	if otp == "" {
+		return nil, fmt.Errorf("operation cancelled")
+	}
+
+	// Retry the request with sudo headers
+	result, statusCode, retryBody, err := makeRequestWithSudo(method, path, creds, data, otp, challengeID)
+	if err != nil {
+		if statusCode >= 200 && statusCode < 300 {
+			return result, nil
+		}
+		// Extract error message from response if available
+		if retryBody != nil {
+			var errResp map[string]interface{}
+			if json.Unmarshal(retryBody, &errResp) == nil {
+				if errMsg, ok := errResp["error"].(string); ok {
+					return nil, fmt.Errorf("%s", errMsg)
+				}
+			}
+		}
+		return nil, err
+	}
+
+	fmt.Fprintf(os.Stderr, "\033[32mOperation completed successfully\033[0m\n")
+	return result, nil
+}
+
+// makeDestructiveRequest makes a request that may require sudo OTP confirmation (for 428 responses)
+func makeDestructiveRequest(method, path string, creds *Credentials, data interface{}) (map[string]interface{}, error) {
+	result, statusCode, respBody, err := makeRequestWithSudo(method, path, creds, data, "", "")
+	if statusCode == 428 {
+		return handleSudoChallenge(method, path, creds, data, respBody)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -646,8 +777,9 @@ func RestoreSnapshot(creds *Credentials, snapshotID string) (map[string]interfac
 }
 
 // DeleteSnapshot deletes a snapshot (NEW)
+// This operation may require sudo OTP confirmation (428 response handling)
 func DeleteSnapshot(creds *Credentials, snapshotID string) (map[string]interface{}, error) {
-	return makeRequest("DELETE", fmt.Sprintf("/snapshots/%s", snapshotID), creds, nil)
+	return makeDestructiveRequest("DELETE", fmt.Sprintf("/snapshots/%s", snapshotID), creds, nil)
 }
 
 // ============================================================================
@@ -855,8 +987,9 @@ func UpdateService(creds *Credentials, serviceID string, opts *ServiceUpdateOpti
 }
 
 // DeleteService destroys a service.
+// This operation may require sudo OTP confirmation (428 response handling)
 func DeleteService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
-	return makeRequest("DELETE", fmt.Sprintf("/services/%s", serviceID), creds, nil)
+	return makeDestructiveRequest("DELETE", fmt.Sprintf("/services/%s", serviceID), creds, nil)
 }
 
 // FreezeService freezes a service (pauses execution, preserves state).
@@ -875,8 +1008,9 @@ func LockService(creds *Credentials, serviceID string) (map[string]interface{}, 
 }
 
 // UnlockService unlocks a previously locked service.
+// This operation may require sudo OTP confirmation (428 response handling)
 func UnlockService(creds *Credentials, serviceID string) (map[string]interface{}, error) {
-	return makeRequest("POST", fmt.Sprintf("/services/%s/unlock", serviceID), creds, map[string]interface{}{})
+	return makeDestructiveRequest("POST", fmt.Sprintf("/services/%s/unlock", serviceID), creds, map[string]interface{}{})
 }
 
 // SetUnfreezeOnDemand enables or disables automatic unfreezing on HTTP request.
@@ -972,8 +1106,9 @@ func LockSnapshot(creds *Credentials, snapshotID string) (map[string]interface{}
 }
 
 // UnlockSnapshot unlocks a previously locked snapshot.
+// This operation may require sudo OTP confirmation (428 response handling)
 func UnlockSnapshot(creds *Credentials, snapshotID string) (map[string]interface{}, error) {
-	return makeRequest("POST", fmt.Sprintf("/snapshots/%s/unlock", snapshotID), creds, map[string]interface{}{})
+	return makeDestructiveRequest("POST", fmt.Sprintf("/snapshots/%s/unlock", snapshotID), creds, map[string]interface{}{})
 }
 
 // CloneSnapshotOptions contains optional parameters for snapshot cloning.
@@ -1181,8 +1316,9 @@ func GetImage(creds *Credentials, imageID string) (map[string]interface{}, error
 // DeleteImage deletes an LXD container image.
 //
 // Note: Locked images cannot be deleted. Use UnlockImage first if needed.
+// This operation may require sudo OTP confirmation (428 response handling)
 func DeleteImage(creds *Credentials, imageID string) (map[string]interface{}, error) {
-	return makeRequest("DELETE", fmt.Sprintf("/images/%s", imageID), creds, nil)
+	return makeDestructiveRequest("DELETE", fmt.Sprintf("/images/%s", imageID), creds, nil)
 }
 
 // LockImage locks an LXD container image to prevent deletion.
@@ -1191,8 +1327,9 @@ func LockImage(creds *Credentials, imageID string) (map[string]interface{}, erro
 }
 
 // UnlockImage unlocks a previously locked LXD container image.
+// This operation may require sudo OTP confirmation (428 response handling)
 func UnlockImage(creds *Credentials, imageID string) (map[string]interface{}, error) {
-	return makeRequest("POST", fmt.Sprintf("/images/%s/unlock", imageID), creds, map[string]interface{}{})
+	return makeDestructiveRequest("POST", fmt.Sprintf("/images/%s/unlock", imageID), creds, map[string]interface{}{})
 }
 
 // SetImageVisibility sets the visibility of an LXD container image.

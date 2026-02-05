@@ -323,6 +323,96 @@ sub detect_language {
 }
 
 sub api_request {
+    my ($endpoint, $method, $data, $public_key, $secret_key, $extra_headers) = @_;
+    $method //= 'GET';
+    $extra_headers //= {};
+
+    my $url = "$API_BASE$endpoint";
+    my $ua = LWP::UserAgent->new(timeout => 300);
+    my $request = HTTP::Request->new($method => $url);
+    $request->header('Authorization' => "Bearer $public_key");
+    $request->header('Content-Type' => 'application/json');
+
+    my $body = '';
+    if ($data) {
+        $body = encode_json($data);
+        $request->content($body);
+    }
+
+    # Add HMAC signature if secret_key is present
+    if ($secret_key) {
+        my $timestamp = time();
+        my $sig_input = "${timestamp}:${method}:${endpoint}:${body}";
+        my $signature = hmac_sha256_hex($sig_input, $secret_key);
+        $request->header('X-Timestamp' => $timestamp);
+        $request->header('X-Signature' => $signature);
+    }
+
+    # Add extra headers (for sudo OTP)
+    for my $key (keys %$extra_headers) {
+        $request->header($key => $extra_headers->{$key});
+    }
+
+    my $response = $ua->request($request);
+
+    unless ($response->is_success) {
+        if ($response->code == 401 && $response->content =~ /timestamp/i) {
+            print STDERR "${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}\n";
+            print STDERR "${YELLOW}Your computer's clock may have drifted.${RESET}\n";
+            print STDERR "${YELLOW}Check your system time and sync with NTP if needed:${RESET}\n";
+            print STDERR "  Linux:   sudo ntpdate -s time.nist.gov\n";
+            print STDERR "  macOS:   sudo sntp -sS time.apple.com\n";
+            print STDERR "  Windows: w32tm /resync\n";
+        } else {
+            print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
+        }
+        exit 1;
+    }
+
+    return decode_json($response->content);
+}
+
+# Handle 428 Sudo OTP challenge - prompt user for OTP and retry
+sub handle_sudo_challenge {
+    my ($response_content, $endpoint, $method, $data, $public_key, $secret_key) = @_;
+
+    # Extract challenge_id from response
+    my $response_data = eval { decode_json($response_content) } || {};
+    my $challenge_id = $response_data->{challenge_id} || '';
+
+    print STDERR "${YELLOW}Confirmation required. Check your email for a one-time code.${RESET}\n";
+    print STDERR "Enter OTP: ";
+
+    my $otp = <STDIN>;
+    unless (defined $otp) {
+        print STDERR "${RED}Error: Failed to read OTP${RESET}\n";
+        return 0;
+    }
+    chomp $otp;
+    $otp =~ s/\r//g;
+
+    if ($otp eq '') {
+        print STDERR "${RED}Error: Operation cancelled${RESET}\n";
+        return 0;
+    }
+
+    # Retry with sudo headers
+    my $extra_headers = { 'X-Sudo-OTP' => $otp };
+    $extra_headers->{'X-Sudo-Challenge'} = $challenge_id if $challenge_id;
+
+    eval {
+        api_request($endpoint, $method, $data, $public_key, $secret_key, $extra_headers);
+    };
+    if ($@) {
+        return 0;
+    }
+
+    print "${GREEN}Operation completed successfully${RESET}\n";
+    return 1;
+}
+
+# API request that handles 428 sudo challenges for destructive operations
+sub api_request_with_sudo {
     my ($endpoint, $method, $data, $public_key, $secret_key) = @_;
     $method //= 'GET';
 
@@ -349,17 +439,13 @@ sub api_request {
 
     my $response = $ua->request($request);
 
+    # Handle 428 Precondition Required (sudo OTP needed)
+    if ($response->code == 428) {
+        return handle_sudo_challenge($response->content, $endpoint, $method, $data, $public_key, $secret_key);
+    }
+
     unless ($response->is_success) {
-        if ($response->code == 401 && $response->content =~ /timestamp/i) {
-            print STDERR "${RED}Error: Request timestamp expired (must be within 5 minutes of server time)${RESET}\n";
-            print STDERR "${YELLOW}Your computer's clock may have drifted.${RESET}\n";
-            print STDERR "${YELLOW}Check your system time and sync with NTP if needed:${RESET}\n";
-            print STDERR "  Linux:   sudo ntpdate -s time.nist.gov\n";
-            print STDERR "  macOS:   sudo sntp -sS time.apple.com\n";
-            print STDERR "  Windows: w32tm /resync\n";
-        } else {
-            print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
-        }
+        print STDERR "${RED}Error: HTTP ", $response->code, " - ", $response->content, "${RESET}\n";
         exit 1;
     }
 
@@ -716,7 +802,7 @@ sub cmd_service {
     }
 
     if ($options->{destroy}) {
-        api_request("/services/$options->{destroy}", 'DELETE', undef, $public_key, $secret_key);
+        api_request_with_sudo("/services/$options->{destroy}", 'DELETE', undef, $public_key, $secret_key);
         print "${GREEN}Service destroyed: $options->{destroy}${RESET}\n";
         return;
     }
@@ -974,7 +1060,7 @@ sub cmd_image {
     }
 
     if ($options->{delete}) {
-        api_request("/images/$options->{delete}", 'DELETE', undef, $public_key, $secret_key);
+        api_request_with_sudo("/images/$options->{delete}", 'DELETE', undef, $public_key, $secret_key);
         print "${GREEN}Image deleted: $options->{delete}${RESET}\n";
         return;
     }
@@ -986,7 +1072,7 @@ sub cmd_image {
     }
 
     if ($options->{unlock}) {
-        api_request("/images/$options->{unlock}/unlock", 'POST', undef, $public_key, $secret_key);
+        api_request_with_sudo("/images/$options->{unlock}/unlock", 'POST', undef, $public_key, $secret_key);
         print "${GREEN}Image unlocked: $options->{unlock}${RESET}\n";
         return;
     }

@@ -176,6 +176,101 @@
       (check-clock-drift response)
       response)))
 
+(defun run-curl-with-status (args)
+  "Run curl and return (response-body . http-code)"
+  (with-output-to-string (out)
+    (let ((process (uiop:launch-program
+                    (append args (list "-w" "\\n%{http_code}"))
+                    :output :stream :error-output nil)))
+      (loop for line = (read-line (uiop:process-info-output process) nil)
+            while line do (format out "~a~%" line))
+      (uiop:wait-process process))))
+
+(defun parse-response-with-status (response)
+  "Parse response to extract body and HTTP status code"
+  (let* ((lines (remove-if (lambda (s) (zerop (length s)))
+                           (uiop:split-string response :separator '(#\Newline))))
+         (last-line (car (last lines)))
+         (code (ignore-errors (parse-integer last-line))))
+    (if code
+        (cons (format nil "~{~a~^~%~}" (butlast lines)) code)
+        (cons response 0))))
+
+(defun handle-sudo-challenge (response-data public-key secret-key method endpoint body)
+  "Handle 428 sudo OTP challenge - prompts user for OTP and retries"
+  (let ((challenge-id (parse-json-field response-data "challenge_id")))
+    (format *error-output* "~aConfirmation required. Check your email for a one-time code.~a~%" *yellow* *reset*)
+    (format *error-output* "Enter OTP: ")
+    (force-output *error-output*)
+    (let ((otp (string-trim '(#\Space #\Tab #\Newline #\Return) (read-line))))
+      (when (zerop (length otp))
+        (format *error-output* "Error: Operation cancelled~%")
+        (uiop:quit 1))
+      ;; Retry the request with sudo headers
+      (let* ((auth-headers (build-auth-headers public-key secret-key method endpoint (or body "")))
+             (sudo-headers (list "-H" (format nil "X-Sudo-OTP: ~a" otp)
+                                 "-H" (format nil "X-Sudo-Challenge: ~a" (or challenge-id ""))))
+             (method-args (cond
+                           ((string= method "DELETE") (list "-X" "DELETE"))
+                           ((string= method "POST") (list "-X" "POST"))
+                           (t (list "-X" method))))
+             (content-headers (if body (list "-H" "Content-Type: application/json") nil))
+             (body-args (if body (list "-d" body) nil))
+             (all-args (append (list "curl" "-s" "-w" "\\n%{http_code}")
+                              method-args
+                              (list (format nil "https://api.unsandbox.com~a" endpoint))
+                              auth-headers
+                              sudo-headers
+                              content-headers
+                              body-args))
+             (response (run-curl all-args))
+             (parsed (parse-response-with-status response))
+             (resp-body (car parsed))
+             (http-code (cdr parsed)))
+        (if (and (>= http-code 200) (< http-code 300))
+            (list t resp-body)
+            (progn
+              (format *error-output* "~aError: HTTP ~a~a~%" *red* http-code *reset*)
+              (format *error-output* "~a~%" resp-body)
+              (list nil resp-body)))))))
+
+(defun curl-delete-with-sudo (api-key endpoint)
+  "DELETE request that handles 428 sudo OTP challenge"
+  (destructuring-bind (public-key secret-key) (get-api-keys)
+    (let* ((auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
+           (base-args (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "DELETE"
+                                   (format nil "https://api.unsandbox.com~a" endpoint))
+                             auth-headers))
+           (response (run-curl base-args))
+           (parsed (parse-response-with-status response))
+           (body (car parsed))
+           (http-code (cdr parsed)))
+      (check-clock-drift body)
+      (if (= http-code 428)
+          (handle-sudo-challenge body public-key secret-key "DELETE" endpoint nil)
+          (list (and (>= http-code 200) (< http-code 300)) body)))))
+
+(defun curl-post-with-sudo (api-key endpoint json-data)
+  "POST request that handles 428 sudo OTP challenge"
+  (let ((tmp-file (write-temp-file json-data)))
+    (unwind-protect
+         (destructuring-bind (public-key secret-key) (get-api-keys)
+           (let* ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
+                  (base-args (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "POST"
+                                          (format nil "https://api.unsandbox.com~a" endpoint)
+                                          "-H" "Content-Type: application/json")
+                                    auth-headers
+                                    (list "-d" (format nil "@~a" tmp-file))))
+                  (response (run-curl base-args))
+                  (parsed (parse-response-with-status response))
+                  (body (car parsed))
+                  (http-code (cdr parsed)))
+             (check-clock-drift body)
+             (if (= http-code 428)
+                 (handle-sudo-challenge body public-key secret-key "POST" endpoint json-data)
+                 (list (and (>= http-code 200) (< http-code 300)) body))))
+      (delete-file tmp-file))))
+
 (defun curl-post-portal (api-key endpoint json-data)
   (let ((tmp-file (write-temp-file json-data)))
     (unwind-protect
@@ -330,8 +425,12 @@
        (curl-post api-key (format nil "/services/~a/unfreeze" id) "{}")
        (format t "~aService unfreezing: ~a~a~%" *green* id *reset*))
       ((string= action "destroy")
-       (curl-delete api-key (format nil "/services/~a" id))
-       (format t "~aService destroyed: ~a~a~%" *green* id *reset*))
+       (let ((result (curl-delete-with-sudo api-key (format nil "/services/~a" id))))
+         (if (first result)
+             (format t "~aService destroyed: ~a~a~%" *green* id *reset*)
+             (progn
+               (format *error-output* "~aError destroying service~a~%" *red* *reset*)
+               (uiop:quit 1)))))
       ((string= action "resize")
        (if (or (null service-type) (string= service-type ""))
            (progn
@@ -506,14 +605,22 @@
       ((string= action "info")
        (format t "~a~%" (curl-get api-key (format nil "/images/~a" id))))
       ((string= action "delete")
-       (curl-delete api-key (format nil "/images/~a" id))
-       (format t "~aImage deleted: ~a~a~%" *green* id *reset*))
+       (let ((result (curl-delete-with-sudo api-key (format nil "/images/~a" id))))
+         (if (first result)
+             (format t "~aImage deleted: ~a~a~%" *green* id *reset*)
+             (progn
+               (format *error-output* "~aError deleting image~a~%" *red* *reset*)
+               (uiop:quit 1)))))
       ((string= action "lock")
        (curl-post api-key (format nil "/images/~a/lock" id) "{}")
        (format t "~aImage locked: ~a~a~%" *green* id *reset*))
       ((string= action "unlock")
-       (curl-post api-key (format nil "/images/~a/unlock" id) "{}")
-       (format t "~aImage unlocked: ~a~a~%" *green* id *reset*))
+       (let ((result (curl-post-with-sudo api-key (format nil "/images/~a/unlock" id) "{}")))
+         (if (first result)
+             (format t "~aImage unlocked: ~a~a~%" *green* id *reset*)
+             (progn
+               (format *error-output* "~aError unlocking image~a~%" *red* *reset*)
+               (uiop:quit 1)))))
       ((string= action "publish")
        (if (or (null source-type) (string= source-type ""))
            (progn

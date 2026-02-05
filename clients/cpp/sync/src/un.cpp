@@ -161,6 +161,163 @@ string exec_curl(const string& cmd) {
     return result;
 }
 
+// Execute curl and get HTTP status code
+pair<string, int> exec_curl_with_status(const string& cmd) {
+    // Modify cmd to include status code output
+    string full_cmd = cmd + " -w '\\n%{http_code}'";
+    string result = exec_curl(full_cmd);
+
+    // Extract status code from end of response
+    size_t last_newline = result.rfind('\n');
+    if (last_newline != string::npos && last_newline > 0) {
+        // Find the status code after the last newline
+        size_t status_start = last_newline + 1;
+        // Trim any trailing whitespace
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' ')) {
+            result.pop_back();
+        }
+        // Now find the status code at the end
+        size_t end = result.length();
+        size_t start = result.rfind('\n');
+        if (start == string::npos) start = 0;
+        else start++;
+
+        string status_str = result.substr(start);
+        int status = 0;
+        try {
+            status = stoi(status_str);
+        } catch (...) {
+            status = 0;
+        }
+        string body = result.substr(0, start > 0 ? start - 1 : 0);
+        return {body, status};
+    }
+    return {result, 0};
+}
+
+// Extract challenge_id from JSON response
+string extract_challenge_id(const string& response) {
+    size_t pos = response.find("\"challenge_id\":\"");
+    if (pos == string::npos) return "";
+    pos += 16; // Length of "challenge_id":"
+    size_t end = response.find("\"", pos);
+    if (end == string::npos) return "";
+    return response.substr(pos, end - pos);
+}
+
+// Handle 428 sudo OTP challenge - prompts user for OTP and retries request
+bool handle_sudo_challenge(const string& method, const string& path, const string& body,
+                           const string& public_key, const string& secret_key, const string& response) {
+    // Extract challenge_id from response
+    string challenge_id = extract_challenge_id(response);
+
+    cerr << YELLOW << "Confirmation required. Check your email for a one-time code." << RESET << endl;
+    cerr << "Enter OTP: ";
+
+    string otp;
+    if (!getline(cin, otp)) {
+        cerr << RED << "Error: Failed to read OTP" << RESET << endl;
+        return false;
+    }
+
+    // Trim whitespace
+    while (!otp.empty() && (otp.back() == '\n' || otp.back() == '\r' || otp.back() == ' ')) {
+        otp.pop_back();
+    }
+    while (!otp.empty() && (otp.front() == ' ')) {
+        otp.erase(0, 1);
+    }
+
+    if (otp.empty()) {
+        cerr << RED << "Error: Operation cancelled" << RESET << endl;
+        return false;
+    }
+
+    // Retry the request with sudo headers
+    string auth_headers = build_auth_headers(method, path, body, public_key, secret_key);
+    auth_headers += " -H 'X-Sudo-OTP: " + otp + "'";
+    if (!challenge_id.empty()) {
+        auth_headers += " -H 'X-Sudo-Challenge: " + challenge_id + "'";
+    }
+
+    string cmd;
+    if (method == "DELETE") {
+        cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    } else if (method == "POST") {
+        cmd = "curl -s -X POST '" + API_BASE + path + "' "
+              "-H 'Content-Type: application/json' "
+              + auth_headers + " "
+              "-d '" + body + "'";
+    } else {
+        cmd = "curl -s -X " + method + " '" + API_BASE + path + "' " + auth_headers;
+    }
+
+    auto [retry_response, status] = exec_curl_with_status(cmd);
+
+    if (status >= 200 && status < 300) {
+        cout << GREEN << "Operation completed successfully" << RESET << endl;
+        return true;
+    }
+
+    // Extract error message if available
+    size_t error_pos = retry_response.find("\"error\":\"");
+    if (error_pos != string::npos) {
+        error_pos += 9;
+        size_t error_end = retry_response.find("\"", error_pos);
+        if (error_end != string::npos) {
+            cerr << RED << "Error: " << retry_response.substr(error_pos, error_end - error_pos) << RESET << endl;
+        } else {
+            cerr << RED << "Error: " << retry_response << RESET << endl;
+        }
+    } else {
+        cerr << RED << "Error: HTTP " << status << RESET << endl;
+        cerr << retry_response << endl;
+    }
+    return false;
+}
+
+// Execute a destructive operation that may require sudo OTP confirmation
+bool exec_destructive_curl(const string& method, const string& path, const string& body,
+                           const string& public_key, const string& secret_key, const string& success_msg) {
+    string auth_headers = build_auth_headers(method, path, body, public_key, secret_key);
+
+    string cmd;
+    if (method == "DELETE") {
+        cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    } else if (method == "POST" && !body.empty()) {
+        cmd = "curl -s -X POST '" + API_BASE + path + "' "
+              "-H 'Content-Type: application/json' "
+              + auth_headers + " "
+              "-d '" + body + "'";
+    } else if (method == "POST") {
+        cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    } else {
+        cmd = "curl -s -X " + method + " '" + API_BASE + path + "' " + auth_headers;
+    }
+
+    auto [response, status] = exec_curl_with_status(cmd);
+
+    // Handle 428 sudo challenge
+    if (status == 428) {
+        return handle_sudo_challenge(method, path, body, public_key, secret_key, response);
+    }
+
+    if (status >= 200 && status < 300) {
+        if (!success_msg.empty()) {
+            cout << GREEN << success_msg << RESET << endl;
+        }
+        return true;
+    }
+
+    if (status == 404) {
+        cerr << RED << "Error: Not found" << RESET << endl;
+    } else {
+        cerr << RED << "Error: HTTP " << status << RESET << endl;
+        if (!response.empty()) cerr << response << endl;
+    }
+    return false;
+}
+
 string compute_hmac(const string& secret_key, const string& message) {
     string cmd = "echo -n '" + message + "' | openssl dgst -sha256 -hmac '" + secret_key + "' -hex | sed 's/.*= //'";
     string result = exec_curl(cmd);
@@ -594,10 +751,8 @@ void cmd_service(const string& name, const string& ports, const string& type, co
     }
 
     if (!destroy.empty()) {
-        string auth_headers = build_auth_headers("DELETE", "/services/" + destroy, "", public_key, secret_key);
-        string cmd = "curl -s -X DELETE '" + API_BASE + "/services/" + destroy + "' " + auth_headers;
-        exec_curl(cmd);
-        cout << GREEN << "Service destroyed: " << destroy << RESET << endl;
+        string path = "/services/" + destroy;
+        exec_destructive_curl("DELETE", path, "", public_key, secret_key, "Service destroyed: " + destroy);
         return;
     }
 
@@ -855,10 +1010,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
 
     if (!del.empty()) {
         string path = "/images/" + del;
-        string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
-        string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
-        exec_curl(cmd);
-        cout << GREEN << "Image deleted: " << del << RESET << endl;
+        exec_destructive_curl("DELETE", path, "", public_key, secret_key, "Image deleted: " + del);
         return;
     }
 
@@ -876,13 +1028,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
 
     if (!unlock.empty()) {
         string path = "/images/" + unlock + "/unlock";
-        string body = "{}";
-        string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
-        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
-                     "-H 'Content-Type: application/json' "
-                     + auth_headers + " -d '" + body + "'";
-        exec_curl(cmd);
-        cout << GREEN << "Image unlocked: " << unlock << RESET << endl;
+        exec_destructive_curl("POST", path, "{}", public_key, secret_key, "Image unlocked: " + unlock);
         return;
     }
 

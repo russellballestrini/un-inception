@@ -197,12 +197,100 @@
 (defn curl-delete [api-key endpoint]
   (let [[public-key secret-key] (get-api-keys)
         auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint "")
-        args (concat ["curl" "-s" "-X" "DELETE"
+        args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "DELETE"
                       (str "https://api.unsandbox.com" endpoint)]
                      auth-headers)
         result (:out (apply sh args))]
     (check-clock-drift-error result)
     result))
+
+(defn extract-http-code [response]
+  "Extract HTTP code from response with status code appended"
+  (let [lines (str/split response #"\n")
+        last-line (last lines)]
+    (try
+      (Integer/parseInt (str/trim last-line))
+      (catch Exception _ 0))))
+
+(defn extract-body [response]
+  "Extract body from response (everything except last line which is status code)"
+  (let [lines (str/split response #"\n")]
+    (str/join "\n" (butlast lines))))
+
+(defn handle-sudo-challenge
+  "Handle 428 sudo OTP challenge - prompts user for OTP and retries the request"
+  [response-data public-key secret-key method endpoint body]
+  (let [challenge-id (extract-field "challenge_id" response-data)]
+    (binding [*out* *err*]
+      (println (str yellow "Confirmation required. Check your email for a one-time code." reset)))
+    (print "Enter OTP: ")
+    (flush)
+    (let [otp (str/trim (or (read-line) ""))]
+      (when (empty? otp)
+        (binding [*out* *err*]
+          (println "Error: Operation cancelled"))
+        (System/exit 1))
+      ;; Retry the request with sudo headers
+      (let [auth-headers (build-auth-headers public-key secret-key method endpoint (or body ""))
+            sudo-headers ["-H" (str "X-Sudo-OTP: " otp)
+                          "-H" (str "X-Sudo-Challenge: " (or challenge-id ""))]
+            content-type-headers (if body ["-H" "Content-Type: application/json"] [])
+            body-args (if body ["-d" body] [])
+            method-args (cond
+                          (= method "DELETE") ["-X" "DELETE"]
+                          (= method "POST") ["-X" "POST"]
+                          :else ["-X" method])
+            args (concat ["curl" "-s"]
+                         method-args
+                         [(str "https://api.unsandbox.com" endpoint)]
+                         auth-headers
+                         sudo-headers
+                         content-type-headers
+                         body-args)
+            {:keys [out]} (apply sh args)
+            http-code (extract-http-code out)]
+        (if (and (>= http-code 200) (< http-code 300))
+          {:success true :response (extract-body out)}
+          (do
+            (binding [*out* *err*]
+              (println (str red "Error: HTTP " http-code reset))
+              (println (extract-body out)))
+            {:success false}))))))
+
+(defn curl-delete-with-sudo [api-key endpoint]
+  "DELETE request that handles 428 sudo OTP challenge"
+  (let [[public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint "")
+        args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "DELETE"
+                      (str "https://api.unsandbox.com" endpoint)]
+                     auth-headers)
+        result (:out (apply sh args))
+        http-code (extract-http-code result)
+        body (extract-body result)]
+    (check-clock-drift-error body)
+    (if (= http-code 428)
+      (handle-sudo-challenge body public-key secret-key "DELETE" endpoint nil)
+      {:success (and (>= http-code 200) (< http-code 300)) :response body :http-code http-code})))
+
+(defn curl-post-with-sudo [api-key endpoint json-data]
+  "POST request that handles 428 sudo OTP challenge"
+  (let [tmp-file (str "/tmp/un_clj_" (rand-int 999999) ".json")
+        [public-key secret-key] (get-api-keys)
+        auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data)]
+    (spit tmp-file json-data)
+    (let [args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "POST"
+                        (str "https://api.unsandbox.com" endpoint)
+                        "-H" "Content-Type: application/json"]
+                       auth-headers
+                       ["-d" (str "@" tmp-file)])
+          {:keys [out]} (apply sh args)]
+      (io/delete-file tmp-file true)
+      (let [http-code (extract-http-code out)
+            body (extract-body out)]
+        (check-clock-drift-error body)
+        (if (= http-code 428)
+          (handle-sudo-challenge body public-key secret-key "POST" endpoint json-data)
+          {:success (and (>= http-code 200) (< http-code 300)) :response body :http-code http-code})))))
 
 (defn curl-put-text [endpoint body]
   (let [tmp-file (str "/tmp/un_clj_" (rand-int 999999) ".txt")
@@ -416,9 +504,13 @@
       :wake (do
               (curl-post api-key (str "/services/" sid "/unfreeze") "{}")
               (println (str green "Service unfreezing: " sid reset)))
-      :destroy (do
-                 (curl-delete api-key (str "/services/" sid))
-                 (println (str green "Service destroyed: " sid reset)))
+      :destroy (let [result (curl-delete-with-sudo api-key (str "/services/" sid))]
+                 (if (:success result)
+                   (println (str green "Service destroyed: " sid reset))
+                   (do
+                     (binding [*out* *err*]
+                       (println (str red "Error destroying service" reset)))
+                     (System/exit 1))))
       :resize (when sid
                 (if (or (nil? vcpu) (< vcpu 1) (> vcpu 8))
                   (do
@@ -586,9 +678,14 @@
     (println (curl-get api-key (str "/images/" id)))))
 
 (defn image-delete [id]
-  (let [api-key (get-api-key)]
-    (curl-delete api-key (str "/images/" id))
-    (println (str green "Image deleted: " id reset))))
+  (let [api-key (get-api-key)
+        result (curl-delete-with-sudo api-key (str "/images/" id))]
+    (if (:success result)
+      (println (str green "Image deleted: " id reset))
+      (do
+        (binding [*out* *err*]
+          (println (str red "Error deleting image" reset)))
+        (System/exit 1)))))
 
 (defn image-lock [id]
   (let [api-key (get-api-key)]
@@ -596,9 +693,14 @@
     (println (str green "Image locked: " id reset))))
 
 (defn image-unlock [id]
-  (let [api-key (get-api-key)]
-    (curl-post api-key (str "/images/" id "/unlock") "{}")
-    (println (str green "Image unlocked: " id reset))))
+  (let [api-key (get-api-key)
+        result (curl-post-with-sudo api-key (str "/images/" id "/unlock") "{}")]
+    (if (:success result)
+      (println (str green "Image unlocked: " id reset))
+      (do
+        (binding [*out* *err*]
+          (println (str red "Error unlocking image" reset)))
+        (System/exit 1)))))
 
 (defn image-publish [source-id source-type name]
   (let [api-key (get-api-key)

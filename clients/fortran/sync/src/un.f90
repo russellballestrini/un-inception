@@ -1402,15 +1402,33 @@ contains
                 'echo -e "\x1b[32mService unfreezing: ', trim(service_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'destroy' .and. len_trim(service_id) > 0) then
-            write(full_cmd, '(20A)') &
+            write(full_cmd, '(50A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X DELETE https://api.unsandbox.com/services/', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE https://api.unsandbox.com/services/', &
                 trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
-                '-H "X-Signature: $SIG" >/dev/null && ', &
-                'echo -e "\x1b[32mService destroyed: ', trim(service_id), '\x1b[0m"'
+                '-H "X-Signature: $SIG"); ', &
+                'HTTP_CODE=$(echo "$RESP" | tail -n1); ', &
+                'BODY=$(echo "$RESP" | sed ''$d''); ', &
+                'if [ "$HTTP_CODE" = "428" ]; then ', &
+                'CHALLENGE_ID=$(echo "$BODY" | jq -r ".challenge_id // empty"); ', &
+                'echo -e "\x1b[33mConfirmation required. Check your email for a one-time code.\x1b[0m" >&2; ', &
+                'echo -n "Enter OTP: " >&2; read OTP; ', &
+                'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
+                'TS2=$(date +%s); ', &
+                'SIG2=$(echo -n "$TS2:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X DELETE https://api.unsandbox.com/services/', trim(service_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS2" ', &
+                '-H "X-Signature: $SIG2" ', &
+                '-H "X-Sudo-OTP: $OTP" ', &
+                '-H "X-Sudo-Challenge: $CHALLENGE_ID" >/dev/null && ', &
+                'echo -e "\x1b[32mService destroyed: ', trim(service_id), '\x1b[0m"; ', &
+                'elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then ', &
+                'echo -e "\x1b[32mService destroyed: ', trim(service_id), '\x1b[0m"; ', &
+                'else echo -e "\x1b[31mError: HTTP $HTTP_CODE\x1b[0m" >&2; echo "$BODY" >&2; exit 1; fi'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'resize' .and. len_trim(service_id) > 0) then
             if (resize_vcpu < 1 .or. resize_vcpu > 8) then
@@ -1615,13 +1633,29 @@ contains
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'delete' .and. len_trim(image_id) > 0) then
-            write(full_cmd, '(20A)') &
+            write(full_cmd, '(50A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE https://api.unsandbox.com/images/', trim(image_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG"); ', &
+                'HTTP_CODE=$(echo "$RESP" | tail -n1); ', &
+                'BODY=$(echo "$RESP" | sed ''$d''); ', &
+                'if [ "$HTTP_CODE" = "428" ]; then ', &
+                'CHALLENGE_ID=$(echo "$BODY" | jq -r ".challenge_id // empty"); ', &
+                'echo -e "\x1b[33mConfirmation required. Check your email for a one-time code.\x1b[0m" >&2; ', &
+                'echo -n "Enter OTP: " >&2; read OTP; ', &
+                'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
+                'TS2=$(date +%s); ', &
+                'SIG2=$(echo -n "$TS2:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
                 'curl -s -X DELETE https://api.unsandbox.com/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
-                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
-                'echo -e "\x1b[32mImage deleted: ', trim(image_id), '\x1b[0m"'
+                '-H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" ', &
+                '-H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID" >/dev/null && ', &
+                'echo -e "\x1b[32mImage deleted: ', trim(image_id), '\x1b[0m"; ', &
+                'elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then ', &
+                'echo -e "\x1b[32mImage deleted: ', trim(image_id), '\x1b[0m"; ', &
+                'else echo -e "\x1b[31mError: HTTP $HTTP_CODE\x1b[0m" >&2; echo "$BODY" >&2; exit 1; fi'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'lock' .and. len_trim(image_id) > 0) then
             write(full_cmd, '(20A)') &
@@ -1633,13 +1667,31 @@ contains
                 'echo -e "\x1b[32mImage locked: ', trim(image_id), '\x1b[0m"'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'unlock' .and. len_trim(image_id) > 0) then
-            write(full_cmd, '(20A)') &
-                'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/unlock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/unlock ', &
+            write(full_cmd, '(50A)') &
+                'TS=$(date +%s); BODY="{}"; ', &
+                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X POST https://api.unsandbox.com/images/', trim(image_id), '/unlock ', &
+                '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
-                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
-                'echo -e "\x1b[32mImage unlocked: ', trim(image_id), '\x1b[0m"'
+                '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" -d "$BODY"); ', &
+                'HTTP_CODE=$(echo "$RESP" | tail -n1); ', &
+                'RESPBODY=$(echo "$RESP" | sed ''$d''); ', &
+                'if [ "$HTTP_CODE" = "428" ]; then ', &
+                'CHALLENGE_ID=$(echo "$RESPBODY" | jq -r ".challenge_id // empty"); ', &
+                'echo -e "\x1b[33mConfirmation required. Check your email for a one-time code.\x1b[0m" >&2; ', &
+                'echo -n "Enter OTP: " >&2; read OTP; ', &
+                'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
+                'TS2=$(date +%s); ', &
+                'SIG2=$(echo -n "$TS2:POST:/images/', trim(image_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/unlock ', &
+                '-H "Content-Type: application/json" ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" ', &
+                '-H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID" -d "$BODY" >/dev/null && ', &
+                'echo -e "\x1b[32mImage unlocked: ', trim(image_id), '\x1b[0m"; ', &
+                'elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then ', &
+                'echo -e "\x1b[32mImage unlocked: ', trim(image_id), '\x1b[0m"; ', &
+                'else echo -e "\x1b[31mError: HTTP $HTTP_CODE\x1b[0m" >&2; echo "$RESPBODY" >&2; exit 1; fi'
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'publish' .and. len_trim(image_id) > 0) then
             if (len_trim(source_type) == 0) then

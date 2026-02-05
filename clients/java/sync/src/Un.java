@@ -107,6 +107,29 @@ public class Un {
         }
     }
 
+    /**
+     * Exception thrown when a 428 sudo challenge is received.
+     * This indicates a destructive operation requires OTP confirmation.
+     */
+    public static class SudoChallengeException extends RuntimeException {
+        private final String challengeId;
+        private final String responseBody;
+
+        public SudoChallengeException(String challengeId, String responseBody) {
+            super("Sudo challenge required");
+            this.challengeId = challengeId;
+            this.responseBody = responseBody;
+        }
+
+        public String getChallengeId() {
+            return challengeId;
+        }
+
+        public String getResponseBody() {
+            return responseBody;
+        }
+    }
+
     // ========================================================================
     // Credential Resolution
     // ========================================================================
@@ -280,6 +303,21 @@ public class Un {
             }
         }
 
+        if (responseCode == 428) {
+            // Extract challenge_id from response
+            String challengeId = null;
+            try {
+                Map<String, Object> errorJson = parseJson(responseBody);
+                Object cid = errorJson.get("challenge_id");
+                if (cid != null) {
+                    challengeId = cid.toString();
+                }
+            } catch (Exception e) {
+                // Ignore parse errors
+            }
+            throw new SudoChallengeException(challengeId, responseBody);
+        }
+
         if (responseCode < 200 || responseCode >= 300) {
             throw new ApiException(
                 "API request failed with status " + responseCode,
@@ -289,6 +327,144 @@ public class Un {
         }
 
         return parseJson(responseBody);
+    }
+
+    // ========================================================================
+    // Sudo Challenge Handling
+    // ========================================================================
+
+    /**
+     * Make an HTTP request with sudo headers for OTP verification.
+     */
+    private static Map<String, Object> makeRequestWithSudo(
+        String method,
+        String path,
+        String publicKey,
+        String secretKey,
+        Map<String, Object> data,
+        String otp,
+        String challengeId
+    ) throws IOException {
+        String url = API_BASE + path;
+        long timestamp = System.currentTimeMillis() / 1000;
+        String body = (data != null) ? mapToJson(data) : "";
+
+        String signature = signRequest(secretKey, timestamp, method, path, data != null ? body : null);
+
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestMethod(method);
+        conn.setConnectTimeout(DEFAULT_TIMEOUT_MS);
+        conn.setReadTimeout(DEFAULT_TIMEOUT_MS);
+
+        conn.setRequestProperty("Authorization", "Bearer " + publicKey);
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signature);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("X-Sudo-OTP", otp);
+        if (challengeId != null) {
+            conn.setRequestProperty("X-Sudo-Challenge", challengeId);
+        }
+
+        if ("POST".equals(method) && data != null) {
+            conn.setDoOutput(true);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+        } else if ("DELETE".equals(method)) {
+            conn.setRequestMethod("DELETE");
+        }
+
+        int responseCode = conn.getResponseCode();
+        String responseBody;
+
+        InputStream inputStream = (responseCode >= 200 && responseCode < 300)
+            ? conn.getInputStream()
+            : conn.getErrorStream();
+
+        if (inputStream == null) {
+            responseBody = "";
+        } else {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                responseBody = sb.toString();
+            }
+        }
+
+        if (responseCode < 200 || responseCode >= 300) {
+            throw new ApiException(
+                "API request failed with status " + responseCode,
+                responseCode,
+                responseBody
+            );
+        }
+
+        return parseJson(responseBody);
+    }
+
+    /**
+     * Prompt user for OTP and retry a destructive operation.
+     * Called when a 428 Sudo Challenge is received.
+     *
+     * @param challengeId The challenge ID from the 428 response
+     * @param method HTTP method (DELETE or POST)
+     * @param path API endpoint path
+     * @param publicKey API public key
+     * @param secretKey API secret key
+     * @param data Request body data (can be null)
+     * @return Response map on success
+     * @throws IOException on network errors
+     */
+    private static Map<String, Object> handleSudoChallenge(
+        String challengeId,
+        String method,
+        String path,
+        String publicKey,
+        String secretKey,
+        Map<String, Object> data
+    ) throws IOException {
+        System.err.println("\033[33mConfirmation required. Check your email for a one-time code.\033[0m");
+        System.err.print("Enter OTP: ");
+        System.err.flush();
+
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        String otp = reader.readLine();
+
+        if (otp == null || otp.trim().isEmpty()) {
+            throw new RuntimeException("Operation cancelled - no OTP provided");
+        }
+
+        otp = otp.trim();
+        return makeRequestWithSudo(method, path, publicKey, secretKey, data, otp, challengeId);
+    }
+
+    /**
+     * Execute a destructive operation with 428 sudo challenge handling.
+     * If the API returns 428, prompts for OTP and retries.
+     *
+     * @param method HTTP method
+     * @param path API endpoint path
+     * @param publicKey API public key
+     * @param secretKey API secret key
+     * @param data Request body data (can be null)
+     * @return Response map on success
+     * @throws IOException on network errors
+     */
+    private static Map<String, Object> makeDestructiveRequest(
+        String method,
+        String path,
+        String publicKey,
+        String secretKey,
+        Map<String, Object> data
+    ) throws IOException {
+        try {
+            return makeRequest(method, path, publicKey, secretKey, data);
+        } catch (SudoChallengeException e) {
+            return handleSudoChallenge(e.getChallengeId(), method, path, publicKey, secretKey, data);
+        }
     }
 
     // ========================================================================
@@ -1048,7 +1224,7 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("DELETE", "/snapshots/" + snapshotId, creds[0], creds[1], null);
+        return makeDestructiveRequest("DELETE", "/snapshots/" + snapshotId, creds[0], creds[1], null);
     }
 
     // ========================================================================
@@ -1456,7 +1632,7 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("DELETE", "/services/" + serviceId, creds[0], creds[1], null);
+        return makeDestructiveRequest("DELETE", "/services/" + serviceId, creds[0], creds[1], null);
     }
 
     /**
@@ -1536,7 +1712,7 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("POST", "/services/" + serviceId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+        return makeDestructiveRequest("POST", "/services/" + serviceId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
     }
 
     /**
@@ -1795,7 +1971,7 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("POST", "/snapshots/" + snapshotId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+        return makeDestructiveRequest("POST", "/snapshots/" + snapshotId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
     }
 
     /**
@@ -1934,7 +2110,7 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("DELETE", "/images/" + imageId, creds[0], creds[1], null);
+        return makeDestructiveRequest("DELETE", "/images/" + imageId, creds[0], creds[1], null);
     }
 
     /**
@@ -1974,7 +2150,7 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("POST", "/images/" + imageId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
+        return makeDestructiveRequest("POST", "/images/" + imageId + "/unlock", creds[0], creds[1], new LinkedHashMap<>());
     }
 
     /**

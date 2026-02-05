@@ -149,6 +149,147 @@ def get_api_keys(args_key : String?) : {String, String?}
   {public_key, secret_key}
 end
 
+def extract_challenge_id(response_body : String) : String?
+  begin
+    parsed = JSON.parse(response_body)
+    parsed["challenge_id"]?.try(&.as_s?)
+  rescue
+    nil
+  end
+end
+
+def handle_sudo_challenge(response_body : String, public_key : String, secret_key : String?, method : String, endpoint : String, body : String?) : JSON::Any
+  challenge_id = extract_challenge_id(response_body)
+
+  STDERR.puts "#{YELLOW}Confirmation required. Check your email for a one-time code.#{RESET}"
+  STDERR.print "Enter OTP: "
+
+  otp = STDIN.gets
+  if otp.nil? || otp.strip.empty?
+    STDERR.puts "#{RED}Error: Operation cancelled#{RESET}"
+    exit 1
+  end
+  otp = otp.strip
+
+  url = URI.parse(API_BASE + endpoint)
+  headers = HTTP::Headers{
+    "Content-Type" => "application/json"
+  }
+
+  request_body = body || ""
+
+  # Add HMAC authentication headers
+  if secret_key && !secret_key.empty?
+    timestamp = Time.utc.to_unix.to_s
+    message = "#{timestamp}:#{method}:#{endpoint}:#{request_body}"
+    signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
+
+    headers["Authorization"] = "Bearer #{public_key}"
+    headers["X-Timestamp"] = timestamp
+    headers["X-Signature"] = signature
+  else
+    headers["Authorization"] = "Bearer #{public_key}"
+  end
+
+  # Add sudo headers
+  headers["X-Sudo-OTP"] = otp
+  if challenge_id
+    headers["X-Sudo-Challenge"] = challenge_id
+  end
+
+  begin
+    response = case method
+    when "GET"
+      HTTP::Client.get(url, headers: headers)
+    when "POST"
+      HTTP::Client.post(url, headers: headers, body: request_body)
+    when "PATCH"
+      HTTP::Client.patch(url, headers: headers, body: request_body)
+    when "DELETE"
+      HTTP::Client.delete(url, headers: headers)
+    else
+      STDERR.puts "#{RED}Error: Unsupported method: #{method}#{RESET}"
+      exit 1
+    end
+
+    if response.status_code >= 200 && response.status_code < 300
+      STDERR.puts "#{GREEN}Operation completed successfully#{RESET}"
+      JSON.parse(response.body)
+    else
+      STDERR.puts "#{RED}Error: HTTP #{response.status_code}#{RESET}"
+      begin
+        error_json = JSON.parse(response.body)
+        if error_msg = error_json["error"]?.try(&.as_s?)
+          STDERR.puts error_msg
+        else
+          STDERR.puts response.body
+        end
+      rescue
+        STDERR.puts response.body
+      end
+      exit 1
+    end
+  rescue ex
+    STDERR.puts "#{RED}Error: #{ex.message}#{RESET}"
+    exit 1
+  end
+end
+
+def api_request_with_sudo(endpoint : String, public_key : String, secret_key : String?, method = "GET", data : JSON::Any? = nil) : {Int32, JSON::Any}
+  url = URI.parse(API_BASE + endpoint)
+  headers = HTTP::Headers{
+    "Content-Type" => "application/json"
+  }
+
+  body = data ? data.to_json : ""
+
+  # Add HMAC authentication headers if secret_key is provided
+  if secret_key && !secret_key.empty?
+    timestamp = Time.utc.to_unix.to_s
+    message = "#{timestamp}:#{method}:#{endpoint}:#{body}"
+
+    signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
+
+    headers["Authorization"] = "Bearer #{public_key}"
+    headers["X-Timestamp"] = timestamp
+    headers["X-Signature"] = signature
+  else
+    # Legacy API key authentication
+    headers["Authorization"] = "Bearer #{public_key}"
+  end
+
+  begin
+    response = case method
+    when "GET"
+      HTTP::Client.get(url, headers: headers)
+    when "POST"
+      HTTP::Client.post(url, headers: headers, body: body)
+    when "PATCH"
+      HTTP::Client.patch(url, headers: headers, body: body)
+    when "DELETE"
+      HTTP::Client.delete(url, headers: headers)
+    else
+      STDERR.puts "#{RED}Error: Unsupported method: #{method}#{RESET}"
+      exit 1
+    end
+
+    {response.status_code, JSON.parse(response.body)}
+  rescue ex
+    error_msg = ex.message || ""
+    if error_msg.downcase.includes?("timestamp")
+      STDERR.puts "#{RED}Error: Request timestamp expired (must be within 5 minutes of server time)#{RESET}"
+      STDERR.puts "#{YELLOW}Your computer's clock may have drifted.#{RESET}"
+      STDERR.puts "Check your system time and sync with NTP if needed:"
+      STDERR.puts "  Linux:   sudo ntpdate -s time.nist.gov"
+      STDERR.puts "  macOS:   sudo sntp -sS time.apple.com"
+      STDERR.puts "  Windows: w32tm /resync"
+    else
+      STDERR.puts "#{RED}Error: Request failed: #{ex.message}#{RESET}"
+    end
+    exit 1
+  end
+end
+
 def api_request(endpoint : String, public_key : String, secret_key : String?, method = "GET", data : JSON::Any? = nil)
   url = URI.parse(API_BASE + endpoint)
   headers = HTTP::Headers{
@@ -613,8 +754,16 @@ def cmd_image(args)
   end
 
   if del_id = args[:image_delete]?.as?(String)
-    api_request("/images/#{del_id}", public_key, secret_key, method: "DELETE")
-    puts "#{GREEN}Image deleted: #{del_id}#{RESET}"
+    status_code, response = api_request_with_sudo("/images/#{del_id}", public_key, secret_key, method: "DELETE")
+    if status_code == 428
+      handle_sudo_challenge(response.to_json, public_key, secret_key, "DELETE", "/images/#{del_id}", nil)
+    elsif status_code >= 200 && status_code < 300
+      puts "#{GREEN}Image deleted: #{del_id}#{RESET}"
+    else
+      STDERR.puts "#{RED}Error: HTTP #{status_code}#{RESET}"
+      STDERR.puts response.to_json
+      exit 1
+    end
     return
   end
 
@@ -627,8 +776,17 @@ def cmd_image(args)
 
   if unlock_id = args[:image_unlock]?.as?(String)
     payload = JSON.parse({}.to_json)
-    api_request("/images/#{unlock_id}/unlock", public_key, secret_key, method: "POST", data: payload)
-    puts "#{GREEN}Image unlocked: #{unlock_id}#{RESET}"
+    body = "{}"
+    status_code, response = api_request_with_sudo("/images/#{unlock_id}/unlock", public_key, secret_key, method: "POST", data: payload)
+    if status_code == 428
+      handle_sudo_challenge(response.to_json, public_key, secret_key, "POST", "/images/#{unlock_id}/unlock", body)
+    elsif status_code >= 200 && status_code < 300
+      puts "#{GREEN}Image unlocked: #{unlock_id}#{RESET}"
+    else
+      STDERR.puts "#{RED}Error: HTTP #{status_code}#{RESET}"
+      STDERR.puts response.to_json
+      exit 1
+    end
     return
   end
 
@@ -756,8 +914,16 @@ def cmd_service(args)
   end
 
   if destroy_id = args[:destroy]?.as?(String)
-    api_request("/services/#{destroy_id}", public_key, secret_key, method: "DELETE")
-    puts "#{GREEN}Service destroyed: #{destroy_id}#{RESET}"
+    status_code, response = api_request_with_sudo("/services/#{destroy_id}", public_key, secret_key, method: "DELETE")
+    if status_code == 428
+      handle_sudo_challenge(response.to_json, public_key, secret_key, "DELETE", "/services/#{destroy_id}", nil)
+    elsif status_code >= 200 && status_code < 300
+      puts "#{GREEN}Service destroyed: #{destroy_id}#{RESET}"
+    else
+      STDERR.puts "#{RED}Error: HTTP #{status_code}#{RESET}"
+      STDERR.puts response.to_json
+      exit 1
+    end
     return
   end
 
