@@ -922,6 +922,597 @@ def languages(Map options = [:]) {
     return result
 }
 
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Get SDK version string.
+ */
+def version() {
+    return "4.2.0"
+}
+
+/**
+ * Check API health status.
+ */
+def healthCheck() {
+    try {
+        def url = new URL("${API_BASE}/health")
+        def connection = url.openConnection() as java.net.HttpURLConnection
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+        return connection.responseCode == 200
+    } catch (Exception e) {
+        return false
+    }
+}
+
+/**
+ * Generate HMAC-SHA256 signature.
+ */
+def hmacSign(String secretKey, String message) {
+    def mac = Mac.getInstance("HmacSHA256")
+    mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
+    return mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
+}
+
+// ============================================================================
+// Session Functions
+// ============================================================================
+
+/**
+ * List all sessions.
+ */
+def sessionList(Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def result = apiRequest('/sessions', 'GET', null, publicKey, secretKey)
+    return result.sessions ?: []
+}
+
+/**
+ * Get session details.
+ */
+def sessionGet(String sessionId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Create a new session.
+ */
+def sessionCreate(Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [
+        network_mode: options.networkMode ?: 'zerotrust',
+        shell: options.shell ?: 'bash'
+    ]
+    if (options.vcpu) payload.vcpu = options.vcpu
+    return apiRequest('/sessions', 'POST', payload, publicKey, secretKey)
+}
+
+/**
+ * Destroy a session.
+ */
+def sessionDestroy(String sessionId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}", 'DELETE', null, publicKey, secretKey)
+}
+
+/**
+ * Freeze a session.
+ */
+def sessionFreeze(String sessionId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}/freeze", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Unfreeze a session.
+ */
+def sessionUnfreeze(String sessionId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}/unfreeze", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Boost a session.
+ */
+def sessionBoost(String sessionId, int vcpu = 2, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}/boost", 'POST', [vcpu: vcpu], publicKey, secretKey)
+}
+
+/**
+ * Unboost a session.
+ */
+def sessionUnboost(String sessionId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}/unboost", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Execute command in a session.
+ */
+def sessionExecute(String sessionId, String command, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/sessions/${sessionId}/shell", 'POST', [command: command], publicKey, secretKey)
+}
+
+// ============================================================================
+// Service Functions
+// ============================================================================
+
+/**
+ * List all services.
+ */
+def serviceList(Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def result = apiRequest('/services', 'GET', null, publicKey, secretKey)
+    return result.services ?: []
+}
+
+/**
+ * Get service details.
+ */
+def serviceGet(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Create a new service.
+ */
+def serviceCreate(String name, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [name: name]
+    if (options.ports) payload.ports = options.ports.split(',').collect { it.trim().toInteger() }
+    if (options.domains) payload.domains = options.domains
+    if (options.bootstrap) payload.bootstrap = options.bootstrap
+    if (options.networkMode) payload.network_mode = options.networkMode
+    def result = apiRequest('/services', 'POST', payload, publicKey, secretKey)
+    return result.id
+}
+
+/**
+ * Destroy a service.
+ */
+def serviceDestroy(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return executeDestructive("/services/${serviceId}", 'DELETE', null, publicKey, secretKey)
+}
+
+/**
+ * Freeze a service.
+ */
+def serviceFreeze(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}/freeze", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Unfreeze a service.
+ */
+def serviceUnfreeze(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}/unfreeze", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Lock a service.
+ */
+def serviceLock(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}/lock", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Unlock a service.
+ */
+def serviceUnlock(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return executeDestructive("/services/${serviceId}/unlock", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Set unfreeze on demand for a service.
+ */
+def serviceSetUnfreezeOnDemand(String serviceId, boolean enabled, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequestPatch("/services/${serviceId}", [unfreeze_on_demand: enabled], publicKey, secretKey)
+}
+
+/**
+ * Redeploy a service.
+ */
+def serviceRedeploy(String serviceId, String bootstrap = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = bootstrap ? [bootstrap: bootstrap] : [:]
+    return apiRequest("/services/${serviceId}/redeploy", 'POST', payload, publicKey, secretKey)
+}
+
+/**
+ * Get service logs.
+ */
+def serviceLogs(String serviceId, boolean allLogs = false, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def path = allLogs ? "/services/${serviceId}/logs?all=true" : "/services/${serviceId}/logs"
+    def result = apiRequest(path, 'GET', null, publicKey, secretKey)
+    return result.logs
+}
+
+/**
+ * Execute command in a service.
+ */
+def serviceExecute(String serviceId, String command, int timeoutMs = 0, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [command: command]
+    if (timeoutMs > 0) payload.timeout = timeoutMs
+    return apiRequest("/services/${serviceId}/execute", 'POST', payload, publicKey, secretKey)
+}
+
+/**
+ * Get service environment vault status.
+ */
+def serviceEnvGet(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}/env", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Set service environment vault.
+ */
+def serviceEnvSet(String serviceId, String envContent, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequestText("/services/${serviceId}/env", 'PUT', envContent, publicKey, secretKey)
+}
+
+/**
+ * Delete service environment vault.
+ */
+def serviceEnvDelete(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}/env", 'DELETE', null, publicKey, secretKey)
+}
+
+/**
+ * Export service environment vault.
+ */
+def serviceEnvExport(String serviceId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/services/${serviceId}/env/export", 'POST', [:], publicKey, secretKey)
+}
+
+/**
+ * Resize a service.
+ */
+def serviceResize(String serviceId, int vcpu, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequestPatch("/services/${serviceId}", [vcpu: vcpu], publicKey, secretKey)
+}
+
+// ============================================================================
+// Snapshot Functions
+// ============================================================================
+
+/**
+ * List all snapshots.
+ */
+def snapshotList(Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def result = apiRequest('/snapshots', 'GET', null, publicKey, secretKey)
+    return result.snapshots ?: []
+}
+
+/**
+ * Get snapshot details.
+ */
+def snapshotGet(String snapshotId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/snapshots/${snapshotId}", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Create snapshot from session.
+ */
+def snapshotSession(String sessionId, String name = null, boolean hot = false, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [session_id: sessionId, hot: hot]
+    if (name) payload.name = name
+    def result = apiRequest('/snapshots', 'POST', payload, publicKey, secretKey)
+    return result.snapshot_id
+}
+
+/**
+ * Create snapshot from service.
+ */
+def snapshotService(String serviceId, String name = null, boolean hot = false, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [service_id: serviceId, hot: hot]
+    if (name) payload.name = name
+    def result = apiRequest('/snapshots', 'POST', payload, publicKey, secretKey)
+    return result.snapshot_id
+}
+
+/**
+ * Restore a snapshot.
+ */
+def snapshotRestore(String snapshotId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/snapshots/${snapshotId}/restore", 'POST', [:], publicKey, secretKey)
+}
+
+/**
+ * Delete a snapshot.
+ */
+def snapshotDelete(String snapshotId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return executeDestructive("/snapshots/${snapshotId}", 'DELETE', null, publicKey, secretKey)
+}
+
+/**
+ * Lock a snapshot.
+ */
+def snapshotLock(String snapshotId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/snapshots/${snapshotId}/lock", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Unlock a snapshot.
+ */
+def snapshotUnlock(String snapshotId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return executeDestructive("/snapshots/${snapshotId}/unlock", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Clone a snapshot.
+ */
+def snapshotClone(String snapshotId, String cloneType, String name = null, String ports = null, String shell = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [type: cloneType]
+    if (name) payload.name = name
+    if (ports) payload.ports = ports.split(',').collect { it.trim().toInteger() }
+    if (shell) payload.shell = shell
+    def result = apiRequest("/snapshots/${snapshotId}/clone", 'POST', payload, publicKey, secretKey)
+    return result.session_id ?: result.service_id
+}
+
+// ============================================================================
+// Image Functions
+// ============================================================================
+
+/**
+ * List all images.
+ */
+def imageList(String filter = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def path = filter ? "/images/${filter}" : '/images'
+    def result = apiRequest(path, 'GET', null, publicKey, secretKey)
+    return result.images ?: []
+}
+
+/**
+ * Get image details.
+ */
+def imageGet(String imageId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/images/${imageId}", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Publish an image.
+ */
+def imagePublish(String sourceType, String sourceId, String name = null, String description = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [source_type: sourceType, source_id: sourceId]
+    if (name) payload.name = name
+    if (description) payload.description = description
+    def result = apiRequest('/images', 'POST', payload, publicKey, secretKey)
+    return result.image_id
+}
+
+/**
+ * Delete an image.
+ */
+def imageDelete(String imageId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return executeDestructive("/images/${imageId}", 'DELETE', null, publicKey, secretKey)
+}
+
+/**
+ * Lock an image.
+ */
+def imageLock(String imageId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/images/${imageId}/lock", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Unlock an image.
+ */
+def imageUnlock(String imageId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return executeDestructive("/images/${imageId}/unlock", 'POST', null, publicKey, secretKey)
+}
+
+/**
+ * Set image visibility.
+ */
+def imageSetVisibility(String imageId, String visibility, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/images/${imageId}/visibility", 'POST', [visibility: visibility], publicKey, secretKey)
+}
+
+/**
+ * Grant access to an image.
+ */
+def imageGrantAccess(String imageId, String trustedApiKey, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/images/${imageId}/grant", 'POST', [trusted_api_key: trustedApiKey], publicKey, secretKey)
+}
+
+/**
+ * Revoke access to an image.
+ */
+def imageRevokeAccess(String imageId, String trustedApiKey, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/images/${imageId}/revoke", 'POST', [trusted_api_key: trustedApiKey], publicKey, secretKey)
+}
+
+/**
+ * List trusted keys for an image.
+ */
+def imageListTrusted(String imageId, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def result = apiRequest("/images/${imageId}/trusted", 'GET', null, publicKey, secretKey)
+    return result.trusted ?: []
+}
+
+/**
+ * Transfer image ownership.
+ */
+def imageTransfer(String imageId, String toApiKey, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    return apiRequest("/images/${imageId}/transfer", 'POST', [to_api_key: toApiKey], publicKey, secretKey)
+}
+
+/**
+ * Spawn a service from an image.
+ */
+def imageSpawn(String imageId, String name = null, String ports = null, String bootstrap = null, String networkMode = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [:]
+    if (name) payload.name = name
+    if (ports) payload.ports = ports.split(',').collect { it.trim().toInteger() }
+    if (bootstrap) payload.bootstrap = bootstrap
+    if (networkMode) payload.network_mode = networkMode
+    def result = apiRequest("/images/${imageId}/spawn", 'POST', payload, publicKey, secretKey)
+    return result.service_id
+}
+
+/**
+ * Clone an image.
+ */
+def imageClone(String imageId, String name = null, String description = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def payload = [:]
+    if (name) payload.name = name
+    if (description) payload.description = description
+    def result = apiRequest("/images/${imageId}/clone", 'POST', payload, publicKey, secretKey)
+    return result.image_id
+}
+
+// ============================================================================
+// PaaS Logs Functions
+// ============================================================================
+
+/**
+ * Fetch batch logs.
+ */
+def logsFetch(String source = 'all', int lines = 100, String since = null, String grep = null, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def params = ["source=${source}", "lines=${lines}"]
+    if (since) params << "since=${since}"
+    if (grep) params << "grep=${URLEncoder.encode(grep, 'UTF-8')}"
+    return apiRequest("/paas/logs?${params.join('&')}", 'GET', null, publicKey, secretKey)
+}
+
+/**
+ * Callback interface for log streaming.
+ */
+interface LogCallback {
+    void onLogLine(String source, String line)
+}
+
+/**
+ * Stream logs via SSE. Blocks until interrupted or server closes.
+ *
+ * @param source Log source ('all', 'api', 'portal', 'pool/cammy', 'pool/ai')
+ * @param grep Optional filter pattern
+ * @param callback Callback for each log line
+ * @param options Optional parameters (publicKey, secretKey)
+ * @return true on clean shutdown, false on error
+ */
+def logsStream(String source = 'all', String grep = null, LogCallback callback, Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+
+    def path = "/paas/logs/stream?source=${source ?: 'all'}"
+    if (grep) {
+        path += "&grep=${URLEncoder.encode(grep, 'UTF-8')}"
+    }
+
+    def timestamp = (System.currentTimeMillis() / 1000) as long
+    def signature = signRequest(secretKey, timestamp, 'GET', path, '')
+
+    def url = new URL("${API_BASE}${path}")
+    def connection = url.openConnection() as java.net.HttpURLConnection
+
+    connection.requestMethod = 'GET'
+    connection.setRequestProperty('Authorization', "Bearer ${publicKey}")
+    connection.setRequestProperty('X-Timestamp', timestamp.toString())
+    connection.setRequestProperty('X-Signature', signature)
+    connection.setRequestProperty('Accept', 'text/event-stream')
+    connection.connectTimeout = 30000
+    connection.readTimeout = 0  // No timeout for streaming
+
+    if (connection.responseCode != 200) {
+        return false
+    }
+
+    try {
+        def reader = new BufferedReader(new InputStreamReader(connection.inputStream, 'UTF-8'))
+        def currentSource = source ?: 'all'
+        def line
+
+        while ((line = reader.readLine()) != null) {
+            if (line.startsWith('data: ')) {
+                def data = line.substring(6)
+                if (callback) {
+                    callback.onLogLine(currentSource, data)
+                }
+            } else if (line.startsWith('event: ')) {
+                currentSource = line.substring(7)
+            }
+        }
+        return true
+    } catch (Exception e) {
+        return false
+    }
+}
+
+/**
+ * Validate API keys.
+ */
+def validateKeys(Map options = [:]) {
+    def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+
+    def timestamp = (System.currentTimeMillis() / 1000) as long
+    def message = "${timestamp}:POST:/keys/validate:{}"
+    def signature = signRequest(secretKey, timestamp, 'POST', '/keys/validate', '{}')
+
+    def url = new URL("${PORTAL_BASE}/keys/validate")
+    def connection = url.openConnection() as java.net.HttpURLConnection
+
+    connection.requestMethod = 'POST'
+    connection.setRequestProperty('Authorization', "Bearer ${publicKey}")
+    connection.setRequestProperty('X-Timestamp', timestamp.toString())
+    connection.setRequestProperty('X-Signature', signature)
+    connection.setRequestProperty('Content-Type', 'application/json')
+    connection.connectTimeout = 30000
+    connection.readTimeout = 30000
+    connection.doOutput = true
+    connection.outputStream.withWriter { it.write('{}') }
+
+    if (connection.responseCode !in 200..299) {
+        throw new APIError("HTTP ${connection.responseCode}")
+    }
+
+    return new JsonSlurper().parseText(connection.inputStream.text)
+}
+
 /**
  * Detect programming language from file extension or shebang.
  *

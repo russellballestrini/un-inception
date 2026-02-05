@@ -21,6 +21,7 @@ void main() async {
   if (apiKey != null && apiKey.isNotEmpty) {
     await testApiCall();
     await testFibExecution();
+    await testSnapshotCommand();
   } else {
     print('SKIP: API integration tests (UNSANDBOX_API_KEY not set)\n');
   }
@@ -217,6 +218,31 @@ Future<void> testFibExecution() async {
   } catch (e) {
     testsFailed++;
     print('FAIL: fib.java execution test threw exception: $e');
+  }
+  print('');
+}
+
+Future<void> testSnapshotCommand() async {
+  print('--- Feature Parity Test: Snapshot Command ---');
+  testsRun++;
+
+  try {
+    // Execute Dart CLI with snapshot --list
+    final result = await Process.run('dart', ['../un.dart', 'snapshot', '--list']);
+
+    if (result.exitCode == 0) {
+      testsPassed++;
+      print('PASS: snapshot --list command works');
+    } else {
+      testsFailed++;
+      print('FAIL: snapshot --list command failed');
+      print('Exit code: ${result.exitCode}');
+      print('Output: ${result.stdout}');
+      print('Error: ${result.stderr}');
+    }
+  } catch (e) {
+    testsFailed++;
+    print('FAIL: snapshot command test threw exception: $e');
   }
   print('');
 }

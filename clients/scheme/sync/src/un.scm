@@ -764,6 +764,190 @@
         (display "Error: --name required to create service, or use env subcommand\n" (current-error-port))
         (exit 1)))))
 
+;; Image access management functions
+(define (image-grant-access id trusted-key)
+  (let* ((api-key (get-api-key))
+         (json (format #f "{\"trusted_api_key\":\"~a\"}" trusted-key)))
+    (curl-post api-key (format #f "/images/~a/grant-access" id) json)
+    (format #t "~aAccess granted to: ~a~a\n" green trusted-key reset)))
+
+(define (image-revoke-access id trusted-key)
+  (let* ((api-key (get-api-key))
+         (json (format #f "{\"trusted_api_key\":\"~a\"}" trusted-key)))
+    (curl-post api-key (format #f "/images/~a/revoke-access" id) json)
+    (format #t "~aAccess revoked from: ~a~a\n" green trusted-key reset)))
+
+(define (image-list-trusted id)
+  (let ((api-key (get-api-key)))
+    (display (curl-get api-key (format #f "/images/~a/trusted" id)))
+    (newline)))
+
+(define (image-transfer id to-key)
+  (let* ((api-key (get-api-key))
+         (json (format #f "{\"to_api_key\":\"~a\"}" to-key)))
+    (curl-post api-key (format #f "/images/~a/transfer" id) json)
+    (format #t "~aImage transferred to: ~a~a\n" green to-key reset)))
+
+;; Snapshot functions
+(define (snapshot-list)
+  (let ((api-key (get-api-key)))
+    (display (curl-get api-key "/snapshots"))
+    (newline)))
+
+(define (snapshot-info id)
+  (let ((api-key (get-api-key)))
+    (display (curl-get api-key (format #f "/snapshots/~a" id)))
+    (newline)))
+
+(define (snapshot-session session-id name hot)
+  (let* ((api-key (get-api-key))
+         (name-json (if name (format #f ",\"name\":\"~a\"" (escape-json name)) ""))
+         (hot-json (if hot ",\"hot\":true" ""))
+         (json (format #f "{\"session_id\":\"~a\"~a~a}" session-id name-json hot-json)))
+    (format #t "~aSnapshot created~a\n" green reset)
+    (display (curl-post api-key "/snapshots" json))
+    (newline)))
+
+(define (snapshot-service-create service-id name hot)
+  (let* ((api-key (get-api-key))
+         (name-json (if name (format #f ",\"name\":\"~a\"" (escape-json name)) ""))
+         (hot-json (if hot ",\"hot\":true" ""))
+         (json (format #f "{\"service_id\":\"~a\"~a~a}" service-id name-json hot-json)))
+    (format #t "~aSnapshot created~a\n" green reset)
+    (display (curl-post api-key "/snapshots" json))
+    (newline)))
+
+(define (snapshot-restore id)
+  (let ((api-key (get-api-key)))
+    (curl-post api-key (format #f "/snapshots/~a/restore" id) "{}")
+    (format #t "~aSnapshot restored: ~a~a\n" green id reset)))
+
+(define (snapshot-delete id)
+  (let* ((api-key (get-api-key))
+         (result (curl-delete-with-sudo api-key (format #f "/snapshots/~a" id))))
+    (if (car result)
+        (format #t "~aSnapshot deleted: ~a~a\n" green id reset)
+        (begin
+          (format (current-error-port) "~aError deleting snapshot~a\n" red reset)
+          (exit 1)))))
+
+(define (snapshot-lock id)
+  (let ((api-key (get-api-key)))
+    (curl-post api-key (format #f "/snapshots/~a/lock" id) "{}")
+    (format #t "~aSnapshot locked: ~a~a\n" green id reset)))
+
+(define (snapshot-unlock id)
+  (let* ((api-key (get-api-key))
+         (result (curl-post-with-sudo api-key (format #f "/snapshots/~a/unlock" id) "{}")))
+    (if (car result)
+        (format #t "~aSnapshot unlocked: ~a~a\n" green id reset)
+        (begin
+          (format (current-error-port) "~aError unlocking snapshot~a\n" red reset)
+          (exit 1)))))
+
+(define (snapshot-clone id clone-type name ports shell)
+  (let* ((api-key (get-api-key))
+         (type-json (format #f "\"clone_type\":\"~a\"" clone-type))
+         (name-json (if name (format #f ",\"name\":\"~a\"" (escape-json name)) ""))
+         (ports-json (if ports (format #f ",\"ports\":[~a]" ports) ""))
+         (shell-json (if shell (format #f ",\"shell\":\"~a\"" shell) ""))
+         (json (format #f "{~a~a~a~a}" type-json name-json ports-json shell-json)))
+    (format #t "~aSnapshot cloned~a\n" green reset)
+    (display (curl-post api-key (format #f "/snapshots/~a/clone" id) json))
+    (newline)))
+
+(define (snapshot-cmd action id name ports shell hot)
+  (cond
+    ((equal? action "list") (snapshot-list))
+    ((equal? action "info") (snapshot-info id))
+    ((equal? action "session") (snapshot-session id name hot))
+    ((equal? action "service") (snapshot-service-create id name hot))
+    ((equal? action "restore") (snapshot-restore id))
+    ((equal? action "delete") (snapshot-delete id))
+    ((equal? action "lock") (snapshot-lock id))
+    ((equal? action "unlock") (snapshot-unlock id))
+    ((equal? action "clone") (snapshot-clone id "session" name ports shell))
+    (else
+      (display "Error: Unknown snapshot action\n" (current-error-port))
+      (exit 1))))
+
+;; Session additional functions
+(define (session-info id)
+  (let ((api-key (get-api-key)))
+    (display (curl-get api-key (format #f "/sessions/~a" id)))
+    (newline)))
+
+(define (session-boost id vcpu)
+  (let* ((api-key (get-api-key))
+         (json (format #f "{\"vcpu\":~a}" vcpu)))
+    (curl-patch api-key (format #f "/sessions/~a" id) json)
+    (format #t "~aSession boosted to ~a vCPU~a\n" green vcpu reset)))
+
+(define (session-unboost id)
+  (let* ((api-key (get-api-key))
+         (json "{\"vcpu\":1}"))
+    (curl-patch api-key (format #f "/sessions/~a" id) json)
+    (format #t "~aSession unboosted to 1 vCPU~a\n" green reset)))
+
+(define (session-execute id command)
+  (let* ((api-key (get-api-key))
+         (json (format #f "{\"command\":\"~a\"}" (escape-json command)))
+         (response (curl-post api-key (format #f "/sessions/~a/execute" id) json))
+         (stdout-val (json-extract-string response "stdout")))
+    (when stdout-val
+      (display (format #f "~a~a~a" blue stdout-val reset)))))
+
+;; Service additional functions
+(define (service-lock id)
+  (let ((api-key (get-api-key)))
+    (curl-post api-key (format #f "/services/~a/lock" id) "{}")
+    (format #t "~aService locked: ~a~a\n" green id reset)))
+
+(define (service-unlock id)
+  (let* ((api-key (get-api-key))
+         (result (curl-post-with-sudo api-key (format #f "/services/~a/unlock" id) "{}")))
+    (if (car result)
+        (format #t "~aService unlocked: ~a~a\n" green id reset)
+        (begin
+          (format (current-error-port) "~aError unlocking service~a\n" red reset)
+          (exit 1)))))
+
+(define (service-redeploy id bootstrap)
+  (let* ((api-key (get-api-key))
+         (json (if bootstrap
+                   (format #f "{\"bootstrap\":\"~a\"}" (escape-json bootstrap))
+                   "{}")))
+    (curl-post api-key (format #f "/services/~a/redeploy" id) json)
+    (format #t "~aService redeploying: ~a~a\n" green id reset)))
+
+;; PaaS logs functions
+(define (logs-fetch source lines since grep-pattern)
+  (let* ((api-key (get-api-key))
+         (params (format #f "?source=~a&lines=~a~a~a"
+                         (or source "all")
+                         (or lines 100)
+                         (if since (format #f "&since=~a" since) "")
+                         (if grep-pattern (format #f "&grep=~a" grep-pattern) ""))))
+    (display (curl-get api-key (format #f "/logs~a" params)))
+    (newline)))
+
+;; Utility functions
+(define (health-check)
+  (let* ((cmd "curl -s https://api.unsandbox.com/health")
+         (port (open-input-pipe cmd))
+         (result (let loop ((chars '()))
+                   (let ((char (read-char port)))
+                     (if (eof-object? char)
+                         (list->string (reverse chars))
+                         (loop (cons char chars)))))))
+    (close-pipe port)
+    (display result)
+    (newline)
+    (string-contains result "ok")))
+
+(define (sdk-version)
+  "4.2.0")
+
 (define (image-cmd action id source-type visibility-mode name ports)
   (let ((api-key (get-api-key)))
     (cond
@@ -880,6 +1064,28 @@
         ((equal? (car args) "key")
          (let ((extend (and (> (length args) 1) (equal? (cadr args) "--extend"))))
            (validate-key-cmd extend)))
+        ((equal? (car args) "snapshot")
+         (cond
+           ((and (> (length args) 1) (equal? (cadr args) "--list"))
+            (snapshot-cmd "list" #f #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--info"))
+            (snapshot-cmd "info" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--session"))
+            (snapshot-cmd "session" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--service"))
+            (snapshot-cmd "service" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--restore"))
+            (snapshot-cmd "restore" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--delete"))
+            (snapshot-cmd "delete" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--lock"))
+            (snapshot-cmd "lock" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--unlock"))
+            (snapshot-cmd "unlock" (caddr args) #f #f #f #f))
+           ((and (> (length args) 2) (equal? (cadr args) "--clone"))
+            (snapshot-cmd "clone" (caddr args) #f #f #f #f))
+           (else
+             (snapshot-cmd "list" #f #f #f #f #f))))
         ((equal? (car args) "image")
          (cond
            ((and (> (length args) 1) (equal? (cadr args) "--list"))

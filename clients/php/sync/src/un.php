@@ -414,6 +414,29 @@ class Unsandbox {
     }
 
     /**
+     * Get details of a specific snapshot.
+     *
+     * @param string $snapshotId Snapshot ID to get details for
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Snapshot details array containing:
+     *   - id: Snapshot ID
+     *   - name: Snapshot name
+     *   - type: "session" or "service"
+     *   - source_id: Original resource ID
+     *   - hot: Whether snapshot preserves running state
+     *   - locked: Whether snapshot is locked
+     *   - created_at: Creation timestamp
+     *   - size_bytes: Size in bytes
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function getSnapshot(string $snapshotId, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('GET', "/snapshots/{$snapshotId}", $publicKey, $secretKey);
+    }
+
+    /**
      * Restore a snapshot.
      *
      * @param string $snapshotId Snapshot ID to restore
@@ -1360,6 +1383,22 @@ class Unsandbox {
         return $response;
     }
 
+    /**
+     * Resize a service's vCPU allocation.
+     *
+     * @param string $serviceId Service ID to resize
+     * @param int $vcpu Number of vCPUs (1-8 typically)
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Response array with updated service info
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function resizeService(string $serviceId, int $vcpu, ?string $publicKey = null, ?string $secretKey = null): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        return $this->makeRequest('PATCH', "/services/{$serviceId}", $publicKey, $secretKey, ['vcpu' => $vcpu]);
+    }
+
     // =========================================================================
     // Key Validation
     // =========================================================================
@@ -1418,6 +1457,172 @@ class Unsandbox {
         }
 
         return $this->makeRequest('POST', '/image', $publicKey, $secretKey, $payload);
+    }
+
+    // =========================================================================
+    // PaaS Logs Functions
+    // =========================================================================
+
+    private static ?string $lastError = null;
+
+    /**
+     * Fetch batch logs from the PaaS platform.
+     *
+     * @param string $source Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+     * @param int $lines Number of lines to fetch (1-10000)
+     * @param string $since Time window - "1m", "5m", "1h", "1d"
+     * @param string|null $grep Optional filter pattern
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @return array Log entries
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function logsFetch(
+        string $source = 'all',
+        int $lines = 100,
+        string $since = '5m',
+        ?string $grep = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): array {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $path = "/logs?source=" . urlencode($source) . "&lines={$lines}&since=" . urlencode($since);
+        if ($grep !== null) {
+            $path .= "&grep=" . urlencode($grep);
+        }
+        return $this->makeRequest('GET', $path, $publicKey, $secretKey);
+    }
+
+    /**
+     * Stream logs via Server-Sent Events.
+     *
+     * Blocks until interrupted or server closes connection.
+     *
+     * @param string $source Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+     * @param string|null $grep Optional filter pattern
+     * @param callable|null $callback Function called for each log line (signature: callback(source, line))
+     * @param string|null $publicKey Optional API key
+     * @param string|null $secretKey Optional API secret
+     * @throws CredentialsException Missing credentials
+     * @throws ApiException API request failed
+     */
+    public function logsStream(
+        string $source = 'all',
+        ?string $grep = null,
+        ?callable $callback = null,
+        ?string $publicKey = null,
+        ?string $secretKey = null
+    ): void {
+        [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+
+        $path = "/logs/stream?source=" . urlencode($source);
+        if ($grep !== null) {
+            $path .= "&grep=" . urlencode($grep);
+        }
+
+        $timestamp = time();
+        $signature = $this->signRequest($secretKey, $timestamp, 'GET', $path);
+
+        $ch = curl_init(self::API_BASE . $path);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_HTTPHEADER => [
+                "Authorization: Bearer {$publicKey}",
+                "X-Timestamp: {$timestamp}",
+                "X-Signature: {$signature}",
+                "Accept: text/event-stream",
+            ],
+            CURLOPT_WRITEFUNCTION => function($ch, $data) use ($source, $callback) {
+                $lines = explode("\n", $data);
+                foreach ($lines as $line) {
+                    if (strpos($line, 'data: ') === 0) {
+                        $json = substr($line, 6);
+                        $entry = @json_decode($json, true);
+                        $entrySource = $entry['source'] ?? $source;
+                        $entryLine = $entry['line'] ?? $json;
+
+                        if ($callback !== null) {
+                            $callback($entrySource, $entryLine);
+                        } else {
+                            echo "[{$entrySource}] {$entryLine}\n";
+                        }
+                    }
+                }
+                return strlen($data);
+            },
+        ]);
+
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    // =========================================================================
+    // Utility Functions
+    // =========================================================================
+
+    public const SDK_VERSION = '4.2.0';
+
+    /**
+     * Get the SDK version string.
+     *
+     * @return string Version string (e.g., "4.2.0")
+     */
+    public static function version(): string {
+        return self::SDK_VERSION;
+    }
+
+    /**
+     * Check if the API is healthy and responding.
+     *
+     * @return bool true if API is healthy, false otherwise
+     */
+    public static function healthCheck(): bool {
+        $ch = curl_init(self::API_BASE . '/health');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) {
+            self::$lastError = "Health check failed: {$error}";
+            return false;
+        }
+
+        if ($httpCode !== 200) {
+            self::$lastError = "Health check failed: HTTP {$httpCode}";
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Get the last error message.
+     *
+     * @return string|null Last error message or null
+     */
+    public static function lastError(): ?string {
+        return self::$lastError;
+    }
+
+    /**
+     * Sign a message using HMAC-SHA256.
+     *
+     * This is the underlying signing function used for request authentication.
+     * Exposed for testing and debugging purposes.
+     *
+     * @param string $secretKey The secret key for signing
+     * @param string $message The message to sign
+     * @return string 64-character lowercase hex string
+     */
+    public static function hmacSign(string $secretKey, string $message): string {
+        return hash_hmac('sha256', $message, $secretKey);
     }
 
     /**

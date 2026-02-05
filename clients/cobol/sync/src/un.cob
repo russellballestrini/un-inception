@@ -95,6 +95,8 @@
        01  WS-ARG5             PIC X(256).
        01  WS-UNFREEZE-ON-DEMAND PIC X(8).
        01  WS-UOD-ENABLED      PIC X(8).
+       01  WS-TYPE             PIC X(32).
+       01  WS-SHELL            PIC X(32).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -132,6 +134,11 @@
 
            IF WS-ARG1 = "image"
                PERFORM HANDLE-IMAGE
+               STOP RUN
+           END-IF.
+
+           IF WS-ARG1 = "snapshot"
+               PERFORM HANDLE-SNAPSHOT
                STOP RUN
            END-IF.
 
@@ -1662,6 +1669,311 @@
                "-H 'X-Signature: '$SIG "
                "-d \"$BODY\" && "
                "echo -e '\x1b[32mImage cloned\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       HANDLE-SNAPSHOT.
+      * Get credentials
+           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT
+               "UNSANDBOX_PUBLIC_KEY".
+           ACCEPT WS-SECRET-KEY FROM ENVIRONMENT
+               "UNSANDBOX_SECRET_KEY".
+           IF WS-PUBLIC-KEY = SPACES OR WS-SECRET-KEY = SPACES
+               DISPLAY "Error: API keys not set" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Get second argument (operation or --list)
+           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+
+           EVALUATE WS-ARG2
+               WHEN "--list"
+               WHEN "-l"
+                   PERFORM SNAPSHOT-LIST
+               WHEN "--info"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM SNAPSHOT-INFO
+               WHEN "--delete"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM SNAPSHOT-DELETE
+               WHEN "--lock"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM SNAPSHOT-LOCK
+               WHEN "--unlock"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM SNAPSHOT-UNLOCK
+               WHEN "--restore"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM SNAPSHOT-RESTORE
+               WHEN "--clone"
+                   ACCEPT WS-ID FROM ARGUMENT-VALUE
+                   PERFORM PARSE-SNAPSHOT-CLONE-ARGS
+                   PERFORM SNAPSHOT-CLONE
+               WHEN OTHER
+                   DISPLAY "Usage: un snapshot [options]" UPON SYSERR
+                   DISPLAY "  --list, -l       List snapshots" UPON SYSERR
+                   DISPLAY "  --info ID        Get snapshot details"
+                       UPON SYSERR
+                   DISPLAY "  --delete ID      Delete snapshot"
+                       UPON SYSERR
+                   DISPLAY "  --lock ID        Lock snapshot" UPON SYSERR
+                   DISPLAY "  --unlock ID      Unlock snapshot" UPON SYSERR
+                   DISPLAY "  --restore ID     Restore snapshot"
+                       UPON SYSERR
+                   DISPLAY "  --clone ID       Clone snapshot" UPON SYSERR
+                   MOVE 1 TO RETURN-CODE
+                   STOP RUN
+           END-EVALUATE.
+
+       SNAPSHOT-LIST.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:GET:/snapshots:\" | "
+               "openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X GET 'https://api.unsandbox.com/snapshots' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SNAPSHOT-INFO.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:GET:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X GET 'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq ."
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SNAPSHOT-DELETE.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:DELETE:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP=$(curl -s -w '\n%{http_code}' -X DELETE "
+               "'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG); "
+               "HTTP_CODE=$(echo \"$RESP\" | tail -1); "
+               "BODY=$(echo \"$RESP\" | head -n -1); "
+               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
+               "OTP=$(echo \"$BODY\" | jq -r '.otp // empty'); "
+               "if [ -n \"$OTP\" ]; then "
+               "TS2=$(date +%s); "
+               "SIG2=$(echo -n \"$TS2:DELETE:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               ":\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X DELETE 'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS2 "
+               "-H 'X-Signature: '$SIG2 "
+               "-H 'X-Sudo-OTP: '$OTP | jq .; "
+               "echo -e '\x1b[32mSnapshot deleted\x1b[0m'; fi; "
+               "else echo \"$BODY\" | jq .; fi"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SNAPSHOT-LOCK.
+           STRING "TS=$(date +%s); "
+               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/lock:\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/lock' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG | jq . && "
+               "echo -e '\x1b[32mSnapshot locked\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SNAPSHOT-UNLOCK.
+           STRING "TS=$(date +%s); "
+               "BODY='{}'; "
+               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "RESP=$(curl -s -w '\n%{http_code}' -X POST "
+               "'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\"); "
+               "HTTP_CODE=$(echo \"$RESP\" | tail -1); "
+               "BODY_RESP=$(echo \"$RESP\" | head -n -1); "
+               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
+               "OTP=$(echo \"$BODY_RESP\" | jq -r '.otp // empty'); "
+               "if [ -n \"$OTP\" ]; then "
+               "TS2=$(date +%s); "
+               "SIG2=$(echo -n \"$TS2:POST:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/unlock' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS2 "
+               "-H 'X-Signature: '$SIG2 "
+               "-H 'X-Sudo-OTP: '$OTP "
+               "-d \"$BODY\" | jq .; "
+               "echo -e '\x1b[32mSnapshot unlocked\x1b[0m'; fi; "
+               "else echo \"$BODY_RESP\" | jq .; fi"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       SNAPSHOT-RESTORE.
+           STRING "TS=$(date +%s); "
+               "BODY='{}'; "
+               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/restore:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/restore' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" | jq . && "
+               "echo -e '\x1b[32mSnapshot restored\x1b[0m'"
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           CALL "SYSTEM" USING WS-CURL-CMD.
+
+       PARSE-SNAPSHOT-CLONE-ARGS.
+      * Parse --type, --name, --ports, --shell
+           MOVE SPACES TO WS-TYPE.
+           MOVE SPACES TO WS-NAME.
+           MOVE SPACES TO WS-PORTS.
+           MOVE SPACES TO WS-SHELL.
+           ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
+           PERFORM UNTIL WS-ARG3 = SPACES
+               IF WS-ARG3 = "--type"
+                   ACCEPT WS-TYPE FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--name"
+                   ACCEPT WS-NAME FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--ports"
+                   ACCEPT WS-PORTS FROM ARGUMENT-VALUE
+               ELSE IF WS-ARG3 = "--shell"
+                   ACCEPT WS-SHELL FROM ARGUMENT-VALUE
+               END-IF
+               ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+           END-PERFORM.
+
+           IF WS-TYPE = SPACES
+               DISPLAY "Error: --type required (session or service)"
+                   UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+       SNAPSHOT-CLONE.
+      * Build clone request
+           STRING "TS=$(date +%s); "
+               "BODY='{\"type\":\"" FUNCTION TRIM(WS-TYPE) "\""
+               DELIMITED BY SIZE INTO WS-CURL-CMD
+           END-STRING.
+
+           IF WS-NAME NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           IF WS-PORTS NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",\"ports\":[" FUNCTION TRIM(WS-PORTS) "]"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           IF WS-SHELL NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   ",\"shell\":\"" FUNCTION TRIM(WS-SHELL) "\""
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           STRING FUNCTION TRIM(WS-CURL-CMD)
+               "}'; "
+               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/clone:$BODY\" | openssl dgst -sha256 -hmac '"
+               FUNCTION TRIM(WS-SECRET-KEY)
+               "' | cut -d' ' -f2); "
+               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               FUNCTION TRIM(WS-ID)
+               "/clone' "
+               "-H 'Content-Type: application/json' "
+               "-H 'Authorization: Bearer "
+               FUNCTION TRIM(WS-PUBLIC-KEY)
+               "' "
+               "-H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d \"$BODY\" | jq . && "
+               "echo -e '\x1b[32mSnapshot cloned\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 

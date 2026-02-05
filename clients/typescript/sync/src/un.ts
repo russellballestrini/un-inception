@@ -59,6 +59,56 @@ import * as crypto from 'crypto';
 const API_BASE = "https://api.unsandbox.com";
 const PORTAL_BASE = "https://unsandbox.com";
 const LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
+const SDK_VERSION = "4.2.0";
+
+// Thread-local error storage
+let _lastError: string | null = null;
+
+// =============================================================================
+// Exported Utility Functions (for library usage)
+// =============================================================================
+
+/**
+ * Get the SDK version string.
+ */
+export function version(): string {
+  return SDK_VERSION;
+}
+
+/**
+ * Get the last error message.
+ */
+export function lastError(): string | null {
+  return _lastError;
+}
+
+/**
+ * Sign a message using HMAC-SHA256.
+ * Exposed for testing and debugging purposes.
+ */
+export function hmacSign(secretKey: string, message: string): string {
+  return crypto.createHmac('sha256', secretKey).update(message).digest('hex');
+}
+
+/**
+ * Check if the API is healthy and responding.
+ */
+export async function healthCheck(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const url = new URL(`${API_BASE}/health`);
+    const req = https.get(url, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', (e) => {
+      _lastError = `Health check failed: ${e.message}`;
+      resolve(false);
+    });
+    req.setTimeout(10000, () => {
+      _lastError = 'Health check failed: timeout';
+      resolve(false);
+    });
+  });
+}
 const BLUE = "\x1b[34m";
 const RED = "\x1b[31m";
 const GREEN = "\x1b[32m";

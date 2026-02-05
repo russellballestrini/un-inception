@@ -5,9 +5,12 @@
   "type": "module",
   "main": "src/un.js",
   "scripts": {
-    "test": "echo 'No tests configured yet'"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "keywords": ["unsandbox", "code-execution", "sandbox", "api"],
   "author": "unsandbox.com",
-  "license": "Unlicense"
+  "license": "Unlicense",
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
 }

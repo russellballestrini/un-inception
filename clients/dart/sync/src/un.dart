@@ -124,6 +124,21 @@ class Args {
   String? imageClone;
   String? imageName;
   String? imagePorts;
+  // Snapshot command options
+  bool snapshotList = false;
+  String? snapshotInfo;
+  String? snapshotSession;
+  String? snapshotService;
+  String? snapshotRestore;
+  String? snapshotDelete;
+  String? snapshotLock;
+  String? snapshotUnlock;
+  String? snapshotClone;
+  String? snapshotCloneType;
+  String? snapshotName;
+  String? snapshotPorts;
+  String? snapshotShell;
+  bool snapshotHot = false;
 }
 
 List<String?> getApiKeys(String? argsKey) {
@@ -1074,6 +1089,235 @@ Future<void> cmdImage(Args args) async {
   exit(1);
 }
 
+// Image access management functions
+Future<void> imageGrantAccess(String id, String trustedKey, String publicKey, String? secretKey) async {
+  final payload = {'trusted_api_key': trustedKey};
+  await apiRequestCurl('/images/$id/grant-access', 'POST', jsonEncode(payload), publicKey, secretKey);
+  print('${green}Access granted to: $trustedKey$reset');
+}
+
+Future<void> imageRevokeAccess(String id, String trustedKey, String publicKey, String? secretKey) async {
+  final payload = {'trusted_api_key': trustedKey};
+  await apiRequestCurl('/images/$id/revoke-access', 'POST', jsonEncode(payload), publicKey, secretKey);
+  print('${green}Access revoked from: $trustedKey$reset');
+}
+
+Future<void> imageListTrusted(String id, String publicKey, String? secretKey) async {
+  final result = await apiRequestCurl('/images/$id/trusted', 'GET', null, publicKey, secretKey);
+  print(jsonEncode(result));
+}
+
+Future<void> imageTransfer(String id, String toKey, String publicKey, String? secretKey) async {
+  final payload = {'to_api_key': toKey};
+  await apiRequestCurl('/images/$id/transfer', 'POST', jsonEncode(payload), publicKey, secretKey);
+  print('${green}Image transferred to: $toKey$reset');
+}
+
+// Snapshot functions
+Future<void> cmdSnapshot(Args args) async {
+  final keys = getApiKeys(args.apiKey);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
+
+  if (args.snapshotList) {
+    final result = await apiRequestCurl('/snapshots', 'GET', null, publicKey, secretKey);
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.snapshotInfo != null) {
+    final result = await apiRequestCurl('/snapshots/${args.snapshotInfo}', 'GET', null, publicKey, secretKey);
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.snapshotSession != null) {
+    final payload = <String, dynamic>{
+      'session_id': args.snapshotSession,
+    };
+    if (args.snapshotName != null) {
+      payload['name'] = args.snapshotName;
+    }
+    if (args.snapshotHot) {
+      payload['hot'] = true;
+    }
+    final result = await apiRequestCurl('/snapshots', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Snapshot created$reset');
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.snapshotService != null) {
+    final payload = <String, dynamic>{
+      'service_id': args.snapshotService,
+    };
+    if (args.snapshotName != null) {
+      payload['name'] = args.snapshotName;
+    }
+    if (args.snapshotHot) {
+      payload['hot'] = true;
+    }
+    final result = await apiRequestCurl('/snapshots', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Snapshot created$reset');
+    print(jsonEncode(result));
+    return;
+  }
+
+  if (args.snapshotRestore != null) {
+    await apiRequestCurl('/snapshots/${args.snapshotRestore}/restore', 'POST', '{}', publicKey, secretKey);
+    print('${green}Snapshot restored: ${args.snapshotRestore}$reset');
+    return;
+  }
+
+  if (args.snapshotDelete != null) {
+    final (statusCode, responseBody) = await apiRequestCurlWithStatus('/snapshots/${args.snapshotDelete}', 'DELETE', null, publicKey, secretKey);
+    if (statusCode == 428) {
+      if (await handleSudoChallenge(responseBody, '/snapshots/${args.snapshotDelete}', 'DELETE', null, publicKey, secretKey)) {
+        print('${green}Snapshot deleted: ${args.snapshotDelete}$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to delete snapshot (OTP verification failed)$reset');
+        exit(1);
+      }
+    } else if (statusCode >= 200 && statusCode < 300) {
+      print('${green}Snapshot deleted: ${args.snapshotDelete}$reset');
+    } else {
+      stderr.writeln('${red}Error: Failed to delete snapshot (HTTP $statusCode)$reset');
+      exit(1);
+    }
+    return;
+  }
+
+  if (args.snapshotLock != null) {
+    await apiRequestCurl('/snapshots/${args.snapshotLock}/lock', 'POST', '{}', publicKey, secretKey);
+    print('${green}Snapshot locked: ${args.snapshotLock}$reset');
+    return;
+  }
+
+  if (args.snapshotUnlock != null) {
+    final (statusCode, responseBody) = await apiRequestCurlWithStatus('/snapshots/${args.snapshotUnlock}/unlock', 'POST', '{}', publicKey, secretKey);
+    if (statusCode == 428) {
+      if (await handleSudoChallenge(responseBody, '/snapshots/${args.snapshotUnlock}/unlock', 'POST', '{}', publicKey, secretKey)) {
+        print('${green}Snapshot unlocked: ${args.snapshotUnlock}$reset');
+      } else {
+        stderr.writeln('${red}Error: Failed to unlock snapshot (OTP verification failed)$reset');
+        exit(1);
+      }
+    } else if (statusCode >= 200 && statusCode < 300) {
+      print('${green}Snapshot unlocked: ${args.snapshotUnlock}$reset');
+    } else {
+      stderr.writeln('${red}Error: Failed to unlock snapshot (HTTP $statusCode)$reset');
+      exit(1);
+    }
+    return;
+  }
+
+  if (args.snapshotClone != null) {
+    final payload = <String, dynamic>{
+      'clone_type': args.snapshotCloneType ?? 'session',
+    };
+    if (args.snapshotName != null) {
+      payload['name'] = args.snapshotName;
+    }
+    if (args.snapshotPorts != null) {
+      payload['ports'] = args.snapshotPorts!.split(',').map((p) => int.parse(p.trim())).toList();
+    }
+    if (args.snapshotShell != null) {
+      payload['shell'] = args.snapshotShell;
+    }
+    final result = await apiRequestCurl('/snapshots/${args.snapshotClone}/clone', 'POST', jsonEncode(payload), publicKey, secretKey);
+    print('${green}Snapshot cloned$reset');
+    print(jsonEncode(result));
+    return;
+  }
+
+  stderr.writeln('${red}Error: Use --list, --info ID, --session ID, --service ID, --restore ID, --delete ID, --lock ID, --unlock ID, or --clone ID$reset');
+  exit(1);
+}
+
+// Session additional functions
+Future<void> sessionInfo(String id, String publicKey, String? secretKey) async {
+  final result = await apiRequestCurl('/sessions/$id', 'GET', null, publicKey, secretKey);
+  print(jsonEncode(result));
+}
+
+Future<void> sessionBoost(String id, int vcpu, String publicKey, String? secretKey) async {
+  final payload = {'vcpu': vcpu};
+  await apiRequestCurl('/sessions/$id', 'PATCH', jsonEncode(payload), publicKey, secretKey);
+  print('${green}Session boosted to $vcpu vCPU$reset');
+}
+
+Future<void> sessionUnboost(String id, String publicKey, String? secretKey) async {
+  final payload = {'vcpu': 1};
+  await apiRequestCurl('/sessions/$id', 'PATCH', jsonEncode(payload), publicKey, secretKey);
+  print('${green}Session unboosted to 1 vCPU$reset');
+}
+
+Future<void> sessionExecuteCmd(String id, String command, String publicKey, String? secretKey) async {
+  final payload = {'command': command};
+  final result = await apiRequestCurl('/sessions/$id/execute', 'POST', jsonEncode(payload), publicKey, secretKey);
+  final stdoutText = result['stdout'] as String?;
+  final stderrText = result['stderr'] as String?;
+  if (stdoutText != null && stdoutText.isNotEmpty) {
+    stdout.write('$blue$stdoutText$reset');
+  }
+  if (stderrText != null && stderrText.isNotEmpty) {
+    stderr.write('$red$stderrText$reset');
+  }
+}
+
+// Service additional functions
+Future<void> serviceLock(String id, String publicKey, String? secretKey) async {
+  await apiRequestCurl('/services/$id/lock', 'POST', '{}', publicKey, secretKey);
+  print('${green}Service locked: $id$reset');
+}
+
+Future<void> serviceUnlock(String id, String publicKey, String? secretKey) async {
+  final (statusCode, responseBody) = await apiRequestCurlWithStatus('/services/$id/unlock', 'POST', '{}', publicKey, secretKey);
+  if (statusCode == 428) {
+    if (await handleSudoChallenge(responseBody, '/services/$id/unlock', 'POST', '{}', publicKey, secretKey)) {
+      print('${green}Service unlocked: $id$reset');
+    } else {
+      stderr.writeln('${red}Error: Failed to unlock service (OTP verification failed)$reset');
+      exit(1);
+    }
+  } else if (statusCode >= 200 && statusCode < 300) {
+    print('${green}Service unlocked: $id$reset');
+  } else {
+    stderr.writeln('${red}Error: Failed to unlock service (HTTP $statusCode)$reset');
+    exit(1);
+  }
+}
+
+Future<void> serviceRedeploy(String id, String? bootstrap, String publicKey, String? secretKey) async {
+  final payload = bootstrap != null ? {'bootstrap': bootstrap} : <String, dynamic>{};
+  await apiRequestCurl('/services/$id/redeploy', 'POST', jsonEncode(payload), publicKey, secretKey);
+  print('${green}Service redeploying: $id$reset');
+}
+
+// PaaS logs functions
+Future<void> logsFetch(String source, int lines, String? since, String? grepPattern, String publicKey, String? secretKey) async {
+  var params = '?source=$source&lines=$lines';
+  if (since != null) params += '&since=$since';
+  if (grepPattern != null) params += '&grep=${Uri.encodeComponent(grepPattern)}';
+  final result = await apiRequestCurl('/logs$params', 'GET', null, publicKey, secretKey);
+  print(jsonEncode(result));
+}
+
+// Utility functions
+Future<bool> healthCheck() async {
+  try {
+    final result = await Process.run('curl', ['-s', 'https://api.unsandbox.com/health']);
+    print(result.stdout);
+    return result.stdout.toString().contains('ok');
+  } catch (e) {
+    return false;
+  }
+}
+
+String sdkVersion() {
+  return '4.2.0';
+}
+
 Future<void> cmdKey(Args args) async {
   final keys = getApiKeys(args.apiKey);
   final publicKey = keys[0]!;
@@ -1146,6 +1390,9 @@ Args parseArgs(List<String> argv) {
       case 'image':
         args.command = 'image';
         break;
+      case 'snapshot':
+        args.command = 'snapshot';
+        break;
       case 'key':
         args.command = 'key';
         break;
@@ -1193,11 +1440,17 @@ Args parseArgs(List<String> argv) {
           args.serviceList = true;
         } else if (args.command == 'image') {
           args.imageList = true;
+        } else if (args.command == 'snapshot') {
+          args.snapshotList = true;
         }
         break;
       case '-s':
       case '--shell':
-        args.sessionShell = argv[++i];
+        if (args.command == 'snapshot') {
+          args.snapshotShell = argv[++i];
+        } else {
+          args.sessionShell = argv[++i];
+        }
         break;
       case '--kill':
         args.sessionKill = argv[++i];
@@ -1205,6 +1458,8 @@ Args parseArgs(List<String> argv) {
       case '--name':
         if (args.command == 'image') {
           args.imageName = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotName = argv[++i];
         } else {
           args.serviceName = argv[++i];
         }
@@ -1212,6 +1467,8 @@ Args parseArgs(List<String> argv) {
       case '--ports':
         if (args.command == 'image') {
           args.imagePorts = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotPorts = argv[++i];
         } else {
           args.servicePorts = argv[++i];
         }
@@ -1285,21 +1542,29 @@ Args parseArgs(List<String> argv) {
           args.serviceInfo = argv[++i];
         } else if (args.command == 'image') {
           args.imageInfo = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotInfo = argv[++i];
         }
         break;
       case '--delete':
         if (args.command == 'image') {
           args.imageDelete = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotDelete = argv[++i];
         }
         break;
       case '--lock':
         if (args.command == 'image') {
           args.imageLock = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotLock = argv[++i];
         }
         break;
       case '--unlock':
         if (args.command == 'image') {
           args.imageUnlock = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotUnlock = argv[++i];
         }
         break;
       case '--publish':
@@ -1326,6 +1591,33 @@ Args parseArgs(List<String> argv) {
       case '--clone':
         if (args.command == 'image') {
           args.imageClone = argv[++i];
+        } else if (args.command == 'snapshot') {
+          args.snapshotClone = argv[++i];
+        }
+        break;
+      case '--session':
+        if (args.command == 'snapshot') {
+          args.snapshotSession = argv[++i];
+        }
+        break;
+      case '--service':
+        if (args.command == 'snapshot') {
+          args.snapshotService = argv[++i];
+        }
+        break;
+      case '--restore':
+        if (args.command == 'snapshot') {
+          args.snapshotRestore = argv[++i];
+        }
+        break;
+      case '--clone-type':
+        if (args.command == 'snapshot') {
+          args.snapshotCloneType = argv[++i];
+        }
+        break;
+      case '--hot':
+        if (args.command == 'snapshot') {
+          args.snapshotHot = true;
         }
         break;
       case 'env':
@@ -1338,7 +1630,7 @@ Args parseArgs(List<String> argv) {
         break;
       default:
         if (argv[i].startsWith('-')) {
-          stderr.writeln('${RED}Unknown option: ${argv[i]}${RESET}');
+          stderr.writeln('${red}Unknown option: ${argv[i]}$reset');
           exit(1);
         } else {
           args.sourceFile = argv[i];
@@ -1354,6 +1646,7 @@ void printHelp() {
 Usage: dart un.dart [options] <source_file>
        dart un.dart session [options]
        dart un.dart service [options]
+       dart un.dart snapshot [options]
        dart un.dart image [options]
        dart un.dart key [options]
        dart un.dart languages [--json]
@@ -1416,6 +1709,22 @@ Image options:
   --name NAME       Name for spawned service or cloned image
   --ports PORTS     Ports for spawned service
 
+Snapshot options:
+  -l, --list        List all snapshots
+  --info ID         Get snapshot details
+  --session ID      Create snapshot from session
+  --service ID      Create snapshot from service
+  --restore ID      Restore a snapshot
+  --delete ID       Delete a snapshot
+  --lock ID         Lock snapshot to prevent deletion
+  --unlock ID       Unlock snapshot
+  --clone ID        Clone snapshot to session/service
+  --clone-type TYPE Clone target: session (default) or service
+  --name NAME       Name for new snapshot or cloned resource
+  --ports PORTS     Ports for service (with --clone --clone-type service)
+  --shell NAME      Shell for session (with --clone --clone-type session)
+  --hot             Hot snapshot (without stopping)
+
 Key options:
   --extend          Open browser to extend key
 
@@ -1434,6 +1743,8 @@ void main(List<String> arguments) async {
       await cmdService(args);
     } else if (args.command == 'image') {
       await cmdImage(args);
+    } else if (args.command == 'snapshot') {
+      await cmdSnapshot(args);
     } else if (args.command == 'key') {
       await cmdKey(args);
     } else if (args.command == 'languages') {

@@ -125,6 +125,11 @@ cr
 blue ." Test Suite 3: End-to-End Functional Test" reset cr
 blue ." ℹ SKIP" reset ."  : E2E test (requires runtime environment and API key)" cr
 
+\ Test Suite 3b: Snapshot Command Support (feature parity test)
+cr
+blue ." Test Suite 3b: Snapshot Command Support" reset cr
+blue ." ℹ SKIP" reset ."  : Snapshot test (requires runtime environment and API key)" cr
+
 \ Test Suite 4: Error Handling
 cr
 blue ." Test Suite 4: Error Handling" reset cr

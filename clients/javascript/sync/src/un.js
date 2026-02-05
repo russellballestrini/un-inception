@@ -933,7 +933,7 @@ async function serviceSnapshot(serviceId, publicKey, secretKey, name, hot = fals
 }
 
 /**
- * List all snapshots (NEW).
+ * List all snapshots.
  *
  * Returns: Promise<Array> (list of snapshot dicts)
  */
@@ -944,7 +944,20 @@ async function listSnapshots(publicKey, secretKey) {
 }
 
 /**
- * Restore a snapshot (NEW).
+ * Get details of a specific snapshot.
+ *
+ * Args:
+ *   snapshotId: Snapshot ID to get details for
+ *
+ * Returns: Promise<Object> (snapshot details with id, name, type, source_id, etc.)
+ */
+async function getSnapshot(snapshotId, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('GET', `/snapshots/${snapshotId}`, publicKey, secretKey);
+}
+
+/**
+ * Restore a snapshot.
  *
  * Returns: Promise<Object> (response with restored resource info)
  */
@@ -1410,6 +1423,20 @@ async function executeInService(serviceId, command, timeout = 30000, publicKey, 
   return response;
 }
 
+/**
+ * Resize a service's vCPU allocation.
+ *
+ * Args:
+ *   serviceId: Service ID to resize
+ *   vcpu: Number of vCPUs (1-8 typically)
+ *
+ * Returns: Promise<Object> (updated service info)
+ */
+async function resizeService(serviceId, vcpu, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  return makeRequest('PATCH', `/services/${serviceId}`, publicKey, secretKey, { vcpu });
+}
+
 // ============================================================================
 // Additional Snapshot Functions
 // ============================================================================
@@ -1753,9 +1780,198 @@ async function image(prompt, options = {}) {
   return makeRequest('POST', '/image', pk, sk, payload);
 }
 
+// ============================================================================
+// PaaS Logs Functions
+// ============================================================================
+
+let _lastError = null;
+
+/**
+ * Fetch batch logs from the PaaS platform.
+ *
+ * Args:
+ *   source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+ *   lines: Number of lines to fetch (1-10000)
+ *   since: Time window - "1m", "5m", "1h", "1d"
+ *   grep: Optional filter pattern
+ *   publicKey: API public key
+ *   secretKey: API secret key
+ *
+ * Returns: Promise<Object> (log entries)
+ */
+async function logsFetch(source = 'all', lines = 100, since = '5m', grep = null, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+  let urlPath = `/logs?source=${source}&lines=${lines}&since=${since}`;
+  if (grep) urlPath += `&grep=${encodeURIComponent(grep)}`;
+  return makeRequest('GET', urlPath, publicKey, secretKey);
+}
+
+/**
+ * Stream logs via Server-Sent Events.
+ *
+ * Args:
+ *   source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+ *   grep: Optional filter pattern
+ *   callback: Function called for each log line (signature: callback(source, line))
+ *   publicKey: API public key
+ *   secretKey: API secret key
+ *
+ * Returns: Promise<void> (blocks until interrupted or server closes)
+ */
+async function logsStream(source = 'all', grep = null, callback = null, publicKey, secretKey) {
+  [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
+
+  let urlPath = `/logs/stream?source=${source}`;
+  if (grep) urlPath += `&grep=${encodeURIComponent(grep)}`;
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signature = await signRequest(secretKey, timestamp, 'GET', urlPath, null);
+
+  const url = `${API_BASE}${urlPath}`;
+  const headers = {
+    'Authorization': `Bearer ${publicKey}`,
+    'X-Timestamp': timestamp.toString(),
+    'X-Signature': signature,
+    'Accept': 'text/event-stream',
+  };
+
+  // Node.js SSE streaming
+  if (IS_NODE) {
+    const https = await import('https');
+    return new Promise((resolve, reject) => {
+      const urlObj = new URL(url);
+      const options = {
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        method: 'GET',
+        headers,
+      };
+
+      const req = https.default.request(options, (res) => {
+        res.on('data', (chunk) => {
+          const lines = chunk.toString().split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.substring(6);
+              try {
+                const entry = JSON.parse(data);
+                if (callback) {
+                  callback(entry.source || source, entry.line || data);
+                } else {
+                  console.log(`[${entry.source || source}] ${entry.line || data}`);
+                }
+              } catch (e) {
+                if (callback) {
+                  callback(source, data);
+                } else {
+                  console.log(`[${source}] ${data}`);
+                }
+              }
+            }
+          }
+        });
+        res.on('end', resolve);
+        res.on('error', reject);
+      });
+
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  // Browser EventSource not directly supported with custom headers
+  throw new Error('logsStream is only supported in Node.js');
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+const SDK_VERSION = '4.2.0';
+
+/**
+ * Get the SDK version string.
+ *
+ * Returns: string (e.g., "4.2.0")
+ */
+function sdkVersion() {
+  return SDK_VERSION;
+}
+
+/**
+ * Check if the API is healthy and responding.
+ *
+ * Returns: Promise<boolean>
+ */
+async function healthCheck() {
+  try {
+    if (IS_NODE) {
+      const https = await import('https');
+      return new Promise((resolve) => {
+        const req = https.default.get(`${API_BASE}/health`, (res) => {
+          resolve(res.statusCode === 200);
+        });
+        req.on('error', () => {
+          _lastError = 'Health check failed: network error';
+          resolve(false);
+        });
+        req.setTimeout(10000, () => {
+          _lastError = 'Health check failed: timeout';
+          resolve(false);
+        });
+      });
+    } else {
+      const response = await fetch(`${API_BASE}/health`);
+      return response.status === 200;
+    }
+  } catch (e) {
+    _lastError = `Health check failed: ${e.message}`;
+    return false;
+  }
+}
+
+/**
+ * Get the last error message.
+ *
+ * Returns: string|null
+ */
+function lastError() {
+  return _lastError;
+}
+
+/**
+ * Sign a message using HMAC-SHA256.
+ *
+ * This is the underlying signing function used for request authentication.
+ * Exposed for testing and debugging purposes.
+ *
+ * Args:
+ *   secretKey: The secret key for signing
+ *   message: The message to sign
+ *
+ * Returns: Promise<string> (64-character lowercase hex string)
+ */
+async function hmacSign(secretKey, message) {
+  if (IS_NODE) {
+    return crypto.createHmac('sha256', secretKey).update(message).digest('hex');
+  } else {
+    // Browser Web Crypto API
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(secretKey);
+    const msgData = encoder.encode(message);
+    const cryptoKey = await window.crypto.subtle.importKey(
+      'raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const signature = await window.crypto.subtle.sign('HMAC', cryptoKey, msgData);
+    return Array.from(new Uint8Array(signature))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+}
+
 // ES Module exports
 export {
-  // Code execution
+  // Code execution (8)
   executeCode,
   executeAsync,
   getJob,
@@ -1764,7 +1980,7 @@ export {
   listJobs,
   getLanguages,
   detectLanguage,
-  // Session management
+  // Session management (9)
   listSessions,
   getSession,
   createSession,
@@ -1774,7 +1990,7 @@ export {
   boostSession,
   unboostSession,
   shellSession,
-  // Service management
+  // Service management (17)
   listServices,
   createService,
   getService,
@@ -1793,16 +2009,18 @@ export {
   exportServiceEnv,
   redeployService,
   executeInService,
-  // Snapshot management
+  resizeService,
+  // Snapshot management (9)
   sessionSnapshot,
   serviceSnapshot,
   listSnapshots,
+  getSnapshot,
   restoreSnapshot,
   deleteSnapshot,
   lockSnapshot,
   unlockSnapshot,
   cloneSnapshot,
-  // Images API (LXD container images)
+  // Images API (13)
   imagePublish,
   listImages,
   getImage,
@@ -1816,9 +2034,17 @@ export {
   transferImage,
   spawnFromImage,
   cloneImage,
+  // PaaS Logs (2)
+  logsFetch,
+  logsStream,
   // Key validation
   validateKeys,
-  // Image generation
+  // Utilities
+  sdkVersion,
+  healthCheck,
+  lastError,
+  hmacSign,
+  // Image generation (AI)
   image,
   // Errors
   CredentialsError,
@@ -1830,7 +2056,7 @@ export {
 
 // Default export for convenience
 export default {
-  // Code execution
+  // Code execution (8)
   executeCode,
   executeAsync,
   getJob,
@@ -1839,7 +2065,7 @@ export default {
   listJobs,
   getLanguages,
   detectLanguage,
-  // Session management
+  // Session management (9)
   listSessions,
   getSession,
   createSession,
@@ -1849,7 +2075,7 @@ export default {
   boostSession,
   unboostSession,
   shellSession,
-  // Service management
+  // Service management (17)
   listServices,
   createService,
   getService,
@@ -1860,6 +2086,7 @@ export default {
   lockService,
   unlockService,
   setUnfreezeOnDemand,
+  setShowFreezePage,
   getServiceLogs,
   getServiceEnv,
   setServiceEnv,
@@ -1867,16 +2094,18 @@ export default {
   exportServiceEnv,
   redeployService,
   executeInService,
-  // Snapshot management
+  resizeService,
+  // Snapshot management (9)
   sessionSnapshot,
   serviceSnapshot,
   listSnapshots,
+  getSnapshot,
   restoreSnapshot,
   deleteSnapshot,
   lockSnapshot,
   unlockSnapshot,
   cloneSnapshot,
-  // Images API (LXD container images)
+  // Images API (13)
   imagePublish,
   listImages,
   getImage,
@@ -1890,9 +2119,17 @@ export default {
   transferImage,
   spawnFromImage,
   cloneImage,
+  // PaaS Logs (2)
+  logsFetch,
+  logsStream,
   // Key validation
   validateKeys,
-  // Image generation
+  // Utilities
+  sdkVersion,
+  healthCheck,
+  lastError,
+  hmacSign,
+  // Image generation (AI)
   image,
   // Errors
   CredentialsError,

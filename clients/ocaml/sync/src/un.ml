@@ -996,6 +996,397 @@ module Client = struct
 end
 
 (* ============================================================================
+   Library API - Sessions (9)
+   ============================================================================ *)
+
+(** SDK version *)
+let sdk_version = "4.2.0"
+
+(** Return the SDK version *)
+let version () = sdk_version
+
+(** Check API health *)
+let health_check () =
+  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' %s/health" api_base in
+  let ic = Unix.open_process_in cmd in
+  let status = try input_line ic with End_of_file -> "0" in
+  let _ = Unix.close_process_in ic in
+  String.trim status = "200"
+
+(** Generate HMAC-SHA256 signature *)
+let hmac_sign secret message = hmac_sha256 secret message
+
+(** Detect language from filename *)
+let detect_language filename =
+  let ext = get_extension filename in
+  ext_to_lang ext
+
+(** List all sessions *)
+let session_list ?public_key ?secret_key () =
+  api_get ?public_key ?secret_key "/sessions"
+
+(** Get session details *)
+let session_get ?public_key ?secret_key session_id =
+  api_get ?public_key ?secret_key (Printf.sprintf "/sessions/%s" session_id)
+
+(** Create a new session *)
+let session_create ?public_key ?secret_key ?(shell="bash") ?network ?vcpu () =
+  let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
+  let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
+  let json = Printf.sprintf "{\"shell\":\"%s\"%s%s}" shell network_json vcpu_json in
+  let response = api_post ?public_key ?secret_key "/sessions" json in
+  extract_json_value response "id"
+
+(** Destroy a session *)
+let session_destroy ?public_key ?secret_key session_id =
+  let response = api_delete ?public_key ?secret_key (Printf.sprintf "/sessions/%s" session_id) in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Freeze a session *)
+let session_freeze ?public_key ?secret_key session_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/sessions/%s/freeze" session_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Unfreeze a session *)
+let session_unfreeze ?public_key ?secret_key session_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/sessions/%s/unfreeze" session_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Boost session resources *)
+let session_boost ?public_key ?secret_key session_id vcpu =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let json = Printf.sprintf "{\"vcpu\":%d}" vcpu in
+  let endpoint = Printf.sprintf "/sessions/%s" session_id in
+  let auth_headers = build_auth_headers pk sk "PATCH" endpoint json in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let response = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Unboost session *)
+let session_unboost ?public_key ?secret_key session_id =
+  session_boost ?public_key ?secret_key session_id 1
+
+(** Execute a command in a session *)
+let session_execute ?public_key ?secret_key session_id command =
+  let json = Printf.sprintf "{\"command\":\"%s\"}" (escape_json command) in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/sessions/%s/execute" session_id) json in
+  let stdout_val = match extract_json_value response "stdout" with Some s -> unescape_json s | None -> "" in
+  let stderr_val = match extract_json_value response "stderr" with Some s -> unescape_json s | None -> "" in
+  let exit_code = match extract_json_int response "exit_code" with Some i -> i | None -> 0 in
+  { success = (exit_code = 0); stdout = stdout_val; stderr = stderr_val; exit_code; job_id = None }
+
+(* ============================================================================
+   Library API - Services (17)
+   ============================================================================ *)
+
+(** List all services *)
+let service_list ?public_key ?secret_key () =
+  api_get ?public_key ?secret_key "/services"
+
+(** Get service details *)
+let service_get ?public_key ?secret_key service_id =
+  api_get ?public_key ?secret_key (Printf.sprintf "/services/%s" service_id)
+
+(** Create a new service *)
+let service_create ?public_key ?secret_key name ?ports ?bootstrap ?network ?vcpu () =
+  let ports_json = match ports with Some p -> Printf.sprintf ",\"ports\":[%s]" p | None -> "" in
+  let bootstrap_json = match bootstrap with Some b -> Printf.sprintf ",\"bootstrap\":\"%s\"" (escape_json b) | None -> "" in
+  let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
+  let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
+  let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s}" (escape_json name) ports_json bootstrap_json network_json vcpu_json in
+  let response = api_post ?public_key ?secret_key "/services" json in
+  extract_json_value response "id"
+
+(** Destroy a service *)
+let service_destroy ?public_key ?secret_key service_id =
+  match api_delete_with_sudo ?public_key ?secret_key (Printf.sprintf "/services/%s" service_id) with
+  | SudoSuccess _ -> true
+  | _ -> false
+
+(** Freeze a service *)
+let service_freeze ?public_key ?secret_key service_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/freeze" service_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Unfreeze a service *)
+let service_unfreeze ?public_key ?secret_key service_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/unfreeze" service_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Lock a service *)
+let service_lock ?public_key ?secret_key service_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/lock" service_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Unlock a service *)
+let service_unlock ?public_key ?secret_key service_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/unlock" service_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Set unfreeze-on-demand for a service *)
+let service_set_unfreeze_on_demand ?public_key ?secret_key service_id enabled =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let enabled_str = if enabled then "true" else "false" in
+  let json = Printf.sprintf "{\"unfreeze_on_demand\":%s}" enabled_str in
+  let endpoint = Printf.sprintf "/services/%s" service_id in
+  let auth_headers = build_auth_headers pk sk "PATCH" endpoint json in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let response = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Redeploy a service *)
+let service_redeploy ?public_key ?secret_key service_id ?bootstrap () =
+  let bootstrap_json = match bootstrap with Some b -> Printf.sprintf "\"bootstrap\":\"%s\"" (escape_json b) | None -> "" in
+  let json = "{" ^ bootstrap_json ^ "}" in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/redeploy" service_id) json in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Get service logs *)
+let service_logs ?public_key ?secret_key ?(all_logs=false) service_id =
+  let endpoint = if all_logs
+    then Printf.sprintf "/services/%s/logs?all=true" service_id
+    else Printf.sprintf "/services/%s/logs" service_id
+  in
+  api_get ?public_key ?secret_key endpoint
+
+(** Execute a command in a service *)
+let service_execute ?public_key ?secret_key ?timeout_ms service_id command =
+  let timeout_json = match timeout_ms with Some t -> Printf.sprintf ",\"timeout_ms\":%d" t | None -> "" in
+  let json = Printf.sprintf "{\"command\":\"%s\"%s}" (escape_json command) timeout_json in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/execute" service_id) json in
+  let stdout_val = match extract_json_value response "stdout" with Some s -> unescape_json s | None -> "" in
+  let stderr_val = match extract_json_value response "stderr" with Some s -> unescape_json s | None -> "" in
+  let exit_code = match extract_json_int response "exit_code" with Some i -> i | None -> 0 in
+  { success = (exit_code = 0); stdout = stdout_val; stderr = stderr_val; exit_code; job_id = None }
+
+(** Get service environment vault *)
+let service_env_get_lib ?public_key ?secret_key service_id =
+  api_get ?public_key ?secret_key (Printf.sprintf "/services/%s/env" service_id)
+
+(** Set service environment vault *)
+let service_env_set_lib ?public_key ?secret_key service_id env_content =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let endpoint = Printf.sprintf "/services/%s/env" service_id in
+  let auth_headers = build_auth_headers pk sk "PUT" endpoint env_content in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.txt" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc env_content;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT %s%s -H 'Content-Type: text/plain'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let status = try input_line ic with End_of_file -> "0" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  let code = int_of_string (String.trim status) in
+  code >= 200 && code < 300
+
+(** Delete service environment vault *)
+let service_env_delete_lib ?public_key ?secret_key service_id =
+  let response = api_delete ?public_key ?secret_key (Printf.sprintf "/services/%s/env" service_id) in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Export service environment vault *)
+let service_env_export_lib ?public_key ?secret_key service_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/env/export" service_id) "{}" in
+  match extract_json_value response "content" with
+  | Some content -> unescape_json content
+  | None -> ""
+
+(** Resize a service *)
+let service_resize ?public_key ?secret_key service_id vcpu =
+  let (pk, sk) = get_credentials ?public_key ?secret_key () in
+  let json = Printf.sprintf "{\"vcpu\":%d}" vcpu in
+  let endpoint = Printf.sprintf "/services/%s" service_id in
+  let auth_headers = build_auth_headers pk sk "PATCH" endpoint json in
+  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
+  let oc = open_out tmp_file in
+  output_string oc json;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+    api_base endpoint auth_headers tmp_file in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (acc ^ line ^ "\n")
+    with End_of_file -> acc
+  in
+  let response = read_all "" in
+  let _ = Unix.close_process_in ic in
+  Sys.remove tmp_file;
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(* ============================================================================
+   Library API - Snapshots (9)
+   ============================================================================ *)
+
+(** List all snapshots *)
+let snapshot_list ?public_key ?secret_key () =
+  api_get ?public_key ?secret_key "/snapshots"
+
+(** Get snapshot details *)
+let snapshot_get ?public_key ?secret_key snapshot_id =
+  api_get ?public_key ?secret_key (Printf.sprintf "/snapshots/%s" snapshot_id)
+
+(** Create a snapshot of a session *)
+let snapshot_session ?public_key ?secret_key ?name ?(hot=false) session_id =
+  let name_json = match name with Some n -> Printf.sprintf "\"name\":\"%s\"," (escape_json n) | None -> "" in
+  let hot_json = if hot then "\"hot\":true" else "\"hot\":false" in
+  let json = "{" ^ name_json ^ hot_json ^ "}" in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/sessions/%s/snapshot" session_id) json in
+  extract_json_value response "id"
+
+(** Create a snapshot of a service *)
+let snapshot_service ?public_key ?secret_key ?name ?(hot=false) service_id =
+  let name_json = match name with Some n -> Printf.sprintf "\"name\":\"%s\"," (escape_json n) | None -> "" in
+  let hot_json = if hot then "\"hot\":true" else "\"hot\":false" in
+  let json = "{" ^ name_json ^ hot_json ^ "}" in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/services/%s/snapshot" service_id) json in
+  extract_json_value response "id"
+
+(** Restore from a snapshot *)
+let snapshot_restore ?public_key ?secret_key snapshot_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/snapshots/%s/restore" snapshot_id) "{}" in
+  extract_json_value response "id"
+
+(** Delete a snapshot *)
+let snapshot_delete ?public_key ?secret_key snapshot_id =
+  match api_delete_with_sudo ?public_key ?secret_key (Printf.sprintf "/snapshots/%s" snapshot_id) with
+  | SudoSuccess _ -> true
+  | _ -> false
+
+(** Lock a snapshot *)
+let snapshot_lock ?public_key ?secret_key snapshot_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/snapshots/%s/lock" snapshot_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Unlock a snapshot *)
+let snapshot_unlock ?public_key ?secret_key snapshot_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/snapshots/%s/unlock" snapshot_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Clone a snapshot to create a new session or service *)
+let snapshot_clone ?public_key ?secret_key snapshot_id ~clone_type ?name ?ports ?shell () =
+  let type_json = Printf.sprintf "\"type\":\"%s\"" clone_type in
+  let name_json = match name with Some n -> Printf.sprintf ",\"name\":\"%s\"" (escape_json n) | None -> "" in
+  let ports_json = match ports with Some p -> Printf.sprintf ",\"ports\":[%s]" p | None -> "" in
+  let shell_json = match shell with Some s -> Printf.sprintf ",\"shell\":\"%s\"" s | None -> "" in
+  let json = "{" ^ type_json ^ name_json ^ ports_json ^ shell_json ^ "}" in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/snapshots/%s/clone" snapshot_id) json in
+  extract_json_value response "id"
+
+(* ============================================================================
+   Library API - Images (13)
+   ============================================================================ *)
+
+(** List images *)
+let image_list ?public_key ?secret_key ?filter () =
+  let endpoint = match filter with Some f -> Printf.sprintf "/images?filter=%s" f | None -> "/images" in
+  api_get ?public_key ?secret_key endpoint
+
+(** Get image details *)
+let image_get ?public_key ?secret_key image_id =
+  api_get ?public_key ?secret_key (Printf.sprintf "/images/%s" image_id)
+
+(** Publish an image *)
+let image_publish ?public_key ?secret_key source_type source_id ?name ?description () =
+  let name_json = match name with Some n -> Printf.sprintf ",\"name\":\"%s\"" (escape_json n) | None -> "" in
+  let desc_json = match description with Some d -> Printf.sprintf ",\"description\":\"%s\"" (escape_json d) | None -> "" in
+  let json = Printf.sprintf "{\"source_type\":\"%s\",\"source_id\":\"%s\"%s%s}" source_type source_id name_json desc_json in
+  let response = api_post ?public_key ?secret_key "/images/publish" json in
+  extract_json_value response "id"
+
+(** Delete an image *)
+let image_delete ?public_key ?secret_key image_id =
+  match api_delete_with_sudo ?public_key ?secret_key (Printf.sprintf "/images/%s" image_id) with
+  | SudoSuccess _ -> true
+  | _ -> false
+
+(** Lock an image *)
+let image_lock ?public_key ?secret_key image_id =
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/lock" image_id) "{}" in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Unlock an image *)
+let image_unlock ?public_key ?secret_key image_id =
+  match api_post_with_sudo ?public_key ?secret_key (Printf.sprintf "/images/%s/unlock" image_id) "{}" with
+  | SudoSuccess _ -> true
+  | _ -> false
+
+(** Set image visibility *)
+let image_set_visibility ?public_key ?secret_key image_id visibility =
+  let json = Printf.sprintf "{\"visibility\":\"%s\"}" visibility in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/visibility" image_id) json in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Grant access to an image *)
+let image_grant_access ?public_key ?secret_key image_id trusted_api_key =
+  let json = Printf.sprintf "{\"api_key\":\"%s\"}" trusted_api_key in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/access/grant" image_id) json in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Revoke access to an image *)
+let image_revoke_access ?public_key ?secret_key image_id trusted_api_key =
+  let json = Printf.sprintf "{\"api_key\":\"%s\"}" trusted_api_key in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/access/revoke" image_id) json in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** List trusted API keys for an image *)
+let image_list_trusted ?public_key ?secret_key image_id =
+  api_get ?public_key ?secret_key (Printf.sprintf "/images/%s/access" image_id)
+
+(** Transfer image ownership *)
+let image_transfer ?public_key ?secret_key image_id to_api_key =
+  let json = Printf.sprintf "{\"to_api_key\":\"%s\"}" to_api_key in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/transfer" image_id) json in
+  not (String.length response > 0 && Str.string_match (Str.regexp ".*\"error\"") response 0)
+
+(** Spawn a service from an image *)
+let image_spawn ?public_key ?secret_key image_id ?name ?ports ?bootstrap ?network () =
+  let name_json = match name with Some n -> Printf.sprintf "\"name\":\"%s\"" (escape_json n) | None -> "" in
+  let ports_json = match ports with Some p -> Printf.sprintf "%s\"ports\":[%s]" (if name_json <> "" then "," else "") p | None -> "" in
+  let bootstrap_json = match bootstrap with Some b -> Printf.sprintf ",\"bootstrap\":\"%s\"" (escape_json b) | None -> "" in
+  let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
+  let json = "{" ^ name_json ^ ports_json ^ bootstrap_json ^ network_json ^ "}" in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/spawn" image_id) json in
+  extract_json_value response "id"
+
+(** Clone an image *)
+let image_clone ?public_key ?secret_key image_id ?name ?description () =
+  let name_json = match name with Some n -> Printf.sprintf "\"name\":\"%s\"" (escape_json n) | None -> "" in
+  let desc_json = match description with Some d -> Printf.sprintf "%s\"description\":\"%s\"" (if name_json <> "" then "," else "") (escape_json d) | None -> "" in
+  let json = "{" ^ name_json ^ desc_json ^ "}" in
+  let response = api_post ?public_key ?secret_key (Printf.sprintf "/images/%s/clone" image_id) json in
+  extract_json_value response "id"
+
+(** Validate API keys *)
+let validate_keys ?public_key ?secret_key () =
+  portal_post ?public_key ?secret_key "/keys/validate" "{}"
+
+(* ============================================================================
    CLI - Legacy curl-based functions for CLI
    ============================================================================ *)
 

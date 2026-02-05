@@ -740,14 +740,14 @@ let openBrowser (url: string) =
         eprintfn "%sError opening browser: %s%s" red ex.Message reset
 
 let cmdKey (args: Args) =
-    let apiKey = getApiKey args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey
 
     ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
 
     let request = WebRequest.Create(portalBase + "/keys/validate") :?> HttpWebRequest
     request.Method <- "POST"
     request.ContentType <- "application/json"
-    request.Headers.Add("Authorization", sprintf "Bearer %s" apiKey)
+    request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
     request.Timeout <- 30000
 
     try
@@ -756,7 +756,7 @@ let cmdKey (args: Args) =
         let responseText = reader.ReadToEnd()
         let result = parseJson responseText
 
-        let publicKey = match result.TryFind "public_key" with | Some v -> v.ToString() | None -> "N/A"
+        let resultPublicKey = match result.TryFind "public_key" with | Some v -> v.ToString() | None -> "N/A"
         let tier = match result.TryFind "tier" with | Some v -> v.ToString() | None -> "N/A"
         let status = match result.TryFind "status" with | Some v -> v.ToString() | None -> "N/A"
         let expiresAt = match result.TryFind "expires_at" with | Some v -> v.ToString() | None -> "N/A"
@@ -766,20 +766,20 @@ let cmdKey (args: Args) =
         let concurrency = match result.TryFind "concurrency" with | Some v -> v.ToString() | None -> "N/A"
         let expired = match result.TryFind "expired" with | Some v -> v.ToString() = "True" | None -> false
 
-        if args.KeyExtend && publicKey <> "N/A" then
-            let extendUrl = sprintf "%s/keys/extend?pk=%s" portalBase publicKey
+        if args.KeyExtend && resultPublicKey <> "N/A" then
+            let extendUrl = sprintf "%s/keys/extend?pk=%s" portalBase resultPublicKey
             printfn "%sOpening browser to extend key...%s" blue reset
             openBrowser extendUrl
         elif expired then
             printfn "%sExpired%s" red reset
-            printfn "Public Key: %s" publicKey
+            printfn "Public Key: %s" resultPublicKey
             printfn "Tier: %s" tier
             printfn "Expired: %s" expiresAt
             printfn "%sTo renew: Visit https://unsandbox.com/keys/extend%s" yellow reset
             exit 1
         else
             printfn "%sValid%s" green reset
-            printfn "Public Key: %s" publicKey
+            printfn "Public Key: %s" resultPublicKey
             printfn "Tier: %s" tier
             printfn "Status: %s" status
             printfn "Expires: %s" expiresAt

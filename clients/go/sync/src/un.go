@@ -1096,6 +1096,20 @@ func ExecuteInService(creds *Credentials, serviceID, command string) (map[string
 	return makeRequest("POST", fmt.Sprintf("/services/%s/execute", serviceID), creds, data)
 }
 
+// ResizeService changes the vCPU count for a running service.
+//
+// Args:
+//
+//	creds: API credentials
+//	serviceID: Service ID
+//	vcpu: New vCPU count (1-8)
+func ResizeService(creds *Credentials, serviceID string, vcpu int) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"vcpu": vcpu,
+	}
+	return makeRequest("POST", fmt.Sprintf("/services/%s/resize", serviceID), creds, data)
+}
+
 // ============================================================================
 // Additional Snapshot Operations
 // ============================================================================
@@ -1478,6 +1492,190 @@ func CloneImage(creds *Credentials, imageID string, opts *CloneImageOptions) (ma
 	}
 
 	return makeRequest("POST", fmt.Sprintf("/images/%s/clone", imageID), creds, data)
+}
+
+// ============================================================================
+// PaaS Logs API
+// ============================================================================
+
+// LogsFetchOptions contains options for fetching logs.
+type LogsFetchOptions struct {
+	Lines int    // Number of lines (1-10000)
+	Since string // Time window ("1m", "5m", "1h", "1d")
+	Grep  string // Optional filter pattern
+}
+
+// LogsFetch fetches batch logs from the portal.
+//
+// Args:
+//
+//	creds: API credentials
+//	source: Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
+//	opts: Fetch options (can be nil for defaults)
+//
+// Returns:
+//
+//	JSON response with log entries
+func LogsFetch(creds *Credentials, source string, opts *LogsFetchOptions) (map[string]interface{}, error) {
+	path := "/paas/logs"
+	params := []string{}
+
+	if source != "" {
+		params = append(params, fmt.Sprintf("source=%s", source))
+	}
+
+	if opts != nil {
+		if opts.Lines > 0 {
+			params = append(params, fmt.Sprintf("lines=%d", opts.Lines))
+		}
+		if opts.Since != "" {
+			params = append(params, fmt.Sprintf("since=%s", opts.Since))
+		}
+		if opts.Grep != "" {
+			params = append(params, fmt.Sprintf("grep=%s", opts.Grep))
+		}
+	}
+
+	if len(params) > 0 {
+		path = path + "?" + strings.Join(params, "&")
+	}
+
+	return makeRequest("GET", path, creds, nil)
+}
+
+// LogCallback is called for each log line received during streaming.
+type LogCallback func(source, line string)
+
+// LogsStream streams logs via Server-Sent Events.
+// This function blocks until the stream is closed or an error occurs.
+//
+// Args:
+//
+//	creds: API credentials
+//	source: Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
+//	grep: Optional filter pattern (empty string for no filter)
+//	callback: Function called for each log line
+//
+// Returns:
+//
+//	nil on clean shutdown, error on failure
+func LogsStream(creds *Credentials, source, grep string, callback LogCallback) error {
+	path := "/paas/logs/stream"
+	params := []string{}
+
+	if source != "" {
+		params = append(params, fmt.Sprintf("source=%s", source))
+	}
+	if grep != "" {
+		params = append(params, fmt.Sprintf("grep=%s", grep))
+	}
+
+	if len(params) > 0 {
+		path = path + "?" + strings.Join(params, "&")
+	}
+
+	url := APIBase + path
+	timestamp := time.Now().Unix()
+	message := fmt.Sprintf("%d:GET:%s:", timestamp, path)
+	mac := hmac.New(sha256.New, []byte(creds.SecretKey))
+	mac.Write([]byte(message))
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+creds.PublicKey)
+	req.Header.Set("X-Timestamp", fmt.Sprintf("%d", timestamp))
+	req.Header.Set("X-Signature", signature)
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 0} // No timeout for streaming
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("stream error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	currentSource := source
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return nil // Clean shutdown
+			}
+			return err
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Parse SSE format
+		if strings.HasPrefix(line, "event:") {
+			// New source from event type
+			currentSource = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if callback != nil && data != "" {
+				callback(currentSource, data)
+			}
+		}
+	}
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+// SDKVersion is the version of this SDK.
+const SDKVersion = "4.2.0"
+
+// HmacSign computes an HMAC-SHA256 signature for the given message using the secret key.
+// Returns the signature as a lowercase hex string.
+func HmacSign(secretKey, message string) string {
+	mac := hmac.New(sha256.New, []byte(secretKey))
+	mac.Write([]byte(message))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// HealthCheck checks if the API is reachable and responding.
+// Returns true if healthy, false otherwise.
+func HealthCheck() bool {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(APIBase + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+// Version returns the SDK version string.
+func Version() string {
+	return SDKVersion
+}
+
+// lastError holds the most recent error message for thread-safe access.
+var lastError string
+
+// SetLastError sets the last error message (internal use).
+func SetLastError(msg string) {
+	lastError = msg
+}
+
+// LastError returns the most recent error message from the SDK.
+func LastError() string {
+	return lastError
 }
 
 // ============================================================================

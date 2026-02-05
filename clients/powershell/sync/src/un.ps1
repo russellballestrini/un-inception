@@ -757,6 +757,97 @@ function Invoke-Image {
     exit 1
 }
 
+function Invoke-Snapshot {
+    param($Args)
+
+    # Parse arguments
+    $listMode = $Args -contains "--list" -or $Args -contains "-l"
+    $infoId = $null
+    $deleteId = $null
+    $lockId = $null
+    $unlockId = $null
+    $restoreId = $null
+    $cloneId = $null
+    $cloneType = $null
+    $name = $null
+    $shell = $null
+    $ports = $null
+
+    for ($i = 0; $i -lt $Args.Count; $i++) {
+        switch ($Args[$i]) {
+            "--info" { $infoId = $Args[$i + 1]; $i++ }
+            "--delete" { $deleteId = $Args[$i + 1]; $i++ }
+            "--lock" { $lockId = $Args[$i + 1]; $i++ }
+            "--unlock" { $unlockId = $Args[$i + 1]; $i++ }
+            "--restore" { $restoreId = $Args[$i + 1]; $i++ }
+            "--clone" { $cloneId = $Args[$i + 1]; $i++ }
+            "--type" { $cloneType = $Args[$i + 1]; $i++ }
+            "--name" { $name = $Args[$i + 1]; $i++ }
+            "--shell" { $shell = $Args[$i + 1]; $i++ }
+            "-s" { $shell = $Args[$i + 1]; $i++ }
+            "--ports" { $ports = $Args[$i + 1]; $i++ }
+        }
+    }
+
+    if ($listMode) {
+        $result = Invoke-Api -Endpoint "/snapshots"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($infoId) {
+        $result = Invoke-Api -Endpoint "/snapshots/$infoId"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($deleteId) {
+        Invoke-ApiWithSudo -Endpoint "/snapshots/$deleteId" -Method "DELETE"
+        Write-Host "`e[32mSnapshot deleted: $deleteId`e[0m"
+        return
+    }
+
+    if ($lockId) {
+        Invoke-Api -Endpoint "/snapshots/$lockId/lock" -Method "POST" -Body "{}"
+        Write-Host "`e[32mSnapshot locked: $lockId`e[0m"
+        return
+    }
+
+    if ($unlockId) {
+        Invoke-ApiWithSudo -Endpoint "/snapshots/$unlockId/unlock" -Method "POST" -Body "{}"
+        Write-Host "`e[32mSnapshot unlocked: $unlockId`e[0m"
+        return
+    }
+
+    if ($restoreId) {
+        $result = Invoke-Api -Endpoint "/snapshots/$restoreId/restore" -Method "POST" -Body "{}"
+        Write-Host "`e[32mRestored from snapshot`e[0m"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    if ($cloneId) {
+        if (-not $cloneType) {
+            $cloneType = "session"
+        }
+        $payload = @{ type = $cloneType }
+        if ($name) { $payload["name"] = $name }
+        if ($shell) { $payload["shell"] = $shell }
+        if ($ports) {
+            $portList = $ports -split "," | ForEach-Object { [int]$_ }
+            $payload["ports"] = $portList
+        }
+        $body = $payload | ConvertTo-Json
+        $result = Invoke-Api -Endpoint "/snapshots/$cloneId/clone" -Method "POST" -Body $body
+        Write-Host "`e[32mCloned to $cloneType`e[0m"
+        $result | ConvertTo-Json -Depth 5
+        return
+    }
+
+    Write-Error "Error: Use --list, --info, --delete, --lock, --unlock, --restore, or --clone"
+    exit 1
+}
+
 function Invoke-Service {
     param($Args)
 
@@ -1011,6 +1102,7 @@ if ($args.Count -eq 0 -or $args[0] -eq "--help" -or $args[0] -eq "-h") {
 Usage: pwsh un.ps1 [options] <source_file>
        pwsh un.ps1 session [options]
        pwsh un.ps1 service [options]
+       pwsh un.ps1 snapshot [options]
        pwsh un.ps1 image [options]
        pwsh un.ps1 languages [--json]
        pwsh un.ps1 key [options]
@@ -1068,6 +1160,19 @@ Service env commands:
   env export ID        Export vault contents
   env delete ID        Delete vault
 
+Snapshot options:
+  --list, -l          List all snapshots
+  --info ID           Get snapshot details
+  --delete ID         Delete snapshot
+  --lock ID           Lock snapshot
+  --unlock ID         Unlock snapshot
+  --restore ID        Restore from snapshot
+  --clone ID          Clone snapshot to session/service
+  --type TYPE         Clone type: session or service
+  --name NAME         Name for cloned resource
+  --shell NAME        Shell for cloned session
+  --ports PORTS       Ports for cloned service
+
 Key options:
   --extend        Open browser to extend key
 "@
@@ -1078,6 +1183,8 @@ if ($args[0] -eq "session") {
     Invoke-Session -Args $args[1..($args.Count-1)]
 } elseif ($args[0] -eq "service") {
     Invoke-Service -Args $args[1..($args.Count-1)]
+} elseif ($args[0] -eq "snapshot") {
+    Invoke-Snapshot -Args $args[1..($args.Count-1)]
 } elseif ($args[0] -eq "image") {
     Invoke-Image -Args $args[1..($args.Count-1)]
 } elseif ($args[0] -eq "languages") {

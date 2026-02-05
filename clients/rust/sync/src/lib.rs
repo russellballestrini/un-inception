@@ -1302,6 +1302,19 @@ pub fn list_snapshots(creds: &Credentials) -> Result<Vec<Snapshot>> {
     Ok(response.snapshots)
 }
 
+/// Get details of a specific snapshot.
+///
+/// # Arguments
+/// * `snapshot_id` - Snapshot ID to retrieve
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Snapshot information
+pub fn get_snapshot(snapshot_id: &str, creds: &Credentials) -> Result<Snapshot> {
+    let path = format!("/snapshots/{}", snapshot_id);
+    make_request("GET", &path, creds, None::<&()>)
+}
+
 /// Restore a snapshot to create a new session or service.
 ///
 /// # Arguments
@@ -2265,6 +2278,30 @@ pub fn redeploy_service(service_id: &str, creds: &Credentials) -> Result<Service
     make_request("POST", &path, creds, Some(&body))
 }
 
+/// Resize a service by changing its vCPU count.
+///
+/// # Arguments
+/// * `service_id` - Service ID to resize
+/// * `vcpu` - New vCPU count (1-8)
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Updated Service information
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+/// let service = resize_service("service-123", 4, &creds)?;
+/// println!("Service now has {} vCPUs", service.vcpu);
+/// ```
+pub fn resize_service(service_id: &str, vcpu: u32, creds: &Credentials) -> Result<Service> {
+    let path = format!("/services/{}/resize", service_id);
+    let body = serde_json::json!({
+        "vcpu": vcpu
+    });
+    make_request("POST", &path, creds, Some(&body))
+}
+
 /// Execute a command in a service container.
 ///
 /// # Arguments
@@ -2395,6 +2432,278 @@ pub fn image(prompt: &str, creds: &Credentials, opts: Option<ImageOptions>) -> R
     });
 
     make_request("POST", "/image", creds, Some(&payload))
+}
+
+// =============================================================================
+// PaaS Logs API Functions
+// =============================================================================
+
+/// Options for fetching logs.
+#[derive(Debug, Default)]
+pub struct LogsFetchOptions {
+    /// Number of lines to fetch (1-10000)
+    pub lines: Option<u32>,
+    /// Time window ("1m", "5m", "1h", "1d")
+    pub since: Option<String>,
+    /// Optional filter pattern
+    pub grep: Option<String>,
+}
+
+/// Response from logs fetch.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogsEntry {
+    /// Log source
+    #[serde(default)]
+    pub source: String,
+    /// Log line content
+    #[serde(default)]
+    pub line: String,
+    /// Timestamp
+    #[serde(default)]
+    pub timestamp: String,
+}
+
+/// Fetch batch logs from the portal.
+///
+/// # Arguments
+/// * `source` - Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
+/// * `opts` - Fetch options (can be None for defaults)
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Vector of log entries
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// // Fetch last 100 lines from all sources
+/// let opts = LogsFetchOptions {
+///     lines: Some(100),
+///     since: Some("1h".to_string()),
+///     ..Default::default()
+/// };
+/// let logs = logs_fetch("all", Some(opts), &creds)?;
+/// for entry in logs {
+///     println!("[{}] {}", entry.source, entry.line);
+/// }
+/// ```
+pub fn logs_fetch(source: &str, opts: Option<LogsFetchOptions>, creds: &Credentials) -> Result<Vec<LogsEntry>> {
+    let mut path = String::from("/paas/logs");
+    let mut params = vec![];
+
+    if !source.is_empty() {
+        params.push(format!("source={}", source));
+    }
+
+    if let Some(opts) = opts {
+        if let Some(lines) = opts.lines {
+            params.push(format!("lines={}", lines));
+        }
+        if let Some(since) = opts.since {
+            params.push(format!("since={}", since));
+        }
+        if let Some(grep) = opts.grep {
+            params.push(format!("grep={}", grep));
+        }
+    }
+
+    if !params.is_empty() {
+        path = format!("{}?{}", path, params.join("&"));
+    }
+
+    #[derive(Deserialize)]
+    struct LogsResponse {
+        #[serde(default)]
+        logs: Vec<LogsEntry>,
+    }
+
+    let response: LogsResponse = make_request("GET", &path, creds, None::<&()>)?;
+    Ok(response.logs)
+}
+
+/// Callback function for streaming logs.
+pub type LogCallback = fn(source: &str, line: &str);
+
+/// Stream logs via Server-Sent Events.
+///
+/// This function blocks until the stream is closed or an error occurs.
+/// Note: This is a simplified implementation that reads until EOF.
+///
+/// # Arguments
+/// * `source` - Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
+/// * `grep` - Optional filter pattern (empty string for no filter)
+/// * `callback` - Function called for each log line
+/// * `creds` - API credentials
+///
+/// # Returns
+/// Ok(()) on clean shutdown, error on failure
+///
+/// # Examples
+/// ```ignore
+/// let creds = resolve_credentials(None, None)?;
+///
+/// fn handle_log(source: &str, line: &str) {
+///     println!("[{}] {}", source, line);
+/// }
+///
+/// logs_stream("all", "", handle_log, &creds)?;
+/// ```
+pub fn logs_stream(source: &str, grep: &str, callback: LogCallback, creds: &Credentials) -> Result<()> {
+    let mut path = String::from("/paas/logs/stream");
+    let mut params = vec![];
+
+    if !source.is_empty() {
+        params.push(format!("source={}", source));
+    }
+    if !grep.is_empty() {
+        params.push(format!("grep={}", grep));
+    }
+
+    if !params.is_empty() {
+        path = format!("{}?{}", path, params.join("&"));
+    }
+
+    let url = format!("{}{}", API_BASE, path);
+    let timestamp = get_timestamp();
+    let signature = sign_request(&creds.secret_key, timestamp, "GET", &path, "");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(None)  // No timeout for streaming
+        .build()?;
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("Accept", "text/event-stream")
+        .header("User-Agent", "un-rust-sync/2.0")
+        .send()?;
+
+    let status = response.status().as_u16();
+    if status < 200 || status >= 300 {
+        let response_text = response.text()?;
+        return Err(UnsandboxError::ApiError {
+            status,
+            message: response_text,
+        });
+    }
+
+    let reader = BufReader::new(response);
+    let mut current_source = source.to_string();
+
+    for line in reader.lines() {
+        let line = line?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Parse SSE format
+        if let Some(event) = line.strip_prefix("event:") {
+            current_source = event.trim().to_string();
+        } else if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if !data.is_empty() {
+                callback(&current_source, data);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// SDK version string
+pub const SDK_VERSION: &str = "4.2.0";
+
+/// Compute HMAC-SHA256 signature for a message.
+///
+/// # Arguments
+/// * `secret_key` - Secret key for signing
+/// * `message` - Message to sign
+///
+/// # Returns
+/// Lowercase hex-encoded signature string
+///
+/// # Examples
+/// ```ignore
+/// let sig = hmac_sign("my-secret", "hello");
+/// println!("Signature: {}", sig);
+/// ```
+pub fn hmac_sign(secret_key: &str, message: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret_key.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(message.as_bytes());
+    let result = mac.finalize();
+    hex::encode(result.into_bytes())
+}
+
+/// Check if the API is reachable and responding.
+///
+/// # Returns
+/// true if healthy, false otherwise
+///
+/// # Examples
+/// ```ignore
+/// if health_check() {
+///     println!("API is healthy");
+/// } else {
+///     println!("API is unreachable");
+/// }
+/// ```
+pub fn health_check() -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    match client.get(format!("{}/health", API_BASE)).send() {
+        Ok(resp) => resp.status().as_u16() == 200,
+        Err(_) => false,
+    }
+}
+
+/// Get the SDK version string.
+///
+/// # Returns
+/// Version string (e.g., "4.2.0")
+pub fn version() -> &'static str {
+    SDK_VERSION
+}
+
+/// Thread-local storage for the last error message.
+thread_local! {
+    static LAST_ERROR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Set the last error message (internal use).
+pub fn set_last_error(msg: &str) {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = msg.to_string();
+    });
+}
+
+/// Get the last error message from the SDK.
+///
+/// # Returns
+/// Last error message, or empty string if none
+///
+/// # Examples
+/// ```ignore
+/// if let Err(_) = some_operation() {
+///     println!("Error: {}", last_error());
+/// }
+/// ```
+pub fn last_error() -> String {
+    LAST_ERROR.with(|e| e.borrow().clone())
 }
 
 // =============================================================================

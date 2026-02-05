@@ -451,10 +451,17 @@ proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network:
   let cmd = fmt"""curl -s -X POST '{API_BASE}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
   echo execCurl(cmd)
 
-proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, screen: bool, inputFiles: seq[string], publicKey: string, secretKey: string) =
+proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execute, command, shell, network: string, vcpu: int, tmux, screen: bool, inputFiles: seq[string], publicKey: string, secretKey: string) =
   if list:
     let authHeaders = buildAuthHeaders("GET", "/sessions", "", publicKey, secretKey)
     let cmd = fmt"""curl -s -X GET '{API_BASE}/sessions' {authHeaders}"""
+    echo execCurl(cmd)
+    return
+
+  if info != "":
+    let path = fmt"/sessions/{info}"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/sessions/{info}' {authHeaders}"""
     echo execCurl(cmd)
     return
 
@@ -464,6 +471,74 @@ proc cmdSession(list: bool, kill, shell, network: string, vcpu: int, tmux, scree
     let cmd = fmt"""curl -s -X DELETE '{API_BASE}/sessions/{kill}' {authHeaders}"""
     discard execCurl(cmd)
     echo GREEN & "Session terminated: " & kill & RESET
+    return
+
+  if freeze != "":
+    let path = fmt"/sessions/{freeze}/freeze"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{freeze}/freeze' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Session frozen: " & freeze & RESET
+    return
+
+  if unfreeze != "":
+    let path = fmt"/sessions/{unfreeze}/unfreeze"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{unfreeze}/unfreeze' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Session unfreezing: " & unfreeze & RESET
+    return
+
+  if boost != "":
+    let boostVcpu = if vcpu > 0: vcpu else: 2
+    let json = fmt"""{{"vcpu":{boostVcpu}}}"""
+    let path = fmt"/sessions/{boost}/boost"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{boost}/boost' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    discard execCurl(cmd)
+    echo GREEN & "Session boosted to " & $boostVcpu & " vCPU: " & boost & RESET
+    return
+
+  if unboost != "":
+    let path = fmt"/sessions/{unboost}/unboost"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{unboost}/unboost' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Session unboosted: " & unboost & RESET
+    return
+
+  if execute != "":
+    let json = fmt"""{"command":"{escapeJson(command)}"}"""
+    let path = fmt"/sessions/{execute}/execute"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let result = execCurl(cmd)
+
+    let stdoutStart = result.find("\"stdout\":\"")
+    if stdoutStart >= 0:
+      let start = stdoutStart + 10
+      var endPos = start
+      while endPos < result.len:
+        if result[endPos] == '"' and (endPos == 0 or result[endPos-1] != '\\'):
+          break
+        inc endPos
+      if endPos > start:
+        var output = result[start..<endPos]
+        output = output.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\")
+        stdout.write(output)
+
+    let stderrStart = result.find("\"stderr\":\"")
+    if stderrStart >= 0:
+      let start = stderrStart + 10
+      var endPos = start
+      while endPos < result.len:
+        if result[endPos] == '"' and (endPos == 0 or result[endPos-1] != '\\'):
+          break
+        inc endPos
+      if endPos > start:
+        var errout = result[start..<endPos]
+        errout = errout.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\"", "\"").replace("\\\\", "\\")
+        stderr.write(errout)
     return
 
   var json = fmt"""{"shell":"{if shell != "": shell else: "bash"}""""
@@ -492,7 +567,7 @@ proc setServiceUnfreezeOnDemand(serviceId: string, enabled: bool, publicKey: str
   except:
     return false
 
-proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, resize: string, resizeVcpu: int, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, unfreezeOnDemand: bool, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled: string, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
+proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list: bool, info, logs, tail, sleep, wake, destroy, resize: string, resizeVcpu: int, execute, command, dumpBootstrap, dumpFile, network: string, vcpu: int, unfreezeOnDemand: bool, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, lock, unlock, redeploy: string, inputFiles: seq[string], svcEnvs: seq[string], svcEnvFile, envAction, envTarget: string, publicKey: string, secretKey: string) =
   # Handle env subcommand
   if envAction != "":
     cmdServiceEnv(envAction, envTarget, svcEnvs, svcEnvFile, publicKey, secretKey)
@@ -575,6 +650,47 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     else:
       stderr.writeLine(RED & "Error: Failed to update unfreeze-on-demand setting" & RESET)
       quit(1)
+    return
+
+  if lock != "":
+    let path = fmt"/services/{lock}/lock"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{lock}/lock' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Service locked: " & lock & RESET
+    return
+
+  if unlock != "":
+    let path = fmt"/services/{unlock}/unlock"
+    let status = execCurlPostWithSudo(path, "{}", publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Service unlocked: " & unlock & RESET
+    elif status != 428:
+      stderr.writeLine(RED & "Error: Failed to unlock service" & RESET)
+      quit(1)
+    return
+
+  if redeploy != "":
+    var json = "{"
+    var hasContent = false
+    if bootstrap != "":
+      json.add(fmt""""bootstrap":"{escapeJson(bootstrap)}"""")
+      hasContent = true
+    if bootstrapFile != "":
+      if fileExists(bootstrapFile):
+        let bootCode = readFile(bootstrapFile)
+        if hasContent: json.add(",")
+        json.add(fmt""""bootstrap_content":"{escapeJson(bootCode)}"""")
+      else:
+        stderr.writeLine(RED & "Error: Bootstrap file not found: " & bootstrapFile & RESET)
+        quit(1)
+    json.add("}")
+    let path = fmt"/services/{redeploy}/redeploy"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{redeploy}/redeploy' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Service redeployed: " & redeploy & RESET
+    echo response
     return
 
   if execute != "":
@@ -823,7 +939,144 @@ proc cmdLanguages(jsonOutput: bool, publicKey: string, secretKey: string) =
           else:
             inc pos
 
-proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceType, visibilityId, visibilityMode, spawnId, cloneId, name, ports, publicKey, secretKey: string) =
+proc cmdSnapshot(list: bool, infoId, sessionId, serviceId, restoreId, deleteId, lockId, unlockId, cloneId, cloneType, name, ports: string, hot: bool, publicKey, secretKey: string) =
+  if list:
+    let authHeaders = buildAuthHeaders("GET", "/snapshots", "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/snapshots' {authHeaders}"""
+    echo execCurl(cmd)
+    return
+
+  if infoId != "":
+    let path = fmt"/snapshots/{infoId}"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/snapshots/{infoId}' {authHeaders}"""
+    echo execCurl(cmd)
+    return
+
+  if sessionId != "":
+    var json = "{"
+    var hasContent = false
+    if name != "":
+      json.add(fmt""""name":"{name}"""")
+      hasContent = true
+    if hot:
+      if hasContent: json.add(",")
+      json.add(""""hot":true""")
+    json.add("}")
+    let path = fmt"/sessions/{sessionId}/snapshot"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{sessionId}/snapshot' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Snapshot created" & RESET
+    echo response
+    return
+
+  if serviceId != "":
+    var json = "{"
+    var hasContent = false
+    if name != "":
+      json.add(fmt""""name":"{name}"""")
+      hasContent = true
+    if hot:
+      if hasContent: json.add(",")
+      json.add(""""hot":true""")
+    json.add("}")
+    let path = fmt"/services/{serviceId}/snapshot"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{serviceId}/snapshot' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Snapshot created" & RESET
+    echo response
+    return
+
+  if restoreId != "":
+    let path = fmt"/snapshots/{restoreId}/restore"
+    let authHeaders = buildAuthHeaders("POST", path, "{}", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/snapshots/{restoreId}/restore' -H 'Content-Type: application/json' {authHeaders} -d '{{}}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Snapshot restored" & RESET
+    echo response
+    return
+
+  if deleteId != "":
+    let path = fmt"/snapshots/{deleteId}"
+    let status = execCurlDeleteWithSudo(path, publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Snapshot deleted: " & deleteId & RESET
+    elif status != 428:
+      stderr.writeLine(RED & "Error: Failed to delete snapshot" & RESET)
+      quit(1)
+    return
+
+  if lockId != "":
+    let path = fmt"/snapshots/{lockId}/lock"
+    let authHeaders = buildAuthHeaders("POST", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/snapshots/{lockId}/lock' {authHeaders}"""
+    discard execCurl(cmd)
+    echo GREEN & "Snapshot locked: " & lockId & RESET
+    return
+
+  if unlockId != "":
+    let path = fmt"/snapshots/{unlockId}/unlock"
+    let status = execCurlPostWithSudo(path, "{}", publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Snapshot unlocked: " & unlockId & RESET
+    elif status != 428:
+      stderr.writeLine(RED & "Error: Failed to unlock snapshot" & RESET)
+      quit(1)
+    return
+
+  if cloneId != "":
+    var json = fmt"""{{"clone_type":"{if cloneType != "": cloneType else: "session"}"""""
+    if name != "": json.add(fmt""","name":"{name}"""")
+    if ports != "": json.add(fmt""","ports":[{ports}]""")
+    json.add("}")
+    let path = fmt"/snapshots/{cloneId}/clone"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/snapshots/{cloneId}/clone' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let response = execCurl(cmd)
+    echo GREEN & "Snapshot cloned" & RESET
+    echo response
+    return
+
+  stderr.writeLine(RED & "Error: Use --list, --info, --session, --service, --restore, --delete, --lock, --unlock, or --clone" & RESET)
+  quit(1)
+
+proc cmdLogs(source: string, lines: int, since, grep: string, follow: bool, publicKey, secretKey: string) =
+  let sourceParam = if source != "": source else: "all"
+  let linesParam = if lines > 0: lines else: 100
+  let sinceParam = if since != "": since else: "1h"
+
+  if follow:
+    var endpoint = fmt"/paas/logs/stream?source={sourceParam}"
+    if grep != "": endpoint.add(fmt"&grep={grep}")
+    let authHeaders = buildAuthHeaders("GET", endpoint, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -N -X GET '{PORTAL_BASE}{endpoint}' -H 'Accept: text/event-stream' {authHeaders}"""
+    # Stream logs - this will block
+    let output = execProcess(cmd)
+    echo output
+  else:
+    var endpoint = fmt"/paas/logs?source={sourceParam}&lines={linesParam}&since={sinceParam}"
+    if grep != "": endpoint.add(fmt"&grep={grep}")
+    let authHeaders = buildAuthHeaders("GET", endpoint, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{PORTAL_BASE}{endpoint}' {authHeaders}"""
+    echo execCurl(cmd)
+
+proc cmdHealth() =
+  let cmd = fmt"""curl -s -X GET '{API_BASE}/health'"""
+  let response = execProcess(cmd)
+  if response.contains("\"status\":\"healthy\"") or response.contains("\"ok\":true"):
+    echo GREEN & "API is healthy" & RESET
+  else:
+    echo RED & "API may be unhealthy" & RESET
+  echo response
+
+proc cmdVersion() =
+  echo "un.nim version 1.0.0"
+  echo "API: " & API_BASE
+  echo "Portal: " & PORTAL_BASE
+
+proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceType, visibilityId, visibilityMode, spawnId, cloneId, name, ports, grantId, revokeId, trustedId, trustedKey, transferId, toKey, publicKey, secretKey: string) =
   if list:
     let authHeaders = buildAuthHeaders("GET", "/images", "", publicKey, secretKey)
     let cmd = fmt"""curl -s -X GET '{API_BASE}/images' {authHeaders}"""
@@ -919,7 +1172,52 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     echo response
     return
 
-  stderr.writeLine(RED & "Error: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone" & RESET)
+  if grantId != "":
+    if trustedKey == "":
+      stderr.writeLine(RED & "Error: --grant requires --trusted-key" & RESET)
+      quit(1)
+    let json = fmt"""{{"trusted_api_key":"{trustedKey}"}}"""
+    let path = fmt"/images/{grantId}/grant"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{grantId}/grant' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    discard execCurl(cmd)
+    echo GREEN & "Access granted to " & trustedKey & RESET
+    return
+
+  if revokeId != "":
+    if trustedKey == "":
+      stderr.writeLine(RED & "Error: --revoke requires --trusted-key" & RESET)
+      quit(1)
+    let json = fmt"""{{"trusted_api_key":"{trustedKey}"}}"""
+    let path = fmt"/images/{revokeId}/revoke"
+    let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{revokeId}/revoke' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    discard execCurl(cmd)
+    echo GREEN & "Access revoked from " & trustedKey & RESET
+    return
+
+  if trustedId != "":
+    let path = fmt"/images/{trustedId}/trusted"
+    let authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey)
+    let cmd = fmt"""curl -s -X GET '{API_BASE}/images/{trustedId}/trusted' {authHeaders}"""
+    echo execCurl(cmd)
+    return
+
+  if transferId != "":
+    if toKey == "":
+      stderr.writeLine(RED & "Error: --transfer requires --to-key" & RESET)
+      quit(1)
+    let json = fmt"""{{"to_api_key":"{toKey}"}}"""
+    let path = fmt"/images/{transferId}/transfer"
+    let status = execCurlPostWithSudo(path, json, publicKey, secretKey)
+    if status >= 200 and status < 300:
+      echo GREEN & "Image transferred to " & toKey & RESET
+    elif status != 428:
+      stderr.writeLine(RED & "Error: Failed to transfer image" & RESET)
+      quit(1)
+    return
+
+  stderr.writeLine(RED & "Error: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, --clone, --grant, --revoke, --trusted, or --transfer" & RESET)
   quit(1)
 
 proc main() =
@@ -985,6 +1283,7 @@ proc main() =
     var list = false
     var infoId, deleteId, lockId, unlockId, publishId, sourceType = ""
     var visibilityId, visibilityMode, spawnId, cloneId, name, ports = ""
+    var grantId, revokeId, trustedId, trustedKey, transferId, toKey = ""
     var i = 1
     while i < args.len:
       case args[i]
@@ -1003,10 +1302,69 @@ proc main() =
       of "--clone": cloneId = args[i+1]; inc i
       of "--name": name = args[i+1]; inc i
       of "--ports": ports = args[i+1]; inc i
+      of "--grant": grantId = args[i+1]; inc i
+      of "--revoke": revokeId = args[i+1]; inc i
+      of "--trusted": trustedId = args[i+1]; inc i
+      of "--trusted-key": trustedKey = args[i+1]; inc i
+      of "--transfer": transferId = args[i+1]; inc i
+      of "--to-key": toKey = args[i+1]; inc i
       of "-k": publicKey = args[i+1]; inc i
       else: discard
       inc i
-    cmdImage(list, infoId, deleteId, lockId, unlockId, publishId, sourceType, visibilityId, visibilityMode, spawnId, cloneId, name, ports, publicKey, secretKey)
+    cmdImage(list, infoId, deleteId, lockId, unlockId, publishId, sourceType, visibilityId, visibilityMode, spawnId, cloneId, name, ports, grantId, revokeId, trustedId, trustedKey, transferId, toKey, publicKey, secretKey)
+    return
+
+  if args[0] == "snapshot":
+    var list = false
+    var infoId, sessionId, serviceId, restoreId, deleteId, lockId, unlockId = ""
+    var cloneId, cloneType, name, ports = ""
+    var hot = false
+    var i = 1
+    while i < args.len:
+      case args[i]
+      of "--list", "-l": list = true
+      of "--info": infoId = args[i+1]; inc i
+      of "--session": sessionId = args[i+1]; inc i
+      of "--service": serviceId = args[i+1]; inc i
+      of "--restore": restoreId = args[i+1]; inc i
+      of "--delete": deleteId = args[i+1]; inc i
+      of "--lock": lockId = args[i+1]; inc i
+      of "--unlock": unlockId = args[i+1]; inc i
+      of "--clone": cloneId = args[i+1]; inc i
+      of "--clone-type": cloneType = args[i+1]; inc i
+      of "--name": name = args[i+1]; inc i
+      of "--ports": ports = args[i+1]; inc i
+      of "--hot": hot = true
+      of "-k": publicKey = args[i+1]; inc i
+      else: discard
+      inc i
+    cmdSnapshot(list, infoId, sessionId, serviceId, restoreId, deleteId, lockId, unlockId, cloneId, cloneType, name, ports, hot, publicKey, secretKey)
+    return
+
+  if args[0] == "logs":
+    var source, since, grep = ""
+    var lines = 0
+    var follow = false
+    var i = 1
+    while i < args.len:
+      case args[i]
+      of "--source": source = args[i+1]; inc i
+      of "--lines": lines = parseInt(args[i+1]); inc i
+      of "--since": since = args[i+1]; inc i
+      of "--grep": grep = args[i+1]; inc i
+      of "--follow", "-f": follow = true
+      of "-k": publicKey = args[i+1]; inc i
+      else: discard
+      inc i
+    cmdLogs(source, lines, since, grep, follow, publicKey, secretKey)
+    return
+
+  if args[0] == "health":
+    cmdHealth()
+    return
+
+  if args[0] == "version":
+    cmdVersion()
     return
 
   if args[0] == "key":
@@ -1022,7 +1380,7 @@ proc main() =
 
   if args[0] == "session":
     var list = false
-    var kill, shell, network = ""
+    var kill, info, freeze, unfreeze, boost, unboost, execute, command, shell, network = ""
     var vcpu = 0
     var tmux, screen = false
     var inputFiles: seq[string] = @[]
@@ -1031,6 +1389,13 @@ proc main() =
       case args[i]
       of "--list": list = true
       of "--kill": kill = args[i+1]; inc i
+      of "--info": info = args[i+1]; inc i
+      of "--freeze": freeze = args[i+1]; inc i
+      of "--unfreeze": unfreeze = args[i+1]; inc i
+      of "--boost": boost = args[i+1]; inc i
+      of "--unboost": unboost = args[i+1]; inc i
+      of "--execute": execute = args[i+1]; inc i
+      of "--command": command = args[i+1]; inc i
       of "--shell": shell = args[i+1]; inc i
       of "-n": network = args[i+1]; inc i
       of "-v": vcpu = parseInt(args[i+1]); inc i
@@ -1047,13 +1412,14 @@ proc main() =
         inc i
       else: discard
       inc i
-    cmdSession(list, kill, shell, network, vcpu, tmux, screen, inputFiles, publicKey, secretKey)
+    cmdSession(list, kill, info, freeze, unfreeze, boost, unboost, execute, command, shell, network, vcpu, tmux, screen, inputFiles, publicKey, secretKey)
     return
 
   if args[0] == "service":
     var name, ports, bootstrap, bootstrapFile, serviceType = ""
     var list = false
     var info, logs, tail, sleep, wake, destroy, resize, execute, command, dumpBootstrap, dumpFile, network = ""
+    var lock, unlock, redeploy = ""
     var vcpu = 0
     var resizeVcpu = 0
     var unfreezeOnDemand = false
@@ -1078,7 +1444,7 @@ proc main() =
         of "-k": publicKey = args[i+1]; inc i
         else: discard
         inc i
-      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, unfreezeOnDemand, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+      cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, unfreezeOnDemand, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, lock, unlock, redeploy, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
       return
 
     while i < args.len:
@@ -1101,6 +1467,9 @@ proc main() =
       of "--command": command = args[i+1]; inc i
       of "--dump-bootstrap": dumpBootstrap = args[i+1]; inc i
       of "--dump-file": dumpFile = args[i+1]; inc i
+      of "--lock": lock = args[i+1]; inc i
+      of "--unlock": unlock = args[i+1]; inc i
+      of "--redeploy": redeploy = args[i+1]; inc i
       of "-n": network = args[i+1]; inc i
       of "-v": vcpu = parseInt(args[i+1]); inc i
       of "-k": publicKey = args[i+1]; inc i
@@ -1121,7 +1490,7 @@ proc main() =
         inc i
       else: discard
       inc i
-    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, unfreezeOnDemand, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
+    cmdService(name, ports, bootstrap, bootstrapFile, serviceType, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, network, vcpu, unfreezeOnDemand, setUnfreezeOnDemand, setUnfreezeOnDemandEnabled, lock, unlock, redeploy, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey)
     return
 
   # Execute mode

@@ -2394,6 +2394,123 @@ public class Un {
     }
 
     // ========================================================================
+    // PaaS Logs API (2)
+    // ========================================================================
+
+    /**
+     * Fetch batch logs from portal.
+     *
+     * @param source Log source: "all", "api", "portal", "pool/cammy", "pool/ai"
+     * @param lines Number of lines (1-10000)
+     * @param since Time window: "1m", "5m", "1h", "1d"
+     * @param grep Optional filter pattern (null for no filter)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing logs
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> logsFetch(
+        String source,
+        int lines,
+        String since,
+        String grep,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        StringBuilder path = new StringBuilder("/paas/logs?source=");
+        path.append(source != null ? source : "all");
+        path.append("&lines=").append(lines > 0 ? lines : 100);
+        if (since != null && !since.isEmpty()) {
+            path.append("&since=").append(since);
+        }
+        if (grep != null && !grep.isEmpty()) {
+            path.append("&grep=").append(java.net.URLEncoder.encode(grep, "UTF-8"));
+        }
+        return makeRequest("GET", path.toString(), creds[0], creds[1], null);
+    }
+
+    /**
+     * Interface for receiving streamed log lines.
+     */
+    public interface LogCallback {
+        /**
+         * Called for each log line received.
+         *
+         * @param source The log source (e.g., "api", "portal")
+         * @param line The log line content
+         */
+        void onLogLine(String source, String line);
+    }
+
+    /**
+     * Stream logs via SSE. Blocks until interrupted or server closes connection.
+     *
+     * @param source Log source: "all", "api", "portal", "pool/cammy", "pool/ai"
+     * @param grep Optional filter pattern (null for no filter)
+     * @param callback Callback for each log line received
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return true on clean shutdown, false on error
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     */
+    public static boolean logsStream(
+        String source,
+        String grep,
+        LogCallback callback,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        StringBuilder path = new StringBuilder("/paas/logs/stream?source=");
+        path.append(source != null ? source : "all");
+        if (grep != null && !grep.isEmpty()) {
+            path.append("&grep=").append(java.net.URLEncoder.encode(grep, "UTF-8"));
+        }
+
+        String url = API_BASE + path.toString();
+        long timestamp = System.currentTimeMillis() / 1000;
+        String signature = signRequest(creds[1], timestamp, "GET", path.toString(), null);
+
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(30000);
+        conn.setReadTimeout(0); // No timeout for streaming
+
+        conn.setRequestProperty("Authorization", "Bearer " + creds[0]);
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signature);
+        conn.setRequestProperty("Accept", "text/event-stream");
+
+        int responseCode = conn.getResponseCode();
+        if (responseCode != 200) {
+            return false;
+        }
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            String currentSource = source != null ? source : "all";
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("data: ")) {
+                    String data = line.substring(6);
+                    if (callback != null) {
+                        callback.onLogLine(currentSource, data);
+                    }
+                } else if (line.startsWith("event: ")) {
+                    currentSource = line.substring(7);
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ========================================================================
     // Key Validation API
     // ========================================================================
 
@@ -2413,6 +2530,106 @@ public class Un {
         String[] creds = resolveCredentials(publicKey, secretKey);
         // Note: validateKeys uses POST to /keys/validate
         return makeRequest("POST", "/keys/validate", creds[0], creds[1], new LinkedHashMap<>());
+    }
+
+    // ========================================================================
+    // Utility Functions
+    // ========================================================================
+
+    /**
+     * Get SDK version string.
+     *
+     * @return Version string (e.g., "4.2.0")
+     */
+    public static String version() {
+        return "4.2.0";
+    }
+
+    /**
+     * Check API health status.
+     *
+     * @return true if API is healthy, false otherwise
+     */
+    public static boolean healthCheck() {
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL(API_BASE + "/health").openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            return conn.getResponseCode() == 200;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Generate HMAC-SHA256 signature.
+     *
+     * @param secretKey Secret key for HMAC
+     * @param message Message to sign
+     * @return Lowercase hex-encoded signature
+     */
+    public static String hmacSign(String secretKey, String message) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            SecretKeySpec secretKeySpec = new SecretKeySpec(
+                secretKey.getBytes(StandardCharsets.UTF_8),
+                "HmacSHA256"
+            );
+            mac.init(secretKeySpec);
+            byte[] hash = mac.doFinal(message.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                hexString.append(String.format("%02x", b));
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Get details of a specific snapshot.
+     *
+     * @param snapshotId Snapshot ID to retrieve
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Snapshot details map
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> getSnapshot(
+        String snapshotId,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        return makeRequest("GET", "/snapshots/" + snapshotId, creds[0], creds[1], null);
+    }
+
+    /**
+     * Resize a service (change vCPU allocation).
+     *
+     * @param serviceId Service ID to resize
+     * @param vcpu New vCPU count (1-8)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with resize confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> resizeService(
+        String serviceId,
+        int vcpu,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String[] creds = resolveCredentials(publicKey, secretKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("vcpu", vcpu);
+        return makeRequestWithMethod("PATCH", "/services/" + serviceId, creds[0], creds[1], data);
     }
 
     // ========================================================================

@@ -1369,6 +1369,382 @@
     s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
 ;
 
+\ Image grant access
+: image-grant-access ( image-id-addr image-id-len key-addr key-len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2over r@ write-file throw
+    s" '" r@ write-line throw
+    s" TRUSTED_KEY='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" BODY='{\"trusted_api_key\":\"'$TRUSTED_KEY'\"}'" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/grant-access:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/grant-access -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mAccess granted to $TRUSTED_KEY\\x1b[0m\"" r@ write-line throw
+    r> close-file throw
+    2drop 2drop \ clean up the stack
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image revoke access
+: image-revoke-access ( image-id-addr image-id-len key-addr key-len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2over r@ write-file throw
+    s" '" r@ write-line throw
+    s" TRUSTED_KEY='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" BODY='{\"trusted_api_key\":\"'$TRUSTED_KEY'\"}'" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/revoke-access:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/images/$IMAGE_ID/revoke-access -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mAccess revoked from $TRUSTED_KEY\\x1b[0m\"" r@ write-line throw
+    r> close-file throw
+    2drop 2drop \ clean up the stack
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Image list trusted
+: image-list-trusted ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IMAGE_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/images/$IMAGE_ID/trusted:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X GET https://api.unsandbox.com/images/$IMAGE_ID/trusted -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot list
+: snapshot-list ( -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/snapshots:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X GET https://api.unsandbox.com/snapshots -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot info
+: snapshot-info ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SNAPSHOT_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:GET:/snapshots/$SNAPSHOT_ID:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X GET https://api.unsandbox.com/snapshots/$SNAPSHOT_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot restore
+: snapshot-restore ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SNAPSHOT_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/restore:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/snapshots/$SNAPSHOT_ID/restore -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mSnapshot restored: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot delete
+: snapshot-delete ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SNAPSHOT_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:DELETE:/snapshots/$SNAPSHOT_ID:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" RESP=$(curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com/snapshots/$SNAPSHOT_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
+    s" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"428\" ]; then" r@ write-line throw
+    s"   CHALLENGE_ID=$(echo \"$BODY\" | grep -o '\"challenge_id\":\"[^\"]*\"' | cut -d'\"' -f4)" r@ write-line throw
+    s"   echo -e '\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m' >&2" r@ write-line throw
+    s"   echo -n 'Enter OTP: ' >&2" r@ write-line throw
+    s"   read OTP" r@ write-line throw
+    s"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
+    s"   TIMESTAMP=$(date +%s)" r@ write-line throw
+    s"   MESSAGE=\"$TIMESTAMP:DELETE:/snapshots/$SNAPSHOT_ID:\"" r@ write-line throw
+    s"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s"   RESP=$(curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com/snapshots/$SNAPSHOT_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\")" r@ write-line throw
+    s"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"200\" ]; then" r@ write-line throw
+    s"   echo -e '\\x1b[32mSnapshot deleted: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    s" else" r@ write-line throw
+    s"   echo -e \"\\x1b[31mError: HTTP $HTTP_CODE\\x1b[0m\" >&2" r@ write-line throw
+    s"   echo \"$BODY\" >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot lock
+: snapshot-lock ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SNAPSHOT_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/lock:\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/snapshots/$SNAPSHOT_ID/lock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mSnapshot locked: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot unlock
+: snapshot-unlock ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SNAPSHOT_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/unlock:{}\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" RESP=$(curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com/snapshots/$SNAPSHOT_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -d '{}')" r@ write-line throw
+    s" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"428\" ]; then" r@ write-line throw
+    s"   CHALLENGE_ID=$(echo \"$BODY\" | grep -o '\"challenge_id\":\"[^\"]*\"' | cut -d'\"' -f4)" r@ write-line throw
+    s"   echo -e '\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m' >&2" r@ write-line throw
+    s"   echo -n 'Enter OTP: ' >&2" r@ write-line throw
+    s"   read OTP" r@ write-line throw
+    s"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
+    s"   TIMESTAMP=$(date +%s)" r@ write-line throw
+    s"   MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/unlock:{}\"" r@ write-line throw
+    s"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s"   RESP=$(curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com/snapshots/$SNAPSHOT_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\" -d '{}')" r@ write-line throw
+    s"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
+    s" fi" r@ write-line throw
+    s" if [ \"$HTTP_CODE\" = \"200\" ]; then" r@ write-line throw
+    s"   echo -e '\\x1b[32mSnapshot unlocked: " r@ write-file throw
+    r@ write-file throw
+    s" \\x1b[0m'" r@ write-line throw
+    s" else" r@ write-line throw
+    s"   echo -e \"\\x1b[31mError: HTTP $HTTP_CODE\\x1b[0m\" >&2" r@ write-line throw
+    s"   echo \"$BODY\" >&2" r@ write-line throw
+    s"   exit 1" r@ write-line throw
+    s" fi" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Snapshot clone
+: snapshot-clone ( addr len -- )
+    get-api-key
+    s" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" SNAPSHOT_ID='" r@ write-file throw
+    2dup r@ write-file throw
+    s" '" r@ write-line throw
+    s" PUBLIC_KEY='" r@ write-file throw
+    get-public-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" SECRET_KEY='" r@ write-file throw
+    get-secret-key r@ write-file throw
+    s" '" r@ write-line throw
+    s" CLONE_TYPE='session'; NAME=''; PORTS=''; SHELL=''" r@ write-line throw
+    s" i=4" r@ write-line throw
+    s" while [ $i -le $# ]; do" r@ write-line throw
+    s"   arg=${!i}" r@ write-line throw
+    s"   case \"$arg\" in" r@ write-line throw
+    s"     --type) ((i++)); CLONE_TYPE=${!i} ;;" r@ write-line throw
+    s"     --name) ((i++)); NAME=${!i} ;;" r@ write-line throw
+    s"     --ports) ((i++)); PORTS=${!i} ;;" r@ write-line throw
+    s"     --shell) ((i++)); SHELL=${!i} ;;" r@ write-line throw
+    s"   esac" r@ write-line throw
+    s"   ((i++))" r@ write-line throw
+    s" done" r@ write-line throw
+    s" BODY='{\"clone_type\":\"'$CLONE_TYPE'\"}'" r@ write-line throw
+    s" [ -n \"$NAME\" ] && BODY=$(echo $BODY | jq --arg n \"$NAME\" '. + {name: $n}')" r@ write-line throw
+    s" [ -n \"$PORTS\" ] && BODY=$(echo $BODY | jq --arg p \"$PORTS\" '. + {ports: ($p | split(\",\") | map(tonumber))}')" r@ write-line throw
+    s" [ -n \"$SHELL\" ] && BODY=$(echo $BODY | jq --arg s \"$SHELL\" '. + {shell: $s}')" r@ write-line throw
+    s" TIMESTAMP=$(date +%s)" r@ write-line throw
+    s" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/clone:$BODY\"" r@ write-line throw
+    s" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s" curl -s -X POST https://api.unsandbox.com/snapshots/$SNAPSHOT_ID/clone -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
+    s" echo -e '\\x1b[32mSnapshot cloned\\x1b[0m'" r@ write-line throw
+    r> close-file throw
+    s" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+;
+
+\ Handle snapshot subcommand
+: handle-snapshot ( -- )
+    argc @ 3 < if
+        snapshot-list
+        0 (bye)
+    then
+
+    2 arg 2dup s" --list" compare 0= if
+        2drop snapshot-list
+        0 (bye)
+    then
+
+    2dup s" -l" compare 0= if
+        2drop snapshot-list
+        0 (bye)
+    then
+
+    2dup s" --info" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --info requires snapshot ID" type cr
+            1 (bye)
+        then
+        3 arg snapshot-info
+        0 (bye)
+    then
+
+    2dup s" --restore" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --restore requires snapshot ID" type cr
+            1 (bye)
+        then
+        3 arg snapshot-restore
+        0 (bye)
+    then
+
+    2dup s" --delete" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --delete requires snapshot ID" type cr
+            1 (bye)
+        then
+        3 arg snapshot-delete
+        0 (bye)
+    then
+
+    2dup s" --lock" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --lock requires snapshot ID" type cr
+            1 (bye)
+        then
+        3 arg snapshot-lock
+        0 (bye)
+    then
+
+    2dup s" --unlock" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --unlock requires snapshot ID" type cr
+            1 (bye)
+        then
+        3 arg snapshot-unlock
+        0 (bye)
+    then
+
+    2dup s" --clone" compare 0= if
+        2drop
+        argc @ 4 < if
+            s" Error: --clone requires snapshot ID" type cr
+            1 (bye)
+        then
+        3 arg snapshot-clone
+        0 (bye)
+    then
+
+    2drop
+    s" Error: Use --list, --info ID, --restore ID, --delete ID, --lock ID, --unlock ID, or --clone ID" type cr
+    1 (bye)
+;
+
 \ Handle image subcommand
 : handle-image ( -- )
     argc @ 3 < if
@@ -1500,6 +1876,11 @@
 
     2dup s" image" compare 0= if
         2drop handle-image
+        0 (bye)
+    then
+
+    2dup s" snapshot" compare 0= if
+        2drop handle-snapshot
         0 (bye)
     then
 

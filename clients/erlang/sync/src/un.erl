@@ -37,10 +37,687 @@
 
 #!/usr/bin/env escript
 
-%%% Erlang UN CLI - Unsandbox CLI Client
+%%% @doc unsandbox.com Erlang SDK
 %%%
-%%% Full-featured CLI matching un.py capabilities
-%%% Uses curl for HTTP (no external dependencies)
+%%% Full API with execution, sessions, services, snapshots, and images.
+%%%
+%%% Library Usage:
+%%% ```
+%%%     %% Execute code synchronously
+%%%     Result = un:execute("python", "print(42)"),
+%%%     io:format("~s~n", [maps:get(stdout, Result)]).
+%%%
+%%%     %% List sessions
+%%%     Sessions = un:session_list().
+%%%
+%%%     %% Create a service
+%%%     ServiceId = un:service_create("myapp", #{ports => "8080"}).
+%%% ```
+%%%
+%%% Authentication Priority:
+%%%   1. Function arguments (PublicKey, SecretKey)
+%%%   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+%%%   3. Config file (~/.unsandbox/accounts.csv)
+
+-define(API_BASE, "https://api.unsandbox.com").
+-define(PORTAL_BASE, "https://unsandbox.com").
+-define(VERSION, "4.2.0").
+-define(LANGUAGES_CACHE_TTL, 3600).
+
+%% ============================================================================
+%% Utility Functions
+%% ============================================================================
+
+%% @doc Return the SDK version.
+version() -> ?VERSION.
+
+%% @doc Check API health.
+health_check() ->
+    Cmd = "curl -s -o /dev/null -w '%{http_code}' " ++ ?API_BASE ++ "/health",
+    Result = os:cmd(Cmd),
+    string:trim(Result) == "200".
+
+%% @doc Generate HMAC-SHA256 signature for a message.
+hmac_sign(SecretKey, Message) ->
+    hmac_sha256(SecretKey, Message).
+
+%% @doc Detect language from filename extension.
+detect_language(Filename) ->
+    Ext = filename:extension(Filename),
+    ext_to_lang(Ext).
+
+%% ============================================================================
+%% Execution Functions (8)
+%% ============================================================================
+
+%% @doc Execute code synchronously.
+execute(Language, Code) ->
+    execute(Language, Code, #{}).
+
+execute(Language, Code, Opts) ->
+    Json = build_execute_json_full(Language, Code, Opts),
+    Response = api_post("/execute", Json, Opts),
+    parse_result(Response).
+
+%% @doc Execute code asynchronously, returning a job ID.
+execute_async(Language, Code) ->
+    execute_async(Language, Code, #{}).
+
+execute_async(Language, Code, Opts) ->
+    Json = build_execute_json_full(Language, Code, Opts),
+    Response = api_post("/execute/async", Json, Opts),
+    extract_json_field(Response, "job_id").
+
+%% @doc Wait for a job to complete and return the result.
+wait_job(JobId) ->
+    wait_job(JobId, #{}).
+
+wait_job(JobId, Opts) ->
+    MaxPolls = maps:get(max_polls, Opts, 100),
+    PollDelays = [300, 450, 700, 900, 650, 1600, 2000],
+    do_wait_job(JobId, PollDelays, 0, MaxPolls, Opts).
+
+do_wait_job(JobId, _PollDelays, PollCount, MaxPolls, _Opts) when PollCount >= MaxPolls ->
+    #{success => false, stdout => "", stderr => "Max polls exceeded", exit_code => 1, job_id => JobId};
+do_wait_job(JobId, PollDelays, PollCount, MaxPolls, Opts) ->
+    DelayIdx = min(PollCount, length(PollDelays) - 1),
+    Delay = lists:nth(DelayIdx + 1, PollDelays),
+    timer:sleep(Delay),
+    Job = get_job(JobId, Opts),
+    Status = maps:get(status, Job, "unknown"),
+    case lists:member(Status, ["completed", "failed", "timeout", "cancelled"]) of
+        true ->
+            Response = api_get("/jobs/" ++ JobId, Opts),
+            parse_result(Response);
+        false ->
+            do_wait_job(JobId, PollDelays, PollCount + 1, MaxPolls, Opts)
+    end.
+
+%% @doc Get job status and details.
+get_job(JobId) ->
+    get_job(JobId, #{}).
+
+get_job(JobId, Opts) ->
+    Response = api_get("/jobs/" ++ JobId, Opts),
+    #{
+        id => JobId,
+        status => case extract_json_field(Response, "status") of "" -> "unknown"; S -> S end,
+        language => extract_json_field(Response, "language"),
+        created_at => extract_json_number(Response, "created_at"),
+        completed_at => extract_json_number(Response, "completed_at")
+    }.
+
+%% @doc Cancel a running job.
+cancel_job(JobId) ->
+    cancel_job(JobId, #{}).
+
+cancel_job(JobId, Opts) ->
+    Response = api_delete("/jobs/" ++ JobId, Opts),
+    not_contains_error(Response).
+
+%% @doc List all active jobs.
+list_jobs() ->
+    list_jobs(#{}).
+
+list_jobs(Opts) ->
+    api_get("/jobs", Opts).
+
+%% @doc Get list of supported languages.
+get_languages() ->
+    get_languages(#{}).
+
+get_languages(Opts) ->
+    case load_languages_cache() of
+        undefined ->
+            Response = api_get("/languages", Opts),
+            Langs = extract_json_array(Response, "languages"),
+            save_languages_cache(Langs),
+            Langs;
+        CachedLanguages ->
+            CachedLanguages
+    end.
+
+%% ============================================================================
+%% Session Functions (9)
+%% ============================================================================
+
+%% @doc List all sessions.
+session_list() -> session_list(#{}).
+session_list(Opts) -> api_get("/sessions", Opts).
+
+%% @doc Get session details.
+session_get(SessionId) -> session_get(SessionId, #{}).
+session_get(SessionId, Opts) ->
+    Response = api_get("/sessions/" ++ SessionId, Opts),
+    #{
+        id => SessionId,
+        status => case extract_json_field(Response, "status") of "" -> "unknown"; S -> S end,
+        container_name => extract_json_field(Response, "container_name"),
+        network_mode => extract_json_field(Response, "network_mode"),
+        vcpu => extract_json_number(Response, "vcpu"),
+        created_at => extract_json_number(Response, "created_at")
+    }.
+
+%% @doc Create a new session.
+session_create() -> session_create(#{}).
+session_create(Opts) ->
+    Shell = maps:get(shell, Opts, "bash"),
+    Network = maps:get(network, Opts, undefined),
+    Vcpu = maps:get(vcpu, Opts, undefined),
+    NetworkJson = case Network of undefined -> ""; N -> ",\"network\":\"" ++ N ++ "\"" end,
+    VcpuJson = case Vcpu of undefined -> ""; V -> ",\"vcpu\":" ++ integer_to_list(V) end,
+    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ NetworkJson ++ VcpuJson ++ "}",
+    Response = api_post("/sessions", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Destroy a session.
+session_destroy(SessionId) -> session_destroy(SessionId, #{}).
+session_destroy(SessionId, Opts) ->
+    Response = api_delete("/sessions/" ++ SessionId, Opts),
+    not_contains_error(Response).
+
+%% @doc Freeze a session.
+session_freeze(SessionId) -> session_freeze(SessionId, #{}).
+session_freeze(SessionId, Opts) ->
+    Response = api_post("/sessions/" ++ SessionId ++ "/freeze", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Unfreeze a session.
+session_unfreeze(SessionId) -> session_unfreeze(SessionId, #{}).
+session_unfreeze(SessionId, Opts) ->
+    Response = api_post("/sessions/" ++ SessionId ++ "/unfreeze", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Boost session resources.
+session_boost(SessionId, Vcpu) -> session_boost(SessionId, Vcpu, #{}).
+session_boost(SessionId, Vcpu, Opts) ->
+    Json = "{\"vcpu\":" ++ integer_to_list(Vcpu) ++ "}",
+    Response = api_patch("/sessions/" ++ SessionId, Json, Opts),
+    not_contains_error(Response).
+
+%% @doc Unboost session.
+session_unboost(SessionId) -> session_unboost(SessionId, #{}).
+session_unboost(SessionId, Opts) ->
+    Response = api_patch("/sessions/" ++ SessionId, "{\"vcpu\":1}", Opts),
+    not_contains_error(Response).
+
+%% @doc Execute a command in a session.
+session_execute(SessionId, Command) -> session_execute(SessionId, Command, #{}).
+session_execute(SessionId, Command, Opts) ->
+    Json = "{\"command\":\"" ++ escape_json(Command) ++ "\"}",
+    Response = api_post("/sessions/" ++ SessionId ++ "/execute", Json, Opts),
+    parse_result(Response).
+
+%% ============================================================================
+%% Service Functions (17)
+%% ============================================================================
+
+%% @doc List all services.
+service_list() -> service_list(#{}).
+service_list(Opts) -> api_get("/services", Opts).
+
+%% @doc Get service details.
+service_get(ServiceId) -> service_get(ServiceId, #{}).
+service_get(ServiceId, Opts) ->
+    Response = api_get("/services/" ++ ServiceId, Opts),
+    #{
+        id => ServiceId,
+        name => extract_json_field(Response, "name"),
+        status => case extract_json_field(Response, "status") of "" -> "unknown"; S -> S end,
+        ports => extract_json_field(Response, "ports"),
+        domains => extract_json_field(Response, "domains"),
+        vcpu => extract_json_number(Response, "vcpu"),
+        locked => extract_json_field(Response, "locked") == "true",
+        unfreeze_on_demand => extract_json_field(Response, "unfreeze_on_demand") == "true",
+        created_at => extract_json_number(Response, "created_at")
+    }.
+
+%% @doc Create a new service.
+service_create(Name) -> service_create(Name, #{}).
+service_create(Name, Opts) ->
+    Ports = maps:get(ports, Opts, undefined),
+    Bootstrap = maps:get(bootstrap, Opts, undefined),
+    Network = maps:get(network, Opts, undefined),
+    Vcpu = maps:get(vcpu, Opts, undefined),
+    PortsJson = case Ports of undefined -> ""; P -> ",\"ports\":[" ++ P ++ "]" end,
+    BootstrapJson = case Bootstrap of undefined -> ""; B -> ",\"bootstrap\":\"" ++ escape_json(B) ++ "\"" end,
+    NetworkJson = case Network of undefined -> ""; N -> ",\"network\":\"" ++ N ++ "\"" end,
+    VcpuJson = case Vcpu of undefined -> ""; V -> ",\"vcpu\":" ++ integer_to_list(V) end,
+    Json = "{\"name\":\"" ++ escape_json(Name) ++ "\"" ++ PortsJson ++ BootstrapJson ++ NetworkJson ++ VcpuJson ++ "}",
+    Response = api_post("/services", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Destroy a service.
+service_destroy(ServiceId) -> service_destroy(ServiceId, #{}).
+service_destroy(ServiceId, Opts) ->
+    Response = api_delete("/services/" ++ ServiceId, Opts),
+    not_contains_error(Response).
+
+%% @doc Freeze a service.
+service_freeze(ServiceId) -> service_freeze(ServiceId, #{}).
+service_freeze(ServiceId, Opts) ->
+    Response = api_post("/services/" ++ ServiceId ++ "/freeze", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Unfreeze a service.
+service_unfreeze(ServiceId) -> service_unfreeze(ServiceId, #{}).
+service_unfreeze(ServiceId, Opts) ->
+    Response = api_post("/services/" ++ ServiceId ++ "/unfreeze", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Lock a service.
+service_lock(ServiceId) -> service_lock(ServiceId, #{}).
+service_lock(ServiceId, Opts) ->
+    Response = api_post("/services/" ++ ServiceId ++ "/lock", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Unlock a service.
+service_unlock(ServiceId) -> service_unlock(ServiceId, #{}).
+service_unlock(ServiceId, Opts) ->
+    Response = api_post("/services/" ++ ServiceId ++ "/unlock", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Set unfreeze-on-demand for a service.
+service_set_unfreeze_on_demand(ServiceId, Enabled) -> service_set_unfreeze_on_demand(ServiceId, Enabled, #{}).
+service_set_unfreeze_on_demand(ServiceId, Enabled, Opts) ->
+    EnabledStr = if Enabled -> "true"; true -> "false" end,
+    Json = "{\"unfreeze_on_demand\":" ++ EnabledStr ++ "}",
+    Response = api_patch("/services/" ++ ServiceId, Json, Opts),
+    not_contains_error(Response).
+
+%% @doc Redeploy a service.
+service_redeploy(ServiceId) -> service_redeploy(ServiceId, undefined, #{}).
+service_redeploy(ServiceId, Bootstrap) -> service_redeploy(ServiceId, Bootstrap, #{}).
+service_redeploy(ServiceId, Bootstrap, Opts) ->
+    BootstrapJson = case Bootstrap of undefined -> ""; B -> "\"bootstrap\":\"" ++ escape_json(B) ++ "\"" end,
+    Json = "{" ++ BootstrapJson ++ "}",
+    Response = api_post("/services/" ++ ServiceId ++ "/redeploy", Json, Opts),
+    not_contains_error(Response).
+
+%% @doc Get service logs.
+service_logs(ServiceId) -> service_logs(ServiceId, #{}).
+service_logs(ServiceId, Opts) ->
+    AllLogs = maps:get(all_logs, Opts, false),
+    Endpoint = if AllLogs -> "/services/" ++ ServiceId ++ "/logs?all=true"; true -> "/services/" ++ ServiceId ++ "/logs" end,
+    api_get(Endpoint, Opts).
+
+%% @doc Execute a command in a service.
+service_execute(ServiceId, Command) -> service_execute(ServiceId, Command, #{}).
+service_execute(ServiceId, Command, Opts) ->
+    TimeoutMs = maps:get(timeout_ms, Opts, undefined),
+    TimeoutJson = case TimeoutMs of undefined -> ""; T -> ",\"timeout_ms\":" ++ integer_to_list(T) end,
+    Json = "{\"command\":\"" ++ escape_json(Command) ++ "\"" ++ TimeoutJson ++ "}",
+    Response = api_post("/services/" ++ ServiceId ++ "/execute", Json, Opts),
+    parse_result(Response).
+
+%% @doc Get service environment vault.
+service_env_get(ServiceId) -> service_env_get(ServiceId, #{}).
+service_env_get(ServiceId, Opts) ->
+    api_get("/services/" ++ ServiceId ++ "/env", Opts).
+
+%% @doc Set service environment vault.
+service_env_set(ServiceId, EnvContent) -> service_env_set(ServiceId, EnvContent, #{}).
+service_env_set(ServiceId, EnvContent, Opts) ->
+    api_put_text("/services/" ++ ServiceId ++ "/env", EnvContent, Opts).
+
+%% @doc Delete service environment vault.
+service_env_delete(ServiceId) -> service_env_delete(ServiceId, #{}).
+service_env_delete(ServiceId, Opts) ->
+    Response = api_delete("/services/" ++ ServiceId ++ "/env", Opts),
+    not_contains_error(Response).
+
+%% @doc Export service environment vault.
+service_env_export(ServiceId) -> service_env_export(ServiceId, #{}).
+service_env_export(ServiceId, Opts) ->
+    Response = api_post("/services/" ++ ServiceId ++ "/env/export", "{}", Opts),
+    extract_json_field(Response, "content").
+
+%% @doc Resize a service.
+service_resize(ServiceId, Vcpu) -> service_resize(ServiceId, Vcpu, #{}).
+service_resize(ServiceId, Vcpu, Opts) ->
+    Json = "{\"vcpu\":" ++ integer_to_list(Vcpu) ++ "}",
+    Response = api_patch("/services/" ++ ServiceId, Json, Opts),
+    not_contains_error(Response).
+
+%% ============================================================================
+%% Snapshot Functions (9)
+%% ============================================================================
+
+%% @doc List all snapshots.
+snapshot_list() -> snapshot_list(#{}).
+snapshot_list(Opts) -> api_get("/snapshots", Opts).
+
+%% @doc Get snapshot details.
+snapshot_get(SnapshotId) -> snapshot_get(SnapshotId, #{}).
+snapshot_get(SnapshotId, Opts) ->
+    Response = api_get("/snapshots/" ++ SnapshotId, Opts),
+    #{
+        id => SnapshotId,
+        name => extract_json_field(Response, "name"),
+        type => case extract_json_field(Response, "type") of "" -> "unknown"; T -> T end,
+        source_id => extract_json_field(Response, "source_id"),
+        hot => extract_json_field(Response, "hot") == "true",
+        locked => extract_json_field(Response, "locked") == "true",
+        created_at => extract_json_number(Response, "created_at"),
+        size_bytes => extract_json_number(Response, "size_bytes")
+    }.
+
+%% @doc Create a snapshot of a session.
+snapshot_session(SessionId) -> snapshot_session(SessionId, #{}).
+snapshot_session(SessionId, Opts) ->
+    Name = maps:get(name, Opts, undefined),
+    Hot = maps:get(hot, Opts, false),
+    NameJson = case Name of undefined -> ""; N -> "\"name\":\"" ++ escape_json(N) ++ "\"," end,
+    HotJson = if Hot -> "\"hot\":true"; true -> "\"hot\":false" end,
+    Json = "{" ++ NameJson ++ HotJson ++ "}",
+    Response = api_post("/sessions/" ++ SessionId ++ "/snapshot", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Create a snapshot of a service.
+snapshot_service(ServiceId) -> snapshot_service(ServiceId, #{}).
+snapshot_service(ServiceId, Opts) ->
+    Name = maps:get(name, Opts, undefined),
+    Hot = maps:get(hot, Opts, false),
+    NameJson = case Name of undefined -> ""; N -> "\"name\":\"" ++ escape_json(N) ++ "\"," end,
+    HotJson = if Hot -> "\"hot\":true"; true -> "\"hot\":false" end,
+    Json = "{" ++ NameJson ++ HotJson ++ "}",
+    Response = api_post("/services/" ++ ServiceId ++ "/snapshot", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Restore from a snapshot.
+snapshot_restore(SnapshotId) -> snapshot_restore(SnapshotId, #{}).
+snapshot_restore(SnapshotId, Opts) ->
+    Response = api_post("/snapshots/" ++ SnapshotId ++ "/restore", "{}", Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Delete a snapshot.
+snapshot_delete(SnapshotId) -> snapshot_delete(SnapshotId, #{}).
+snapshot_delete(SnapshotId, Opts) ->
+    Response = api_delete("/snapshots/" ++ SnapshotId, Opts),
+    not_contains_error(Response).
+
+%% @doc Lock a snapshot.
+snapshot_lock(SnapshotId) -> snapshot_lock(SnapshotId, #{}).
+snapshot_lock(SnapshotId, Opts) ->
+    Response = api_post("/snapshots/" ++ SnapshotId ++ "/lock", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Unlock a snapshot.
+snapshot_unlock(SnapshotId) -> snapshot_unlock(SnapshotId, #{}).
+snapshot_unlock(SnapshotId, Opts) ->
+    Response = api_post("/snapshots/" ++ SnapshotId ++ "/unlock", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Clone a snapshot to create a new session or service.
+snapshot_clone(SnapshotId, Opts) ->
+    CloneType = maps:get(type, Opts),
+    Name = maps:get(name, Opts, undefined),
+    Ports = maps:get(ports, Opts, undefined),
+    Shell = maps:get(shell, Opts, undefined),
+    TypeJson = "\"type\":\"" ++ CloneType ++ "\"",
+    NameJson = case Name of undefined -> ""; N -> ",\"name\":\"" ++ escape_json(N) ++ "\"" end,
+    PortsJson = case Ports of undefined -> ""; P -> ",\"ports\":[" ++ P ++ "]" end,
+    ShellJson = case Shell of undefined -> ""; S -> ",\"shell\":\"" ++ S ++ "\"" end,
+    Json = "{" ++ TypeJson ++ NameJson ++ PortsJson ++ ShellJson ++ "}",
+    Response = api_post("/snapshots/" ++ SnapshotId ++ "/clone", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% ============================================================================
+%% Image Functions (13)
+%% ============================================================================
+
+%% @doc List images.
+image_list() -> image_list(#{}).
+image_list(Opts) ->
+    Filter = maps:get(filter, Opts, undefined),
+    Endpoint = case Filter of undefined -> "/images"; F -> "/images?filter=" ++ F end,
+    api_get(Endpoint, Opts).
+
+%% @doc Get image details.
+image_get(ImageId) -> image_get(ImageId, #{}).
+image_get(ImageId, Opts) ->
+    Response = api_get("/images/" ++ ImageId, Opts),
+    #{
+        id => ImageId,
+        name => extract_json_field(Response, "name"),
+        description => extract_json_field(Response, "description"),
+        visibility => case extract_json_field(Response, "visibility") of "" -> "private"; V -> V end,
+        source_type => extract_json_field(Response, "source_type"),
+        source_id => extract_json_field(Response, "source_id"),
+        locked => extract_json_field(Response, "locked") == "true",
+        created_at => extract_json_number(Response, "created_at"),
+        size_bytes => extract_json_number(Response, "size_bytes")
+    }.
+
+%% @doc Publish an image.
+image_publish(SourceType, SourceId) -> image_publish(SourceType, SourceId, #{}).
+image_publish(SourceType, SourceId, Opts) ->
+    Name = maps:get(name, Opts, undefined),
+    Description = maps:get(description, Opts, undefined),
+    NameJson = case Name of undefined -> ""; N -> ",\"name\":\"" ++ escape_json(N) ++ "\"" end,
+    DescJson = case Description of undefined -> ""; D -> ",\"description\":\"" ++ escape_json(D) ++ "\"" end,
+    Json = "{\"source_type\":\"" ++ SourceType ++ "\",\"source_id\":\"" ++ SourceId ++ "\"" ++ NameJson ++ DescJson ++ "}",
+    Response = api_post("/images/publish", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Delete an image.
+image_delete(ImageId) -> image_delete(ImageId, #{}).
+image_delete(ImageId, Opts) ->
+    Response = api_delete("/images/" ++ ImageId, Opts),
+    not_contains_error(Response).
+
+%% @doc Lock an image.
+image_lock(ImageId) -> image_lock(ImageId, #{}).
+image_lock(ImageId, Opts) ->
+    Response = api_post("/images/" ++ ImageId ++ "/lock", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Unlock an image.
+image_unlock(ImageId) -> image_unlock(ImageId, #{}).
+image_unlock(ImageId, Opts) ->
+    Response = api_post("/images/" ++ ImageId ++ "/unlock", "{}", Opts),
+    not_contains_error(Response).
+
+%% @doc Set image visibility.
+image_set_visibility(ImageId, Visibility) -> image_set_visibility(ImageId, Visibility, #{}).
+image_set_visibility(ImageId, Visibility, Opts) ->
+    Json = "{\"visibility\":\"" ++ Visibility ++ "\"}",
+    Response = api_post("/images/" ++ ImageId ++ "/visibility", Json, Opts),
+    not_contains_error(Response).
+
+%% @doc Grant access to an image.
+image_grant_access(ImageId, TrustedApiKey) -> image_grant_access(ImageId, TrustedApiKey, #{}).
+image_grant_access(ImageId, TrustedApiKey, Opts) ->
+    Json = "{\"api_key\":\"" ++ TrustedApiKey ++ "\"}",
+    Response = api_post("/images/" ++ ImageId ++ "/access/grant", Json, Opts),
+    not_contains_error(Response).
+
+%% @doc Revoke access to an image.
+image_revoke_access(ImageId, TrustedApiKey) -> image_revoke_access(ImageId, TrustedApiKey, #{}).
+image_revoke_access(ImageId, TrustedApiKey, Opts) ->
+    Json = "{\"api_key\":\"" ++ TrustedApiKey ++ "\"}",
+    Response = api_post("/images/" ++ ImageId ++ "/access/revoke", Json, Opts),
+    not_contains_error(Response).
+
+%% @doc List trusted API keys for an image.
+image_list_trusted(ImageId) -> image_list_trusted(ImageId, #{}).
+image_list_trusted(ImageId, Opts) ->
+    Response = api_get("/images/" ++ ImageId ++ "/access", Opts),
+    extract_json_array(Response, "trusted_keys").
+
+%% @doc Transfer image ownership.
+image_transfer(ImageId, ToApiKey) -> image_transfer(ImageId, ToApiKey, #{}).
+image_transfer(ImageId, ToApiKey, Opts) ->
+    Json = "{\"to_api_key\":\"" ++ ToApiKey ++ "\"}",
+    Response = api_post("/images/" ++ ImageId ++ "/transfer", Json, Opts),
+    not_contains_error(Response).
+
+%% @doc Spawn a service from an image.
+image_spawn(ImageId) -> image_spawn(ImageId, #{}).
+image_spawn(ImageId, Opts) ->
+    Name = maps:get(name, Opts, undefined),
+    Ports = maps:get(ports, Opts, undefined),
+    Bootstrap = maps:get(bootstrap, Opts, undefined),
+    Network = maps:get(network, Opts, undefined),
+    NameJson = case Name of undefined -> ""; N -> "\"name\":\"" ++ escape_json(N) ++ "\"" end,
+    PortsJson = case Ports of undefined -> ""; P -> (if Name =/= undefined -> ","; true -> "" end) ++ "\"ports\":[" ++ P ++ "]" end,
+    BootstrapJson = case Bootstrap of undefined -> ""; B -> ",\"bootstrap\":\"" ++ escape_json(B) ++ "\"" end,
+    NetworkJson = case Network of undefined -> ""; Nn -> ",\"network\":\"" ++ Nn ++ "\"" end,
+    Json = "{" ++ NameJson ++ PortsJson ++ BootstrapJson ++ NetworkJson ++ "}",
+    Response = api_post("/images/" ++ ImageId ++ "/spawn", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% @doc Clone an image.
+image_clone(ImageId) -> image_clone(ImageId, #{}).
+image_clone(ImageId, Opts) ->
+    Name = maps:get(name, Opts, undefined),
+    Description = maps:get(description, Opts, undefined),
+    NameJson = case Name of undefined -> ""; N -> "\"name\":\"" ++ escape_json(N) ++ "\"" end,
+    DescJson = case Description of undefined -> ""; D -> (if Name =/= undefined -> ","; true -> "" end) ++ "\"description\":\"" ++ escape_json(D) ++ "\"" end,
+    Json = "{" ++ NameJson ++ DescJson ++ "}",
+    Response = api_post("/images/" ++ ImageId ++ "/clone", Json, Opts),
+    extract_json_field(Response, "id").
+
+%% ============================================================================
+%% PaaS Logs Functions (2)
+%% ============================================================================
+
+%% @doc Fetch batch logs from portal.
+logs_fetch() -> logs_fetch(#{}).
+logs_fetch(Opts) ->
+    Source = maps:get(source, Opts, "all"),
+    Lines = maps:get(lines, Opts, 100),
+    Since = maps:get(since, Opts, "1h"),
+    Grep = maps:get(grep, Opts, undefined),
+    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ http_uri:encode(G) end,
+    api_get("/logs?source=" ++ Source ++ "&lines=" ++ integer_to_list(Lines) ++ "&since=" ++ Since ++ GrepParam, Opts).
+
+%% @doc Stream logs (simplified polling implementation).
+logs_stream(Callback) -> logs_stream(Callback, #{}).
+logs_stream(Callback, Opts) ->
+    Source = maps:get(source, Opts, "all"),
+    Grep = maps:get(grep, Opts, undefined),
+    Interval = maps:get(interval, Opts, 5000),
+    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ http_uri:encode(G) end,
+    logs_stream_loop(Source, GrepParam, Callback, Interval, Opts).
+
+logs_stream_loop(Source, GrepParam, Callback, Interval, Opts) ->
+    Response = api_get("/logs?source=" ++ Source ++ "&lines=50&since=10s" ++ GrepParam, Opts),
+    Callback(Source, Response),
+    timer:sleep(Interval),
+    logs_stream_loop(Source, GrepParam, Callback, Interval, Opts).
+
+%% ============================================================================
+%% Key Validation (1)
+%% ============================================================================
+
+%% @doc Validate API keys.
+validate_keys() -> validate_keys(#{}).
+validate_keys(Opts) ->
+    Response = portal_post("/keys/validate", "{}", Opts),
+    #{
+        valid => extract_json_field(Response, "status") == "valid",
+        tier => extract_json_field(Response, "tier"),
+        rate_limit_per_minute => extract_json_number(Response, "rate_per_minute"),
+        concurrency_limit => extract_json_number(Response, "concurrency"),
+        expires_at => extract_json_number(Response, "expires_at")
+    }.
+
+%% ============================================================================
+%% Private API Functions
+%% ============================================================================
+
+api_get(Endpoint, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "GET", Endpoint, ""),
+    Cmd = "curl -s " ++ ?API_BASE ++ Endpoint ++ AuthHeaders,
+    Result = os:cmd(Cmd),
+    check_clock_drift_error(Result),
+    Result.
+
+api_post(Endpoint, Json, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    TmpFile = write_temp_file(Json),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
+    Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++ " -H 'Content-Type: application/json'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    check_clock_drift_error(Result),
+    Result.
+
+api_delete(Endpoint, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
+    Cmd = "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++ AuthHeaders,
+    Result = os:cmd(Cmd),
+    check_clock_drift_error(Result),
+    Result.
+
+api_patch(Endpoint, Json, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    TmpFile = write_temp_file(Json),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PATCH", Endpoint, Json),
+    Cmd = "curl -s -X PATCH " ++ ?API_BASE ++ Endpoint ++ " -H 'Content-Type: application/json'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    check_clock_drift_error(Result),
+    Result.
+
+api_put_text(Endpoint, Body, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    TmpFile = write_temp_file(Body),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PUT", Endpoint, Body),
+    Cmd = "curl -s -o /dev/null -w '%{http_code}' -X PUT " ++ ?API_BASE ++ Endpoint ++ " -H 'Content-Type: text/plain'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    StatusCode = list_to_integer(string:trim(Result)),
+    StatusCode >= 200 andalso StatusCode < 300.
+
+portal_post(Endpoint, Json, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    TmpFile = write_temp_file(Json),
+    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
+    Cmd = "curl -s -X POST " ++ ?PORTAL_BASE ++ Endpoint ++ " -H 'Content-Type: application/json'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
+    Result = os:cmd(Cmd),
+    file:delete(TmpFile),
+    check_clock_drift_error(Result),
+    Result.
+
+get_api_keys_from_opts(Opts) ->
+    case {maps:get(public_key, Opts, undefined), maps:get(secret_key, Opts, undefined)} of
+        {Pk, Sk} when Pk =/= undefined, Sk =/= undefined -> {Pk, Sk};
+        _ -> get_api_keys()
+    end.
+
+build_execute_json_full(Language, Code, Opts) ->
+    Network = maps:get(network, Opts, undefined),
+    Vcpu = maps:get(vcpu, Opts, undefined),
+    Ttl = maps:get(ttl, Opts, undefined),
+    ReturnArtifacts = maps:get(return_artifacts, Opts, false),
+    NetworkJson = case Network of undefined -> ""; N -> ",\"network\":\"" ++ N ++ "\"" end,
+    VcpuJson = case Vcpu of undefined -> ""; V -> ",\"vcpu\":" ++ integer_to_list(V) end,
+    TtlJson = case Ttl of undefined -> ""; T -> ",\"ttl\":" ++ integer_to_list(T) end,
+    ArtifactsJson = if ReturnArtifacts -> ",\"return_artifacts\":true"; true -> "" end,
+    "{\"language\":\"" ++ Language ++ "\",\"code\":\"" ++ escape_json(Code) ++ "\"" ++ NetworkJson ++ VcpuJson ++ TtlJson ++ ArtifactsJson ++ "}".
+
+parse_result(Response) ->
+    ExitCode = case extract_json_number(Response, "exit_code") of 0 -> 0; N when is_integer(N) -> N; _ -> 0 end,
+    #{
+        success => ExitCode == 0,
+        stdout => case extract_json_field(Response, "stdout") of "" -> ""; S -> S end,
+        stderr => case extract_json_field(Response, "stderr") of "" -> ""; S -> S end,
+        exit_code => ExitCode,
+        job_id => extract_json_field(Response, "job_id"),
+        language => extract_json_field(Response, "language"),
+        execution_time => undefined
+    }.
+
+not_contains_error(Response) ->
+    string:str(Response, "\"error\"") == 0.
+
+%% ============================================================================
+%% CLI Entry Point
+%% ============================================================================
 
 main([]) ->
     io:format("Usage: un.erl [options] <source_file>~n"),

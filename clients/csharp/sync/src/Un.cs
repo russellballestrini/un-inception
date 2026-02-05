@@ -1357,3 +1357,1073 @@ Key options:
   --extend          Open browser to extend expired key");
     }
 }
+
+// =============================================================================
+// Library API - For embedding in other .NET applications
+// =============================================================================
+
+/// <summary>
+/// Unsandbox SDK for C# (Mono) - Full library API matching the C reference implementation
+/// </summary>
+public static class Unsandbox
+{
+    private const string API_BASE = "https://api.unsandbox.com";
+    private const string VERSION = "4.2.50";
+    private static string _lastError;
+
+    /// <summary>Extension map for language detection</summary>
+    public static readonly Dictionary<string, string> ExtMap = new Dictionary<string, string>
+    {
+        {".py", "python"}, {".js", "javascript"}, {".ts", "typescript"},
+        {".rb", "ruby"}, {".php", "php"}, {".pl", "perl"}, {".lua", "lua"},
+        {".sh", "bash"}, {".go", "go"}, {".rs", "rust"}, {".c", "c"},
+        {".cpp", "cpp"}, {".cc", "cpp"}, {".cxx", "cpp"},
+        {".java", "java"}, {".kt", "kotlin"}, {".cs", "csharp"}, {".fs", "fsharp"},
+        {".ps1", "powershell"}, {".hs", "haskell"}, {".ml", "ocaml"},
+        {".clj", "clojure"}, {".scm", "scheme"}, {".lisp", "commonlisp"},
+        {".erl", "erlang"}, {".ex", "elixir"}, {".exs", "elixir"},
+        {".jl", "julia"}, {".r", "r"}, {".R", "r"}, {".cr", "crystal"},
+        {".d", "d"}, {".nim", "nim"}, {".zig", "zig"}, {".v", "v"},
+        {".dart", "dart"}, {".groovy", "groovy"}, {".scala", "scala"},
+        {".f90", "fortran"}, {".f95", "fortran"}, {".cob", "cobol"},
+        {".pro", "prolog"}, {".forth", "forth"}, {".4th", "forth"},
+        {".tcl", "tcl"}, {".raku", "raku"}, {".m", "objc"}
+    };
+
+    // --- Execution Functions (8) ---
+
+    /// <summary>Execute code synchronously</summary>
+    public static ExecuteResult Execute(string language, string code, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["language"] = language, ["code"] = code };
+        try
+        {
+            var result = ApiCall("/execute", "POST", payload, pk, sk);
+            return new ExecuteResult
+            {
+                Stdout = GetString(result, "stdout"),
+                Stderr = GetString(result, "stderr"),
+                ExitCode = GetInt(result, "exit_code"),
+                Language = language,
+                ExecutionTime = GetDouble(result, "execution_time"),
+                Success = true
+            };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new ExecuteResult { Success = false, ErrorMessage = ex.Message }; }
+    }
+
+    /// <summary>Execute code asynchronously, returns job ID</summary>
+    public static string ExecuteAsync(string language, string code, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["language"] = language, ["code"] = code, ["async"] = true };
+        try
+        {
+            var result = ApiCall("/execute", "POST", payload, pk, sk);
+            return GetString(result, "job_id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    /// <summary>Wait for async job to complete</summary>
+    public static ExecuteResult WaitJob(string jobId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/jobs/{jobId}/wait", "GET", null, pk, sk);
+            return new ExecuteResult
+            {
+                Stdout = GetString(result, "stdout"),
+                Stderr = GetString(result, "stderr"),
+                ExitCode = GetInt(result, "exit_code"),
+                ExecutionTime = GetDouble(result, "execution_time"),
+                Success = true
+            };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    /// <summary>Get job status</summary>
+    public static JobInfo GetJob(string jobId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/jobs/{jobId}", "GET", null, pk, sk);
+            return new JobInfo
+            {
+                Id = GetString(result, "id"),
+                Language = GetString(result, "language"),
+                Status = GetString(result, "status")
+            };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    /// <summary>Cancel a running job</summary>
+    public static bool CancelJob(string jobId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/jobs/{jobId}/cancel", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    /// <summary>List all jobs</summary>
+    public static List<JobInfo> ListJobs(string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall("/jobs", "GET", null, pk, sk);
+            var jobs = new List<JobInfo>();
+            if (result.ContainsKey("jobs") && result["jobs"] is List<object> jobList)
+                foreach (Dictionary<string, object> j in jobList)
+                    jobs.Add(new JobInfo { Id = j.ContainsKey("id") ? (string)j["id"] : null, Status = j.ContainsKey("status") ? (string)j["status"] : null });
+            return jobs;
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<JobInfo>(); }
+    }
+
+    /// <summary>Get available programming languages</summary>
+    public static List<string> GetLanguages(string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall("/languages", "GET", null, pk, sk);
+            if (result.ContainsKey("languages") && result["languages"] is List<object> langs)
+                return langs.ConvertAll(x => x.ToString());
+            return new List<string>();
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<string>(); }
+    }
+
+    /// <summary>Detect language from filename extension</summary>
+    public static string DetectLanguage(string filename)
+    {
+        int dotIndex = filename.LastIndexOf('.');
+        if (dotIndex == -1) return null;
+        string ext = filename.Substring(dotIndex).ToLower();
+        return ExtMap.ContainsKey(ext) ? ExtMap[ext] : null;
+    }
+
+    // --- Session Functions (9) ---
+
+    public static List<SessionInfo> SessionList(string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall("/sessions", "GET", null, pk, sk);
+            var sessions = new List<SessionInfo>();
+            if (result.ContainsKey("sessions") && result["sessions"] is List<object> sessionList)
+                foreach (Dictionary<string, object> s in sessionList)
+                    sessions.Add(new SessionInfo { Id = s.ContainsKey("id") ? (string)s["id"] : null, Status = s.ContainsKey("status") ? (string)s["status"] : null });
+            return sessions;
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<SessionInfo>(); }
+    }
+
+    public static SessionInfo SessionGet(string sessionId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/sessions/{sessionId}", "GET", null, pk, sk);
+            return new SessionInfo { Id = GetString(result, "id"), Status = GetString(result, "status") };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static SessionInfo SessionCreate(string networkMode = null, string shell = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["shell"] = shell ?? "bash" };
+        if (networkMode != null) payload["network"] = networkMode;
+        try
+        {
+            var result = ApiCall("/sessions", "POST", payload, pk, sk);
+            return new SessionInfo { Id = GetString(result, "id"), Status = "running" };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static bool SessionDestroy(string sessionId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/sessions/{sessionId}", "DELETE", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool SessionFreeze(string sessionId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/sessions/{sessionId}/freeze", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool SessionUnfreeze(string sessionId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/sessions/{sessionId}/unfreeze", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool SessionBoost(string sessionId, int vcpu = 2, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["vcpu"] = vcpu };
+        try { ApiCall($"/sessions/{sessionId}/boost", "POST", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool SessionUnboost(string sessionId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/sessions/{sessionId}/unboost", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static ExecuteResult SessionExecute(string sessionId, string command, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["command"] = command };
+        try
+        {
+            var result = ApiCall($"/sessions/{sessionId}/execute", "POST", payload, pk, sk);
+            return new ExecuteResult
+            {
+                Stdout = GetString(result, "stdout"),
+                Stderr = GetString(result, "stderr"),
+                ExitCode = GetInt(result, "exit_code"),
+                Success = true
+            };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    // --- Service Functions (17) ---
+
+    public static List<ServiceInfo> ServiceList(string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall("/services", "GET", null, pk, sk);
+            var services = new List<ServiceInfo>();
+            if (result.ContainsKey("services") && result["services"] is List<object> serviceList)
+                foreach (Dictionary<string, object> s in serviceList)
+                    services.Add(new ServiceInfo { Id = s.ContainsKey("id") ? (string)s["id"] : null, Name = s.ContainsKey("name") ? (string)s["name"] : null, Status = s.ContainsKey("status") ? (string)s["status"] : null });
+            return services;
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<ServiceInfo>(); }
+    }
+
+    public static ServiceInfo ServiceGet(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/services/{serviceId}", "GET", null, pk, sk);
+            return new ServiceInfo { Id = GetString(result, "id"), Name = GetString(result, "name"), Status = GetString(result, "status") };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string ServiceCreate(string name, string ports = null, string domains = null, string bootstrap = null, string networkMode = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["name"] = name };
+        if (ports != null)
+        {
+            var portList = new List<int>();
+            foreach (var p in ports.Split(',')) portList.Add(int.Parse(p.Trim()));
+            payload["ports"] = portList;
+        }
+        if (domains != null) payload["domains"] = domains;
+        if (bootstrap != null) payload["bootstrap"] = bootstrap;
+        if (networkMode != null) payload["network"] = networkMode;
+        try
+        {
+            var result = ApiCall("/services", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static bool ServiceDestroy(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/services/{serviceId}", "DELETE", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceFreeze(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/services/{serviceId}/freeze", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceUnfreeze(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/services/{serviceId}/unfreeze", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceLock(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/services/{serviceId}/lock", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceUnlock(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/services/{serviceId}/unlock", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceSetUnfreezeOnDemand(string serviceId, bool enabled, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["unfreeze_on_demand"] = enabled };
+        try { ApiCall($"/services/{serviceId}", "PATCH", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceRedeploy(string serviceId, string bootstrap = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = bootstrap != null ? new Dictionary<string, object> { ["bootstrap"] = bootstrap } : null;
+        try { ApiCall($"/services/{serviceId}/redeploy", "POST", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static string ServiceLogs(string serviceId, bool allLogs = false, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var endpoint = allLogs ? $"/services/{serviceId}/logs?lines=9000" : $"/services/{serviceId}/logs";
+        try
+        {
+            var result = ApiCall(endpoint, "GET", null, pk, sk);
+            return GetString(result, "logs");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static ExecuteResult ServiceExecute(string serviceId, string command, int timeoutMs = 30000, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["command"] = command };
+        try
+        {
+            var result = ApiCall($"/services/{serviceId}/execute", "POST", payload, pk, sk);
+            return new ExecuteResult
+            {
+                Stdout = GetString(result, "stdout"),
+                Stderr = GetString(result, "stderr"),
+                ExitCode = GetInt(result, "exit_code"),
+                Success = true
+            };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string ServiceEnvGet(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/services/{serviceId}/env", "GET", null, pk, sk);
+            return GetString(result, "content");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static bool ServiceEnvSet(string serviceId, string envContent, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCallText($"/services/{serviceId}/env", "PUT", envContent, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ServiceEnvDelete(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/services/{serviceId}/env", "DELETE", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static string ServiceEnvExport(string serviceId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/services/{serviceId}/env/export", "POST", null, pk, sk);
+            return GetString(result, "content");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static bool ServiceResize(string serviceId, int vcpu, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["vcpu"] = vcpu };
+        try { ApiCall($"/services/{serviceId}/resize", "POST", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    // --- Snapshot Functions (9) ---
+
+    public static List<SnapshotInfo> SnapshotList(string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall("/snapshots", "GET", null, pk, sk);
+            var snapshots = new List<SnapshotInfo>();
+            if (result.ContainsKey("snapshots") && result["snapshots"] is List<object> snapshotList)
+                foreach (Dictionary<string, object> s in snapshotList)
+                    snapshots.Add(new SnapshotInfo { Id = s.ContainsKey("id") ? (string)s["id"] : null, Name = s.ContainsKey("name") ? (string)s["name"] : null });
+            return snapshots;
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<SnapshotInfo>(); }
+    }
+
+    public static SnapshotInfo SnapshotGet(string snapshotId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/snapshots/{snapshotId}", "GET", null, pk, sk);
+            return new SnapshotInfo { Id = GetString(result, "id"), Name = GetString(result, "name"), Type = GetString(result, "source_type") };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string SnapshotSession(string sessionId, string name = null, bool hot = false, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object>();
+        if (name != null) payload["name"] = name;
+        if (hot) payload["hot"] = true;
+        try
+        {
+            var result = ApiCall($"/sessions/{sessionId}/snapshot", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string SnapshotService(string serviceId, string name = null, bool hot = false, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object>();
+        if (name != null) payload["name"] = name;
+        if (hot) payload["hot"] = true;
+        try
+        {
+            var result = ApiCall($"/services/{serviceId}/snapshot", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string SnapshotRestore(string snapshotId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/snapshots/{snapshotId}/restore", "POST", null, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static bool SnapshotDelete(string snapshotId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/snapshots/{snapshotId}", "DELETE", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool SnapshotLock(string snapshotId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/snapshots/{snapshotId}/lock", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool SnapshotUnlock(string snapshotId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/snapshots/{snapshotId}/unlock", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static string SnapshotClone(string snapshotId, string cloneType, string name = null, string ports = null, string shell = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["type"] = cloneType };
+        if (name != null) payload["name"] = name;
+        if (ports != null)
+        {
+            var portList = new List<int>();
+            foreach (var p in ports.Split(',')) portList.Add(int.Parse(p.Trim()));
+            payload["ports"] = portList;
+        }
+        if (shell != null) payload["shell"] = shell;
+        try
+        {
+            var result = ApiCall($"/snapshots/{snapshotId}/clone", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    // --- Image Functions (13) ---
+
+    public static List<ImageInfo> ImageList(string filter = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var endpoint = filter != null ? $"/images?filter={filter}" : "/images";
+        try
+        {
+            var result = ApiCall(endpoint, "GET", null, pk, sk);
+            var images = new List<ImageInfo>();
+            if (result.ContainsKey("images") && result["images"] is List<object> imageList)
+                foreach (Dictionary<string, object> img in imageList)
+                    images.Add(new ImageInfo { Id = img.ContainsKey("id") ? (string)img["id"] : null, Name = img.ContainsKey("name") ? (string)img["name"] : null });
+            return images;
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<ImageInfo>(); }
+    }
+
+    public static ImageInfo ImageGet(string imageId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/images/{imageId}", "GET", null, pk, sk);
+            return new ImageInfo { Id = GetString(result, "id"), Name = GetString(result, "name"), Visibility = GetString(result, "visibility") };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string ImagePublish(string sourceType, string sourceId, string name = null, string description = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["source_type"] = sourceType, ["source_id"] = sourceId };
+        if (name != null) payload["name"] = name;
+        if (description != null) payload["description"] = description;
+        try
+        {
+            var result = ApiCall("/images", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static bool ImageDelete(string imageId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/images/{imageId}", "DELETE", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ImageLock(string imageId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/images/{imageId}/lock", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ImageUnlock(string imageId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try { ApiCall($"/images/{imageId}/unlock", "POST", null, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ImageSetVisibility(string imageId, string visibility, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["visibility"] = visibility };
+        try { ApiCall($"/images/{imageId}", "PATCH", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ImageGrantAccess(string imageId, string trustedApiKey, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["api_key"] = trustedApiKey };
+        try { ApiCall($"/images/{imageId}/access", "POST", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static bool ImageRevokeAccess(string imageId, string trustedApiKey, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["api_key"] = trustedApiKey };
+        try { ApiCall($"/images/{imageId}/access", "DELETE", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static List<string> ImageListTrusted(string imageId, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall($"/images/{imageId}/access", "GET", null, pk, sk);
+            if (result.ContainsKey("trusted_keys") && result["trusted_keys"] is List<object> keys)
+                return keys.ConvertAll(x => x.ToString());
+            return new List<string>();
+        }
+        catch (Exception ex) { _lastError = ex.Message; return new List<string>(); }
+    }
+
+    public static bool ImageTransfer(string imageId, string toApiKey, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object> { ["to_api_key"] = toApiKey };
+        try { ApiCall($"/images/{imageId}/transfer", "POST", payload, pk, sk); return true; }
+        catch (Exception ex) { _lastError = ex.Message; return false; }
+    }
+
+    public static string ImageSpawn(string imageId, string name = null, string ports = null, string bootstrap = null, string networkMode = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object>();
+        if (name != null) payload["name"] = name;
+        if (ports != null)
+        {
+            var portList = new List<int>();
+            foreach (var p in ports.Split(',')) portList.Add(int.Parse(p.Trim()));
+            payload["ports"] = portList;
+        }
+        if (bootstrap != null) payload["bootstrap"] = bootstrap;
+        if (networkMode != null) payload["network"] = networkMode;
+        try
+        {
+            var result = ApiCall($"/images/{imageId}/spawn", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string ImageClone(string imageId, string name = null, string description = null, string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        var payload = new Dictionary<string, object>();
+        if (name != null) payload["name"] = name;
+        if (description != null) payload["description"] = description;
+        try
+        {
+            var result = ApiCall($"/images/{imageId}/clone", "POST", payload, pk, sk);
+            return GetString(result, "id");
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    // --- Utilities ---
+
+    public static KeyInfo ValidateKeys(string publicKey = null, string secretKey = null)
+    {
+        var (pk, sk) = ResolveKeys(publicKey, secretKey);
+        try
+        {
+            var result = ApiCall("/keys/validate", "POST", null, pk, sk);
+            return new KeyInfo
+            {
+                Valid = result.ContainsKey("valid") && result["valid"] is bool v && v,
+                Tier = GetString(result, "tier"),
+                RateLimitPerMinute = GetInt(result, "rate_limit"),
+                ConcurrencyLimit = GetInt(result, "concurrency")
+            };
+        }
+        catch (Exception ex) { _lastError = ex.Message; return null; }
+    }
+
+    public static string HmacSign(string secretKey, string message)
+    {
+        using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
+        {
+            var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
+            return BitConverter.ToString(hash).Replace("-", "").ToLower();
+        }
+    }
+
+    public static bool HealthCheck()
+    {
+        try
+        {
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+            var request = (HttpWebRequest)WebRequest.Create(API_BASE + "/health");
+            request.Method = "GET";
+            request.Timeout = 10000;
+            using (var response = (HttpWebResponse)request.GetResponse())
+                return response.StatusCode == HttpStatusCode.OK;
+        }
+        catch { return false; }
+    }
+
+    public static string Version() => VERSION;
+
+    public static string LastError() => _lastError;
+
+    /// <summary>Build environment content from list of env vars and optional env file</summary>
+    public static string BuildEnvContent(List<string> envs, string envFile)
+    {
+        var lines = new List<string>(envs);
+        if (!string.IsNullOrEmpty(envFile) && File.Exists(envFile))
+        {
+            var content = File.ReadAllText(envFile);
+            foreach (var line in content.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (!string.IsNullOrEmpty(trimmed) && !trimmed.StartsWith("#"))
+                    lines.Add(trimmed);
+            }
+        }
+        return string.Join("\n", lines);
+    }
+
+    // --- Internal Helpers ---
+
+    private static (string, string) ResolveKeys(string publicKey, string secretKey)
+    {
+        var pk = publicKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY") ?? "";
+        var sk = secretKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY") ?? "";
+        return (pk, sk);
+    }
+
+    private static Dictionary<string, object> ApiCall(string endpoint, string method, Dictionary<string, object> data, string publicKey, string secretKey)
+    {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+
+        var request = (HttpWebRequest)WebRequest.Create(API_BASE + endpoint);
+        request.Method = method;
+        request.ContentType = "application/json";
+        request.Timeout = 300000;
+
+        string body = data != null ? ToJson(data) : "";
+
+        if (!string.IsNullOrEmpty(secretKey))
+        {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+            using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
+            {
+                byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
+                string signature = BitConverter.ToString(hash).Replace("-", "").ToLower();
+                request.Headers.Add("Authorization", $"Bearer {publicKey}");
+                request.Headers.Add("X-Timestamp", timestamp.ToString());
+                request.Headers.Add("X-Signature", signature);
+            }
+        }
+        else
+        {
+            request.Headers.Add("Authorization", $"Bearer {publicKey}");
+        }
+
+        if (data != null)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(body);
+            request.ContentLength = bytes.Length;
+            using (Stream stream = request.GetRequestStream())
+                stream.Write(bytes, 0, bytes.Length);
+        }
+
+        using (var response = (HttpWebResponse)request.GetResponse())
+        using (var reader = new StreamReader(response.GetResponseStream()))
+        {
+            var responseText = reader.ReadToEnd();
+            return ParseJson(responseText);
+        }
+    }
+
+    private static void ApiCallText(string endpoint, string method, string body, string publicKey, string secretKey)
+    {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+
+        var request = (HttpWebRequest)WebRequest.Create(API_BASE + endpoint);
+        request.Method = method;
+        request.ContentType = "text/plain";
+        request.Timeout = 300000;
+
+        if (!string.IsNullOrEmpty(secretKey))
+        {
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+            using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
+            {
+                byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
+                string signature = BitConverter.ToString(hash).Replace("-", "").ToLower();
+                request.Headers.Add("Authorization", $"Bearer {publicKey}");
+                request.Headers.Add("X-Timestamp", timestamp.ToString());
+                request.Headers.Add("X-Signature", signature);
+            }
+        }
+        else
+        {
+            request.Headers.Add("Authorization", $"Bearer {publicKey}");
+        }
+
+        byte[] bytes = Encoding.UTF8.GetBytes(body);
+        request.ContentLength = bytes.Length;
+        using (Stream stream = request.GetRequestStream())
+            stream.Write(bytes, 0, bytes.Length);
+
+        using (var response = (HttpWebResponse)request.GetResponse()) { }
+    }
+
+    private static string ToJson(Dictionary<string, object> dict)
+    {
+        var sb = new StringBuilder("{");
+        bool first = true;
+        foreach (var kv in dict)
+        {
+            if (!first) sb.Append(",");
+            first = false;
+            sb.Append($"\"{kv.Key}\":");
+            sb.Append(ValueToJson(kv.Value));
+        }
+        sb.Append("}");
+        return sb.ToString();
+    }
+
+    private static string ValueToJson(object val)
+    {
+        if (val == null) return "null";
+        if (val is string s) return $"\"{s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r")}\"";
+        if (val is bool b) return b.ToString().ToLower();
+        if (val is int || val is long || val is double) return val.ToString();
+        if (val is List<int> intList)
+        {
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < intList.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append(intList[i]);
+            }
+            sb.Append("]");
+            return sb.ToString();
+        }
+        if (val is Dictionary<string, object> dict) return ToJson(dict);
+        return $"\"{val}\"";
+    }
+
+    private static Dictionary<string, object> ParseJson(string json)
+    {
+        // Reuse the existing ParseJson from the Un class
+        json = json.Trim();
+        if (!json.StartsWith("{")) return new Dictionary<string, object>();
+
+        var result = new Dictionary<string, object>();
+        int i = 1;
+
+        while (i < json.Length)
+        {
+            while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+            if (json[i] == '}') break;
+
+            if (json[i] == '"')
+            {
+                int keyStart = ++i;
+                while (i < json.Length && json[i] != '"')
+                {
+                    if (json[i] == '\\') i++;
+                    i++;
+                }
+                string key = json.Substring(keyStart, i - keyStart).Replace("\\\"", "\"").Replace("\\\\", "\\");
+                i++;
+
+                while (i < json.Length && (char.IsWhiteSpace(json[i]) || json[i] == ':')) i++;
+
+                var valuePair = ParseJsonValue(json, i);
+                result[key] = valuePair.Item1;
+                i = valuePair.Item2;
+
+                while (i < json.Length && (char.IsWhiteSpace(json[i]) || json[i] == ',')) i++;
+            }
+            else
+            {
+                i++;
+            }
+        }
+        return result;
+    }
+
+    private static Tuple<object, int> ParseJsonValue(string json, int start)
+    {
+        int i = start;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+
+        if (json[i] == '"')
+        {
+            i++;
+            var sb = new StringBuilder();
+            bool escaped = false;
+            while (i < json.Length)
+            {
+                char c = json[i];
+                if (escaped)
+                {
+                    switch (c)
+                    {
+                        case 'n': sb.Append('\n'); break;
+                        case 'r': sb.Append('\r'); break;
+                        case 't': sb.Append('\t'); break;
+                        case '"': sb.Append('"'); break;
+                        case '\\': sb.Append('\\'); break;
+                        default: sb.Append(c); break;
+                    }
+                    escaped = false;
+                }
+                else if (c == '\\') escaped = true;
+                else if (c == '"') return Tuple.Create((object)sb.ToString(), i + 1);
+                else sb.Append(c);
+                i++;
+            }
+        }
+        else if (json[i] == '{')
+        {
+            int depth = 1;
+            int objStart = i++;
+            while (i < json.Length && depth > 0)
+            {
+                if (json[i] == '{') depth++;
+                else if (json[i] == '}') depth--;
+                i++;
+            }
+            return Tuple.Create((object)ParseJson(json.Substring(objStart, i - objStart)), i);
+        }
+        else if (json[i] == '[')
+        {
+            var list = new List<object>();
+            i++;
+            while (i < json.Length)
+            {
+                while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+                if (json[i] == ']') { i++; break; }
+                var item = ParseJsonValue(json, i);
+                list.Add(item.Item1);
+                i = item.Item2;
+                while (i < json.Length && (char.IsWhiteSpace(json[i]) || json[i] == ',')) i++;
+            }
+            return Tuple.Create((object)list, i);
+        }
+        else if (char.IsDigit(json[i]) || json[i] == '-')
+        {
+            int numStart = i;
+            while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '.' || json[i] == '-')) i++;
+            string num = json.Substring(numStart, i - numStart);
+            return Tuple.Create((object)(num.Contains(".") ? (object)double.Parse(num) : int.Parse(num)), i);
+        }
+        else if (json.Substring(i).StartsWith("true")) return Tuple.Create((object)true, i + 4);
+        else if (json.Substring(i).StartsWith("false")) return Tuple.Create((object)false, i + 5);
+        else if (json.Substring(i).StartsWith("null")) return Tuple.Create((object)null, i + 4);
+
+        return Tuple.Create((object)null, i);
+    }
+
+    private static string GetString(Dictionary<string, object> result, string key)
+        => result.ContainsKey(key) ? result[key]?.ToString() : null;
+
+    private static int GetInt(Dictionary<string, object> result, string key)
+        => result.ContainsKey(key) && result[key] is int i ? i : 0;
+
+    private static double GetDouble(Dictionary<string, object> result, string key)
+        => result.ContainsKey(key) && result[key] is double d ? d : 0;
+}
+
+// --- Data Types ---
+
+public class ExecuteResult
+{
+    public string Stdout { get; set; }
+    public string Stderr { get; set; }
+    public int ExitCode { get; set; }
+    public string Language { get; set; }
+    public double ExecutionTime { get; set; }
+    public bool Success { get; set; }
+    public string ErrorMessage { get; set; }
+}
+
+public class JobInfo
+{
+    public string Id { get; set; }
+    public string Language { get; set; }
+    public string Status { get; set; }
+    public long CreatedAt { get; set; }
+    public long CompletedAt { get; set; }
+    public string ErrorMessage { get; set; }
+}
+
+public class SessionInfo
+{
+    public string Id { get; set; }
+    public string ContainerName { get; set; }
+    public string Status { get; set; }
+    public string NetworkMode { get; set; }
+    public int Vcpu { get; set; }
+    public long CreatedAt { get; set; }
+    public long LastActivity { get; set; }
+}
+
+public class ServiceInfo
+{
+    public string Id { get; set; }
+    public string Name { get; set; }
+    public string Status { get; set; }
+    public string ContainerName { get; set; }
+    public string NetworkMode { get; set; }
+    public string Ports { get; set; }
+    public string Domains { get; set; }
+    public int Vcpu { get; set; }
+    public bool Locked { get; set; }
+    public bool UnfreezeOnDemand { get; set; }
+    public long CreatedAt { get; set; }
+    public long LastActivity { get; set; }
+}
+
+public class SnapshotInfo
+{
+    public string Id { get; set; }
+    public string Name { get; set; }
+    public string Type { get; set; }
+    public string SourceId { get; set; }
+    public bool Hot { get; set; }
+    public bool Locked { get; set; }
+    public long CreatedAt { get; set; }
+    public long SizeBytes { get; set; }
+}
+
+public class ImageInfo
+{
+    public string Id { get; set; }
+    public string Name { get; set; }
+    public string Description { get; set; }
+    public string Visibility { get; set; }
+    public string SourceType { get; set; }
+    public string SourceId { get; set; }
+    public string OwnerApiKey { get; set; }
+    public bool Locked { get; set; }
+    public long CreatedAt { get; set; }
+    public long SizeBytes { get; set; }
+}
+
+public class KeyInfo
+{
+    public bool Valid { get; set; }
+    public string Tier { get; set; }
+    public int RateLimitPerMinute { get; set; }
+    public int RateLimitBurst { get; set; }
+    public int ConcurrencyLimit { get; set; }
+    public string ErrorMessage { get; set; }
+}

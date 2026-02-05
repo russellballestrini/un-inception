@@ -712,6 +712,488 @@ sub languages(Str :$public-key, Str :$secret-key) returns Hash is export {
     return %result;
 }
 
+# ============================================================================
+# Session Functions
+# ============================================================================
+
+#| List all sessions for this API key
+sub session-list(Str :$public-key, Str :$secret-key) returns Array is export {
+    my %result = api-request('/sessions', 'GET', :$public-key, :$secret-key);
+    return %result<sessions> // [];
+}
+
+#| Get session details by ID
+sub session-get(Str $session-id, Str :$public-key, Str :$secret-key) returns Hash is export {
+    return api-request("/sessions/{$session-id}", 'GET', :$public-key, :$secret-key);
+}
+
+#| Create a new interactive session
+sub session-create(
+    Str :$network-mode = 'zerotrust',
+    Str :$shell = 'bash',
+    Str :$public-key,
+    Str :$secret-key
+) returns Hash is export {
+    my %payload = shell => $shell, network_mode => $network-mode;
+    return api-request('/sessions', 'POST', %payload, :$public-key, :$secret-key);
+}
+
+#| Destroy a session
+sub session-destroy(Str $session-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/sessions/{$session-id}", 'DELETE', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Freeze a session
+sub session-freeze(Str $session-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/sessions/{$session-id}/freeze", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Unfreeze a session
+sub session-unfreeze(Str $session-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/sessions/{$session-id}/unfreeze", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Boost session CPU (1-8 vCPUs)
+sub session-boost(Str $session-id, Int $vcpu, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = vcpu => $vcpu;
+    api-request("/sessions/{$session-id}/boost", 'POST', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| Remove CPU boost from session
+sub session-unboost(Str $session-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/sessions/{$session-id}/unboost", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Execute command in a session
+sub session-execute(Str $session-id, Str $command, Str :$public-key, Str :$secret-key) returns Hash is export {
+    my %payload = command => $command;
+    return api-request("/sessions/{$session-id}/execute", 'POST', %payload, :$public-key, :$secret-key);
+}
+
+# ============================================================================
+# Service Functions
+# ============================================================================
+
+#| List all services for this API key
+sub service-list(Str :$public-key, Str :$secret-key) returns Array is export {
+    my %result = api-request('/services', 'GET', :$public-key, :$secret-key);
+    return %result<services> // [];
+}
+
+#| Get service details by ID
+sub service-get(Str $service-id, Str :$public-key, Str :$secret-key) returns Hash is export {
+    return api-request("/services/{$service-id}", 'GET', :$public-key, :$secret-key);
+}
+
+#| Create a new service
+sub service-create(
+    Str :$name!,
+    Str :$ports,
+    Str :$domains,
+    Str :$bootstrap,
+    Str :$network-mode,
+    Str :$public-key,
+    Str :$secret-key
+) returns Str is export {
+    my %payload = name => $name;
+    %payload<ports> = $ports.split(',')>>.Int if $ports;
+    %payload<domains> = $domains.split(',') if $domains;
+    %payload<bootstrap> = $bootstrap if $bootstrap;
+    %payload<network_mode> = $network-mode if $network-mode;
+    my %result = api-request('/services', 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+#| Destroy a service
+sub service-destroy(Str $service-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/services/{$service-id}", 'DELETE', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Freeze a service
+sub service-freeze(Str $service-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/services/{$service-id}/freeze", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Unfreeze a service
+sub service-unfreeze(Str $service-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/services/{$service-id}/unfreeze", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Lock a service (prevent deletion)
+sub service-lock(Str $service-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/services/{$service-id}/lock", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Unlock a service
+sub service-unlock(Str $service-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/services/{$service-id}/unlock", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Set unfreeze-on-demand for a service
+sub service-set-unfreeze-on-demand(Str $service-id, Bool $enabled, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = unfreeze_on_demand => $enabled;
+    api-request("/services/{$service-id}", 'PATCH', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| Redeploy a service with optional new bootstrap
+sub service-redeploy(Str $service-id, Str :$bootstrap, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload;
+    %payload<bootstrap> = $bootstrap if $bootstrap;
+    api-request("/services/{$service-id}/redeploy", 'POST', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| Get service logs
+sub service-logs(Str $service-id, Bool :$all = False, Str :$public-key, Str :$secret-key) returns Str is export {
+    my $endpoint = "/services/{$service-id}/logs";
+    $endpoint ~= "?all=true" if $all;
+    my %result = api-request($endpoint, 'GET', :$public-key, :$secret-key);
+    return %result<logs> // '';
+}
+
+#| Execute command in a service
+sub service-execute(Str $service-id, Str $command, Int :$timeout-ms, Str :$public-key, Str :$secret-key) returns Hash is export {
+    my %payload = command => $command;
+    %payload<timeout_ms> = $timeout-ms if $timeout-ms;
+    return api-request("/services/{$service-id}/execute", 'POST', %payload, :$public-key, :$secret-key);
+}
+
+#| Get service environment vault
+sub service-env-get(Str $service-id, Str :$public-key, Str :$secret-key) returns Str is export {
+    my %result = api-request("/services/{$service-id}/env", 'GET', :$public-key, :$secret-key);
+    return %result<content> // '';
+}
+
+#| Set service environment vault
+sub service-env-set(Str $service-id, Str $content, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my ($pk, $sk) = get-credentials(:$public-key, :$secret-key);
+    my $url = "{$API_BASE}/services/{$service-id}/env";
+    my $timestamp = now.Int;
+    my $signature = sign-request($sk, $timestamp, 'PUT', "/services/{$service-id}/env", $content);
+
+    my @args = 'curl', '-s', '-X', 'PUT', $url;
+    @args.append: '-H', 'Content-Type: text/plain';
+    @args.append: '-H', "Authorization: Bearer $pk";
+    @args.append: '-H', "X-Timestamp: $timestamp";
+    @args.append: '-H', "X-Signature: $signature";
+    @args.append: '-d', $content;
+
+    my $proc = run |@args, :out, :err;
+    return $proc.exitcode == 0;
+}
+
+#| Delete service environment vault
+sub service-env-delete(Str $service-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/services/{$service-id}/env", 'DELETE', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Export service environment vault
+sub service-env-export(Str $service-id, Str :$public-key, Str :$secret-key) returns Str is export {
+    my %result = api-request("/services/{$service-id}/env/export", 'POST', :$public-key, :$secret-key);
+    return %result<content> // '';
+}
+
+#| Resize service (change vCPU count)
+sub service-resize(Str $service-id, Int $vcpu, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = vcpu => $vcpu;
+    api-request("/services/{$service-id}", 'PATCH', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+# ============================================================================
+# Snapshot Functions
+# ============================================================================
+
+#| List all snapshots for this API key
+sub snapshot-list(Str :$public-key, Str :$secret-key) returns Array is export {
+    my %result = api-request('/snapshots', 'GET', :$public-key, :$secret-key);
+    return %result<snapshots> // [];
+}
+
+#| Get snapshot details by ID
+sub snapshot-get(Str $snapshot-id, Str :$public-key, Str :$secret-key) returns Hash is export {
+    return api-request("/snapshots/{$snapshot-id}", 'GET', :$public-key, :$secret-key);
+}
+
+#| Create snapshot from a session
+sub snapshot-session(Str $session-id, Str :$name, Bool :$hot = False, Str :$public-key, Str :$secret-key) returns Str is export {
+    my %payload = session_id => $session-id, hot => $hot;
+    %payload<name> = $name if $name;
+    my %result = api-request('/snapshots', 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+#| Create snapshot from a service
+sub snapshot-service(Str $service-id, Str :$name, Bool :$hot = False, Str :$public-key, Str :$secret-key) returns Str is export {
+    my %payload = service_id => $service-id, hot => $hot;
+    %payload<name> = $name if $name;
+    my %result = api-request('/snapshots', 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+#| Restore a snapshot
+sub snapshot-restore(Str $snapshot-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/snapshots/{$snapshot-id}/restore", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Delete a snapshot
+sub snapshot-delete(Str $snapshot-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/snapshots/{$snapshot-id}", 'DELETE', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Lock a snapshot (prevent deletion)
+sub snapshot-lock(Str $snapshot-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/snapshots/{$snapshot-id}/lock", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Unlock a snapshot
+sub snapshot-unlock(Str $snapshot-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/snapshots/{$snapshot-id}/unlock", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Clone a snapshot to create a new session or service
+sub snapshot-clone(
+    Str $snapshot-id,
+    Str :$clone-type!,      # "session" or "service"
+    Str :$name,             # name for cloned service
+    Str :$ports,            # ports for cloned service
+    Str :$shell,            # shell for cloned session
+    Str :$public-key,
+    Str :$secret-key
+) returns Str is export {
+    my %payload = clone_type => $clone-type;
+    %payload<name> = $name if $name;
+    %payload<ports> = $ports.split(',')>>.Int if $ports;
+    %payload<shell> = $shell if $shell;
+    my %result = api-request("/snapshots/{$snapshot-id}/clone", 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+# ============================================================================
+# Image Functions
+# ============================================================================
+
+#| List images (filter: owned, shared, public, or all)
+sub image-list(Str :$filter, Str :$public-key, Str :$secret-key) returns Array is export {
+    my $endpoint = '/images';
+    $endpoint ~= "?filter={$filter}" if $filter;
+    my %result = api-request($endpoint, 'GET', :$public-key, :$secret-key);
+    return %result<images> // [];
+}
+
+#| Get image details by ID
+sub image-get(Str $image-id, Str :$public-key, Str :$secret-key) returns Hash is export {
+    return api-request("/images/{$image-id}", 'GET', :$public-key, :$secret-key);
+}
+
+#| Publish an image from a service or snapshot
+sub image-publish(
+    Str :$source-type!,     # "service" or "snapshot"
+    Str :$source-id!,
+    Str :$name,
+    Str :$description,
+    Str :$public-key,
+    Str :$secret-key
+) returns Str is export {
+    my %payload = source_type => $source-type, source_id => $source-id;
+    %payload<name> = $name if $name;
+    %payload<description> = $description if $description;
+    my %result = api-request('/images/publish', 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+#| Delete an image
+sub image-delete(Str $image-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/images/{$image-id}", 'DELETE', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Lock an image (prevent deletion)
+sub image-lock(Str $image-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/images/{$image-id}/lock", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Unlock an image
+sub image-unlock(Str $image-id, Str :$public-key, Str :$secret-key) returns Bool is export {
+    api-request("/images/{$image-id}/unlock", 'POST', :$public-key, :$secret-key);
+    return True;
+}
+
+#| Set image visibility (private, unlisted, public)
+sub image-set-visibility(Str $image-id, Str $visibility, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = visibility => $visibility;
+    api-request("/images/{$image-id}/visibility", 'POST', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| Grant access to an image for another API key
+sub image-grant-access(Str $image-id, Str $trusted-api-key, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = trusted_api_key => $trusted-api-key;
+    api-request("/images/{$image-id}/access/grant", 'POST', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| Revoke access to an image from another API key
+sub image-revoke-access(Str $image-id, Str $trusted-api-key, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = trusted_api_key => $trusted-api-key;
+    api-request("/images/{$image-id}/access/revoke", 'POST', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| List trusted API keys for an image
+sub image-list-trusted(Str $image-id, Str :$public-key, Str :$secret-key) returns Array is export {
+    my %result = api-request("/images/{$image-id}/access", 'GET', :$public-key, :$secret-key);
+    return %result<trusted_keys> // [];
+}
+
+#| Transfer image ownership to another API key
+sub image-transfer(Str $image-id, Str $to-api-key, Str :$public-key, Str :$secret-key) returns Bool is export {
+    my %payload = to_api_key => $to-api-key;
+    api-request("/images/{$image-id}/transfer", 'POST', %payload, :$public-key, :$secret-key);
+    return True;
+}
+
+#| Spawn a new service from an image
+sub image-spawn(
+    Str $image-id,
+    Str :$name,
+    Str :$ports,
+    Str :$bootstrap,
+    Str :$network-mode,
+    Str :$public-key,
+    Str :$secret-key
+) returns Str is export {
+    my %payload;
+    %payload<name> = $name if $name;
+    %payload<ports> = $ports.split(',')>>.Int if $ports;
+    %payload<bootstrap> = $bootstrap if $bootstrap;
+    %payload<network_mode> = $network-mode if $network-mode;
+    my %result = api-request("/images/{$image-id}/spawn", 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+#| Clone an image
+sub image-clone(Str $image-id, Str :$name, Str :$description, Str :$public-key, Str :$secret-key) returns Str is export {
+    my %payload;
+    %payload<name> = $name if $name;
+    %payload<description> = $description if $description;
+    my %result = api-request("/images/{$image-id}/clone", 'POST', %payload, :$public-key, :$secret-key);
+    return %result<id> // '';
+}
+
+# ============================================================================
+# PaaS Logs Functions
+# ============================================================================
+
+#| Fetch batch logs from portal
+#| source: "all", "api", "portal", "pool/cammy", "pool/ai"
+#| lines: number of lines (1-10000)
+#| since: time window ("1m", "5m", "1h", "1d")
+#| grep: optional filter pattern
+sub logs-fetch(
+    Str :$source = 'all',
+    Int :$lines = 100,
+    Str :$since = '1h',
+    Str :$grep,
+    Str :$public-key,
+    Str :$secret-key
+) returns Str is export {
+    my $endpoint = "/logs?source={$source}&lines={$lines}&since={$since}";
+    $endpoint ~= "&grep={uri-encode($grep)}" if $grep;
+    my %result = api-request($endpoint, 'GET', :$public-key, :$secret-key);
+    return to-json(%result);
+}
+
+#| Stream logs via SSE (blocking call)
+#| Returns when interrupted or server closes connection
+sub logs-stream(
+    Str :$source = 'all',
+    Str :$grep,
+    :&callback,
+    Str :$public-key,
+    Str :$secret-key
+) returns Bool is export {
+    my ($pk, $sk) = get-credentials(:$public-key, :$secret-key);
+    my $endpoint = "/logs/stream?source={$source}";
+    $endpoint ~= "&grep={uri-encode($grep)}" if $grep;
+
+    my $timestamp = now.Int;
+    my $signature = sign-request($sk, $timestamp, 'GET', $endpoint, '');
+
+    my @args = 'curl', '-s', '-N', "{$API_BASE}{$endpoint}";
+    @args.append: '-H', "Authorization: Bearer $pk";
+    @args.append: '-H', "X-Timestamp: $timestamp";
+    @args.append: '-H', "X-Signature: $signature";
+    @args.append: '-H', 'Accept: text/event-stream';
+
+    my $proc = run |@args, :out;
+    for $proc.out.lines -> $line {
+        if $line.starts-with('data: ') {
+            my $data = $line.substr(6);
+            &callback($source, $data) if &callback;
+        }
+    }
+    return True;
+}
+
+# ============================================================================
+# Key Validation
+# ============================================================================
+
+#| Validate API keys and get account info
+sub validate-keys(Str :$public-key, Str :$secret-key) returns Hash is export {
+    my ($pk, $sk) = get-credentials(:$public-key, :$secret-key);
+
+    my $url = "{$PORTAL_BASE}/keys/validate";
+    my $timestamp = now.Int;
+    my $signature = sign-request($sk, $timestamp, 'POST', '/keys/validate', '');
+
+    my @args = 'curl', '-s', '-X', 'POST', $url;
+    @args.append: '-H', 'Content-Type: application/json';
+    @args.append: '-H', "Authorization: Bearer $pk";
+    @args.append: '-H', "X-Timestamp: $timestamp";
+    @args.append: '-H', "X-Signature: $signature";
+
+    my $proc = run |@args, :out;
+    my $resp = $proc.out.slurp;
+    return from-json($resp);
+}
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+#| Check API health
+sub health-check(Str :$public-key, Str :$secret-key) returns Bool is export {
+    try {
+        my %result = api-request('/health', 'GET', :$public-key, :$secret-key);
+        return %result<status> eq 'ok';
+        CATCH { default { return False; } }
+    }
+}
+
+#| Get SDK version
+sub version() returns Str is export {
+    return '0.1.0';
+}
+
 #| Detect programming language from file extension or shebang
 #|
 #| Returns: Language name or Nil if undetected
@@ -814,6 +1296,66 @@ class Client is export {
     method languages() returns Hash {
         return languages(:$.public-key, :$.secret-key);
     }
+
+    # Session methods
+    method session-list() returns Array { return session-list(:$.public-key, :$.secret-key); }
+    method session-get(Str $id) returns Hash { return session-get($id, :$.public-key, :$.secret-key); }
+    method session-create(*%opts) returns Hash { return session-create(:$.public-key, :$.secret-key, |%opts); }
+    method session-destroy(Str $id) returns Bool { return session-destroy($id, :$.public-key, :$.secret-key); }
+    method session-freeze(Str $id) returns Bool { return session-freeze($id, :$.public-key, :$.secret-key); }
+    method session-unfreeze(Str $id) returns Bool { return session-unfreeze($id, :$.public-key, :$.secret-key); }
+    method session-boost(Str $id, Int $vcpu) returns Bool { return session-boost($id, $vcpu, :$.public-key, :$.secret-key); }
+    method session-unboost(Str $id) returns Bool { return session-unboost($id, :$.public-key, :$.secret-key); }
+    method session-execute(Str $id, Str $cmd) returns Hash { return session-execute($id, $cmd, :$.public-key, :$.secret-key); }
+
+    # Service methods
+    method service-list() returns Array { return service-list(:$.public-key, :$.secret-key); }
+    method service-get(Str $id) returns Hash { return service-get($id, :$.public-key, :$.secret-key); }
+    method service-create(*%opts) returns Str { return service-create(:$.public-key, :$.secret-key, |%opts); }
+    method service-destroy(Str $id) returns Bool { return service-destroy($id, :$.public-key, :$.secret-key); }
+    method service-freeze(Str $id) returns Bool { return service-freeze($id, :$.public-key, :$.secret-key); }
+    method service-unfreeze(Str $id) returns Bool { return service-unfreeze($id, :$.public-key, :$.secret-key); }
+    method service-lock(Str $id) returns Bool { return service-lock($id, :$.public-key, :$.secret-key); }
+    method service-unlock(Str $id) returns Bool { return service-unlock($id, :$.public-key, :$.secret-key); }
+    method service-redeploy(Str $id, *%opts) returns Bool { return service-redeploy($id, :$.public-key, :$.secret-key, |%opts); }
+    method service-logs(Str $id, *%opts) returns Str { return service-logs($id, :$.public-key, :$.secret-key, |%opts); }
+    method service-execute(Str $id, Str $cmd, *%opts) returns Hash { return service-execute($id, $cmd, :$.public-key, :$.secret-key, |%opts); }
+    method service-resize(Str $id, Int $vcpu) returns Bool { return service-resize($id, $vcpu, :$.public-key, :$.secret-key); }
+
+    # Snapshot methods
+    method snapshot-list() returns Array { return snapshot-list(:$.public-key, :$.secret-key); }
+    method snapshot-get(Str $id) returns Hash { return snapshot-get($id, :$.public-key, :$.secret-key); }
+    method snapshot-session(Str $id, *%opts) returns Str { return snapshot-session($id, :$.public-key, :$.secret-key, |%opts); }
+    method snapshot-service(Str $id, *%opts) returns Str { return snapshot-service($id, :$.public-key, :$.secret-key, |%opts); }
+    method snapshot-restore(Str $id) returns Bool { return snapshot-restore($id, :$.public-key, :$.secret-key); }
+    method snapshot-delete(Str $id) returns Bool { return snapshot-delete($id, :$.public-key, :$.secret-key); }
+    method snapshot-lock(Str $id) returns Bool { return snapshot-lock($id, :$.public-key, :$.secret-key); }
+    method snapshot-unlock(Str $id) returns Bool { return snapshot-unlock($id, :$.public-key, :$.secret-key); }
+    method snapshot-clone(Str $id, *%opts) returns Str { return snapshot-clone($id, :$.public-key, :$.secret-key, |%opts); }
+
+    # Image methods
+    method image-list(*%opts) returns Array { return image-list(:$.public-key, :$.secret-key, |%opts); }
+    method image-get(Str $id) returns Hash { return image-get($id, :$.public-key, :$.secret-key); }
+    method image-publish(*%opts) returns Str { return image-publish(:$.public-key, :$.secret-key, |%opts); }
+    method image-delete(Str $id) returns Bool { return image-delete($id, :$.public-key, :$.secret-key); }
+    method image-lock(Str $id) returns Bool { return image-lock($id, :$.public-key, :$.secret-key); }
+    method image-unlock(Str $id) returns Bool { return image-unlock($id, :$.public-key, :$.secret-key); }
+    method image-set-visibility(Str $id, Str $v) returns Bool { return image-set-visibility($id, $v, :$.public-key, :$.secret-key); }
+    method image-grant-access(Str $id, Str $key) returns Bool { return image-grant-access($id, $key, :$.public-key, :$.secret-key); }
+    method image-revoke-access(Str $id, Str $key) returns Bool { return image-revoke-access($id, $key, :$.public-key, :$.secret-key); }
+    method image-list-trusted(Str $id) returns Array { return image-list-trusted($id, :$.public-key, :$.secret-key); }
+    method image-transfer(Str $id, Str $key) returns Bool { return image-transfer($id, $key, :$.public-key, :$.secret-key); }
+    method image-spawn(Str $id, *%opts) returns Str { return image-spawn($id, :$.public-key, :$.secret-key, |%opts); }
+    method image-clone(Str $id, *%opts) returns Str { return image-clone($id, :$.public-key, :$.secret-key, |%opts); }
+
+    # Logs methods
+    method logs-fetch(*%opts) returns Str { return logs-fetch(:$.public-key, :$.secret-key, |%opts); }
+    method logs-stream(*%opts) returns Bool { return logs-stream(:$.public-key, :$.secret-key, |%opts); }
+
+    # Utility methods
+    method validate-keys() returns Hash { return validate-keys(:$.public-key, :$.secret-key); }
+    method health-check() returns Bool { return health-check(:$.public-key, :$.secret-key); }
+    method version() returns Str { return version(); }
 }
 
 # ============================================================================
@@ -1548,17 +2090,168 @@ sub cmd-image(@args) {
     exit 1;
 }
 
+sub cmd-snapshot(@args) {
+    my ($public-key, $secret-key) = get-credentials();
+    my $list-mode = False;
+    my $info-id = '';
+    my $delete-id = '';
+    my $lock-id = '';
+    my $unlock-id = '';
+    my $restore-id = '';
+    my $clone-id = '';
+    my $session-id = '';
+    my $service-id = '';
+    my $name = '';
+    my $hot = False;
+    my $clone-type = '';
+    my $ports = '';
+    my $shell = '';
+
+    # Parse arguments
+    my $i = 0;
+    while $i < @args.elems {
+        given @args[$i] {
+            when '--list' | '-l' { $list-mode = True; }
+            when '--info' { $i++; $info-id = @args[$i]; }
+            when '--delete' { $i++; $delete-id = @args[$i]; }
+            when '--lock' { $i++; $lock-id = @args[$i]; }
+            when '--unlock' { $i++; $unlock-id = @args[$i]; }
+            when '--restore' { $i++; $restore-id = @args[$i]; }
+            when '--clone' { $i++; $clone-id = @args[$i]; }
+            when '--session' { $i++; $session-id = @args[$i]; }
+            when '--service' { $i++; $service-id = @args[$i]; }
+            when '--name' { $i++; $name = @args[$i]; }
+            when '--hot' { $hot = True; }
+            when '--clone-type' { $i++; $clone-type = @args[$i]; }
+            when '--ports' { $i++; $ports = @args[$i]; }
+            when '--shell' { $i++; $shell = @args[$i]; }
+        }
+        $i++;
+    }
+
+    if $list-mode {
+        my @snapshots = snapshot-list(:$public-key, :$secret-key);
+        unless @snapshots {
+            say "No snapshots found";
+            return;
+        }
+        say sprintf("%-40s %-20s %-10s %-10s %s", 'ID', 'Name', 'Type', 'Locked', 'Created');
+        for @snapshots -> %s {
+            say sprintf("%-40s %-20s %-10s %-10s %s",
+                %s<id> // 'N/A', %s<name> // '-', %s<type> // 'N/A',
+                %s<locked> ?? 'Yes' !! 'No', %s<created_at> // 'N/A');
+        }
+        return;
+    }
+
+    if $info-id {
+        my %result = snapshot-get($info-id, :$public-key, :$secret-key);
+        say to-json(%result, :pretty);
+        return;
+    }
+
+    if $delete-id {
+        my ($status, $body) = api-request-with-status("/snapshots/$delete-id", 'DELETE', :$public-key, :$secret-key);
+        if $status == 428 {
+            if handle-sudo-challenge($body, "/snapshots/$delete-id", 'DELETE', :$public-key, :$secret-key) {
+                say "{$GREEN}Snapshot deleted: $delete-id{$RESET}";
+            } else {
+                note "{$RED}Error: Failed to delete snapshot (OTP verification failed){$RESET}";
+                exit 1;
+            }
+        } elsif $status >= 200 && $status < 300 {
+            say "{$GREEN}Snapshot deleted: $delete-id{$RESET}";
+        } else {
+            note "{$RED}Error: Failed to delete snapshot (HTTP $status){$RESET}";
+            exit 1;
+        }
+        return;
+    }
+
+    if $lock-id {
+        snapshot-lock($lock-id, :$public-key, :$secret-key);
+        say "{$GREEN}Snapshot locked: $lock-id{$RESET}";
+        return;
+    }
+
+    if $unlock-id {
+        my ($status, $body) = api-request-with-status("/snapshots/$unlock-id/unlock", 'POST', :$public-key, :$secret-key);
+        if $status == 428 {
+            if handle-sudo-challenge($body, "/snapshots/$unlock-id/unlock", 'POST', :$public-key, :$secret-key) {
+                say "{$GREEN}Snapshot unlocked: $unlock-id{$RESET}";
+            } else {
+                note "{$RED}Error: Failed to unlock snapshot (OTP verification failed){$RESET}";
+                exit 1;
+            }
+        } elsif $status >= 200 && $status < 300 {
+            say "{$GREEN}Snapshot unlocked: $unlock-id{$RESET}";
+        } else {
+            note "{$RED}Error: Failed to unlock snapshot (HTTP $status){$RESET}";
+            exit 1;
+        }
+        return;
+    }
+
+    if $restore-id {
+        snapshot-restore($restore-id, :$public-key, :$secret-key);
+        say "{$GREEN}Snapshot restored: $restore-id{$RESET}";
+        return;
+    }
+
+    if $clone-id {
+        unless $clone-type {
+            note "{$RED}Error: --clone-type required (session or service){$RESET}";
+            exit 1;
+        }
+        my $new-id = snapshot-clone($clone-id, :$clone-type, :$name, :$ports, :$shell, :$public-key, :$secret-key);
+        say "{$GREEN}Cloned to $clone-type: $new-id{$RESET}";
+        return;
+    }
+
+    if $session-id {
+        my $snap-id = snapshot-session($session-id, :$name, :$hot, :$public-key, :$secret-key);
+        say "{$GREEN}Snapshot created: $snap-id{$RESET}";
+        return;
+    }
+
+    if $service-id {
+        my $snap-id = snapshot-service($service-id, :$name, :$hot, :$public-key, :$secret-key);
+        say "{$GREEN}Snapshot created: $snap-id{$RESET}";
+        return;
+    }
+
+    note "{$RED}Error: Specify --list, --info ID, --delete ID, --lock ID, --unlock ID, --restore ID, --clone ID, --session ID, or --service ID{$RESET}";
+    exit 1;
+}
+
 sub MAIN(*@args) is export {
     unless @args {
         note "Usage: un.raku [options] <source_file>";
         note "       un.raku session [options]";
         note "       un.raku service [options]";
+        note "       un.raku snapshot [options]";
         note "       un.raku image [options]";
         note "       un.raku key [options]";
         note "       un.raku languages [--json]";
         note "";
         note "Languages options:";
         note "  --json              Output as JSON array";
+        note "";
+        note "Snapshot options:";
+        note "  --list              List all snapshots";
+        note "  --info ID           Get snapshot details";
+        note "  --delete ID         Delete a snapshot";
+        note "  --lock ID           Lock snapshot to prevent deletion";
+        note "  --unlock ID         Unlock snapshot";
+        note "  --restore ID        Restore a snapshot";
+        note "  --clone ID          Clone snapshot (requires --clone-type)";
+        note "  --session ID        Create snapshot from session";
+        note "  --service ID        Create snapshot from service";
+        note "  --name NAME         Name for the snapshot";
+        note "  --hot               Create hot snapshot (while running)";
+        note "  --clone-type TYPE   Clone type: session or service";
+        note "  --ports PORTS       Ports for cloned service";
+        note "  --shell SHELL       Shell for cloned session";
         note "";
         note "Image options:";
         note "  --list              List all images";
@@ -1573,6 +2266,10 @@ sub MAIN(*@args) is export {
         note "  --clone ID          Clone an image";
         note "  --name NAME         Name for spawned service or cloned image";
         note "  --ports PORTS       Ports for spawned service";
+        note "  --grant ID KEY      Grant image access to API key";
+        note "  --revoke ID KEY     Revoke image access from API key";
+        note "  --trusted ID        List trusted API keys for image";
+        note "  --transfer ID KEY   Transfer image ownership";
         exit 1;
     }
 
@@ -1582,6 +2279,9 @@ sub MAIN(*@args) is export {
         }
         when 'service' {
             cmd-service(@args[1..*]);
+        }
+        when 'snapshot' {
+            cmd-snapshot(@args[1..*]);
         }
         when 'image' {
             cmd-image(@args[1..*]);

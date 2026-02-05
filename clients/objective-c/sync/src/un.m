@@ -1674,6 +1674,12 @@ void cmdImage(NSArray* args) {
     NSString* cloneId = nil;
     NSString* name = nil;
     NSString* ports = nil;
+    NSString* grantId = nil;
+    NSString* revokeId = nil;
+    NSString* trustedId = nil;
+    NSString* trustedKey = nil;
+    NSString* transferId = nil;
+    NSString* toKey = nil;
 
     for (NSUInteger i = 0; i < [args count]; i++) {
         NSString* arg = args[i];
@@ -1702,6 +1708,18 @@ void cmdImage(NSArray* args) {
             name = args[++i];
         } else if ([arg isEqualToString:@"--ports"] && i + 1 < [args count]) {
             ports = args[++i];
+        } else if ([arg isEqualToString:@"--grant"] && i + 1 < [args count]) {
+            grantId = args[++i];
+        } else if ([arg isEqualToString:@"--revoke"] && i + 1 < [args count]) {
+            revokeId = args[++i];
+        } else if ([arg isEqualToString:@"--trusted"] && i + 1 < [args count]) {
+            trustedId = args[++i];
+        } else if ([arg isEqualToString:@"--trusted-key"] && i + 1 < [args count]) {
+            trustedKey = args[++i];
+        } else if ([arg isEqualToString:@"--transfer"] && i + 1 < [args count]) {
+            transferId = args[++i];
+        } else if ([arg isEqualToString:@"--to-key"] && i + 1 < [args count]) {
+            toKey = args[++i];
         }
     }
 
@@ -1831,9 +1849,441 @@ void cmdImage(NSArray* args) {
         return;
     }
 
-    fprintf(stderr, "%sError: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, or --clone%s\n",
+    if (grantId) {
+        if (!trustedKey) {
+            fprintf(stderr, "%sError: --grant requires --trusted-key%s\n", [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/grant", grantId];
+        NSDictionary* payload = @{@"trusted_api_key": trustedKey};
+        apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        printf("%sAccess granted to %s%s\n", [GREEN UTF8String], [trustedKey UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (revokeId) {
+        if (!trustedKey) {
+            fprintf(stderr, "%sError: --revoke requires --trusted-key%s\n", [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/revoke", revokeId];
+        NSDictionary* payload = @{@"trusted_api_key": trustedKey};
+        apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        printf("%sAccess revoked from %s%s\n", [GREEN UTF8String], [trustedKey UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (trustedId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/trusted", trustedId];
+        NSDictionary* result = apiRequestCLI(endpoint, @"GET", nil, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (transferId) {
+        if (!toKey) {
+            fprintf(stderr, "%sError: --transfer requires --to-key%s\n", [RED UTF8String], [RESET UTF8String]);
+            exit(1);
+        }
+        NSString* endpoint = [NSString stringWithFormat:@"/images/%@/transfer", transferId];
+        NSDictionary* payload = @{@"to_api_key": toKey};
+        NSInteger statusCode = 0;
+        NSDictionary* response = apiRequestWithStatusCLI(endpoint, @"POST", payload, publicKey, secretKey, &statusCode);
+
+        if (statusCode == 428) {
+            NSData* bodyData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+            NSString* bodyStr = [[NSString alloc] initWithData:bodyData encoding:NSUTF8StringEncoding];
+            if (handleSudoChallenge(response, @"POST", endpoint, bodyStr, publicKey, secretKey)) {
+                printf("%sImage transferred to %s%s\n", [GREEN UTF8String], [toKey UTF8String], [RESET UTF8String]);
+            } else {
+                exit(1);
+            }
+        } else if (statusCode >= 200 && statusCode < 300) {
+            printf("%sImage transferred to %s%s\n", [GREEN UTF8String], [toKey UTF8String], [RESET UTF8String]);
+        } else {
+            fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+            exit(1);
+        }
+        return;
+    }
+
+    fprintf(stderr, "%sError: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, --clone, --grant, --revoke, --trusted, or --transfer%s\n",
             [RED UTF8String], [RESET UTF8String]);
     exit(1);
+}
+
+// ============================================================================
+// Snapshot Command
+// ============================================================================
+
+void cmdSnapshot(NSArray* args) {
+    NSString* publicKey, *secretKey;
+    UNGetApiKeysCLI(&publicKey, &secretKey);
+
+    BOOL listMode = NO;
+    NSString* infoId = nil;
+    NSString* sessionId = nil;
+    NSString* serviceId = nil;
+    NSString* restoreId = nil;
+    NSString* deleteId = nil;
+    NSString* lockId = nil;
+    NSString* unlockId = nil;
+    NSString* cloneId = nil;
+    NSString* cloneType = nil;
+    NSString* name = nil;
+    NSString* ports = nil;
+    BOOL hot = NO;
+
+    for (NSUInteger i = 0; i < [args count]; i++) {
+        NSString* arg = args[i];
+        if ([arg isEqualToString:@"--list"] || [arg isEqualToString:@"-l"]) {
+            listMode = YES;
+        } else if ([arg isEqualToString:@"--info"] && i + 1 < [args count]) {
+            infoId = args[++i];
+        } else if ([arg isEqualToString:@"--session"] && i + 1 < [args count]) {
+            sessionId = args[++i];
+        } else if ([arg isEqualToString:@"--service"] && i + 1 < [args count]) {
+            serviceId = args[++i];
+        } else if ([arg isEqualToString:@"--restore"] && i + 1 < [args count]) {
+            restoreId = args[++i];
+        } else if ([arg isEqualToString:@"--delete"] && i + 1 < [args count]) {
+            deleteId = args[++i];
+        } else if ([arg isEqualToString:@"--lock"] && i + 1 < [args count]) {
+            lockId = args[++i];
+        } else if ([arg isEqualToString:@"--unlock"] && i + 1 < [args count]) {
+            unlockId = args[++i];
+        } else if ([arg isEqualToString:@"--clone"] && i + 1 < [args count]) {
+            cloneId = args[++i];
+        } else if ([arg isEqualToString:@"--clone-type"] && i + 1 < [args count]) {
+            cloneType = args[++i];
+        } else if ([arg isEqualToString:@"--name"] && i + 1 < [args count]) {
+            name = args[++i];
+        } else if ([arg isEqualToString:@"--ports"] && i + 1 < [args count]) {
+            ports = args[++i];
+        } else if ([arg isEqualToString:@"--hot"]) {
+            hot = YES;
+        }
+    }
+
+    if (listMode) {
+        NSDictionary* result = apiRequestCLI(@"/snapshots", @"GET", nil, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (infoId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@", infoId];
+        NSDictionary* result = apiRequestCLI(endpoint, @"GET", nil, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (sessionId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/sessions/%@/snapshot", sessionId];
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        if (name) payload[@"name"] = name;
+        if (hot) payload[@"hot"] = @YES;
+
+        NSDictionary* result = apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sSnapshot created%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (serviceId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/services/%@/snapshot", serviceId];
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        if (name) payload[@"name"] = name;
+        if (hot) payload[@"hot"] = @YES;
+
+        NSDictionary* result = apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sSnapshot created%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (restoreId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/restore", restoreId];
+        NSDictionary* result = apiRequestCLI(endpoint, @"POST", @{}, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sSnapshot restored%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    if (deleteId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@", deleteId];
+        NSInteger statusCode = 0;
+        NSDictionary* response = apiRequestWithStatusCLI(endpoint, @"DELETE", nil, publicKey, secretKey, &statusCode);
+
+        if (statusCode == 428) {
+            if (handleSudoChallenge(response, @"DELETE", endpoint, nil, publicKey, secretKey)) {
+                printf("%sSnapshot deleted: %s%s\n", [GREEN UTF8String], [deleteId UTF8String], [RESET UTF8String]);
+            } else {
+                exit(1);
+            }
+        } else if (statusCode >= 200 && statusCode < 300) {
+            printf("%sSnapshot deleted: %s%s\n", [GREEN UTF8String], [deleteId UTF8String], [RESET UTF8String]);
+        } else {
+            fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+            exit(1);
+        }
+        return;
+    }
+
+    if (lockId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/lock", lockId];
+        apiRequestCLI(endpoint, @"POST", nil, publicKey, secretKey);
+        printf("%sSnapshot locked: %s%s\n", [GREEN UTF8String], [lockId UTF8String], [RESET UTF8String]);
+        return;
+    }
+
+    if (unlockId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/unlock", unlockId];
+        NSInteger statusCode = 0;
+        NSDictionary* response = apiRequestWithStatusCLI(endpoint, @"POST", @{}, publicKey, secretKey, &statusCode);
+
+        if (statusCode == 428) {
+            if (handleSudoChallenge(response, @"POST", endpoint, @"{}", publicKey, secretKey)) {
+                printf("%sSnapshot unlocked: %s%s\n", [GREEN UTF8String], [unlockId UTF8String], [RESET UTF8String]);
+            } else {
+                exit(1);
+            }
+        } else if (statusCode >= 200 && statusCode < 300) {
+            printf("%sSnapshot unlocked: %s%s\n", [GREEN UTF8String], [unlockId UTF8String], [RESET UTF8String]);
+        } else {
+            fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+            exit(1);
+        }
+        return;
+    }
+
+    if (cloneId) {
+        NSString* endpoint = [NSString stringWithFormat:@"/snapshots/%@/clone", cloneId];
+        NSMutableDictionary* payload = [NSMutableDictionary dictionary];
+        payload[@"clone_type"] = cloneType ?: @"session";
+        if (name) payload[@"name"] = name;
+        if (ports) {
+            NSArray* portStrings = [ports componentsSeparatedByString:@","];
+            NSMutableArray* portNumbers = [NSMutableArray array];
+            for (NSString* p in portStrings) {
+                [portNumbers addObject:@([p intValue])];
+            }
+            payload[@"ports"] = portNumbers;
+        }
+
+        NSDictionary* result = apiRequestCLI(endpoint, @"POST", payload, publicKey, secretKey);
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%sSnapshot cloned%s\n", [GREEN UTF8String], [RESET UTF8String]);
+        printf("%s\n", [jsonString UTF8String]);
+        return;
+    }
+
+    fprintf(stderr, "%sError: Use --list, --info, --session, --service, --restore, --delete, --lock, --unlock, or --clone%s\n",
+            [RED UTF8String], [RESET UTF8String]);
+    exit(1);
+}
+
+// ============================================================================
+// Logs Command
+// ============================================================================
+
+void cmdLogs(NSArray* args) {
+    NSString* publicKey, *secretKey;
+    UNGetApiKeysCLI(&publicKey, &secretKey);
+
+    NSString* source = @"all";
+    NSInteger lines = 100;
+    NSString* since = @"1h";
+    NSString* grepPattern = nil;
+    BOOL follow = NO;
+
+    for (NSUInteger i = 0; i < [args count]; i++) {
+        NSString* arg = args[i];
+        if (([arg isEqualToString:@"--source"] || [arg isEqualToString:@"-s"]) && i + 1 < [args count]) {
+            source = args[++i];
+        } else if (([arg isEqualToString:@"--lines"] || [arg isEqualToString:@"-n"]) && i + 1 < [args count]) {
+            lines = [args[++i] integerValue];
+        } else if ([arg isEqualToString:@"--since"] && i + 1 < [args count]) {
+            since = args[++i];
+        } else if (([arg isEqualToString:@"--grep"] || [arg isEqualToString:@"-g"]) && i + 1 < [args count]) {
+            grepPattern = args[++i];
+        } else if ([arg isEqualToString:@"--follow"] || [arg isEqualToString:@"-f"]) {
+            follow = YES;
+        }
+    }
+
+    if (follow) {
+        // Streaming logs via SSE
+        NSMutableString* endpoint = [NSMutableString stringWithFormat:@"/paas/logs/stream?source=%@", source];
+        if (grepPattern) {
+            NSString* encoded = [grepPattern stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+            [endpoint appendFormat:@"&grep=%@", encoded];
+        }
+
+        NSString* urlStr = [NSString stringWithFormat:@"%@%@", UN_PORTAL_BASE, endpoint];
+        NSURL* url = [NSURL URLWithString:urlStr];
+        NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+        request.HTTPMethod = @"GET";
+        [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
+
+        // Add HMAC authentication headers
+        if (secretKey && [secretKey length] > 0) {
+            NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
+            NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
+            NSString* signature = hmacSign(secretKey, message);
+            [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
+            [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
+            [request setValue:signature forHTTPHeaderField:@"X-Signature"];
+        } else {
+            [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
+        }
+
+        printf("Streaming logs (Ctrl+C to stop)...\n");
+
+        // Use synchronous download for SSE - will block
+        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+        __block NSData* responseData = nil;
+
+        NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+            completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+                responseData = data;
+                dispatch_semaphore_signal(semaphore);
+            }];
+        [task resume];
+
+        // For SSE, we need to handle streaming differently - just show we attempted
+        // Real SSE would need a custom NSURLSession delegate
+        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+        if (responseData) {
+            NSString* output = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
+            printf("%s\n", [output UTF8String]);
+        }
+        return;
+    }
+
+    // Fetch logs
+    NSMutableString* endpoint = [NSMutableString stringWithFormat:@"/paas/logs?source=%@&lines=%ld&since=%@",
+                                  source, (long)lines, since];
+    if (grepPattern) {
+        NSString* encoded = [grepPattern stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        [endpoint appendFormat:@"&grep=%@", encoded];
+    }
+
+    // Call Portal API for logs
+    NSString* urlStr = [NSString stringWithFormat:@"%@%@", UN_PORTAL_BASE, endpoint];
+    NSURL* url = [NSURL URLWithString:urlStr];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+
+    // Add HMAC authentication headers
+    if (secretKey && [secretKey length] > 0) {
+        NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
+        NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
+        NSString* signature = hmacSign(secretKey, message);
+        [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
+        [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
+        [request setValue:signature forHTTPHeaderField:@"X-Signature"];
+    } else {
+        [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
+    }
+
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block NSDictionary* responseData = nil;
+    __block NSInteger statusCode = 0;
+
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+            NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
+            statusCode = httpResponse.statusCode;
+            if (data) {
+                responseData = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            }
+            dispatch_semaphore_signal(semaphore);
+        }];
+    [task resume];
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+    if (statusCode == 200 && responseData) {
+        NSArray* logLines = responseData[@"logs"];
+        if (logLines && [logLines isKindOfClass:[NSArray class]]) {
+            for (NSDictionary* entry in logLines) {
+                NSString* src = entry[@"source"] ?: @"unknown";
+                NSString* msg = entry[@"line"] ?: @"";
+                printf("[%s] %s\n", [src UTF8String], [msg UTF8String]);
+            }
+        } else {
+            NSData* jsonData = [NSJSONSerialization dataWithJSONObject:responseData options:NSJSONWritingPrettyPrinted error:nil];
+            NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            printf("%s\n", [jsonString UTF8String]);
+        }
+    } else {
+        fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
+        exit(1);
+    }
+}
+
+// ============================================================================
+// Health Command
+// ============================================================================
+
+void cmdHealth(void) {
+    NSURL* url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/health", UN_API_BASE]];
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    request.timeoutInterval = 10;
+
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block NSDictionary* responseData = nil;
+    __block NSInteger statusCode = 0;
+
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
+        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+            NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
+            statusCode = httpResponse.statusCode;
+            if (data) {
+                responseData = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            }
+            dispatch_semaphore_signal(semaphore);
+        }];
+    [task resume];
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+    if (statusCode == 200) {
+        printf("%sAPI is healthy%s\n", [GREEN UTF8String], [RESET UTF8String]);
+    } else {
+        printf("%sAPI may be unhealthy%s\n", [RED UTF8String], [RESET UTF8String]);
+    }
+
+    if (responseData) {
+        NSData* jsonData = [NSJSONSerialization dataWithJSONObject:responseData options:NSJSONWritingPrettyPrinted error:nil];
+        NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        printf("%s\n", [jsonString UTF8String]);
+    }
+}
+
+// ============================================================================
+// Version Command
+// ============================================================================
+
+void cmdVersion(void) {
+    printf("un.m version 1.0.0\n");
+    printf("API: %s\n", [UN_API_BASE UTF8String]);
+    printf("Portal: %s\n", [UN_PORTAL_BASE UTF8String]);
 }
 
 void cmdLanguages(BOOL jsonOutput) {
@@ -1951,6 +2401,14 @@ int main(int argc, const char* argv[]) {
             cmdLanguages(jsonOutput);
         } else if ([firstArg isEqualToString:@"key"]) {
             cmdKey([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"snapshot"]) {
+            cmdSnapshot([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"logs"]) {
+            cmdLogs([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"health"]) {
+            cmdHealth();
+        } else if ([firstArg isEqualToString:@"version"] || [firstArg isEqualToString:@"--version"]) {
+            cmdVersion();
         } else {
             cmdExecute(args);
         }

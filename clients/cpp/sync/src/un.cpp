@@ -68,6 +68,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <sys/stat.h>
+#include <unistd.h>
 
 using namespace std;
 
@@ -489,6 +490,508 @@ void set_unfreeze_on_demand(const string& service_id, bool enabled, const string
                  "-d '" + body + "'";
     exec_curl(cmd);
     cout << GREEN << "Service unfreeze_on_demand set to " << enabled_str << RESET << endl;
+}
+
+// ============================================================================
+// Library Functions for C++ SDK (matching C reference un.h)
+// ============================================================================
+
+const string SDK_VERSION = "4.2.0";
+
+// Execute code synchronously
+string execute(const string& language, const string& code, const string& public_key, const string& secret_key) {
+    string body = "{\"language\":\"" + escape_json(language) + "\",\"code\":\"" + escape_json(code) + "\"}";
+    string auth_headers = build_auth_headers("POST", "/execute", body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " "
+                 "-d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+// Execute code asynchronously (returns job_id)
+string execute_async(const string& language, const string& code, const string& public_key, const string& secret_key) {
+    string body = "{\"language\":\"" + escape_json(language) + "\",\"code\":\"" + escape_json(code) + "\",\"async\":true}";
+    string auth_headers = build_auth_headers("POST", "/execute", body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " "
+                 "-d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+// Get job status
+string get_job(const string& job_id, const string& public_key, const string& secret_key) {
+    string path = "/jobs/" + job_id;
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+// Wait for job completion
+string wait_for_job(const string& job_id, const string& public_key, const string& secret_key) {
+    const int poll_delays[] = {300, 450, 700, 900, 650, 1600, 2000};
+    const int poll_count = 7;
+    int delay_idx = 0;
+
+    while (true) {
+        string result = get_job(job_id, public_key, secret_key);
+        if (result.find("\"status\":\"completed\"") != string::npos ||
+            result.find("\"status\":\"failed\"") != string::npos ||
+            result.find("\"status\":\"timeout\"") != string::npos ||
+            result.find("\"status\":\"cancelled\"") != string::npos) {
+            return result;
+        }
+
+        usleep(poll_delays[delay_idx % poll_count] * 1000);
+        if (delay_idx < poll_count - 1) delay_idx++;
+    }
+}
+
+// Cancel a job
+string cancel_job(const string& job_id, const string& public_key, const string& secret_key) {
+    string path = "/jobs/" + job_id + "/cancel";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+// List all jobs
+string list_jobs(const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("GET", "/jobs", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/jobs' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+// Get supported languages
+string get_languages(const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("GET", "/languages", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/languages' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+// Session functions
+string session_list(const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("GET", "/sessions", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/sessions' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string session_get(const string& session_id, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id;
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string session_create(const string& shell, const string& network, const string& public_key, const string& secret_key) {
+    string body = "{\"shell\":\"" + (shell.empty() ? "bash" : shell) + "\"";
+    if (!network.empty()) body += ",\"network\":\"" + network + "\"";
+    body += "}";
+    string auth_headers = build_auth_headers("POST", "/sessions", body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + "/sessions' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string session_destroy(const string& session_id, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id;
+    string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
+    string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string session_freeze(const string& session_id, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id + "/freeze";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string session_unfreeze(const string& session_id, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id + "/unfreeze";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string session_boost(const string& session_id, int vcpu, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id + "/boost";
+    string body = vcpu > 0 ? "{\"vcpu\":" + to_string(vcpu) + "}" : "{}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string session_unboost(const string& session_id, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id + "/unboost";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string session_execute(const string& session_id, const string& command, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id + "/shell";
+    string body = "{\"command\":\"" + escape_json(command) + "\"}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+// Service functions
+string service_list(const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("GET", "/services", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/services' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_get(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id;
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_create(const string& name, const string& ports, const string& bootstrap, const string& network, const string& public_key, const string& secret_key) {
+    string body = "{\"name\":\"" + escape_json(name) + "\"";
+    if (!ports.empty()) body += ",\"ports\":\"" + ports + "\"";
+    if (!bootstrap.empty()) body += ",\"bootstrap\":\"" + escape_json(bootstrap) + "\"";
+    if (!network.empty()) body += ",\"network\":\"" + network + "\"";
+    body += "}";
+    string auth_headers = build_auth_headers("POST", "/services", body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + "/services' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string service_destroy(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id;
+    string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
+    string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_freeze(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/freeze";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_unfreeze(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/unfreeze";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_lock(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/lock";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_unlock(const string& service_id, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/unlock";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_redeploy(const string& service_id, const string& bootstrap, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/redeploy";
+    string body = bootstrap.empty() ? "{}" : "{\"bootstrap\":\"" + escape_json(bootstrap) + "\"}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string service_logs(const string& service_id, bool all, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/logs" + (all ? "?all=true" : "");
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string service_execute(const string& service_id, const string& command, int timeout_ms, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/execute";
+    string body = "{\"command\":\"" + escape_json(command) + "\"";
+    if (timeout_ms > 0) body += ",\"timeout\":" + to_string(timeout_ms);
+    body += "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string service_resize(const string& service_id, int vcpu, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/resize";
+    string body = "{\"vcpu\":" + to_string(vcpu) + "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+// Snapshot functions
+string snapshot_list(const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("GET", "/snapshots", "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + "/snapshots' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string snapshot_get(const string& snapshot_id, const string& public_key, const string& secret_key) {
+    string path = "/snapshots/" + snapshot_id;
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string snapshot_session(const string& session_id, const string& name, bool hot, const string& public_key, const string& secret_key) {
+    string path = "/sessions/" + session_id + "/snapshot";
+    string body = "{";
+    if (!name.empty()) body += "\"name\":\"" + escape_json(name) + "\",";
+    body += "\"hot\":" + string(hot ? "true" : "false") + "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string snapshot_service(const string& service_id, const string& name, bool hot, const string& public_key, const string& secret_key) {
+    string path = "/services/" + service_id + "/snapshot";
+    string body = "{";
+    if (!name.empty()) body += "\"name\":\"" + escape_json(name) + "\",";
+    body += "\"hot\":" + string(hot ? "true" : "false") + "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string snapshot_restore(const string& snapshot_id, const string& public_key, const string& secret_key) {
+    string path = "/snapshots/" + snapshot_id + "/restore";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string snapshot_delete(const string& snapshot_id, const string& public_key, const string& secret_key) {
+    string path = "/snapshots/" + snapshot_id;
+    string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
+    string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string snapshot_lock(const string& snapshot_id, const string& public_key, const string& secret_key) {
+    string path = "/snapshots/" + snapshot_id + "/lock";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string snapshot_unlock(const string& snapshot_id, const string& public_key, const string& secret_key) {
+    string path = "/snapshots/" + snapshot_id + "/unlock";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string snapshot_clone(const string& snapshot_id, const string& clone_type, const string& name, const string& ports, const string& shell, const string& public_key, const string& secret_key) {
+    string path = "/snapshots/" + snapshot_id + "/clone";
+    string body = "{\"type\":\"" + clone_type + "\"";
+    if (!name.empty()) body += ",\"name\":\"" + escape_json(name) + "\"";
+    if (!ports.empty()) body += ",\"ports\":\"" + ports + "\"";
+    if (!shell.empty()) body += ",\"shell\":\"" + shell + "\"";
+    body += "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+// Image functions
+string image_list(const string& filter, const string& public_key, const string& secret_key) {
+    string path = "/images" + (filter.empty() ? "" : "?filter=" + filter);
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string image_get(const string& image_id, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id;
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string image_publish(const string& source_type, const string& source_id, const string& name, const string& description, const string& public_key, const string& secret_key) {
+    string body = "{\"source_type\":\"" + source_type + "\",\"source_id\":\"" + source_id + "\"";
+    if (!name.empty()) body += ",\"name\":\"" + escape_json(name) + "\"";
+    if (!description.empty()) body += ",\"description\":\"" + escape_json(description) + "\"";
+    body += "}";
+    string auth_headers = build_auth_headers("POST", "/images", body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + "/images' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string image_delete(const string& image_id, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id;
+    string auth_headers = build_auth_headers("DELETE", path, "", public_key, secret_key);
+    string cmd = "curl -s -X DELETE '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string image_lock(const string& image_id, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/lock";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string image_unlock(const string& image_id, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/unlock";
+    string auth_headers = build_auth_headers("POST", path, "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string image_set_visibility(const string& image_id, const string& visibility, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/visibility";
+    string body = "{\"visibility\":\"" + visibility + "\"}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string image_grant_access(const string& image_id, const string& trusted_key, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/grant";
+    string body = "{\"trusted_api_key\":\"" + trusted_key + "\"}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string image_revoke_access(const string& image_id, const string& trusted_key, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/revoke";
+    string body = "{\"trusted_api_key\":\"" + trusted_key + "\"}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string image_list_trusted(const string& image_id, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/trusted";
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+string image_transfer(const string& image_id, const string& to_api_key, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/transfer";
+    string body = "{\"to_api_key\":\"" + to_api_key + "\"}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string image_spawn(const string& image_id, const string& name, const string& ports, const string& bootstrap, const string& network, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/spawn";
+    string body = "{";
+    bool has_field = false;
+    if (!name.empty()) { body += "\"name\":\"" + escape_json(name) + "\""; has_field = true; }
+    if (!ports.empty()) { body += string(has_field ? "," : "") + "\"ports\":\"" + ports + "\""; has_field = true; }
+    if (!bootstrap.empty()) { body += string(has_field ? "," : "") + "\"bootstrap\":\"" + escape_json(bootstrap) + "\""; has_field = true; }
+    if (!network.empty()) { body += string(has_field ? "," : "") + "\"network\":\"" + network + "\""; }
+    body += "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+string image_clone(const string& image_id, const string& name, const string& description, const string& public_key, const string& secret_key) {
+    string path = "/images/" + image_id + "/clone";
+    string body = "{";
+    bool has_field = false;
+    if (!name.empty()) { body += "\"name\":\"" + escape_json(name) + "\""; has_field = true; }
+    if (!description.empty()) { body += string(has_field ? "," : "") + "\"description\":\"" + escape_json(description) + "\""; }
+    body += "}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl(cmd);
+}
+
+// PaaS Logs functions
+string logs_fetch(const string& source, int lines, const string& since, const string& grep, const string& public_key, const string& secret_key) {
+    string path = "/paas/logs?";
+    if (!source.empty()) path += "source=" + source + "&";
+    if (lines > 0) path += "lines=" + to_string(lines) + "&";
+    if (!since.empty()) path += "since=" + since + "&";
+    if (!grep.empty()) path += "grep=" + grep + "&";
+    if (path.back() == '&' || path.back() == '?') path.pop_back();
+    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
+    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+// Key validation
+string validate_keys(const string& public_key, const string& secret_key) {
+    string auth_headers = build_auth_headers("POST", "/keys/validate", "", public_key, secret_key);
+    string cmd = "curl -s -X POST '" + API_BASE + "/keys/validate' " + auth_headers;
+    return exec_curl(cmd);
+}
+
+// Utility functions
+string hmac_sign(const string& secret_key, const string& message) {
+    return compute_hmac(secret_key, message);
+}
+
+bool health_check() {
+    string cmd = "curl -s -o /dev/null -w '%{http_code}' '" + API_BASE + "/health' 2>/dev/null";
+    string result = exec_curl(cmd);
+    return result.find("200") != string::npos;
+}
+
+string version() {
+    return SDK_VERSION;
+}
+
+static string last_error_msg;
+
+void set_last_error(const string& msg) {
+    last_error_msg = msg;
+}
+
+string last_error() {
+    return last_error_msg;
 }
 
 void cmd_service_env(const string& action, const string& target, const vector<string>& envs, const string& env_file, const string& public_key, const string& secret_key) {

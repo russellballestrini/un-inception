@@ -138,6 +138,14 @@ if %*ENV<UNSANDBOX_API_KEY>:exists && %*ENV<UNSANDBOX_API_KEY> {
     } else {
         test-skipped("Executes Bash file successfully (fib.sh not found)");
     }
+
+    # Test: Snapshot command support (feature parity test)
+    ($exit-code, $output) = run-command([$UN_RAKU, 'snapshot', '--list']);
+    if $exit-code == 0 {
+        test-passed("Snapshot list command works");
+    } else {
+        test-failed("Snapshot list command works", "Expected exit code 0");
+    }
 } else {
     say "";
     say color-yellow("Skipping integration tests (UNSANDBOX_API_KEY not set)");

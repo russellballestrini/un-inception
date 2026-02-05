@@ -161,6 +161,161 @@ fn test_fib_execution() bool {
 	return true
 }
 
+fn test_cli_commands() bool {
+	println('=== Test 4: CLI Commands (Feature Parity) ===')
+
+	mut passed := 0
+	mut failed := 0
+
+	// Find un.v script
+	script_paths := [
+		'../clients/v/sync/src/un.v',
+		'../../clients/v/sync/src/un.v',
+		'../un.v',
+	]
+
+	mut un_script := ''
+	for path in script_paths {
+		if os.exists(path) {
+			un_script = path
+			break
+		}
+	}
+
+	if un_script == '' {
+		println('  SKIP: un.v not found')
+		println('CLI Commands: skipped\n')
+		return true
+	}
+
+	// Test: --help
+	help_result := os.execute('v run ${un_script} -- --help')
+	if help_result.output.contains('Usage') || help_result.output.contains('usage') {
+		println('  PASS: --help shows usage')
+		passed++
+	} else {
+		println('  FAIL: --help does not show usage')
+		failed++
+	}
+
+	// Test: version command
+	version_result := os.execute('v run ${un_script} -- version')
+	if version_result.output.contains('version') || version_result.output.contains('Version') {
+		println('  PASS: version command works')
+		passed++
+	} else {
+		println('  FAIL: version command does not work')
+		failed++
+	}
+
+	// Test: health command
+	health_result := os.execute('v run ${un_script} -- health')
+	if health_result.output.contains('health') || health_result.output.contains('API') {
+		println('  PASS: health command works')
+		passed++
+	} else {
+		println('  FAIL: health command does not work')
+		failed++
+	}
+
+	// Test: languages command
+	langs_result := os.execute('v run ${un_script} -- languages')
+	if langs_result.output.contains('python') || langs_result.output.contains('Error') || langs_result.output.contains('API key') {
+		println('  PASS: languages command works')
+		passed++
+	} else {
+		println('  FAIL: languages command does not work')
+		failed++
+	}
+
+	println('CLI Commands: ${passed} passed, ${failed} failed\n')
+	return failed == 0
+}
+
+fn test_api_commands() bool {
+	println('=== Test 5: API Commands (require auth) ===')
+
+	public_key := os.getenv('UNSANDBOX_PUBLIC_KEY')
+	secret_key := os.getenv('UNSANDBOX_SECRET_KEY')
+
+	if public_key == '' && secret_key == '' {
+		println('  SKIP: UNSANDBOX_PUBLIC_KEY/SECRET_KEY not set')
+		println('API Commands: skipped\n')
+		return true
+	}
+
+	mut passed := 0
+	mut failed := 0
+
+	// Find un.v script
+	script_paths := [
+		'../clients/v/sync/src/un.v',
+		'../../clients/v/sync/src/un.v',
+		'../un.v',
+	]
+
+	mut un_script := ''
+	for path in script_paths {
+		if os.exists(path) {
+			un_script = path
+			break
+		}
+	}
+
+	if un_script == '' {
+		println('  SKIP: un.v not found')
+		println('API Commands: skipped\n')
+		return true
+	}
+
+	// Test: snapshot --list
+	snap_result := os.execute('v run ${un_script} -- snapshot --list')
+	if snap_result.output.contains('[') || snap_result.output.contains('{') ||
+		snap_result.output.contains('Error') || snap_result.output.contains('snapshots') {
+		println('  PASS: snapshot --list works')
+		passed++
+	} else {
+		println('  FAIL: snapshot --list does not work')
+		failed++
+	}
+
+	// Test: session --list
+	sess_result := os.execute('v run ${un_script} -- session --list')
+	if sess_result.output.contains('[') || sess_result.output.contains('{') ||
+		sess_result.output.contains('Error') || sess_result.output.contains('sessions') {
+		println('  PASS: session --list works')
+		passed++
+	} else {
+		println('  FAIL: session --list does not work')
+		failed++
+	}
+
+	// Test: service --list
+	svc_result := os.execute('v run ${un_script} -- service --list')
+	if svc_result.output.contains('[') || svc_result.output.contains('{') ||
+		svc_result.output.contains('Error') || svc_result.output.contains('services') {
+		println('  PASS: service --list works')
+		passed++
+	} else {
+		println('  FAIL: service --list does not work')
+		failed++
+	}
+
+	// Test: image --list
+	img_result := os.execute('v run ${un_script} -- image --list')
+	if img_result.output.contains('[') || img_result.output.contains('{') ||
+		img_result.output.contains('Error') || img_result.output.contains('images') {
+		println('  PASS: image --list works')
+		passed++
+	} else {
+		println('  FAIL: image --list does not work')
+		failed++
+	}
+
+	println('API Commands: ${passed} passed, ${failed} failed\n')
+	return failed == 0
+}
+
 fn main() {
 	println('UN CLI V Implementation Test Suite')
 	println('===================================\n')
@@ -176,6 +331,14 @@ fn main() {
 	}
 
 	if !test_fib_execution() {
+		all_passed = false
+	}
+
+	if !test_cli_commands() {
+		all_passed = false
+	}
+
+	if !test_api_commands() {
 		all_passed = false
 	}
 

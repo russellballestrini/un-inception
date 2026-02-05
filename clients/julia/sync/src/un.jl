@@ -1026,6 +1026,37 @@ function main()
         "image"
             help = "Manage images"
             action = :command
+        "snapshot"
+            help = "Manage snapshots"
+            action = :command
+    end
+
+    @add_arg_table! s["snapshot"] begin
+        "--list", "-l"
+            help = "List all snapshots"
+            action = :store_true
+        "--info"
+            help = "Get snapshot details"
+        "--delete"
+            help = "Delete a snapshot"
+        "--lock"
+            help = "Lock snapshot to prevent deletion"
+        "--unlock"
+            help = "Unlock snapshot"
+        "--restore"
+            help = "Restore from snapshot"
+        "--clone"
+            help = "Clone snapshot to session/service (requires --type)"
+        "--type"
+            help = "Clone type: session or service"
+        "--name"
+            help = "Name for cloned resource"
+        "--shell"
+            help = "Shell for cloned session"
+        "--ports"
+            help = "Comma-separated ports for cloned service"
+        "--api-key", "-k"
+            help = "API key"
     end
 
     @add_arg_table! s["session"] begin
@@ -1197,10 +1228,12 @@ function main()
         cmd_key(args["key"])
     elseif args["%COMMAND%"] == "image"
         cmd_image(args["image"])
+    elseif args["%COMMAND%"] == "snapshot"
+        cmd_snapshot(args["snapshot"])
     elseif args["source_file"] !== nothing
         cmd_execute(args)
     else
-        println(stderr, "$(RED)Error: Provide source_file or use 'session'/'service'/'languages'/'key'/'image' subcommand$(RESET)")
+        println(stderr, "$(RED)Error: Provide source_file or use 'session'/'service'/'snapshot'/'languages'/'key'/'image' subcommand$(RESET)")
         exit(1)
     end
 end
@@ -1294,6 +1327,1343 @@ function cmd_image(args)
 
     println(stderr, "$(RED)Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --publish ID, --visibility ID, --spawn ID, or --clone ID$(RESET)")
     exit(1)
+end
+
+function cmd_snapshot(args)
+    (public_key, secret_key) = get_api_keys(args["api-key"])
+
+    if args["list"]
+        result = api_request("/snapshots", public_key, secret_key)
+        snapshots = get(result, "snapshots", [])
+        if isempty(snapshots)
+            println("No snapshots found")
+        else
+            @printf("%-40s %-20s %-12s %-30s %s\n", "ID", "Name", "Type", "Source ID", "Size")
+            for s in snapshots
+                @printf("%-40s %-20s %-12s %-30s %s\n",
+                    get(s, "id", "N/A"),
+                    get(s, "name", "-"),
+                    get(s, "source_type", "N/A"),
+                    get(s, "source_id", "N/A"),
+                    get(s, "size", "N/A"))
+            end
+        end
+        return
+    end
+
+    if args["info"] !== nothing
+        result = api_request("/snapshots/$(args["info"])", public_key, secret_key)
+        println(JSON.json(result, 2))
+        return
+    end
+
+    if args["delete"] !== nothing
+        api_request_with_sudo("/snapshots/$(args["delete"])", public_key, secret_key, method="DELETE")
+        println("$(GREEN)Snapshot deleted: $(args["delete"])$(RESET)")
+        return
+    end
+
+    if args["lock"] !== nothing
+        api_request("/snapshots/$(args["lock"])/lock", public_key, secret_key, method="POST")
+        println("$(GREEN)Snapshot locked: $(args["lock"])$(RESET)")
+        return
+    end
+
+    if args["unlock"] !== nothing
+        api_request_with_sudo("/snapshots/$(args["unlock"])/unlock", public_key, secret_key, method="POST", data=Dict())
+        println("$(GREEN)Snapshot unlocked: $(args["unlock"])$(RESET)")
+        return
+    end
+
+    if args["restore"] !== nothing
+        api_request("/snapshots/$(args["restore"])/restore", public_key, secret_key, method="POST", data=Dict())
+        println("$(GREEN)Snapshot restored: $(args["restore"])$(RESET)")
+        return
+    end
+
+    if args["clone"] !== nothing
+        clone_type = args["type"]
+        if clone_type === nothing
+            println(stderr, "$(RED)Error: --type required for --clone (session or service)$(RESET)")
+            exit(1)
+        end
+        payload = Dict("type" => clone_type)
+        if args["name"] !== nothing
+            payload["name"] = args["name"]
+        end
+        if args["shell"] !== nothing
+            payload["shell"] = args["shell"]
+        end
+        if args["ports"] !== nothing
+            ports = [parse(Int, strip(p)) for p in split(args["ports"], ',')]
+            payload["ports"] = ports
+        end
+        result = api_request("/snapshots/$(args["clone"])/clone", public_key, secret_key, method="POST", data=payload)
+        println("$(GREEN)Cloned from snapshot$(RESET)")
+        println(JSON.json(result, 2))
+        return
+    end
+
+    println(stderr, "$(RED)Error: Use --list, --info ID, --delete ID, --lock ID, --unlock ID, --restore ID, or --clone ID$(RESET)")
+    exit(1)
+end
+
+# =============================================================================
+# Library API Functions (for import/use as a module)
+# =============================================================================
+
+const VERSION = "1.0.0"
+
+"""
+    execute(language::String, code::String; kwargs...) -> Dict
+
+Execute code synchronously and return the result.
+
+# Arguments
+- `language`: Programming language (e.g., "python", "javascript")
+- `code`: Source code to execute
+
+# Keyword Arguments
+- `env::Dict{String,String}`: Environment variables
+- `network::String`: Network mode ("zerotrust" or "semitrusted")
+- `public_key::String`: API public key (optional)
+- `secret_key::String`: API secret key (optional)
+
+# Returns
+Dict with `stdout`, `stderr`, `exit_code`, `success`
+
+# Example
+```julia
+result = execute("python", "print('Hello, World!')")
+println(result["stdout"])
+```
+"""
+function execute(language::String, code::String;
+                 env::Union{Dict{String,String}, Nothing}=nothing,
+                 network::String="zerotrust",
+                 public_key::Union{String,Nothing}=nothing,
+                 secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict("language" => language, "code" => code)
+    if env !== nothing
+        payload["env"] = env
+    end
+    if network != "zerotrust"
+        payload["network"] = network
+    end
+
+    return api_request("/execute", pk, sk, method="POST", data=payload)
+end
+
+"""
+    execute_async(language::String, code::String; kwargs...) -> String
+
+Execute code asynchronously and return job ID.
+
+# Returns
+Job ID string for polling with `wait_job` or `get_job`.
+"""
+function execute_async(language::String, code::String;
+                       env::Union{Dict{String,String}, Nothing}=nothing,
+                       network::String="zerotrust",
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict("language" => language, "code" => code, "async" => true)
+    if env !== nothing
+        payload["env"] = env
+    end
+    if network != "zerotrust"
+        payload["network"] = network
+    end
+
+    result = api_request("/execute", pk, sk, method="POST", data=payload)
+    return get(result, "job_id", "")
+end
+
+"""
+    wait_job(job_id::String; kwargs...) -> Dict
+
+Wait for an async job to complete and return results.
+"""
+function wait_job(job_id::String;
+                  poll_interval::Int=1,
+                  max_wait::Int=300,
+                  public_key::Union{String,Nothing}=nothing,
+                  secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    start_time = time()
+    while true
+        result = get_job(job_id, public_key=pk, secret_key=sk)
+        status = get(result, "status", "")
+        if status in ["completed", "failed", "timeout", "cancelled"]
+            return result
+        end
+        if time() - start_time >= max_wait
+            error("Job $job_id did not complete within $max_wait seconds")
+        end
+        sleep(poll_interval)
+    end
+end
+
+"""
+    get_job(job_id::String; kwargs...) -> Dict
+
+Get the status of an async job.
+"""
+function get_job(job_id::String;
+                 public_key::Union{String,Nothing}=nothing,
+                 secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/jobs/$job_id", pk, sk)
+end
+
+"""
+    cancel_job(job_id::String; kwargs...) -> Bool
+
+Cancel a running job.
+"""
+function cancel_job(job_id::String;
+                    public_key::Union{String,Nothing}=nothing,
+                    secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/jobs/$job_id", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    list_jobs(; kwargs...) -> Vector{Dict}
+
+List all jobs for the account.
+"""
+function list_jobs(;
+                   public_key::Union{String,Nothing}=nothing,
+                   secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/jobs", pk, sk)
+    return get(result, "jobs", [])
+end
+
+"""
+    get_languages(; kwargs...) -> Vector{String}
+
+Get list of supported programming languages.
+"""
+function get_languages(;
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/languages", pk, sk)
+    return get(result, "languages", [])
+end
+
+"""
+    session_list(; kwargs...) -> Vector{Dict}
+
+List all active sessions.
+"""
+function session_list(;
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/sessions", pk, sk)
+    return get(result, "sessions", [])
+end
+
+"""
+    session_get(session_id::String; kwargs...) -> Dict
+
+Get details of a session.
+"""
+function session_get(session_id::String;
+                     public_key::Union{String,Nothing}=nothing,
+                     secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/sessions/$session_id", pk, sk)
+end
+
+"""
+    session_create(; kwargs...) -> Dict
+
+Create a new interactive session.
+"""
+function session_create(;
+                        shell::String="bash",
+                        network::String="zerotrust",
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict("shell" => shell)
+    if network != "zerotrust"
+        payload["network"] = network
+    end
+
+    return api_request("/sessions", pk, sk, method="POST", data=payload)
+end
+
+"""
+    session_destroy(session_id::String; kwargs...) -> Bool
+
+Destroy a session.
+"""
+function session_destroy(session_id::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/sessions/$session_id", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    session_freeze(session_id::String; kwargs...) -> Bool
+
+Freeze (pause) a session.
+"""
+function session_freeze(session_id::String;
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/sessions/$session_id/freeze", pk, sk, method="POST")
+    return true
+end
+
+"""
+    session_unfreeze(session_id::String; kwargs...) -> Bool
+
+Unfreeze (resume) a session.
+"""
+function session_unfreeze(session_id::String;
+                          public_key::Union{String,Nothing}=nothing,
+                          secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/sessions/$session_id/unfreeze", pk, sk, method="POST")
+    return true
+end
+
+"""
+    session_boost(session_id::String, vcpu::Int; kwargs...) -> Bool
+
+Boost session resources.
+"""
+function session_boost(session_id::String, vcpu::Int;
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_patch("/sessions/$session_id", pk, sk, data=Dict("vcpu" => vcpu))
+    return true
+end
+
+"""
+    session_unboost(session_id::String; kwargs...) -> Bool
+
+Remove session boost.
+"""
+function session_unboost(session_id::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_patch("/sessions/$session_id", pk, sk, data=Dict("vcpu" => 1))
+    return true
+end
+
+"""
+    session_execute(session_id::String, command::String; kwargs...) -> Dict
+
+Execute a command in a session.
+"""
+function session_execute(session_id::String, command::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/sessions/$session_id/execute", pk, sk, method="POST", data=Dict("command" => command))
+end
+
+"""
+    service_list(; kwargs...) -> Vector{Dict}
+
+List all services.
+"""
+function service_list(;
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/services", pk, sk)
+    return get(result, "services", [])
+end
+
+"""
+    service_get(service_id::String; kwargs...) -> Dict
+
+Get details of a service.
+"""
+function service_get(service_id::String;
+                     public_key::Union{String,Nothing}=nothing,
+                     secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/services/$service_id", pk, sk)
+end
+
+"""
+    service_create(name::String; kwargs...) -> Dict
+
+Create a new service.
+"""
+function service_create(name::String;
+                        ports::Union{Vector{Int}, Nothing}=nothing,
+                        domains::Union{Vector{String}, Nothing}=nothing,
+                        bootstrap::Union{String, Nothing}=nothing,
+                        network::String="semitrusted",
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict("name" => name)
+    if ports !== nothing
+        payload["ports"] = ports
+    end
+    if domains !== nothing
+        payload["domains"] = domains
+    end
+    if bootstrap !== nothing
+        payload["bootstrap"] = bootstrap
+    end
+    if network != "semitrusted"
+        payload["network"] = network
+    end
+
+    return api_request("/services", pk, sk, method="POST", data=payload)
+end
+
+"""
+    service_destroy(service_id::String; kwargs...) -> Bool
+
+Destroy a service.
+"""
+function service_destroy(service_id::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_with_sudo("/services/$service_id", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    service_freeze(service_id::String; kwargs...) -> Bool
+
+Freeze (pause) a service.
+"""
+function service_freeze(service_id::String;
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/services/$service_id/freeze", pk, sk, method="POST")
+    return true
+end
+
+"""
+    service_unfreeze(service_id::String; kwargs...) -> Bool
+
+Unfreeze (resume) a service.
+"""
+function service_unfreeze(service_id::String;
+                          public_key::Union{String,Nothing}=nothing,
+                          secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/services/$service_id/unfreeze", pk, sk, method="POST")
+    return true
+end
+
+"""
+    service_lock(service_id::String; kwargs...) -> Bool
+
+Lock a service to prevent deletion.
+"""
+function service_lock(service_id::String;
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/services/$service_id/lock", pk, sk, method="POST")
+    return true
+end
+
+"""
+    service_unlock(service_id::String; kwargs...) -> Bool
+
+Unlock a service.
+"""
+function service_unlock(service_id::String;
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_with_sudo("/services/$service_id/unlock", pk, sk, method="POST", data=Dict())
+    return true
+end
+
+"""
+    service_set_unfreeze_on_demand(service_id::String, enabled::Bool; kwargs...) -> Bool
+
+Set unfreeze-on-demand for a service.
+"""
+function service_set_unfreeze_on_demand(service_id::String, enabled::Bool;
+                                        public_key::Union{String,Nothing}=nothing,
+                                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_patch("/services/$service_id", pk, sk, data=Dict("unfreeze_on_demand" => enabled))
+    return true
+end
+
+"""
+    service_redeploy(service_id::String; kwargs...) -> Bool
+
+Redeploy a service (re-run bootstrap).
+"""
+function service_redeploy(service_id::String;
+                          bootstrap::Union{String, Nothing}=nothing,
+                          public_key::Union{String,Nothing}=nothing,
+                          secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = bootstrap !== nothing ? Dict("bootstrap" => bootstrap) : Dict()
+    api_request("/services/$service_id/redeploy", pk, sk, method="POST", data=payload)
+    return true
+end
+
+"""
+    service_logs(service_id::String; kwargs...) -> String
+
+Get service logs.
+"""
+function service_logs(service_id::String;
+                      all_logs::Bool=false,
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    endpoint = all_logs ? "/services/$service_id/logs?all=true" : "/services/$service_id/logs"
+    result = api_request(endpoint, pk, sk)
+    return get(result, "logs", "")
+end
+
+"""
+    service_execute(service_id::String, command::String; kwargs...) -> Dict
+
+Execute a command in a service.
+"""
+function service_execute(service_id::String, command::String;
+                         timeout_ms::Int=30000,
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/services/$service_id/execute", pk, sk, method="POST",
+                       data=Dict("command" => command, "timeout_ms" => timeout_ms))
+end
+
+"""
+    service_resize(service_id::String, vcpu::Int; kwargs...) -> Bool
+
+Resize a service.
+"""
+function service_resize(service_id::String, vcpu::Int;
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_patch("/services/$service_id", pk, sk, data=Dict("vcpu" => vcpu))
+    return true
+end
+
+"""
+    service_env_get(service_id::String; kwargs...) -> String
+
+Get service environment variables.
+"""
+function service_env_get(service_id::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/services/$service_id/env", pk, sk)
+    return get(result, "env", "")
+end
+
+"""
+    service_env_set(service_id::String, env_content::String; kwargs...) -> Bool
+
+Set service environment variables.
+"""
+function service_env_set(service_id::String, env_content::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/services/$service_id/env", pk, sk, method="POST", data=Dict("env" => env_content))
+    return true
+end
+
+"""
+    service_env_delete(service_id::String; kwargs...) -> Bool
+
+Delete service environment variables.
+"""
+function service_env_delete(service_id::String;
+                            public_key::Union{String,Nothing}=nothing,
+                            secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/services/$service_id/env", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    service_env_export(service_id::String; kwargs...) -> String
+
+Export service environment variables as shell format.
+"""
+function service_env_export(service_id::String;
+                            public_key::Union{String,Nothing}=nothing,
+                            secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/services/$service_id/env/export", pk, sk)
+    return get(result, "export", "")
+end
+
+"""
+    snapshot_list(; kwargs...) -> Vector{Dict}
+
+List all snapshots.
+"""
+function snapshot_list(;
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/snapshots", pk, sk)
+    return get(result, "snapshots", [])
+end
+
+"""
+    snapshot_get(snapshot_id::String; kwargs...) -> Dict
+
+Get details of a snapshot.
+"""
+function snapshot_get(snapshot_id::String;
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/snapshots/$snapshot_id", pk, sk)
+end
+
+"""
+    snapshot_session(session_id::String; kwargs...) -> String
+
+Create a snapshot from a session. Returns snapshot ID.
+"""
+function snapshot_session(session_id::String;
+                          name::Union{String, Nothing}=nothing,
+                          hot::Bool=false,
+                          public_key::Union{String,Nothing}=nothing,
+                          secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict()
+    if name !== nothing
+        payload["name"] = name
+    end
+    if hot
+        payload["hot"] = true
+    end
+
+    result = api_request("/sessions/$session_id/snapshot", pk, sk, method="POST", data=payload)
+    return get(result, "id", "")
+end
+
+"""
+    snapshot_service(service_id::String; kwargs...) -> String
+
+Create a snapshot from a service. Returns snapshot ID.
+"""
+function snapshot_service(service_id::String;
+                          name::Union{String, Nothing}=nothing,
+                          hot::Bool=false,
+                          public_key::Union{String,Nothing}=nothing,
+                          secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict()
+    if name !== nothing
+        payload["name"] = name
+    end
+    if hot
+        payload["hot"] = true
+    end
+
+    result = api_request("/services/$service_id/snapshot", pk, sk, method="POST", data=payload)
+    return get(result, "id", "")
+end
+
+"""
+    snapshot_restore(snapshot_id::String; kwargs...) -> Bool
+
+Restore from a snapshot.
+"""
+function snapshot_restore(snapshot_id::String;
+                          public_key::Union{String,Nothing}=nothing,
+                          secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/snapshots/$snapshot_id/restore", pk, sk, method="POST", data=Dict())
+    return true
+end
+
+"""
+    snapshot_delete(snapshot_id::String; kwargs...) -> Bool
+
+Delete a snapshot.
+"""
+function snapshot_delete(snapshot_id::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_with_sudo("/snapshots/$snapshot_id", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    snapshot_lock(snapshot_id::String; kwargs...) -> Bool
+
+Lock a snapshot to prevent deletion.
+"""
+function snapshot_lock(snapshot_id::String;
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/snapshots/$snapshot_id/lock", pk, sk, method="POST")
+    return true
+end
+
+"""
+    snapshot_unlock(snapshot_id::String; kwargs...) -> Bool
+
+Unlock a snapshot.
+"""
+function snapshot_unlock(snapshot_id::String;
+                         public_key::Union{String,Nothing}=nothing,
+                         secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_with_sudo("/snapshots/$snapshot_id/unlock", pk, sk, method="POST", data=Dict())
+    return true
+end
+
+"""
+    snapshot_clone(snapshot_id::String, clone_type::String; kwargs...) -> String
+
+Clone a snapshot to a new session or service. Returns the new resource ID.
+"""
+function snapshot_clone(snapshot_id::String, clone_type::String;
+                        name::Union{String, Nothing}=nothing,
+                        ports::Union{Vector{Int}, Nothing}=nothing,
+                        shell::Union{String, Nothing}=nothing,
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict("type" => clone_type)
+    if name !== nothing
+        payload["name"] = name
+    end
+    if ports !== nothing
+        payload["ports"] = ports
+    end
+    if shell !== nothing
+        payload["shell"] = shell
+    end
+
+    result = api_request("/snapshots/$snapshot_id/clone", pk, sk, method="POST", data=payload)
+    return get(result, "id", "")
+end
+
+"""
+    image_list(; kwargs...) -> Vector{Dict}
+
+List all images.
+"""
+function image_list(;
+                    filter::Union{String, Nothing}=nothing,
+                    public_key::Union{String,Nothing}=nothing,
+                    secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    endpoint = filter !== nothing ? "/images?filter=$filter" : "/images"
+    result = api_request(endpoint, pk, sk)
+    return get(result, "images", [])
+end
+
+"""
+    image_get(image_id::String; kwargs...) -> Dict
+
+Get details of an image.
+"""
+function image_get(image_id::String;
+                   public_key::Union{String,Nothing}=nothing,
+                   secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    return api_request("/images/$image_id", pk, sk)
+end
+
+"""
+    image_publish(source_type::String, source_id::String; kwargs...) -> String
+
+Publish an image from a service or snapshot. Returns image ID.
+"""
+function image_publish(source_type::String, source_id::String;
+                       name::Union{String, Nothing}=nothing,
+                       description::Union{String, Nothing}=nothing,
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict("source_type" => source_type, "source_id" => source_id)
+    if name !== nothing
+        payload["name"] = name
+    end
+    if description !== nothing
+        payload["description"] = description
+    end
+
+    result = api_request("/images/publish", pk, sk, method="POST", data=payload)
+    return get(result, "id", "")
+end
+
+"""
+    image_delete(image_id::String; kwargs...) -> Bool
+
+Delete an image.
+"""
+function image_delete(image_id::String;
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_with_sudo("/images/$image_id", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    image_lock(image_id::String; kwargs...) -> Bool
+
+Lock an image to prevent deletion.
+"""
+function image_lock(image_id::String;
+                    public_key::Union{String,Nothing}=nothing,
+                    secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/images/$image_id/lock", pk, sk, method="POST")
+    return true
+end
+
+"""
+    image_unlock(image_id::String; kwargs...) -> Bool
+
+Unlock an image.
+"""
+function image_unlock(image_id::String;
+                      public_key::Union{String,Nothing}=nothing,
+                      secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request_with_sudo("/images/$image_id/unlock", pk, sk, method="POST", data=Dict())
+    return true
+end
+
+"""
+    image_set_visibility(image_id::String, visibility::String; kwargs...) -> Bool
+
+Set image visibility (private, unlisted, or public).
+"""
+function image_set_visibility(image_id::String, visibility::String;
+                              public_key::Union{String,Nothing}=nothing,
+                              secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/images/$image_id/visibility", pk, sk, method="POST", data=Dict("visibility" => visibility))
+    return true
+end
+
+"""
+    image_grant_access(image_id::String, trusted_api_key::String; kwargs...) -> Bool
+
+Grant access to an image.
+"""
+function image_grant_access(image_id::String, trusted_api_key::String;
+                            public_key::Union{String,Nothing}=nothing,
+                            secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/images/$image_id/access", pk, sk, method="POST", data=Dict("trusted_api_key" => trusted_api_key))
+    return true
+end
+
+"""
+    image_revoke_access(image_id::String, trusted_api_key::String; kwargs...) -> Bool
+
+Revoke access to an image.
+"""
+function image_revoke_access(image_id::String, trusted_api_key::String;
+                             public_key::Union{String,Nothing}=nothing,
+                             secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/images/$image_id/access/$trusted_api_key", pk, sk, method="DELETE")
+    return true
+end
+
+"""
+    image_list_trusted(image_id::String; kwargs...) -> Vector{String}
+
+List trusted API keys for an image.
+"""
+function image_list_trusted(image_id::String;
+                            public_key::Union{String,Nothing}=nothing,
+                            secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    result = api_request("/images/$image_id/access", pk, sk)
+    return get(result, "trusted_keys", [])
+end
+
+"""
+    image_transfer(image_id::String, to_api_key::String; kwargs...) -> Bool
+
+Transfer ownership of an image.
+"""
+function image_transfer(image_id::String, to_api_key::String;
+                        public_key::Union{String,Nothing}=nothing,
+                        secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    api_request("/images/$image_id/transfer", pk, sk, method="POST", data=Dict("to_api_key" => to_api_key))
+    return true
+end
+
+"""
+    image_spawn(image_id::String; kwargs...) -> String
+
+Spawn a new service from an image. Returns service ID.
+"""
+function image_spawn(image_id::String;
+                     name::Union{String, Nothing}=nothing,
+                     ports::Union{Vector{Int}, Nothing}=nothing,
+                     bootstrap::Union{String, Nothing}=nothing,
+                     network::Union{String, Nothing}=nothing,
+                     public_key::Union{String,Nothing}=nothing,
+                     secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict()
+    if name !== nothing
+        payload["name"] = name
+    end
+    if ports !== nothing
+        payload["ports"] = ports
+    end
+    if bootstrap !== nothing
+        payload["bootstrap"] = bootstrap
+    end
+    if network !== nothing
+        payload["network"] = network
+    end
+
+    result = api_request("/images/$image_id/spawn", pk, sk, method="POST", data=payload)
+    return get(result, "id", "")
+end
+
+"""
+    image_clone(image_id::String; kwargs...) -> String
+
+Clone an image. Returns new image ID.
+"""
+function image_clone(image_id::String;
+                     name::Union{String, Nothing}=nothing,
+                     description::Union{String, Nothing}=nothing,
+                     public_key::Union{String,Nothing}=nothing,
+                     secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    payload = Dict()
+    if name !== nothing
+        payload["name"] = name
+    end
+    if description !== nothing
+        payload["description"] = description
+    end
+
+    result = api_request("/images/$image_id/clone", pk, sk, method="POST", data=payload)
+    return get(result, "id", "")
+end
+
+"""
+    logs_fetch(source::String; kwargs...) -> String
+
+Fetch PaaS logs.
+"""
+function logs_fetch(source::String;
+                    lines::Int=100,
+                    since::String="1h",
+                    grep::Union{String, Nothing}=nothing,
+                    public_key::Union{String,Nothing}=nothing,
+                    secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    endpoint = "/logs?source=$source&lines=$lines&since=$since"
+    if grep !== nothing
+        endpoint *= "&grep=$grep"
+    end
+
+    result = api_request(endpoint, pk, sk)
+    return get(result, "logs", "")
+end
+
+"""
+    validate_keys(; kwargs...) -> Dict
+
+Validate API keys and return account info.
+"""
+function validate_keys(;
+                       public_key::Union{String,Nothing}=nothing,
+                       secret_key::Union{String,Nothing}=nothing)
+    (pk, sk) = if public_key !== nothing && secret_key !== nothing
+        (public_key, secret_key)
+    else
+        get_api_keys(nothing)
+    end
+
+    url = PORTAL_BASE * "/keys/validate"
+    timestamp = Int64(floor(time()))
+    body = "{}"
+    signature = compute_signature(sk, timestamp, "POST", "/keys/validate", body)
+
+    headers = [
+        "Authorization" => "Bearer $pk",
+        "X-Timestamp" => string(timestamp),
+        "X-Signature" => signature,
+        "Content-Type" => "application/json"
+    ]
+
+    try
+        response = HTTP.post(url, headers, body, readtimeout=30)
+        return JSON.parse(String(response.body))
+    catch e
+        return Dict("valid" => false, "error" => string(e))
+    end
+end
+
+"""
+    health_check() -> Bool
+
+Check if the API is healthy.
+"""
+function health_check()
+    try
+        response = HTTP.get("$API_BASE/health", readtimeout=10)
+        return response.status == 200
+    catch
+        return false
+    end
+end
+
+"""
+    version() -> String
+
+Get SDK version.
+"""
+function version()
+    return VERSION
+end
+
+# Thread-local error storage
+const _last_error = Ref{String}("")
+
+"""
+    last_error() -> String
+
+Get the last error message.
+"""
+function last_error()
+    return _last_error[]
+end
+
+"""
+    set_last_error(msg::String)
+
+Set the last error message (internal use).
+"""
+function set_last_error(msg::String)
+    _last_error[] = msg
+end
+
+"""
+    hmac_sign(secret_key::String, message::String) -> String
+
+Compute HMAC-SHA256 signature.
+"""
+function hmac_sign(secret_key::String, message::String)
+    return bytes2hex(SHA.hmac_sha256(Vector{UInt8}(secret_key), Vector{UInt8}(message)))
 end
 
 main()

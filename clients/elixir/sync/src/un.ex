@@ -52,14 +52,113 @@
 # Uses curl for HTTP (no external dependencies)
 
 defmodule Un do
+  @moduledoc """
+  unsandbox.com Elixir SDK - Full API with execution, sessions, services, snapshots, and images.
+
+  ## Library Usage
+
+      # Execute code synchronously
+      result = Un.execute("python", "print(42)")
+      IO.puts(result.stdout)
+
+      # List sessions
+      sessions = Un.session_list()
+
+      # Create a service
+      service_id = Un.service_create("myapp", ports: "8080")
+
+  ## Authentication
+
+  Credentials are loaded in priority order:
+  1. Function arguments (public_key, secret_key)
+  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+  3. Config file (~/.unsandbox/accounts.csv)
+  """
+
   @blue "\e[34m"
   @red "\e[31m"
   @green "\e[32m"
   @yellow "\e[33m"
   @reset "\e[0m"
 
+  @api_base "https://api.unsandbox.com"
   @portal_base "https://unsandbox.com"
   @languages_cache_ttl 3600
+  @version "4.2.0"
+
+  # ============================================================================
+  # Types
+  # ============================================================================
+
+  @type result :: %{
+    success: boolean(),
+    stdout: String.t(),
+    stderr: String.t(),
+    exit_code: integer(),
+    job_id: String.t() | nil,
+    language: String.t() | nil,
+    execution_time: float() | nil
+  }
+
+  @type job :: %{
+    id: String.t(),
+    status: String.t(),
+    language: String.t() | nil,
+    created_at: integer() | nil,
+    completed_at: integer() | nil
+  }
+
+  @type session :: %{
+    id: String.t(),
+    status: String.t(),
+    container_name: String.t() | nil,
+    network_mode: String.t() | nil,
+    vcpu: integer() | nil,
+    created_at: integer() | nil
+  }
+
+  @type service :: %{
+    id: String.t(),
+    name: String.t(),
+    status: String.t(),
+    ports: String.t() | nil,
+    domains: String.t() | nil,
+    vcpu: integer() | nil,
+    locked: boolean(),
+    unfreeze_on_demand: boolean(),
+    created_at: integer() | nil
+  }
+
+  @type snapshot :: %{
+    id: String.t(),
+    name: String.t() | nil,
+    type: String.t(),
+    source_id: String.t(),
+    hot: boolean(),
+    locked: boolean(),
+    created_at: integer() | nil,
+    size_bytes: integer() | nil
+  }
+
+  @type image :: %{
+    id: String.t(),
+    name: String.t() | nil,
+    description: String.t() | nil,
+    visibility: String.t(),
+    source_type: String.t(),
+    source_id: String.t(),
+    locked: boolean(),
+    created_at: integer() | nil,
+    size_bytes: integer() | nil
+  }
+
+  @type key_info :: %{
+    valid: boolean(),
+    tier: String.t() | nil,
+    rate_limit_per_minute: integer() | nil,
+    concurrency_limit: integer() | nil,
+    expires_at: integer() | nil
+  }
 
   @ext_map %{
     ".ex" => "elixir", ".exs" => "elixir", ".erl" => "erlang",
@@ -75,6 +174,963 @@ defmodule Un do
     ".f90" => "fortran", ".cob" => "cobol", ".pro" => "prolog",
     ".forth" => "forth", ".tcl" => "tcl", ".raku" => "raku"
   }
+
+  # ============================================================================
+  # Utility Functions
+  # ============================================================================
+
+  @doc """
+  Return the SDK version.
+  """
+  @spec version() :: String.t()
+  def version, do: @version
+
+  @doc """
+  Check API health.
+
+  Returns true if API is healthy, false otherwise.
+  """
+  @spec health_check() :: boolean()
+  def health_check do
+    try do
+      {output, 0} = System.cmd("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "#{@api_base}/health"])
+      String.trim(output) == "200"
+    rescue
+      _ -> false
+    end
+  end
+
+  @doc """
+  Generate HMAC-SHA256 signature for a message.
+  """
+  @spec hmac_sign(String.t(), String.t()) :: String.t()
+  def hmac_sign(secret_key, message) do
+    hmac_sha256(secret_key, message)
+  end
+
+  @doc """
+  Detect language from filename extension.
+  """
+  @spec detect_language(String.t()) :: String.t() | nil
+  def detect_language(filename) do
+    ext = Path.extname(filename) |> String.downcase()
+    Map.get(@ext_map, ext)
+  end
+
+  # ============================================================================
+  # Execution Functions (8)
+  # ============================================================================
+
+  @doc """
+  Execute code synchronously.
+
+  ## Options
+    * `:network` - Network mode ("zerotrust" or "semitrusted")
+    * `:vcpu` - Number of vCPUs (1-8)
+    * `:ttl` - Time to live in seconds
+    * `:env` - Environment variables as keyword list
+    * `:input_files` - List of file paths to include
+    * `:return_artifacts` - Return compiled artifacts
+    * `:public_key` - API public key (optional)
+    * `:secret_key` - API secret key (optional)
+
+  ## Examples
+
+      result = Un.execute("python", "print('Hello World')")
+      IO.puts(result.stdout)
+
+  """
+  @spec execute(String.t(), String.t(), keyword()) :: result()
+  def execute(language, code, opts \\ []) do
+    json = build_execute_json_full(language, code, opts)
+    response = api_post("/execute", json, opts)
+    parse_result(response)
+  end
+
+  @doc """
+  Execute code asynchronously, returning a job ID.
+  """
+  @spec execute_async(String.t(), String.t(), keyword()) :: String.t() | nil
+  def execute_async(language, code, opts \\ []) do
+    json = build_execute_json_full(language, code, opts)
+    response = api_post("/execute/async", json, opts)
+    extract_json_value(response, "job_id")
+  end
+
+  @doc """
+  Wait for a job to complete and return the result.
+  """
+  @spec wait_job(String.t(), keyword()) :: result()
+  def wait_job(job_id, opts \\ []) do
+    poll_delays = [300, 450, 700, 900, 650, 1600, 2000]
+    max_polls = Keyword.get(opts, :max_polls, 100)
+    do_wait_job(job_id, poll_delays, 0, max_polls, opts)
+  end
+
+  defp do_wait_job(job_id, poll_delays, poll_count, max_polls, opts) when poll_count >= max_polls do
+    %{success: false, stdout: "", stderr: "Max polls exceeded", exit_code: 1, job_id: job_id, language: nil, execution_time: nil}
+  end
+
+  defp do_wait_job(job_id, poll_delays, poll_count, max_polls, opts) do
+    delay_idx = min(poll_count, length(poll_delays) - 1)
+    delay = Enum.at(poll_delays, delay_idx)
+    Process.sleep(delay)
+
+    job = get_job(job_id, opts)
+    case job.status do
+      status when status in ["completed", "failed", "timeout", "cancelled"] ->
+        response = api_get("/jobs/#{job_id}", opts)
+        parse_result(response)
+      _ ->
+        do_wait_job(job_id, poll_delays, poll_count + 1, max_polls, opts)
+    end
+  end
+
+  @doc """
+  Get job status and details.
+  """
+  @spec get_job(String.t(), keyword()) :: job()
+  def get_job(job_id, opts \\ []) do
+    response = api_get("/jobs/#{job_id}", opts)
+    %{
+      id: job_id,
+      status: extract_json_value(response, "status") || "unknown",
+      language: extract_json_value(response, "language"),
+      created_at: extract_json_int(response, "created_at"),
+      completed_at: extract_json_int(response, "completed_at")
+    }
+  end
+
+  @doc """
+  Cancel a running job.
+  """
+  @spec cancel_job(String.t(), keyword()) :: boolean()
+  def cancel_job(job_id, opts \\ []) do
+    response = api_delete("/jobs/#{job_id}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  List all active jobs.
+  """
+  @spec list_jobs(keyword()) :: String.t()
+  def list_jobs(opts \\ []) do
+    api_get("/jobs", opts)
+  end
+
+  @doc """
+  Get list of supported languages.
+  """
+  @spec get_languages(keyword()) :: [String.t()]
+  def get_languages(opts \\ []) do
+    case load_languages_cache() do
+      nil ->
+        response = api_get("/languages", opts)
+        langs = extract_json_array(response, "languages")
+        save_languages_cache(langs)
+        langs
+      cached ->
+        cached
+    end
+  end
+
+  # ============================================================================
+  # Session Functions (9)
+  # ============================================================================
+
+  @doc """
+  List all sessions.
+  """
+  @spec session_list(keyword()) :: String.t()
+  def session_list(opts \\ []), do: api_get("/sessions", opts)
+
+  @doc """
+  Get session details.
+  """
+  @spec session_get(String.t(), keyword()) :: session()
+  def session_get(session_id, opts \\ []) do
+    response = api_get("/sessions/#{session_id}", opts)
+    %{
+      id: session_id,
+      status: extract_json_value(response, "status") || "unknown",
+      container_name: extract_json_value(response, "container_name"),
+      network_mode: extract_json_value(response, "network_mode"),
+      vcpu: extract_json_int(response, "vcpu"),
+      created_at: extract_json_int(response, "created_at")
+    }
+  end
+
+  @doc """
+  Create a new session.
+
+  ## Options
+    * `:shell` - Shell to use (default "bash")
+    * `:network` - Network mode
+    * `:vcpu` - Number of vCPUs
+    * `:input_files` - List of file paths
+  """
+  @spec session_create(keyword()) :: session()
+  def session_create(opts \\ []) do
+    shell = Keyword.get(opts, :shell, "bash")
+    network = Keyword.get(opts, :network)
+    vcpu = Keyword.get(opts, :vcpu)
+    input_files = Keyword.get(opts, :input_files, [])
+
+    network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
+    vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
+    input_files_json = build_input_files_json(input_files)
+
+    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}#{input_files_json}}"
+    response = api_post("/sessions", json, opts)
+
+    %{
+      id: extract_json_value(response, "id") || "",
+      status: extract_json_value(response, "status") || "created",
+      container_name: extract_json_value(response, "container_name"),
+      network_mode: extract_json_value(response, "network_mode"),
+      vcpu: extract_json_int(response, "vcpu"),
+      created_at: extract_json_int(response, "created_at")
+    }
+  end
+
+  @doc """
+  Destroy a session.
+  """
+  @spec session_destroy(String.t(), keyword()) :: boolean()
+  def session_destroy(session_id, opts \\ []) do
+    response = api_delete("/sessions/#{session_id}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Freeze a session.
+  """
+  @spec session_freeze(String.t(), keyword()) :: boolean()
+  def session_freeze(session_id, opts \\ []) do
+    response = api_post("/sessions/#{session_id}/freeze", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Unfreeze a session.
+  """
+  @spec session_unfreeze(String.t(), keyword()) :: boolean()
+  def session_unfreeze(session_id, opts \\ []) do
+    response = api_post("/sessions/#{session_id}/unfreeze", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Boost session resources (increase vCPU).
+  """
+  @spec session_boost(String.t(), integer(), keyword()) :: boolean()
+  def session_boost(session_id, vcpu, opts \\ []) do
+    json = "{\"vcpu\":#{vcpu}}"
+    response = api_patch("/sessions/#{session_id}", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Unboost session (reset to default resources).
+  """
+  @spec session_unboost(String.t(), keyword()) :: boolean()
+  def session_unboost(session_id, opts \\ []) do
+    json = "{\"vcpu\":1}"
+    response = api_patch("/sessions/#{session_id}", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Execute a command in a session.
+  """
+  @spec session_execute(String.t(), String.t(), keyword()) :: result()
+  def session_execute(session_id, command, opts \\ []) do
+    json = "{\"command\":\"#{escape_json(command)}\"}"
+    response = api_post("/sessions/#{session_id}/execute", json, opts)
+    parse_result(response)
+  end
+
+  # ============================================================================
+  # Service Functions (17)
+  # ============================================================================
+
+  @doc """
+  List all services.
+  """
+  @spec service_list(keyword()) :: String.t()
+  def service_list(opts \\ []), do: api_get("/services", opts)
+
+  @doc """
+  Get service details.
+  """
+  @spec service_get(String.t(), keyword()) :: service()
+  def service_get(service_id, opts \\ []) do
+    response = api_get("/services/#{service_id}", opts)
+    %{
+      id: service_id,
+      name: extract_json_value(response, "name") || "",
+      status: extract_json_value(response, "status") || "unknown",
+      ports: extract_json_value(response, "ports"),
+      domains: extract_json_value(response, "domains"),
+      vcpu: extract_json_int(response, "vcpu"),
+      locked: extract_json_value(response, "locked") == "true",
+      unfreeze_on_demand: extract_json_value(response, "unfreeze_on_demand") == "true",
+      created_at: extract_json_int(response, "created_at")
+    }
+  end
+
+  @doc """
+  Create a new service.
+
+  ## Options
+    * `:ports` - Ports to expose (e.g., "8080" or "80,443")
+    * `:domains` - Custom domains
+    * `:bootstrap` - Bootstrap script content
+    * `:network` - Network mode
+    * `:vcpu` - Number of vCPUs
+    * `:input_files` - List of file paths
+  """
+  @spec service_create(String.t(), keyword()) :: String.t() | nil
+  def service_create(name, opts \\ []) do
+    ports = Keyword.get(opts, :ports)
+    domains = Keyword.get(opts, :domains)
+    bootstrap = Keyword.get(opts, :bootstrap)
+    network = Keyword.get(opts, :network)
+    vcpu = Keyword.get(opts, :vcpu)
+    input_files = Keyword.get(opts, :input_files, [])
+
+    ports_json = if ports, do: ",\"ports\":[#{ports}]", else: ""
+    domains_json = if domains, do: ",\"domains\":\"#{escape_json(domains)}\"", else: ""
+    bootstrap_json = if bootstrap, do: ",\"bootstrap\":\"#{escape_json(bootstrap)}\"", else: ""
+    network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
+    vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
+    input_files_json = build_input_files_json(input_files)
+
+    json = "{\"name\":\"#{escape_json(name)}\"#{ports_json}#{domains_json}#{bootstrap_json}#{network_json}#{vcpu_json}#{input_files_json}}"
+    response = api_post("/services", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  @doc """
+  Destroy a service.
+  """
+  @spec service_destroy(String.t(), keyword()) :: boolean()
+  def service_destroy(service_id, opts \\ []) do
+    response = api_delete("/services/#{service_id}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Freeze a service.
+  """
+  @spec service_freeze(String.t(), keyword()) :: boolean()
+  def service_freeze(service_id, opts \\ []) do
+    response = api_post("/services/#{service_id}/freeze", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Unfreeze a service.
+  """
+  @spec service_unfreeze(String.t(), keyword()) :: boolean()
+  def service_unfreeze(service_id, opts \\ []) do
+    response = api_post("/services/#{service_id}/unfreeze", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Lock a service to prevent deletion.
+  """
+  @spec service_lock(String.t(), keyword()) :: boolean()
+  def service_lock(service_id, opts \\ []) do
+    response = api_post("/services/#{service_id}/lock", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Unlock a service.
+  """
+  @spec service_unlock(String.t(), keyword()) :: boolean()
+  def service_unlock(service_id, opts \\ []) do
+    response = api_post("/services/#{service_id}/unlock", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Set unfreeze-on-demand for a service.
+  """
+  @spec service_set_unfreeze_on_demand(String.t(), boolean(), keyword()) :: boolean()
+  def service_set_unfreeze_on_demand(service_id, enabled, opts \\ []) do
+    json = "{\"unfreeze_on_demand\":#{enabled}}"
+    response = api_patch("/services/#{service_id}", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Redeploy a service with optional new bootstrap.
+  """
+  @spec service_redeploy(String.t(), String.t() | nil, keyword()) :: boolean()
+  def service_redeploy(service_id, bootstrap \\ nil, opts \\ []) do
+    bootstrap_json = if bootstrap, do: "\"bootstrap\":\"#{escape_json(bootstrap)}\"", else: ""
+    json = "{#{bootstrap_json}}"
+    response = api_post("/services/#{service_id}/redeploy", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Get service bootstrap logs.
+  """
+  @spec service_logs(String.t(), keyword()) :: String.t()
+  def service_logs(service_id, opts \\ []) do
+    all_logs = Keyword.get(opts, :all_logs, false)
+    endpoint = if all_logs, do: "/services/#{service_id}/logs?all=true", else: "/services/#{service_id}/logs"
+    api_get(endpoint, opts)
+  end
+
+  @doc """
+  Execute a command in a service.
+  """
+  @spec service_execute(String.t(), String.t(), keyword()) :: result()
+  def service_execute(service_id, command, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :timeout_ms)
+    timeout_json = if timeout_ms, do: ",\"timeout_ms\":#{timeout_ms}", else: ""
+    json = "{\"command\":\"#{escape_json(command)}\"#{timeout_json}}"
+    response = api_post("/services/#{service_id}/execute", json, opts)
+    parse_result(response)
+  end
+
+  @doc """
+  Get service environment vault.
+  """
+  @spec service_env_get(String.t(), keyword()) :: String.t()
+  def service_env_get(service_id, opts \\ []) do
+    api_get("/services/#{service_id}/env", opts)
+  end
+
+  @doc """
+  Set service environment vault.
+  """
+  @spec service_env_set(String.t(), String.t(), keyword()) :: boolean()
+  def service_env_set(service_id, env_content, opts \\ []) do
+    api_put_text("/services/#{service_id}/env", env_content, opts)
+  end
+
+  @doc """
+  Delete service environment vault.
+  """
+  @spec service_env_delete(String.t(), keyword()) :: boolean()
+  def service_env_delete(service_id, opts \\ []) do
+    response = api_delete("/services/#{service_id}/env", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Export service environment vault.
+  """
+  @spec service_env_export(String.t(), keyword()) :: String.t()
+  def service_env_export(service_id, opts \\ []) do
+    response = api_post("/services/#{service_id}/env/export", "{}", opts)
+    extract_json_value(response, "content") || ""
+  end
+
+  @doc """
+  Resize a service (change vCPU).
+  """
+  @spec service_resize(String.t(), integer(), keyword()) :: boolean()
+  def service_resize(service_id, vcpu, opts \\ []) do
+    json = "{\"vcpu\":#{vcpu}}"
+    response = api_patch("/services/#{service_id}", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  # ============================================================================
+  # Snapshot Functions (9)
+  # ============================================================================
+
+  @doc """
+  List all snapshots.
+  """
+  @spec snapshot_list(keyword()) :: String.t()
+  def snapshot_list(opts \\ []), do: api_get("/snapshots", opts)
+
+  @doc """
+  Get snapshot details.
+  """
+  @spec snapshot_get(String.t(), keyword()) :: snapshot()
+  def snapshot_get(snapshot_id, opts \\ []) do
+    response = api_get("/snapshots/#{snapshot_id}", opts)
+    %{
+      id: snapshot_id,
+      name: extract_json_value(response, "name"),
+      type: extract_json_value(response, "type") || "unknown",
+      source_id: extract_json_value(response, "source_id") || "",
+      hot: extract_json_value(response, "hot") == "true",
+      locked: extract_json_value(response, "locked") == "true",
+      created_at: extract_json_int(response, "created_at"),
+      size_bytes: extract_json_int(response, "size_bytes")
+    }
+  end
+
+  @doc """
+  Create a snapshot of a session.
+  """
+  @spec snapshot_session(String.t(), keyword()) :: String.t() | nil
+  def snapshot_session(session_id, opts \\ []) do
+    name = Keyword.get(opts, :name)
+    hot = Keyword.get(opts, :hot, false)
+    name_json = if name, do: "\"name\":\"#{escape_json(name)}\",", else: ""
+    json = "{#{name_json}\"hot\":#{hot}}"
+    response = api_post("/sessions/#{session_id}/snapshot", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  @doc """
+  Create a snapshot of a service.
+  """
+  @spec snapshot_service(String.t(), keyword()) :: String.t() | nil
+  def snapshot_service(service_id, opts \\ []) do
+    name = Keyword.get(opts, :name)
+    hot = Keyword.get(opts, :hot, false)
+    name_json = if name, do: "\"name\":\"#{escape_json(name)}\",", else: ""
+    json = "{#{name_json}\"hot\":#{hot}}"
+    response = api_post("/services/#{service_id}/snapshot", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  @doc """
+  Restore from a snapshot.
+  """
+  @spec snapshot_restore(String.t(), keyword()) :: String.t() | nil
+  def snapshot_restore(snapshot_id, opts \\ []) do
+    response = api_post("/snapshots/#{snapshot_id}/restore", "{}", opts)
+    extract_json_value(response, "id")
+  end
+
+  @doc """
+  Delete a snapshot.
+  """
+  @spec snapshot_delete(String.t(), keyword()) :: boolean()
+  def snapshot_delete(snapshot_id, opts \\ []) do
+    response = api_delete("/snapshots/#{snapshot_id}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Lock a snapshot to prevent deletion.
+  """
+  @spec snapshot_lock(String.t(), keyword()) :: boolean()
+  def snapshot_lock(snapshot_id, opts \\ []) do
+    response = api_post("/snapshots/#{snapshot_id}/lock", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Unlock a snapshot.
+  """
+  @spec snapshot_unlock(String.t(), keyword()) :: boolean()
+  def snapshot_unlock(snapshot_id, opts \\ []) do
+    response = api_post("/snapshots/#{snapshot_id}/unlock", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Clone a snapshot to create a new session or service.
+
+  ## Options
+    * `:type` - "session" or "service" (required)
+    * `:name` - Name for cloned service
+    * `:ports` - Ports for cloned service
+    * `:shell` - Shell for cloned session
+  """
+  @spec snapshot_clone(String.t(), keyword()) :: String.t() | nil
+  def snapshot_clone(snapshot_id, opts \\ []) do
+    clone_type = Keyword.get(opts, :type)
+    name = Keyword.get(opts, :name)
+    ports = Keyword.get(opts, :ports)
+    shell = Keyword.get(opts, :shell)
+
+    type_json = "\"type\":\"#{clone_type}\""
+    name_json = if name, do: ",\"name\":\"#{escape_json(name)}\"", else: ""
+    ports_json = if ports, do: ",\"ports\":[#{ports}]", else: ""
+    shell_json = if shell, do: ",\"shell\":\"#{shell}\"", else: ""
+    json = "{#{type_json}#{name_json}#{ports_json}#{shell_json}}"
+    response = api_post("/snapshots/#{snapshot_id}/clone", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  # ============================================================================
+  # Image Functions (13)
+  # ============================================================================
+
+  @doc """
+  List images.
+
+  ## Options
+    * `:filter` - "owned", "shared", "public", or nil for all
+  """
+  @spec image_list(keyword()) :: String.t()
+  def image_list(opts \\ []) do
+    filter = Keyword.get(opts, :filter)
+    endpoint = if filter, do: "/images?filter=#{filter}", else: "/images"
+    api_get(endpoint, opts)
+  end
+
+  @doc """
+  Get image details.
+  """
+  @spec image_get(String.t(), keyword()) :: image()
+  def image_get(image_id, opts \\ []) do
+    response = api_get("/images/#{image_id}", opts)
+    %{
+      id: image_id,
+      name: extract_json_value(response, "name"),
+      description: extract_json_value(response, "description"),
+      visibility: extract_json_value(response, "visibility") || "private",
+      source_type: extract_json_value(response, "source_type") || "",
+      source_id: extract_json_value(response, "source_id") || "",
+      locked: extract_json_value(response, "locked") == "true",
+      created_at: extract_json_int(response, "created_at"),
+      size_bytes: extract_json_int(response, "size_bytes")
+    }
+  end
+
+  @doc """
+  Publish an image from a service or snapshot.
+
+  ## Options
+    * `:name` - Image name
+    * `:description` - Image description
+  """
+  @spec image_publish(String.t(), String.t(), keyword()) :: String.t() | nil
+  def image_publish(source_type, source_id, opts \\ []) do
+    name = Keyword.get(opts, :name)
+    description = Keyword.get(opts, :description)
+    name_json = if name, do: ",\"name\":\"#{escape_json(name)}\"", else: ""
+    desc_json = if description, do: ",\"description\":\"#{escape_json(description)}\"", else: ""
+    json = "{\"source_type\":\"#{source_type}\",\"source_id\":\"#{source_id}\"#{name_json}#{desc_json}}"
+    response = api_post("/images/publish", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  @doc """
+  Delete an image.
+  """
+  @spec image_delete(String.t(), keyword()) :: boolean()
+  def image_delete(image_id, opts \\ []) do
+    response = api_delete("/images/#{image_id}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Lock an image to prevent deletion.
+  """
+  @spec image_lock(String.t(), keyword()) :: boolean()
+  def image_lock(image_id, opts \\ []) do
+    response = api_post("/images/#{image_id}/lock", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Unlock an image.
+  """
+  @spec image_unlock(String.t(), keyword()) :: boolean()
+  def image_unlock(image_id, opts \\ []) do
+    response = api_post("/images/#{image_id}/unlock", "{}", opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Set image visibility.
+  """
+  @spec image_set_visibility(String.t(), String.t(), keyword()) :: boolean()
+  def image_set_visibility(image_id, visibility, opts \\ []) do
+    json = "{\"visibility\":\"#{visibility}\"}"
+    response = api_post("/images/#{image_id}/visibility", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Grant access to an image for another API key.
+  """
+  @spec image_grant_access(String.t(), String.t(), keyword()) :: boolean()
+  def image_grant_access(image_id, trusted_api_key, opts \\ []) do
+    json = "{\"api_key\":\"#{trusted_api_key}\"}"
+    response = api_post("/images/#{image_id}/access/grant", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Revoke access to an image from another API key.
+  """
+  @spec image_revoke_access(String.t(), String.t(), keyword()) :: boolean()
+  def image_revoke_access(image_id, trusted_api_key, opts \\ []) do
+    json = "{\"api_key\":\"#{trusted_api_key}\"}"
+    response = api_post("/images/#{image_id}/access/revoke", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  List trusted API keys for an image.
+  """
+  @spec image_list_trusted(String.t(), keyword()) :: [String.t()]
+  def image_list_trusted(image_id, opts \\ []) do
+    response = api_get("/images/#{image_id}/access", opts)
+    extract_json_array(response, "trusted_keys")
+  end
+
+  @doc """
+  Transfer image ownership to another API key.
+  """
+  @spec image_transfer(String.t(), String.t(), keyword()) :: boolean()
+  def image_transfer(image_id, to_api_key, opts \\ []) do
+    json = "{\"to_api_key\":\"#{to_api_key}\"}"
+    response = api_post("/images/#{image_id}/transfer", json, opts)
+    not String.contains?(response, "\"error\"")
+  end
+
+  @doc """
+  Spawn a new service from an image.
+
+  ## Options
+    * `:name` - Service name
+    * `:ports` - Ports to expose
+    * `:bootstrap` - Bootstrap command
+    * `:network` - Network mode
+  """
+  @spec image_spawn(String.t(), keyword()) :: String.t() | nil
+  def image_spawn(image_id, opts \\ []) do
+    name = Keyword.get(opts, :name)
+    ports = Keyword.get(opts, :ports)
+    bootstrap = Keyword.get(opts, :bootstrap)
+    network = Keyword.get(opts, :network)
+
+    name_json = if name, do: "\"name\":\"#{escape_json(name)}\"", else: ""
+    ports_json = if ports, do: "#{if name, do: ",", else: ""}\"ports\":[#{ports}]", else: ""
+    bootstrap_json = if bootstrap, do: ",\"bootstrap\":\"#{escape_json(bootstrap)}\"", else: ""
+    network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
+    json = "{#{name_json}#{ports_json}#{bootstrap_json}#{network_json}}"
+    response = api_post("/images/#{image_id}/spawn", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  @doc """
+  Clone an image.
+
+  ## Options
+    * `:name` - Name for cloned image
+    * `:description` - Description for cloned image
+  """
+  @spec image_clone(String.t(), keyword()) :: String.t() | nil
+  def image_clone(image_id, opts \\ []) do
+    name = Keyword.get(opts, :name)
+    description = Keyword.get(opts, :description)
+    name_json = if name, do: "\"name\":\"#{escape_json(name)}\"", else: ""
+    desc_json = if description, do: "#{if name, do: ",", else: ""}\"description\":\"#{escape_json(description)}\"", else: ""
+    json = "{#{name_json}#{desc_json}}"
+    response = api_post("/images/#{image_id}/clone", json, opts)
+    extract_json_value(response, "id")
+  end
+
+  # ============================================================================
+  # PaaS Logs Functions (2)
+  # ============================================================================
+
+  @doc """
+  Fetch batch logs from portal.
+
+  ## Options
+    * `:source` - "all", "api", "portal", "pool/cammy", "pool/ai"
+    * `:lines` - Number of lines (1-10000)
+    * `:since` - Time window ("1m", "5m", "1h", "1d")
+    * `:grep` - Filter pattern
+  """
+  @spec logs_fetch(keyword()) :: String.t()
+  def logs_fetch(opts \\ []) do
+    source = Keyword.get(opts, :source, "all")
+    lines = Keyword.get(opts, :lines, 100)
+    since = Keyword.get(opts, :since, "1h")
+    grep = Keyword.get(opts, :grep)
+
+    grep_param = if grep, do: "&grep=#{URI.encode(grep)}", else: ""
+    api_get("/logs?source=#{source}&lines=#{lines}&since=#{since}#{grep_param}", opts)
+  end
+
+  @doc """
+  Stream logs via SSE. This is a blocking operation that calls the callback for each log line.
+  Note: Full SSE streaming requires WebSocket support; this implementation provides basic fetch.
+  """
+  @spec logs_stream(keyword(), (String.t(), String.t() -> any())) :: :ok
+  def logs_stream(opts \\ [], callback) do
+    # For Elixir without external deps, we can't do true SSE streaming
+    # Instead, we poll with a short interval
+    source = Keyword.get(opts, :source, "all")
+    grep = Keyword.get(opts, :grep)
+    interval = Keyword.get(opts, :interval, 5000)
+
+    grep_param = if grep, do: "&grep=#{URI.encode(grep)}", else: ""
+
+    Stream.repeatedly(fn ->
+      response = api_get("/logs?source=#{source}&lines=50&since=10s#{grep_param}", opts)
+      callback.(source, response)
+      Process.sleep(interval)
+    end)
+    |> Stream.run()
+
+    :ok
+  end
+
+  # ============================================================================
+  # Key Validation (1)
+  # ============================================================================
+
+  @doc """
+  Validate API keys and get account information.
+  """
+  @spec validate_keys(keyword()) :: key_info()
+  def validate_keys(opts \\ []) do
+    response = portal_post("/keys/validate", "{}", opts)
+    %{
+      valid: extract_json_value(response, "status") == "valid",
+      tier: extract_json_value(response, "tier"),
+      rate_limit_per_minute: extract_json_int(response, "rate_per_minute"),
+      concurrency_limit: extract_json_int(response, "concurrency"),
+      expires_at: extract_json_int(response, "expires_at")
+    }
+  end
+
+  # ============================================================================
+  # Private API Functions
+  # ============================================================================
+
+  defp api_get(endpoint, opts) do
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    headers = build_auth_headers(public_key, secret_key, "GET", endpoint, "")
+    args = ["-s", "#{@api_base}#{endpoint}"] ++ headers
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+    check_clock_drift(output)
+    output
+  end
+
+  defp api_post(endpoint, json, opts) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+    File.write!(tmp_file, json)
+
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
+
+    args = ["-s", "-X", "POST", "#{@api_base}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+    check_clock_drift(output)
+    output
+  end
+
+  defp api_delete(endpoint, opts) do
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
+    args = ["-s", "-X", "DELETE", "#{@api_base}#{endpoint}"] ++ headers
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+    check_clock_drift(output)
+    output
+  end
+
+  defp api_patch(endpoint, json, opts) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+    File.write!(tmp_file, json)
+
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    headers = build_auth_headers(public_key, secret_key, "PATCH", endpoint, json)
+
+    args = ["-s", "-X", "PATCH", "#{@api_base}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+    check_clock_drift(output)
+    output
+  end
+
+  defp api_put_text(endpoint, body, opts) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.txt"
+    File.write!(tmp_file, body)
+
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    headers = build_auth_headers(public_key, secret_key, "PUT", endpoint, body)
+
+    args = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PUT", "#{@api_base}#{endpoint}", "-H", "Content-Type: text/plain"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+    status_code = String.trim(output) |> String.to_integer()
+    status_code >= 200 and status_code < 300
+  end
+
+  defp portal_post(endpoint, json, opts) do
+    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+    File.write!(tmp_file, json)
+
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
+
+    args = ["-s", "-X", "POST", "#{@portal_base}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+
+    File.rm(tmp_file)
+    check_clock_drift(output)
+    output
+  end
+
+  defp get_api_keys_from_opts(opts) do
+    public_key = Keyword.get(opts, :public_key)
+    secret_key = Keyword.get(opts, :secret_key)
+
+    if public_key && secret_key do
+      {public_key, secret_key}
+    else
+      get_api_keys()
+    end
+  end
+
+  defp build_execute_json_full(language, code, opts) do
+    network = Keyword.get(opts, :network)
+    vcpu = Keyword.get(opts, :vcpu)
+    ttl = Keyword.get(opts, :ttl)
+    env = Keyword.get(opts, :env, [])
+    input_files = Keyword.get(opts, :input_files, [])
+    return_artifacts = Keyword.get(opts, :return_artifacts, false)
+
+    network_json = if network, do: ",\"network\":\"#{network}\"", else: ""
+    vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
+    ttl_json = if ttl, do: ",\"ttl\":#{ttl}", else: ""
+    env_json = if env != [], do: ",\"env\":{" <> Enum.map_join(env, ",", fn {k, v} -> "\"#{k}\":\"#{escape_json(v)}\"" end) <> "}", else: ""
+    input_files_json = build_input_files_json(input_files)
+    artifacts_json = if return_artifacts, do: ",\"return_artifacts\":true", else: ""
+
+    "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"#{network_json}#{vcpu_json}#{ttl_json}#{env_json}#{input_files_json}#{artifacts_json}}"
+  end
+
+  defp parse_result(response) do
+    %{
+      success: extract_json_int(response, "exit_code") == 0,
+      stdout: extract_json_value(response, "stdout") || "",
+      stderr: extract_json_value(response, "stderr") || "",
+      exit_code: extract_json_int(response, "exit_code") || 0,
+      job_id: extract_json_value(response, "job_id"),
+      language: extract_json_value(response, "language"),
+      execution_time: nil
+    }
+  end
+
+  defp extract_json_int(json_str, key) do
+    case Regex.run(~r/"#{key}"\s*:\s*(-?\d+)/, json_str) do
+      [_, value] -> String.to_integer(value)
+      _ -> nil
+    end
+  end
+
+  # ============================================================================
+  # CLI Entry Point
+  # ============================================================================
 
   def main([]), do: print_usage()
   def main(["session" | rest]), do: session_command(rest)

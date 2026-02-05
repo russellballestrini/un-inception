@@ -747,9 +747,23 @@ main(Argv) :-
     ->  write(user_error, 'Usage: un.pro [options] <source_file>\n'),
         write(user_error, '       un.pro session [options]\n'),
         write(user_error, '       un.pro service [options]\n'),
+        write(user_error, '       un.pro snapshot [options]\n'),
         write(user_error, '       un.pro image [options]\n'),
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
+        write(user_error, '\n'),
+        write(user_error, 'Snapshot options:\n'),
+        write(user_error, '  --list, -l          List all snapshots\n'),
+        write(user_error, '  --info ID           Get snapshot details\n'),
+        write(user_error, '  --delete ID         Delete a snapshot\n'),
+        write(user_error, '  --lock ID           Lock snapshot\n'),
+        write(user_error, '  --unlock ID         Unlock snapshot\n'),
+        write(user_error, '  --restore ID        Restore from snapshot\n'),
+        write(user_error, '  --clone ID          Clone snapshot (--type required)\n'),
+        write(user_error, '  --type TYPE         Clone type: session or service\n'),
+        write(user_error, '  --name NAME         Name for cloned resource\n'),
+        write(user_error, '  --shell SHELL       Shell for cloned session\n'),
+        write(user_error, '  --ports PORTS       Ports for cloned service\n'),
         write(user_error, '\n'),
         write(user_error, 'Image options:\n'),
         write(user_error, '  --list, -l          List all images\n'),
@@ -772,6 +786,8 @@ main(Argv) :-
     ->  handle_session(Rest)
     ;   Argv = ['service'|Rest]
     ->  handle_service(Rest)
+    ;   Argv = ['snapshot'|Rest]
+    ->  handle_snapshot(Rest)
     ;   Argv = ['image'|Rest]
     ->  handle_image(Rest)
     ;   Argv = ['languages'|Rest]
@@ -783,3 +799,173 @@ main(Argv) :-
     ;   write(user_error, 'Error: Invalid arguments\n'),
         halt(1)
     ).
+
+% =============================================================================
+% Snapshot handlers
+% =============================================================================
+
+handle_snapshot(Args) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    handle_snapshot_cmd(Args, PublicKey, SecretKey).
+
+handle_snapshot_cmd(['--list'|_], PublicKey, SecretKey) :- !,
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'SIG=$(echo -n "$TS:GET:/snapshots:" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X GET "https://api.unsandbox.com/snapshots" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG" | jq .'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(['-l'|_], PublicKey, SecretKey) :- !,
+    handle_snapshot_cmd(['--list'], PublicKey, SecretKey).
+
+handle_snapshot_cmd(['--info', Id|_], PublicKey, SecretKey) :- !,
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'SIG=$(echo -n "$TS:GET:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X GET "https://api.unsandbox.com/snapshots/', Id, '" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG" | jq .'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(['--delete', Id|_], PublicKey, SecretKey) :- !,
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'SIG=$(echo -n "$TS:DELETE:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'RESP=$(curl -s -w "\\n%{http_code}" -X DELETE "https://api.unsandbox.com/snapshots/', Id, '" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG"); ',
+        'HTTP_CODE=$(echo "$RESP" | tail -1); ',
+        'BODY=$(echo "$RESP" | head -n -1); ',
+        'if [ "$HTTP_CODE" = "428" ]; then ',
+        'OTP=$(echo "$BODY" | jq -r ".otp // empty"); ',
+        'if [ -n "$OTP" ]; then ',
+        'TS2=$(date +%s); ',
+        'SIG2=$(echo -n "$TS2:DELETE:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X DELETE "https://api.unsandbox.com/snapshots/', Id, '" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS2" ',
+        '-H "X-Signature: $SIG2" ',
+        '-H "X-Sudo-OTP: $OTP" | jq .; ',
+        'echo -e "\\x1b[32mSnapshot deleted\\x1b[0m"; fi; ',
+        'else echo "$BODY" | jq .; fi'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(['--lock', Id|_], PublicKey, SecretKey) :- !,
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/lock:" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/lock" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG" | jq . && ',
+        'echo -e "\\x1b[32mSnapshot locked\\x1b[0m"'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(['--unlock', Id|_], PublicKey, SecretKey) :- !,
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'BODY="{}"; ',
+        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/unlock:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'RESP=$(curl -s -w "\\n%{http_code}" -X POST "https://api.unsandbox.com/snapshots/', Id, '/unlock" ',
+        '-H "Content-Type: application/json" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG" ',
+        '-d "$BODY"); ',
+        'HTTP_CODE=$(echo "$RESP" | tail -1); ',
+        'BODY_RESP=$(echo "$RESP" | head -n -1); ',
+        'if [ "$HTTP_CODE" = "428" ]; then ',
+        'OTP=$(echo "$BODY_RESP" | jq -r ".otp // empty"); ',
+        'if [ -n "$OTP" ]; then ',
+        'TS2=$(date +%s); ',
+        'SIG2=$(echo -n "$TS2:POST:/snapshots/', Id, '/unlock:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/unlock" ',
+        '-H "Content-Type: application/json" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS2" ',
+        '-H "X-Signature: $SIG2" ',
+        '-H "X-Sudo-OTP: $OTP" ',
+        '-d "$BODY" | jq .; ',
+        'echo -e "\\x1b[32mSnapshot unlocked\\x1b[0m"; fi; ',
+        'else echo "$BODY_RESP" | jq .; fi'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(['--restore', Id|_], PublicKey, SecretKey) :- !,
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'BODY="{}"; ',
+        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/restore:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/restore" ',
+        '-H "Content-Type: application/json" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG" ',
+        '-d "$BODY" | jq . && ',
+        'echo -e "\\x1b[32mSnapshot restored\\x1b[0m"'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(['--clone', Id|Rest], PublicKey, SecretKey) :- !,
+    parse_snapshot_clone_args(Rest, Type, Name, Ports, Shell),
+    (   Type = ''
+    ->  write(user_error, '\x1b[31mError: --type required for --clone (session or service)\x1b[0m\n'),
+        halt(1)
+    ;   true
+    ),
+    build_snapshot_clone_body(Type, Name, Ports, Shell, Body),
+    atomic_list_concat([
+        'TS=$(date +%s); ',
+        'BODY=''', Body, '''; ',
+        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/clone:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/clone" ',
+        '-H "Content-Type: application/json" ',
+        '-H "Authorization: Bearer ', PublicKey, '" ',
+        '-H "X-Timestamp: $TS" ',
+        '-H "X-Signature: $SIG" ',
+        '-d "$BODY" | jq . && ',
+        'echo -e "\\x1b[32mSnapshot cloned\\x1b[0m"'
+    ], Cmd),
+    shell(Cmd).
+
+handle_snapshot_cmd(_, _, _) :-
+    write(user_error, '\x1b[31mError: Use --list, --info, --delete, --lock, --unlock, --restore, or --clone\x1b[0m\n'),
+    halt(1).
+
+parse_snapshot_clone_args([], '', '', '', '').
+parse_snapshot_clone_args(['--type', Type|Rest], Type, Name, Ports, Shell) :- !,
+    parse_snapshot_clone_args(Rest, _, Name, Ports, Shell).
+parse_snapshot_clone_args(['--name', Name|Rest], Type, Name, Ports, Shell) :- !,
+    parse_snapshot_clone_args(Rest, Type, _, Ports, Shell).
+parse_snapshot_clone_args(['--ports', Ports|Rest], Type, Name, Ports, Shell) :- !,
+    parse_snapshot_clone_args(Rest, Type, Name, _, Shell).
+parse_snapshot_clone_args(['--shell', Shell|Rest], Type, Name, Ports, Shell) :- !,
+    parse_snapshot_clone_args(Rest, Type, Name, Ports, _).
+parse_snapshot_clone_args([_|Rest], Type, Name, Ports, Shell) :-
+    parse_snapshot_clone_args(Rest, Type, Name, Ports, Shell).
+
+build_snapshot_clone_body(Type, Name, Ports, Shell, Body) :-
+    atomic_list_concat(['{"type":"', Type, '"'], Base),
+    (   Name \= ''
+    ->  atomic_list_concat([Base, ',"name":"', Name, '"'], Base2)
+    ;   Base2 = Base
+    ),
+    (   Ports \= ''
+    ->  atomic_list_concat([Base2, ',"ports":[', Ports, ']'], Base3)
+    ;   Base3 = Base2
+    ),
+    (   Shell \= ''
+    ->  atomic_list_concat([Base3, ',"shell":"', Shell, '"'], Base4)
+    ;   Base4 = Base3
+    ),
+    atomic_list_concat([Base4, '}'], Body).

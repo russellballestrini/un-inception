@@ -891,6 +891,9 @@ program unsandbox_cli
     else if (trim(arg) == 'image') then
         call handle_image()
         stop 0
+    else if (trim(arg) == 'snapshot') then
+        call handle_snapshot()
+        stop 0
     else
         ! Default execute command
         filename = trim(arg)
@@ -907,6 +910,7 @@ contains
         write(*, '(A)') 'Usage: ./un [options] <source_file>'
         write(*, '(A)') '       ./un session [options]'
         write(*, '(A)') '       ./un service [options]'
+        write(*, '(A)') '       ./un snapshot [options]'
         write(*, '(A)') '       ./un image [options]'
         write(*, '(A)') '       ./un key [--extend]'
         write(*, '(A)') '       ./un languages [--json]'
@@ -936,6 +940,19 @@ contains
         write(*, '(A)') '  service env set <id>      Set vault (-e KEY=VAL)'
         write(*, '(A)') '  service env export <id>   Export vault'
         write(*, '(A)') '  service env delete <id>   Delete vault'
+        write(*, '(A)') ''
+        write(*, '(A)') 'Snapshot options:'
+        write(*, '(A)') '  -l, --list          List all snapshots'
+        write(*, '(A)') '  --info ID           Get snapshot details'
+        write(*, '(A)') '  --delete ID         Delete a snapshot'
+        write(*, '(A)') '  --lock ID           Lock snapshot'
+        write(*, '(A)') '  --unlock ID         Unlock snapshot'
+        write(*, '(A)') '  --restore ID        Restore from snapshot'
+        write(*, '(A)') '  --clone ID          Clone snapshot (requires --type)'
+        write(*, '(A)') '  --type TYPE         Clone type: session or service'
+        write(*, '(A)') '  --name NAME         Name for cloned resource'
+        write(*, '(A)') '  --shell SHELL       Shell for cloned session'
+        write(*, '(A)') '  --ports PORTS       Ports for cloned service'
         write(*, '(A)') ''
         write(*, '(A)') 'Image options:'
         write(*, '(A)') '  -l, --list          List all images'
@@ -1529,6 +1546,214 @@ contains
             stop 1
         end if
     end subroutine handle_service
+
+    subroutine handle_snapshot()
+        character(len=8192) :: full_cmd
+        character(len=256) :: arg, snapshot_id, operation, clone_type, name, ports, shell
+        character(len=1024) :: public_key, secret_key
+        integer :: i, stat
+        logical :: list_mode
+
+        snapshot_id = ''
+        operation = ''
+        clone_type = ''
+        name = ''
+        ports = ''
+        shell = ''
+        list_mode = .false.
+
+        ! Parse arguments
+        do i = 2, command_argument_count()
+            call get_command_argument(i, arg)
+            if (trim(arg) == '-l' .or. trim(arg) == '--list') then
+                list_mode = .true.
+            else if (trim(arg) == '--info') then
+                operation = 'info'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, snapshot_id)
+                end if
+            else if (trim(arg) == '--delete') then
+                operation = 'delete'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, snapshot_id)
+                end if
+            else if (trim(arg) == '--lock') then
+                operation = 'lock'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, snapshot_id)
+                end if
+            else if (trim(arg) == '--unlock') then
+                operation = 'unlock'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, snapshot_id)
+                end if
+            else if (trim(arg) == '--restore') then
+                operation = 'restore'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, snapshot_id)
+                end if
+            else if (trim(arg) == '--clone') then
+                operation = 'clone'
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, snapshot_id)
+                end if
+            else if (trim(arg) == '--type') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, clone_type)
+                end if
+            else if (trim(arg) == '--name') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, name)
+                end if
+            else if (trim(arg) == '--ports') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, ports)
+                end if
+            else if (trim(arg) == '--shell') then
+                if (i < command_argument_count()) then
+                    call get_command_argument(i + 1, shell)
+                end if
+            end if
+        end do
+
+        ! Get credentials
+        call get_credentials(public_key, secret_key, stat)
+        if (stat /= 0) then
+            write(0, '(A)') 'Error: No credentials found'
+            stop 1
+        end if
+
+        if (list_mode) then
+            ! List snapshots
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/snapshots:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X GET https://api.unsandbox.com/snapshots ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq .'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'info' .and. len_trim(snapshot_id) > 0) then
+            ! Get snapshot info
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:GET:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X GET https://api.unsandbox.com/snapshots/', trim(snapshot_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq .'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'delete' .and. len_trim(snapshot_id) > 0) then
+            ! Delete snapshot (with sudo)
+            write(full_cmd, '(30A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:DELETE:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE https://api.unsandbox.com/snapshots/', trim(snapshot_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG"); ', &
+                'HTTP_CODE=$(echo "$RESP" | tail -1); ', &
+                'BODY=$(echo "$RESP" | head -n -1); ', &
+                'if [ "$HTTP_CODE" = "428" ]; then ', &
+                'OTP=$(echo "$BODY" | jq -r ".otp // empty"); ', &
+                'if [ -n "$OTP" ]; then ', &
+                'TS2=$(date +%s); ', &
+                'SIG2=$(echo -n "$TS2:DELETE:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X DELETE https://api.unsandbox.com/snapshots/', trim(snapshot_id), ' ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS2" ', &
+                '-H "X-Signature: $SIG2" ', &
+                '-H "X-Sudo-OTP: $OTP" | jq .; ', &
+                'echo -e "\x1b[32mSnapshot deleted\x1b[0m"; fi; ', &
+                'else echo "$BODY" | jq .; fi'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'lock' .and. len_trim(snapshot_id) > 0) then
+            ! Lock snapshot
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/lock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/lock ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" | jq . && ', &
+                'echo -e "\x1b[32mSnapshot locked\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'unlock' .and. len_trim(snapshot_id) > 0) then
+            ! Unlock snapshot (with sudo)
+            write(full_cmd, '(30A)') &
+                'TS=$(date +%s); ', &
+                'BODY="{}"; ', &
+                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/unlock ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" ', &
+                '-H "Content-Type: application/json" ', &
+                '-d "$BODY"); ', &
+                'HTTP_CODE=$(echo "$RESP" | tail -1); ', &
+                'BODY_RESP=$(echo "$RESP" | head -n -1); ', &
+                'if [ "$HTTP_CODE" = "428" ]; then ', &
+                'OTP=$(echo "$BODY_RESP" | jq -r ".otp // empty"); ', &
+                'if [ -n "$OTP" ]; then ', &
+                'TS2=$(date +%s); ', &
+                'SIG2=$(echo -n "$TS2:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/unlock ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS2" ', &
+                '-H "X-Signature: $SIG2" ', &
+                '-H "X-Sudo-OTP: $OTP" ', &
+                '-H "Content-Type: application/json" ', &
+                '-d "$BODY" | jq .; ', &
+                'echo -e "\x1b[32mSnapshot unlocked\x1b[0m"; fi; ', &
+                'else echo "$BODY_RESP" | jq .; fi'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'restore' .and. len_trim(snapshot_id) > 0) then
+            ! Restore snapshot
+            write(full_cmd, '(20A)') &
+                'TS=$(date +%s); ', &
+                'BODY="{}"; ', &
+                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/restore:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/restore ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" ', &
+                '-H "Content-Type: application/json" ', &
+                '-d "$BODY" | jq . && ', &
+                'echo -e "\x1b[32mSnapshot restored\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else if (trim(operation) == 'clone' .and. len_trim(snapshot_id) > 0) then
+            ! Clone snapshot
+            if (len_trim(clone_type) == 0) then
+                write(0, '(A)') 'Error: --type required for --clone (session or service)'
+                stop 1
+            end if
+            write(full_cmd, '(30A)') &
+                'TS=$(date +%s); ', &
+                'BODY=''{"type":"', trim(clone_type), '"'
+            if (len_trim(name) > 0) then
+                write(full_cmd, '(A,A)') trim(full_cmd), ',"name":"' // trim(name) // '"'
+            end if
+            if (len_trim(ports) > 0) then
+                write(full_cmd, '(A,A)') trim(full_cmd), ',"ports":[' // trim(ports) // ']'
+            end if
+            if (len_trim(shell) > 0) then
+                write(full_cmd, '(A,A)') trim(full_cmd), ',"shell":"' // trim(shell) // '"'
+            end if
+            write(full_cmd, '(A,20A)') trim(full_cmd), '}''; ', &
+                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/clone ', &
+                '-H "Authorization: Bearer ', trim(public_key), '" ', &
+                '-H "X-Timestamp: $TS" ', &
+                '-H "X-Signature: $SIG" ', &
+                '-H "Content-Type: application/json" ', &
+                '-d "$BODY" | jq . && ', &
+                'echo -e "\x1b[32mSnapshot cloned\x1b[0m"'
+            call execute_command_line(trim(full_cmd), wait=.true.)
+        else
+            write(0, '(A)') 'Error: Use --list, --info, --delete, --lock, --unlock, --restore, or --clone'
+            stop 1
+        end if
+    end subroutine handle_snapshot
 
     subroutine handle_image()
         character(len=8192) :: full_cmd

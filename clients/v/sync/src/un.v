@@ -712,7 +712,155 @@ fn get_secret_key() string {
 	return ''
 }
 
-fn cmd_image(list bool, info string, delete string, lock string, unlock string, publish string, source_type string, visibility_id string, visibility_mode string, spawn string, clone string, name string, ports string, api_key string) {
+fn cmd_snapshot(list bool, info string, session string, service string, restore string, delete string, lock string, unlock string, clone string, clone_type string, name string, ports string, hot bool, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
+	if list {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/snapshots:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/snapshots' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+		return
+	}
+
+	if info != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/snapshots/${info}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/snapshots/${info}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+		return
+	}
+
+	if session != '' {
+		mut json := '{'
+		mut has_content := false
+		if name != '' {
+			json += '"name":"${name}"'
+			has_content = true
+		}
+		if hot {
+			if has_content { json += ',' }
+			json += '"hot":true'
+		}
+		json += '}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/sessions/${session}/snapshot:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/sessions/${session}/snapshot' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		result := exec_curl(cmd)
+		println('${green}Snapshot created${reset}')
+		println(result)
+		return
+	}
+
+	if service != '' {
+		mut json := '{'
+		mut has_content := false
+		if name != '' {
+			json += '"name":"${name}"'
+			has_content = true
+		}
+		if hot {
+			if has_content { json += ',' }
+			json += '"hot":true'
+		}
+		json += '}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/services/${service}/snapshot:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/services/${service}/snapshot' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		result := exec_curl(cmd)
+		println('${green}Snapshot created${reset}')
+		println(result)
+		return
+	}
+
+	if restore != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/snapshots/${restore}/restore:{}\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/snapshots/${restore}/restore' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d '{}'"
+		result := exec_curl(cmd)
+		println('${green}Snapshot restored${reset}')
+		println(result)
+		return
+	}
+
+	if delete != '' {
+		endpoint := '/snapshots/${delete}'
+		status := exec_curl_delete_with_sudo(endpoint, pub_key, secret_key)
+		if status >= 200 && status < 300 {
+			println('${green}Snapshot deleted: ${delete}${reset}')
+		} else if status != 428 {
+			eprintln('${red}Error: Failed to delete snapshot${reset}')
+			exit(1)
+		}
+		return
+	}
+
+	if lock != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/snapshots/${lock}/lock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/snapshots/${lock}/lock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		exec_curl(cmd)
+		println('${green}Snapshot locked: ${lock}${reset}')
+		return
+	}
+
+	if unlock != '' {
+		endpoint := '/snapshots/${unlock}/unlock'
+		status := exec_curl_post_with_sudo(endpoint, '{}', pub_key, secret_key)
+		if status >= 200 && status < 300 {
+			println('${green}Snapshot unlocked: ${unlock}${reset}')
+		} else if status != 428 {
+			eprintln('${red}Error: Failed to unlock snapshot${reset}')
+			exit(1)
+		}
+		return
+	}
+
+	if clone != '' {
+		ct := if clone_type != '' { clone_type } else { 'session' }
+		mut json := '{"clone_type":"${ct}"'
+		if name != '' { json += ',"name":"${name}"' }
+		if ports != '' { json += ',"ports":[${ports}]' }
+		json += '}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/snapshots/${clone}/clone:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/snapshots/${clone}/clone' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		result := exec_curl(cmd)
+		println('${green}Snapshot cloned${reset}')
+		println(result)
+		return
+	}
+
+	eprintln('${red}Error: No snapshot action specified. Use --list, --info, --session, --service, --restore, --delete, --lock, --unlock, or --clone${reset}')
+	exit(1)
+}
+
+fn cmd_logs(source string, lines int, since string, grep string, follow bool, api_key string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+
+	src := if source != '' { source } else { 'all' }
+	ln := if lines > 0 { lines } else { 100 }
+	sn := if since != '' { since } else { '1h' }
+
+	if follow {
+		mut endpoint := '/paas/logs/stream?source=${src}'
+		if grep != '' { endpoint += '&grep=${grep}' }
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:${endpoint}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -N -X GET '${portal_base}${endpoint}' -H 'Accept: text/event-stream' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+	} else {
+		mut endpoint := '/paas/logs?source=${src}&lines=${ln}&since=${sn}'
+		if grep != '' { endpoint += '&grep=${grep}' }
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:${endpoint}:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${portal_base}${endpoint}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+	}
+}
+
+fn cmd_health() {
+	cmd := "curl -s -X GET '${api_base}/health'"
+	result := os.execute(cmd)
+	if result.output.contains('"status":"healthy"') || result.output.contains('"ok":true') {
+		println('${green}API is healthy${reset}')
+	} else {
+		println('${red}API may be unhealthy${reset}')
+	}
+	println(result.output)
+}
+
+fn cmd_version() {
+	println('un.v version 1.0.0')
+	println('API: ${api_base}')
+	println('Portal: ${portal_base}')
+}
+
+fn cmd_image(list bool, info string, delete string, lock string, unlock string, publish string, source_type string, visibility_id string, visibility_mode string, spawn string, clone string, name string, ports string, grant string, revoke string, trusted string, trusted_key string, transfer string, to_key string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -811,7 +959,54 @@ fn cmd_image(list bool, info string, delete string, lock string, unlock string, 
 		return
 	}
 
-	eprintln('${red}Error: No image action specified. Use --list, --info, --delete, --publish, etc.${reset}')
+	if grant != '' {
+		if trusted_key == '' {
+			eprintln('${red}Error: --grant requires --trusted-key${reset}')
+			exit(1)
+		}
+		json := '{"trusted_api_key":"${trusted_key}"}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${grant}/grant:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${grant}/grant' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		exec_curl(cmd)
+		println('${green}Access granted to ${trusted_key}${reset}')
+		return
+	}
+
+	if revoke != '' {
+		if trusted_key == '' {
+			eprintln('${red}Error: --revoke requires --trusted-key${reset}')
+			exit(1)
+		}
+		json := '{"trusted_api_key":"${trusted_key}"}'
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${revoke}/revoke:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${revoke}/revoke' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		exec_curl(cmd)
+		println('${green}Access revoked from ${trusted_key}${reset}')
+		return
+	}
+
+	if trusted != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:GET:/images/${trusted}/trusted:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X GET '${api_base}/images/${trusted}/trusted' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+		println(exec_curl(cmd))
+		return
+	}
+
+	if transfer != '' {
+		if to_key == '' {
+			eprintln('${red}Error: --transfer requires --to-key${reset}')
+			exit(1)
+		}
+		json := '{"to_api_key":"${to_key}"}'
+		endpoint := '/images/${transfer}/transfer'
+		status := exec_curl_post_with_sudo(endpoint, json, pub_key, secret_key)
+		if status >= 200 && status < 300 {
+			println('${green}Image transferred to ${to_key}${reset}')
+		} else if status != 428 {
+			eprintln('${red}Error: Failed to transfer image${reset}')
+			exit(1)
+		}
+		return
+	}
+
+	eprintln('${red}Error: No image action specified. Use --list, --info, --delete, --publish, --grant, --revoke, --trusted, --transfer, etc.${reset}')
 	exit(1)
 }
 
@@ -1277,6 +1472,12 @@ fn main() {
 		mut clone := ''
 		mut name := ''
 		mut ports := ''
+		mut grant := ''
+		mut revoke := ''
+		mut trusted := ''
+		mut trusted_key := ''
+		mut transfer := ''
+		mut to_key := ''
 
 		mut i := 2
 		for i < os.args.len {
@@ -1330,6 +1531,30 @@ fn main() {
 					i++
 					ports = os.args[i]
 				}
+				'--grant' {
+					i++
+					grant = os.args[i]
+				}
+				'--revoke' {
+					i++
+					revoke = os.args[i]
+				}
+				'--trusted' {
+					i++
+					trusted = os.args[i]
+				}
+				'--trusted-key' {
+					i++
+					trusted_key = os.args[i]
+				}
+				'--transfer' {
+					i++
+					transfer = os.args[i]
+				}
+				'--to-key' {
+					i++
+					to_key = os.args[i]
+				}
 				'-k' {
 					i++
 					api_key = os.args[i]
@@ -1339,7 +1564,83 @@ fn main() {
 			i++
 		}
 
-		cmd_image(list, info, delete, lock, unlock, publish, source_type, visibility_id, visibility_mode, spawn, clone, name, ports, api_key)
+		cmd_image(list, info, delete, lock, unlock, publish, source_type, visibility_id, visibility_mode, spawn, clone, name, ports, grant, revoke, trusted, trusted_key, transfer, to_key, api_key)
+		return
+	}
+
+	if os.args[1] == 'snapshot' {
+		mut list := false
+		mut info := ''
+		mut session := ''
+		mut service := ''
+		mut restore := ''
+		mut delete := ''
+		mut lock := ''
+		mut unlock := ''
+		mut clone := ''
+		mut clone_type := ''
+		mut name := ''
+		mut ports := ''
+		mut hot := false
+
+		mut i := 2
+		for i < os.args.len {
+			match os.args[i] {
+				'--list', '-l' { list = true }
+				'--info' { i++; info = os.args[i] }
+				'--session' { i++; session = os.args[i] }
+				'--service' { i++; service = os.args[i] }
+				'--restore' { i++; restore = os.args[i] }
+				'--delete' { i++; delete = os.args[i] }
+				'--lock' { i++; lock = os.args[i] }
+				'--unlock' { i++; unlock = os.args[i] }
+				'--clone' { i++; clone = os.args[i] }
+				'--clone-type' { i++; clone_type = os.args[i] }
+				'--name' { i++; name = os.args[i] }
+				'--ports' { i++; ports = os.args[i] }
+				'--hot' { hot = true }
+				'-k' { i++; api_key = os.args[i] }
+				else {}
+			}
+			i++
+		}
+
+		cmd_snapshot(list, info, session, service, restore, delete, lock, unlock, clone, clone_type, name, ports, hot, api_key)
+		return
+	}
+
+	if os.args[1] == 'logs' {
+		mut source := ''
+		mut lines := 0
+		mut since := ''
+		mut grep := ''
+		mut follow := false
+
+		mut i := 2
+		for i < os.args.len {
+			match os.args[i] {
+				'--source' { i++; source = os.args[i] }
+				'--lines' { i++; lines = os.args[i].int() }
+				'--since' { i++; since = os.args[i] }
+				'--grep' { i++; grep = os.args[i] }
+				'--follow', '-f' { follow = true }
+				'-k' { i++; api_key = os.args[i] }
+				else {}
+			}
+			i++
+		}
+
+		cmd_logs(source, lines, since, grep, follow, api_key)
+		return
+	}
+
+	if os.args[1] == 'health' {
+		cmd_health()
+		return
+	}
+
+	if os.args[1] == 'version' {
+		cmd_version()
 		return
 	}
 

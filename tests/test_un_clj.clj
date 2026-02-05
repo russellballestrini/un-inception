@@ -120,6 +120,25 @@
         (catch Exception e
           (->TestResult false (str "Exception: " (.getMessage e))))))))
 
+;; Test 4: Snapshot command support (feature parity test)
+(defn test-snapshot-command []
+  (let [api-key (System/getenv "UNSANDBOX_API_KEY")]
+    (if (nil? api-key)
+      (->TestResult true "Skipped - no API key")
+      (try
+        ;; Run the CLI with snapshot --list
+        (let [result (shell/sh "./un.clj" "snapshot" "--list")
+              {:keys [exit out err]} result]
+
+          ;; Check if it executed without errors (may return empty list)
+          (if (= exit 0)
+            (->TestResult true nil)
+            (->TestResult false (str "Snapshot list failed: exit=" exit
+                                    ", stdout=" out
+                                    ", stderr=" err))))
+        (catch Exception e
+          (->TestResult false (str "Exception: " (.getMessage e))))))))
+
 ;; Main test runner
 (defn main []
   (println "=== Clojure UN CLI Test Suite ===")
@@ -134,7 +153,8 @@
   ;; Run tests
   (let [results [(print-result "Extension detection" (test-extension-detection))
                  (print-result "API integration" (test-api-integration))
-                 (print-result "Fibonacci end-to-end test" (test-fibonacci))]
+                 (print-result "Fibonacci end-to-end test" (test-fibonacci))
+                 (print-result "Snapshot command support" (test-snapshot-command))]
         passed (count (filter true? results))
         total (count results)]
 

@@ -56,6 +56,7 @@ require 'json'
 require 'openssl'
 require 'fileutils'
 require 'optparse'
+require 'cgi'
 
 # Unsandbox Ruby SDK module (synchronous)
 module Un
@@ -341,6 +342,31 @@ module Un
       pk, sk = resolve_credentials(public_key, secret_key)
       response = make_request('GET', '/snapshots', pk, sk)
       response['snapshots'] || []
+    end
+
+    # Get details of a specific snapshot
+    #
+    # @param snapshot_id [String] Snapshot ID to get details for
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Snapshot details hash containing:
+    #   - id: Snapshot ID
+    #   - name: Snapshot name
+    #   - type: "session" or "service"
+    #   - source_id: Original resource ID
+    #   - hot: Whether snapshot preserves running state
+    #   - locked: Whether snapshot is locked
+    #   - created_at: Creation timestamp
+    #   - size_bytes: Size in bytes
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     snapshot = Un.get_snapshot(snapshot_id)
+    #     puts "Snapshot: #{snapshot['name']} (#{snapshot['type']})"
+    def get_snapshot(snapshot_id, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('GET', "/snapshots/#{snapshot_id}", pk, sk)
     end
 
     # Restore a snapshot
@@ -1219,6 +1245,23 @@ module Un
       wait_for_job(job_id, public_key: pk, secret_key: sk, timeout: (timeout / 1000) + 10)
     end
 
+    # Resize a service's vCPU allocation
+    #
+    # @param service_id [String] Service ID to resize
+    # @param vcpu [Integer] Number of vCPUs (1-8 typically)
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Response hash with updated service info
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.resize_service(service_id, 4)
+    def resize_service(service_id, vcpu, public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      make_request('PATCH', "/services/#{service_id}", pk, sk, { vcpu: vcpu })
+    end
+
     # ============================================================================
     # Key Validation
     # ============================================================================
@@ -1268,6 +1311,158 @@ module Un
       payload[:model] = model if model
 
       make_request('POST', '/image', pk, sk, payload)
+    end
+
+    # ============================================================================
+    # PaaS Logs Functions
+    # ============================================================================
+
+    # Fetch batch logs from the PaaS platform
+    #
+    # @param source [String] Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+    # @param lines [Integer] Number of lines to fetch (1-10000)
+    # @param since [String] Time window - "1m", "5m", "1h", "1d"
+    # @param grep [String, nil] Optional filter pattern
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @return [Hash] Log entries
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     logs = Un.logs_fetch(source: 'api', lines: 50, since: '5m')
+    def logs_fetch(source: 'all', lines: 100, since: '5m', grep: nil,
+                   public_key: nil, secret_key: nil)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      path = "/logs?source=#{source}&lines=#{lines}&since=#{since}"
+      path += "&grep=#{CGI.escape(grep)}" if grep
+      make_request('GET', path, pk, sk)
+    end
+
+    # Stream logs via Server-Sent Events
+    #
+    # Blocks until interrupted or server closes connection.
+    #
+    # @param source [String] Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+    # @param grep [String, nil] Optional filter pattern
+    # @param public_key [String, nil] Optional API key
+    # @param secret_key [String, nil] Optional API secret
+    # @yield [source, line] Called for each log line received
+    # @raise [CredentialsError] If no credentials found
+    # @raise [APIError] If API request fails
+    #
+    # @example
+    #     Un.logs_stream(source: 'api') do |src, line|
+    #       puts "[#{src}] #{line}"
+    #     end
+    def logs_stream(source: 'all', grep: nil, public_key: nil, secret_key: nil, &block)
+      pk, sk = resolve_credentials(public_key, secret_key)
+      path = "/logs/stream?source=#{source}"
+      path += "&grep=#{CGI.escape(grep)}" if grep
+
+      uri = URI("#{API_BASE}#{path}")
+      timestamp = Time.now.to_i
+      signature = sign_request(sk, timestamp, 'GET', path)
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      http.read_timeout = nil
+
+      request = Net::HTTP::Get.new(uri)
+      request['Authorization'] = "Bearer #{pk}"
+      request['X-Timestamp'] = timestamp.to_s
+      request['X-Signature'] = signature
+      request['Accept'] = 'text/event-stream'
+
+      http.request(request) do |response|
+        response.read_body do |chunk|
+          chunk.split("\n").each do |line|
+            next unless line.start_with?('data: ')
+
+            data = line[6..]
+            begin
+              entry = JSON.parse(data)
+              if block_given?
+                yield entry['source'] || source, entry['line'] || data
+              else
+                puts "[#{entry['source'] || source}] #{entry['line'] || data}"
+              end
+            rescue JSON::ParserError
+              if block_given?
+                yield source, data
+              else
+                puts "[#{source}] #{data}"
+              end
+            end
+          end
+        end
+      end
+    end
+
+    # ============================================================================
+    # Utility Functions
+    # ============================================================================
+
+    SDK_VERSION = '4.2.0'
+
+    # Thread-local storage for last error
+    @last_error = nil
+
+    class << self
+      attr_accessor :last_error_value
+    end
+
+    # Get the SDK version string
+    #
+    # @return [String] Version string (e.g., "4.2.0")
+    #
+    # @example
+    #     puts Un.version  # "4.2.0"
+    def version
+      SDK_VERSION
+    end
+
+    # Check if the API is healthy and responding
+    #
+    # @return [Boolean] true if API is healthy, false otherwise
+    #
+    # @example
+    #     if Un.health_check
+    #       puts "API is healthy"
+    #     end
+    def health_check
+      uri = URI("#{API_BASE}/health")
+      response = Net::HTTP.get_response(uri)
+      response.code == '200'
+    rescue StandardError => e
+      Un.last_error_value = "Health check failed: #{e.message}"
+      false
+    end
+
+    # Get the last error message
+    #
+    # @return [String, nil] Last error message or nil
+    #
+    # @example
+    #     result = Un.health_check
+    #     puts Un.last_error unless result
+    def last_error
+      Un.last_error_value
+    end
+
+    # Sign a message using HMAC-SHA256
+    #
+    # This is the underlying signing function used for request authentication.
+    # Exposed for testing and debugging purposes.
+    #
+    # @param secret_key [String] The secret key for signing
+    # @param message [String] The message to sign
+    # @return [String] 64-character lowercase hex string
+    #
+    # @example
+    #     signature = Un.hmac_sign("secret", "message")
+    def hmac_sign(secret_key, message)
+      OpenSSL::HMAC.hexdigest('SHA256', secret_key, message)
     end
 
     private

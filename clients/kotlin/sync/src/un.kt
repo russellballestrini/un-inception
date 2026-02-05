@@ -1316,6 +1316,457 @@ fun parseArgs(args: Array<String>): Args {
     return result
 }
 
+// ============================================================================
+// Library Functions (for programmatic use)
+// ============================================================================
+
+/**
+ * SDK version string.
+ */
+fun version(): String = "4.2.0"
+
+/**
+ * Check API health status.
+ */
+fun healthCheck(): Boolean {
+    return try {
+        val url = URL("$API_BASE/health")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+        connection.responseCode == 200
+    } catch (e: Exception) {
+        false
+    }
+}
+
+/**
+ * Generate HMAC-SHA256 signature.
+ */
+fun hmacSign(secretKey: String, message: String): String {
+    val mac = Mac.getInstance("HmacSHA256")
+    val keySpec = SecretKeySpec(secretKey.toByteArray(Charsets.UTF_8), "HmacSHA256")
+    mac.init(keySpec)
+    return mac.doFinal(message.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * Execute code synchronously.
+ */
+fun execute(language: String, code: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) {
+        Pair(publicKey, secretKey)
+    } else {
+        getApiKeys(null)
+    }
+    val payload = mapOf("language" to language, "code" to code)
+    return apiRequest("/execute", "POST", payload, pk, sk)
+}
+
+/**
+ * Execute code asynchronously, returns job ID.
+ */
+fun executeAsync(language: String, code: String, publicKey: String? = null, secretKey: String? = null): String? {
+    val result = execute(language, code, publicKey, secretKey)
+    return result["job_id"]?.toString()
+}
+
+/**
+ * Get job status and result.
+ */
+fun getJob(jobId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) {
+        Pair(publicKey, secretKey)
+    } else {
+        getApiKeys(null)
+    }
+    return apiRequest("/jobs/$jobId", "GET", null, pk, sk)
+}
+
+/**
+ * Wait for job completion with polling.
+ */
+fun waitJob(jobId: String, publicKey: String? = null, secretKey: String? = null, timeoutMs: Long = 0): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) {
+        Pair(publicKey, secretKey)
+    } else {
+        getApiKeys(null)
+    }
+    val pollDelays = intArrayOf(300, 450, 700, 900, 650, 1600, 2000)
+    val terminalStates = setOf("completed", "failed", "timeout", "cancelled")
+    val startTime = System.currentTimeMillis()
+    var pollCount = 0
+
+    while (true) {
+        val delayIdx = minOf(pollCount, pollDelays.size - 1)
+        Thread.sleep(pollDelays[delayIdx].toLong())
+        pollCount++
+
+        if (timeoutMs > 0 && System.currentTimeMillis() - startTime > timeoutMs) {
+            throw RuntimeException("Timeout waiting for job $jobId")
+        }
+
+        val result = getJob(jobId, pk, sk)
+        val status = result["status"]?.toString() ?: ""
+        if (status in terminalStates) {
+            return result
+        }
+    }
+}
+
+/**
+ * Cancel a running job.
+ */
+fun cancelJob(jobId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) {
+        Pair(publicKey, secretKey)
+    } else {
+        getApiKeys(null)
+    }
+    return apiRequest("/jobs/$jobId", "DELETE", null, pk, sk)
+}
+
+/**
+ * List all jobs.
+ */
+fun listJobs(publicKey: String? = null, secretKey: String? = null): List<Map<String, Any>> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) {
+        Pair(publicKey, secretKey)
+    } else {
+        getApiKeys(null)
+    }
+    val result = apiRequest("/jobs", "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    return result["jobs"] as? List<Map<String, Any>> ?: emptyList()
+}
+
+/**
+ * Get supported languages.
+ */
+fun getLanguages(publicKey: String? = null, secretKey: String? = null): List<String> {
+    val cached = loadLanguagesCache()
+    if (cached != null) return cached
+
+    val (pk, sk) = if (publicKey != null && secretKey != null) {
+        Pair(publicKey, secretKey)
+    } else {
+        getApiKeys(null)
+    }
+    val result = apiRequest("/languages", "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    val languages = result["languages"] as? List<String> ?: emptyList()
+    saveLanguagesCache(languages)
+    return languages
+}
+
+// Session functions
+fun sessionList(publicKey: String? = null, secretKey: String? = null): List<Map<String, Any>> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val result = apiRequest("/sessions", "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    return result["sessions"] as? List<Map<String, Any>> ?: emptyList()
+}
+
+fun sessionGet(sessionId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId", "GET", null, pk, sk)
+}
+
+fun sessionCreate(networkMode: String? = null, shell: String? = null, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>("shell" to (shell ?: "bash"))
+    if (networkMode != null) payload["network_mode"] = networkMode
+    return apiRequest("/sessions", "POST", payload, pk, sk)
+}
+
+fun sessionDestroy(sessionId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId", "DELETE", null, pk, sk)
+}
+
+fun sessionFreeze(sessionId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId/freeze", "POST", null, pk, sk)
+}
+
+fun sessionUnfreeze(sessionId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId/unfreeze", "POST", null, pk, sk)
+}
+
+fun sessionBoost(sessionId: String, vcpu: Int = 2, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId/boost", "POST", mapOf("vcpu" to vcpu), pk, sk)
+}
+
+fun sessionUnboost(sessionId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId/unboost", "POST", null, pk, sk)
+}
+
+fun sessionExecute(sessionId: String, command: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/sessions/$sessionId/shell", "POST", mapOf("command" to command), pk, sk)
+}
+
+// Service functions
+fun serviceList(publicKey: String? = null, secretKey: String? = null): List<Map<String, Any>> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val result = apiRequest("/services", "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    return result["services"] as? List<Map<String, Any>> ?: emptyList()
+}
+
+fun serviceGet(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId", "GET", null, pk, sk)
+}
+
+fun serviceCreate(name: String, ports: String? = null, domains: String? = null, bootstrap: String? = null, networkMode: String? = null, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>("name" to name)
+    if (ports != null) payload["ports"] = ports.split(",").map { it.trim().toInt() }
+    if (domains != null) payload["domains"] = domains
+    if (bootstrap != null) payload["bootstrap"] = bootstrap
+    if (networkMode != null) payload["network_mode"] = networkMode
+    val result = apiRequest("/services", "POST", payload, pk, sk)
+    return result["id"]?.toString()
+}
+
+fun serviceDestroy(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestDestructive("/services/$serviceId", "DELETE", null, pk, sk)
+}
+
+fun serviceFreeze(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/freeze", "POST", null, pk, sk)
+}
+
+fun serviceUnfreeze(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/unfreeze", "POST", null, pk, sk)
+}
+
+fun serviceLock(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/lock", "POST", null, pk, sk)
+}
+
+fun serviceUnlock(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestDestructive("/services/$serviceId/unlock", "POST", null, pk, sk)
+}
+
+fun serviceSetUnfreezeOnDemand(serviceId: String, enabled: Boolean, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestPatch("/services/$serviceId", mapOf("unfreeze_on_demand" to enabled), pk, sk)
+}
+
+fun serviceRedeploy(serviceId: String, bootstrap: String? = null, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = if (bootstrap != null) mapOf("bootstrap" to bootstrap) else emptyMap()
+    return apiRequest("/services/$serviceId/redeploy", "POST", payload, pk, sk)
+}
+
+fun serviceLogs(serviceId: String, allLogs: Boolean = false, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val path = if (allLogs) "/services/$serviceId/logs?all=true" else "/services/$serviceId/logs"
+    val result = apiRequest(path, "GET", null, pk, sk)
+    return result["logs"]?.toString()
+}
+
+fun serviceExecute(serviceId: String, command: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/execute", "POST", mapOf("command" to command), pk, sk)
+}
+
+fun serviceEnvGet(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/env", "GET", null, pk, sk)
+}
+
+fun serviceEnvSet(serviceId: String, envContent: String, publicKey: String? = null, secretKey: String? = null): Boolean {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val (success, _) = apiRequestText("/services/$serviceId/env", "PUT", envContent, pk, sk)
+    return success
+}
+
+fun serviceEnvDelete(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/env", "DELETE", null, pk, sk)
+}
+
+fun serviceEnvExport(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/services/$serviceId/env/export", "POST", emptyMap<String, Any>(), pk, sk)
+}
+
+fun serviceResize(serviceId: String, vcpu: Int, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestPatch("/services/$serviceId", mapOf("vcpu" to vcpu), pk, sk)
+}
+
+// Snapshot functions
+fun snapshotList(publicKey: String? = null, secretKey: String? = null): List<Map<String, Any>> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val result = apiRequest("/snapshots", "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    return result["snapshots"] as? List<Map<String, Any>> ?: emptyList()
+}
+
+fun snapshotGet(snapshotId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/snapshots/$snapshotId", "GET", null, pk, sk)
+}
+
+fun snapshotSession(sessionId: String, name: String? = null, hot: Boolean = false, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>("session_id" to sessionId, "hot" to hot)
+    if (name != null) payload["name"] = name
+    val result = apiRequest("/snapshots", "POST", payload, pk, sk)
+    return result["snapshot_id"]?.toString()
+}
+
+fun snapshotService(serviceId: String, name: String? = null, hot: Boolean = false, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>("service_id" to serviceId, "hot" to hot)
+    if (name != null) payload["name"] = name
+    val result = apiRequest("/snapshots", "POST", payload, pk, sk)
+    return result["snapshot_id"]?.toString()
+}
+
+fun snapshotRestore(snapshotId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/snapshots/$snapshotId/restore", "POST", emptyMap<String, Any>(), pk, sk)
+}
+
+fun snapshotDelete(snapshotId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestDestructive("/snapshots/$snapshotId", "DELETE", null, pk, sk)
+}
+
+fun snapshotLock(snapshotId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/snapshots/$snapshotId/lock", "POST", null, pk, sk)
+}
+
+fun snapshotUnlock(snapshotId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestDestructive("/snapshots/$snapshotId/unlock", "POST", null, pk, sk)
+}
+
+fun snapshotClone(snapshotId: String, cloneType: String, name: String? = null, ports: String? = null, shell: String? = null, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>("type" to cloneType)
+    if (name != null) payload["name"] = name
+    if (ports != null) payload["ports"] = ports.split(",").map { it.trim().toInt() }
+    if (shell != null) payload["shell"] = shell
+    val result = apiRequest("/snapshots/$snapshotId/clone", "POST", payload, pk, sk)
+    return (result["session_id"] ?: result["service_id"])?.toString()
+}
+
+// Image functions
+fun imageList(filter: String? = null, publicKey: String? = null, secretKey: String? = null): List<Map<String, Any>> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val path = if (filter != null) "/images/$filter" else "/images"
+    val result = apiRequest(path, "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    return result["images"] as? List<Map<String, Any>> ?: emptyList()
+}
+
+fun imageGet(imageId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/images/$imageId", "GET", null, pk, sk)
+}
+
+fun imagePublish(sourceType: String, sourceId: String, name: String? = null, description: String? = null, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>("source_type" to sourceType, "source_id" to sourceId)
+    if (name != null) payload["name"] = name
+    if (description != null) payload["description"] = description
+    val result = apiRequest("/images", "POST", payload, pk, sk)
+    return result["image_id"]?.toString()
+}
+
+fun imageDelete(imageId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestDestructive("/images/$imageId", "DELETE", null, pk, sk)
+}
+
+fun imageLock(imageId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/images/$imageId/lock", "POST", null, pk, sk)
+}
+
+fun imageUnlock(imageId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequestDestructive("/images/$imageId/unlock", "POST", null, pk, sk)
+}
+
+fun imageSetVisibility(imageId: String, visibility: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/images/$imageId/visibility", "POST", mapOf("visibility" to visibility), pk, sk)
+}
+
+fun imageGrantAccess(imageId: String, trustedApiKey: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/images/$imageId/grant", "POST", mapOf("trusted_api_key" to trustedApiKey), pk, sk)
+}
+
+fun imageRevokeAccess(imageId: String, trustedApiKey: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/images/$imageId/revoke", "POST", mapOf("trusted_api_key" to trustedApiKey), pk, sk)
+}
+
+fun imageListTrusted(imageId: String, publicKey: String? = null, secretKey: String? = null): List<String> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val result = apiRequest("/images/$imageId/trusted", "GET", null, pk, sk)
+    @Suppress("UNCHECKED_CAST")
+    return result["trusted"] as? List<String> ?: emptyList()
+}
+
+fun imageTransfer(imageId: String, toApiKey: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return apiRequest("/images/$imageId/transfer", "POST", mapOf("to_api_key" to toApiKey), pk, sk)
+}
+
+fun imageSpawn(imageId: String, name: String? = null, ports: String? = null, bootstrap: String? = null, networkMode: String? = null, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>()
+    if (name != null) payload["name"] = name
+    if (ports != null) payload["ports"] = ports.split(",").map { it.trim().toInt() }
+    if (bootstrap != null) payload["bootstrap"] = bootstrap
+    if (networkMode != null) payload["network_mode"] = networkMode
+    val result = apiRequest("/images/$imageId/spawn", "POST", payload, pk, sk)
+    return result["service_id"]?.toString()
+}
+
+fun imageClone(imageId: String, name: String? = null, description: String? = null, publicKey: String? = null, secretKey: String? = null): String? {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val payload = mutableMapOf<String, Any>()
+    if (name != null) payload["name"] = name
+    if (description != null) payload["description"] = description
+    val result = apiRequest("/images/$imageId/clone", "POST", payload, pk, sk)
+    return result["image_id"]?.toString()
+}
+
+// PaaS Logs functions
+fun logsFetch(source: String = "all", lines: Int = 100, since: String? = null, grep: String? = null, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    val params = mutableListOf("source=$source", "lines=$lines")
+    if (since != null) params.add("since=$since")
+    if (grep != null) params.add("grep=${java.net.URLEncoder.encode(grep, "UTF-8")}")
+    return apiRequest("/paas/logs?${params.joinToString("&")}", "GET", null, pk, sk)
+}
+
+// Validate keys
+fun validateKeys(publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return validateKey(pk, sk)
+}
+
 fun printHelp() {
     println("""
 Usage: kotlin UnKt [options] <source_file>

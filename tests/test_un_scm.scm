@@ -138,6 +138,26 @@
             (print-result "Fibonacci end-to-end test" #f
                          (format #f "Exception: ~a" args)))))))
 
+;;; Test 4: Snapshot command support (feature parity test)
+(define (test-snapshot-command)
+  (let ((api-key (getenv "UNSANDBOX_API_KEY")))
+    (if (not api-key)
+        (print-result "Snapshot command support" #t #f)  ; Skip test if no API key
+        (catch #t
+          (lambda ()
+            (let* ((result (run-command "./un.scm snapshot --list 2>&1"))
+                   (status (car result))
+                   (output (cdr result)))
+
+              ;; Check if it executed without errors (may return empty list)
+              (if (= status 0)
+                  (print-result "Snapshot command support" #t #f)
+                  (print-result "Snapshot command support" #f
+                              (format #f "Snapshot list failed: ~a" output)))))
+          (lambda (key . args)
+            (print-result "Snapshot command support" #f
+                         (format #f "Exception: ~a" args)))))))
+
 ;;; Main test runner
 (define (main)
   (display "=== Scheme UN CLI Test Suite ===\n\n")
@@ -150,7 +170,8 @@
   ;; Run tests
   (let ((results (list (test-extension-detection)
                       (test-api-integration)
-                      (test-fibonacci))))
+                      (test-fibonacci)
+                      (test-snapshot-command))))
 
     (display "\n")
 

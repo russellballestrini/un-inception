@@ -345,6 +345,499 @@ parseExecute args =
       let (k, v) = span (/= '=') kv
       in (k, drop 1 v)
 
+-- ============================================================================
+-- Library API
+-- ============================================================================
+
+-- SDK Version
+sdkVersion :: String
+sdkVersion = "4.2.0"
+
+-- | Return the SDK version
+version :: String
+version = sdkVersion
+
+-- | Check API health
+healthCheck :: IO Bool
+healthCheck = do
+  (exitCode, stdout, _) <- readProcessWithExitCode "curl"
+    ["-s", "-o", "/dev/null", "-w", "%{http_code}", apiBase ++ "/health"] ""
+  return $ filter isDigit stdout == "200"
+
+-- | Generate HMAC-SHA256 signature for a message
+hmacSign :: String -> String -> String
+hmacSign = hmacSha256
+
+-- | Detect language from filename extension
+detectLanguage :: String -> Maybe String
+detectLanguage filename = extToLang (takeExtension filename)
+
+-- | Get list of supported languages (list of strings)
+getLanguages :: IO [String]
+getLanguages = do
+  cached <- loadLanguagesCache
+  case cached of
+    Just languages -> return languages
+    Nothing -> do
+      apiKey <- getApiKey
+      (_, stdout, _) <- curlGet apiKey (apiBase ++ "/languages")
+      let languages = maybe [] id (extractJsonArray stdout "languages")
+      when (not (null languages)) $ saveLanguagesCache languages
+      return languages
+
+-- | Execute code synchronously
+execute :: String -> String -> IO (Either String (Bool, String, String, Int))
+execute language code = do
+  apiKey <- getApiKey
+  let json = "{\"language\":\"" ++ escapeJSON language ++ "\",\"code\":\"" ++ escapeJSON code ++ "\"}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/execute") json
+  case exitCode of
+    ExitSuccess ->
+      let success = case extractJsonString stdout "exit_code" of
+            Just "0" -> True
+            _ -> False
+          stdoutVal = maybe "" id (extractJsonString stdout "stdout")
+          stderrVal = maybe "" id (extractJsonString stdout "stderr")
+          exitCodeVal = case extractJsonString stdout "exit_code" of
+            Just s -> read (filter isDigit s) :: Int
+            _ -> 0
+      in return $ Right (success, stdoutVal, stderrVal, exitCodeVal)
+    _ -> return $ Left "Execution failed"
+
+-- | Execute code asynchronously, returning a job ID
+executeAsync :: String -> String -> IO (Maybe String)
+executeAsync language code = do
+  apiKey <- getApiKey
+  let json = "{\"language\":\"" ++ escapeJSON language ++ "\",\"code\":\"" ++ escapeJSON code ++ "\"}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/execute/async") json
+  case exitCode of
+    ExitSuccess -> return $ extractJsonString stdout "job_id"
+    _ -> return Nothing
+
+-- | Get job status
+getJob :: String -> IO (Maybe (String, String))
+getJob jobId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlGet apiKey (apiBase ++ "/jobs/" ++ jobId)
+  case exitCode of
+    ExitSuccess ->
+      let status = maybe "unknown" id (extractJsonString stdout "status")
+          language = maybe "" id (extractJsonString stdout "language")
+      in return $ Just (status, language)
+    _ -> return Nothing
+
+-- | Wait for job completion
+waitJob :: String -> IO (Either String (Bool, String, String, Int))
+waitJob jobId = waitJobLoop jobId 0 100
+  where
+    pollDelays = [300, 450, 700, 900, 650, 1600, 2000]
+    terminalStates = ["completed", "failed", "timeout", "cancelled"]
+
+    waitJobLoop jid pollCount maxPolls
+      | pollCount >= maxPolls = return $ Left "Max polls exceeded"
+      | otherwise = do
+          let delayIdx = min pollCount (length pollDelays - 1)
+          let delayMs = pollDelays !! delayIdx
+          threadDelay (delayMs * 1000)  -- threadDelay takes microseconds
+
+          result <- getJob jid
+          case result of
+            Just (status, _) | status `elem` terminalStates -> do
+              apiKey <- getApiKey
+              (_, stdout, _) <- curlGet apiKey (apiBase ++ "/jobs/" ++ jid)
+              let success = case extractJsonString stdout "exit_code" of
+                    Just "0" -> True
+                    _ -> False
+                  stdoutVal = maybe "" id (extractJsonString stdout "stdout")
+                  stderrVal = maybe "" id (extractJsonString stdout "stderr")
+                  exitCodeVal = case extractJsonString stdout "exit_code" of
+                    Just s -> read (filter isDigit s) :: Int
+                    _ -> 1
+              return $ Right (success, stdoutVal, stderrVal, exitCodeVal)
+            _ -> waitJobLoop jid (pollCount + 1) maxPolls
+
+-- | Cancel a running job
+cancelJob :: String -> IO Bool
+cancelJob jobId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlDelete apiKey (apiBase ++ "/jobs/" ++ jobId)
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | List all active jobs
+listJobs :: IO String
+listJobs = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/jobs")
+  return stdout
+
+-- | List all sessions
+sessionList :: IO String
+sessionList = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/sessions")
+  return stdout
+
+-- | Get session details
+sessionGet :: String -> IO String
+sessionGet sessionId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/sessions/" ++ sessionId)
+  return stdout
+
+-- | Create a new session
+sessionCreate :: Maybe String -> Maybe String -> IO (Maybe String)
+sessionCreate shell network = do
+  apiKey <- getApiKey
+  let shellVal = maybe "bash" id shell
+  let networkJson = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") network
+  let json = "{\"shell\":\"" ++ shellVal ++ "\"" ++ networkJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions") json
+  return $ extractJsonString stdout "id"
+
+-- | Destroy a session
+sessionDestroy :: String -> IO Bool
+sessionDestroy sessionId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlDelete apiKey (apiBase ++ "/sessions/" ++ sessionId)
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Freeze a session
+sessionFreeze :: String -> IO Bool
+sessionFreeze sessionId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions/" ++ sessionId ++ "/freeze") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Unfreeze a session
+sessionUnfreeze :: String -> IO Bool
+sessionUnfreeze sessionId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions/" ++ sessionId ++ "/unfreeze") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Boost session resources
+sessionBoost :: String -> Int -> IO Bool
+sessionBoost sessionId vcpu = do
+  apiKey <- getApiKey
+  let json = "{\"vcpu\":" ++ show vcpu ++ "}"
+  (exitCode, stdout, _) <- curlPatch apiKey (apiBase ++ "/sessions/" ++ sessionId) json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Unboost session
+sessionUnboost :: String -> IO Bool
+sessionUnboost sessionId = sessionBoost sessionId 1
+
+-- | Execute a command in a session
+sessionExecute :: String -> String -> IO String
+sessionExecute sessionId command = do
+  apiKey <- getApiKey
+  let json = "{\"command\":\"" ++ escapeJSON command ++ "\"}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions/" ++ sessionId ++ "/execute") json
+  return stdout
+
+-- | List all services
+serviceList :: IO String
+serviceList = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/services")
+  return stdout
+
+-- | Get service details
+serviceGet :: String -> IO String
+serviceGet serviceId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/services/" ++ serviceId)
+  return stdout
+
+-- | Create a new service
+serviceCreate :: String -> Maybe String -> Maybe String -> Maybe String -> IO (Maybe String)
+serviceCreate name ports bootstrap network = do
+  apiKey <- getApiKey
+  let portsJson = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") ports
+  let bootstrapJson = maybe "" (\b -> ",\"bootstrap\":\"" ++ escapeJSON b ++ "\"") bootstrap
+  let networkJson = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") network
+  let json = "{\"name\":\"" ++ escapeJSON name ++ "\"" ++ portsJson ++ bootstrapJson ++ networkJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services") json
+  return $ extractJsonString stdout "id"
+
+-- | Destroy a service
+serviceDestroy :: String -> IO Bool
+serviceDestroy serviceId = do
+  result <- curlDeleteWithSudo "" (apiBase ++ "/services/" ++ serviceId)
+  case result of
+    SudoSuccess _ -> return True
+    _ -> return False
+
+-- | Freeze a service
+serviceFreeze :: String -> IO Bool
+serviceFreeze serviceId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/freeze") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Unfreeze a service
+serviceUnfreeze :: String -> IO Bool
+serviceUnfreeze serviceId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/unfreeze") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Lock a service
+serviceLock :: String -> IO Bool
+serviceLock serviceId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/lock") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Unlock a service
+serviceUnlock :: String -> IO Bool
+serviceUnlock serviceId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/unlock") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Set unfreeze-on-demand for a service
+serviceSetUnfreezeOnDemand :: String -> Bool -> IO Bool
+serviceSetUnfreezeOnDemand serviceId enabled = do
+  apiKey <- getApiKey
+  let enabledStr = if enabled then "true" else "false"
+  let json = "{\"unfreeze_on_demand\":" ++ enabledStr ++ "}"
+  (exitCode, stdout, _) <- curlPatch apiKey (apiBase ++ "/services/" ++ serviceId) json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Redeploy a service
+serviceRedeploy :: String -> Maybe String -> IO Bool
+serviceRedeploy serviceId bootstrap = do
+  apiKey <- getApiKey
+  let bootstrapJson = maybe "" (\b -> "\"bootstrap\":\"" ++ escapeJSON b ++ "\"") bootstrap
+  let json = "{" ++ bootstrapJson ++ "}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/redeploy") json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Get service logs
+serviceLogs :: String -> Bool -> IO String
+serviceLogs serviceId allLogs = do
+  apiKey <- getApiKey
+  let endpoint = if allLogs
+        then "/services/" ++ serviceId ++ "/logs?all=true"
+        else "/services/" ++ serviceId ++ "/logs"
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ endpoint)
+  return stdout
+
+-- | Execute a command in a service
+serviceExecute :: String -> String -> IO String
+serviceExecute serviceId command = do
+  apiKey <- getApiKey
+  let json = "{\"command\":\"" ++ escapeJSON command ++ "\"}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/execute") json
+  return stdout
+
+-- | Resize a service
+serviceResize :: String -> Int -> IO Bool
+serviceResize serviceId vcpu = do
+  apiKey <- getApiKey
+  let json = "{\"vcpu\":" ++ show vcpu ++ "}"
+  (exitCode, stdout, _) <- curlPatch apiKey (apiBase ++ "/services/" ++ serviceId) json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | List all snapshots
+snapshotList :: IO String
+snapshotList = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/snapshots")
+  return stdout
+
+-- | Get snapshot details
+snapshotGet :: String -> IO String
+snapshotGet snapshotId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/snapshots/" ++ snapshotId)
+  return stdout
+
+-- | Create a snapshot of a session
+snapshotSession :: String -> Maybe String -> Bool -> IO (Maybe String)
+snapshotSession sessionId name hot = do
+  apiKey <- getApiKey
+  let nameJson = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\",") name
+  let hotJson = if hot then "\"hot\":true" else "\"hot\":false"
+  let json = "{" ++ nameJson ++ hotJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions/" ++ sessionId ++ "/snapshot") json
+  return $ extractJsonString stdout "id"
+
+-- | Create a snapshot of a service
+snapshotService :: String -> Maybe String -> Bool -> IO (Maybe String)
+snapshotService serviceId name hot = do
+  apiKey <- getApiKey
+  let nameJson = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\",") name
+  let hotJson = if hot then "\"hot\":true" else "\"hot\":false"
+  let json = "{" ++ nameJson ++ hotJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services/" ++ serviceId ++ "/snapshot") json
+  return $ extractJsonString stdout "id"
+
+-- | Restore from a snapshot
+snapshotRestore :: String -> IO (Maybe String)
+snapshotRestore snapshotId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/snapshots/" ++ snapshotId ++ "/restore") "{}"
+  return $ extractJsonString stdout "id"
+
+-- | Delete a snapshot
+snapshotDelete :: String -> IO Bool
+snapshotDelete snapshotId = do
+  result <- curlDeleteWithSudo "" (apiBase ++ "/snapshots/" ++ snapshotId)
+  case result of
+    SudoSuccess _ -> return True
+    _ -> return False
+
+-- | Lock a snapshot
+snapshotLock :: String -> IO Bool
+snapshotLock snapshotId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/snapshots/" ++ snapshotId ++ "/lock") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Unlock a snapshot
+snapshotUnlock :: String -> IO Bool
+snapshotUnlock snapshotId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/snapshots/" ++ snapshotId ++ "/unlock") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Clone a snapshot to create a new session or service
+snapshotClone :: String -> String -> Maybe String -> Maybe String -> Maybe String -> IO (Maybe String)
+snapshotClone snapshotId cloneType name ports shell = do
+  apiKey <- getApiKey
+  let typeJson = "\"type\":\"" ++ cloneType ++ "\""
+  let nameJson = maybe "" (\n -> ",\"name\":\"" ++ escapeJSON n ++ "\"") name
+  let portsJson = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") ports
+  let shellJson = maybe "" (\s -> ",\"shell\":\"" ++ s ++ "\"") shell
+  let json = "{" ++ typeJson ++ nameJson ++ portsJson ++ shellJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/snapshots/" ++ snapshotId ++ "/clone") json
+  return $ extractJsonString stdout "id"
+
+-- | List images
+imageList :: Maybe String -> IO String
+imageList filter' = do
+  apiKey <- getApiKey
+  let endpoint = maybe "/images" (\f -> "/images?filter=" ++ f) filter'
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ endpoint)
+  return stdout
+
+-- | Get image details
+imageGet :: String -> IO String
+imageGet imageId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/images/" ++ imageId)
+  return stdout
+
+-- | Publish an image
+imagePublish :: String -> String -> Maybe String -> Maybe String -> IO (Maybe String)
+imagePublish sourceType sourceId name description = do
+  apiKey <- getApiKey
+  let nameJson = maybe "" (\n -> ",\"name\":\"" ++ escapeJSON n ++ "\"") name
+  let descJson = maybe "" (\d -> ",\"description\":\"" ++ escapeJSON d ++ "\"") description
+  let json = "{\"source_type\":\"" ++ sourceType ++ "\",\"source_id\":\"" ++ sourceId ++ "\"" ++ nameJson ++ descJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/images/publish") json
+  return $ extractJsonString stdout "id"
+
+-- | Delete an image
+imageDelete :: String -> IO Bool
+imageDelete imageId = do
+  result <- curlDeleteWithSudo "" (apiBase ++ "/images/" ++ imageId)
+  case result of
+    SudoSuccess _ -> return True
+    _ -> return False
+
+-- | Lock an image
+imageLock :: String -> IO Bool
+imageLock imageId = do
+  apiKey <- getApiKey
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/lock") "{}"
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Unlock an image
+imageUnlock :: String -> IO Bool
+imageUnlock imageId = do
+  result <- curlPostWithSudo "" (apiBase ++ "/images/" ++ imageId ++ "/unlock") "{}"
+  case result of
+    SudoSuccess _ -> return True
+    _ -> return False
+
+-- | Set image visibility
+imageSetVisibility :: String -> String -> IO Bool
+imageSetVisibility imageId visibility = do
+  apiKey <- getApiKey
+  let json = "{\"visibility\":\"" ++ visibility ++ "\"}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/visibility") json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Grant access to an image
+imageGrantAccess :: String -> String -> IO Bool
+imageGrantAccess imageId trustedApiKey = do
+  apiKey <- getApiKey
+  let json = "{\"api_key\":\"" ++ trustedApiKey ++ "\"}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/access/grant") json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Revoke access to an image
+imageRevokeAccess :: String -> String -> IO Bool
+imageRevokeAccess imageId trustedApiKey = do
+  apiKey <- getApiKey
+  let json = "{\"api_key\":\"" ++ trustedApiKey ++ "\"}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/access/revoke") json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | List trusted API keys for an image
+imageListTrusted :: String -> IO String
+imageListTrusted imageId = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlGet apiKey (apiBase ++ "/images/" ++ imageId ++ "/access")
+  return stdout
+
+-- | Transfer image ownership
+imageTransfer :: String -> String -> IO Bool
+imageTransfer imageId toApiKey = do
+  apiKey <- getApiKey
+  let json = "{\"to_api_key\":\"" ++ toApiKey ++ "\"}"
+  (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/transfer") json
+  return $ exitCode == ExitSuccess && not ("\"error\"" `isPrefixOf` dropWhile (/= '"') stdout)
+
+-- | Spawn a service from an image
+imageSpawn :: String -> Maybe String -> Maybe String -> Maybe String -> Maybe String -> IO (Maybe String)
+imageSpawn imageId name ports bootstrap network = do
+  apiKey <- getApiKey
+  let nameJson = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\"") name
+  let portsJson = maybe "" (\p -> (if null nameJson then "" else ",") ++ "\"ports\":[" ++ p ++ "]") ports
+  let bootstrapJson = maybe "" (\b -> ",\"bootstrap\":\"" ++ escapeJSON b ++ "\"") bootstrap
+  let networkJson = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") network
+  let json = "{" ++ nameJson ++ portsJson ++ bootstrapJson ++ networkJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/spawn") json
+  return $ extractJsonString stdout "id"
+
+-- | Clone an image
+imageClone :: String -> Maybe String -> Maybe String -> IO (Maybe String)
+imageClone imageId name description = do
+  apiKey <- getApiKey
+  let nameJson = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\"") name
+  let descJson = maybe "" (\d -> (if null nameJson then "" else ",") ++ "\"description\":\"" ++ escapeJSON d ++ "\"") description
+  let json = "{" ++ nameJson ++ descJson ++ "}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/images/" ++ imageId ++ "/clone") json
+  return $ extractJsonString stdout "id"
+
+-- | Validate API keys
+validateKeys :: IO String
+validateKeys = do
+  apiKey <- getApiKey
+  (_, stdout, _) <- curlPostPortal apiKey (portalBase ++ "/keys/validate") "{}"
+  return stdout
+
+-- Helper for threadDelay (microseconds)
+threadDelay :: Int -> IO ()
+threadDelay us = do
+  let ms = us `div` 1000
+  _ <- readProcessWithExitCode "sleep" [show (fromIntegral ms / 1000.0 :: Double)] ""
+  return ()
+
 -- Main
 main :: IO ()
 main = do

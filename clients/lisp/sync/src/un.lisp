@@ -597,6 +597,174 @@
 (defun key-cmd (extend-flag)
   (validate-key extend-flag))
 
+;; Image access management functions
+(defun image-grant-access (id trusted-key)
+  (let* ((api-key (get-api-key))
+         (json (format nil "{\"trusted_api_key\":\"~a\"}" trusted-key)))
+    (curl-post api-key (format nil "/images/~a/grant-access" id) json)
+    (format t "~aAccess granted to: ~a~a~%" *green* trusted-key *reset*)))
+
+(defun image-revoke-access (id trusted-key)
+  (let* ((api-key (get-api-key))
+         (json (format nil "{\"trusted_api_key\":\"~a\"}" trusted-key)))
+    (curl-post api-key (format nil "/images/~a/revoke-access" id) json)
+    (format t "~aAccess revoked from: ~a~a~%" *green* trusted-key *reset*)))
+
+(defun image-list-trusted (id)
+  (let ((api-key (get-api-key)))
+    (format t "~a~%" (curl-get api-key (format nil "/images/~a/trusted" id)))))
+
+(defun image-transfer (id to-key)
+  (let* ((api-key (get-api-key))
+         (json (format nil "{\"to_api_key\":\"~a\"}" to-key)))
+    (curl-post api-key (format nil "/images/~a/transfer" id) json)
+    (format t "~aImage transferred to: ~a~a~%" *green* to-key *reset*)))
+
+;; Snapshot functions
+(defun snapshot-list ()
+  (let ((api-key (get-api-key)))
+    (format t "~a~%" (curl-get api-key "/snapshots"))))
+
+(defun snapshot-info (id)
+  (let ((api-key (get-api-key)))
+    (format t "~a~%" (curl-get api-key (format nil "/snapshots/~a" id)))))
+
+(defun snapshot-session (session-id name hot)
+  (let* ((api-key (get-api-key))
+         (name-json (if name (format nil ",\"name\":\"~a\"" (escape-json name)) ""))
+         (hot-json (if hot ",\"hot\":true" ""))
+         (json (format nil "{\"session_id\":\"~a\"~a~a}" session-id name-json hot-json)))
+    (format t "~aSnapshot created~a~%" *green* *reset*)
+    (format t "~a~%" (curl-post api-key "/snapshots" json))))
+
+(defun snapshot-service (service-id name hot)
+  (let* ((api-key (get-api-key))
+         (name-json (if name (format nil ",\"name\":\"~a\"" (escape-json name)) ""))
+         (hot-json (if hot ",\"hot\":true" ""))
+         (json (format nil "{\"service_id\":\"~a\"~a~a}" service-id name-json hot-json)))
+    (format t "~aSnapshot created~a~%" *green* *reset*)
+    (format t "~a~%" (curl-post api-key "/snapshots" json))))
+
+(defun snapshot-restore (id)
+  (let ((api-key (get-api-key)))
+    (curl-post api-key (format nil "/snapshots/~a/restore" id) "{}")
+    (format t "~aSnapshot restored: ~a~a~%" *green* id *reset*)))
+
+(defun snapshot-delete (id)
+  (let* ((api-key (get-api-key))
+         (result (curl-delete-with-sudo api-key (format nil "/snapshots/~a" id))))
+    (if (first result)
+        (format t "~aSnapshot deleted: ~a~a~%" *green* id *reset*)
+        (progn
+          (format *error-output* "~aError deleting snapshot~a~%" *red* *reset*)
+          (uiop:quit 1)))))
+
+(defun snapshot-lock (id)
+  (let ((api-key (get-api-key)))
+    (curl-post api-key (format nil "/snapshots/~a/lock" id) "{}")
+    (format t "~aSnapshot locked: ~a~a~%" *green* id *reset*)))
+
+(defun snapshot-unlock (id)
+  (let* ((api-key (get-api-key))
+         (result (curl-post-with-sudo api-key (format nil "/snapshots/~a/unlock" id) "{}")))
+    (if (first result)
+        (format t "~aSnapshot unlocked: ~a~a~%" *green* id *reset*)
+        (progn
+          (format *error-output* "~aError unlocking snapshot~a~%" *red* *reset*)
+          (uiop:quit 1)))))
+
+(defun snapshot-clone (id clone-type name ports shell)
+  (let* ((api-key (get-api-key))
+         (type-json (format nil "\"clone_type\":\"~a\"" clone-type))
+         (name-json (if name (format nil ",\"name\":\"~a\"" (escape-json name)) ""))
+         (ports-json (if ports (format nil ",\"ports\":[~a]" ports) ""))
+         (shell-json (if shell (format nil ",\"shell\":\"~a\"" shell) ""))
+         (json (format nil "{~a~a~a~a}" type-json name-json ports-json shell-json)))
+    (format t "~aSnapshot cloned~a~%" *green* *reset*)
+    (format t "~a~%" (curl-post api-key (format nil "/snapshots/~a/clone" id) json))))
+
+(defun snapshot-cmd (action id name ports shell hot)
+  (cond
+    ((string= action "list") (snapshot-list))
+    ((string= action "info") (snapshot-info id))
+    ((string= action "session") (snapshot-session id name hot))
+    ((string= action "service") (snapshot-service id name hot))
+    ((string= action "restore") (snapshot-restore id))
+    ((string= action "delete") (snapshot-delete id))
+    ((string= action "lock") (snapshot-lock id))
+    ((string= action "unlock") (snapshot-unlock id))
+    ((string= action "clone") (snapshot-clone id "session" name ports shell))
+    (t (format t "~aError: Unknown snapshot action~a~%" *red* *reset*)
+       (uiop:quit 1))))
+
+;; Session additional functions
+(defun session-info (id)
+  (let ((api-key (get-api-key)))
+    (format t "~a~%" (curl-get api-key (format nil "/sessions/~a" id)))))
+
+(defun session-boost (id vcpu)
+  (let* ((api-key (get-api-key))
+         (json (format nil "{\"vcpu\":~a}" vcpu)))
+    (curl-patch api-key (format nil "/sessions/~a" id) json)
+    (format t "~aSession boosted to ~a vCPU~a~%" *green* vcpu *reset*)))
+
+(defun session-unboost (id)
+  (let* ((api-key (get-api-key))
+         (json "{\"vcpu\":1}"))
+    (curl-patch api-key (format nil "/sessions/~a" id) json)
+    (format t "~aSession unboosted to 1 vCPU~a~%" *green* *reset*)))
+
+(defun session-execute (id command)
+  (let* ((api-key (get-api-key))
+         (json (format nil "{\"command\":\"~a\"}" (escape-json command)))
+         (response (curl-post api-key (format nil "/sessions/~a/execute" id) json))
+         (stdout-val (parse-json-field response "stdout")))
+    (when stdout-val
+      (format t "~a~a~a" *blue* stdout-val *reset*))))
+
+;; Service additional functions
+(defun service-lock (id)
+  (let ((api-key (get-api-key)))
+    (curl-post api-key (format nil "/services/~a/lock" id) "{}")
+    (format t "~aService locked: ~a~a~%" *green* id *reset*)))
+
+(defun service-unlock (id)
+  (let* ((api-key (get-api-key))
+         (result (curl-post-with-sudo api-key (format nil "/services/~a/unlock" id) "{}")))
+    (if (first result)
+        (format t "~aService unlocked: ~a~a~%" *green* id *reset*)
+        (progn
+          (format *error-output* "~aError unlocking service~a~%" *red* *reset*)
+          (uiop:quit 1)))))
+
+(defun service-redeploy (id bootstrap)
+  (let* ((api-key (get-api-key))
+         (json (if bootstrap
+                   (format nil "{\"bootstrap\":\"~a\"}" (escape-json bootstrap))
+                   "{}")))
+    (curl-post api-key (format nil "/services/~a/redeploy" id) json)
+    (format t "~aService redeploying: ~a~a~%" *green* id *reset*)))
+
+;; PaaS logs functions
+(defun logs-fetch (source lines since grep-pattern)
+  (let* ((api-key (get-api-key))
+         (params (format nil "?source=~a&lines=~a~a~a"
+                        (or source "all")
+                        (or lines 100)
+                        (if since (format nil "&since=~a" since) "")
+                        (if grep-pattern (format nil "&grep=~a" grep-pattern) ""))))
+    (format t "~a~%" (curl-get api-key (format nil "/logs~a" params)))))
+
+;; Utility functions
+(defun health-check ()
+  (let* ((cmd "curl -s https://api.unsandbox.com/health")
+         (result (uiop:run-program cmd :output :string)))
+    (format t "~a~%" result)
+    (search "ok" result)))
+
+(defun sdk-version ()
+  "4.2.0")
+
 (defun image-cmd (action id name ports source-type visibility-mode)
   (let ((api-key (get-api-key)))
     (cond
@@ -885,6 +1053,28 @@
           ((string= (first args) "key")
            (let ((extend-flag (and (> (length args) 1) (string= (second args) "--extend"))))
              (key-cmd extend-flag)))
+          ((string= (first args) "snapshot")
+           (cond
+             ((and (> (length args) 1) (string= (second args) "--list"))
+              (snapshot-cmd "list" nil nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--info"))
+              (snapshot-cmd "info" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--session"))
+              (snapshot-cmd "session" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--service"))
+              (snapshot-cmd "service" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--restore"))
+              (snapshot-cmd "restore" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--delete"))
+              (snapshot-cmd "delete" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--lock"))
+              (snapshot-cmd "lock" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--unlock"))
+              (snapshot-cmd "unlock" (third args) nil nil nil nil))
+             ((and (> (length args) 2) (string= (second args) "--clone"))
+              (snapshot-cmd "clone" (third args) nil nil nil nil))
+             (t
+               (snapshot-cmd "list" nil nil nil nil nil))))
           ((string= (first args) "image")
            (cond
              ((and (> (length args) 1) (string= (second args) "--list"))

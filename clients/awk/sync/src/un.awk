@@ -44,10 +44,12 @@
 # Requires: UNSANDBOX_API_KEY environment variable
 
 BEGIN {
+    VERSION = "4.2.50"
     API_BASE = "https://api.unsandbox.com"
     PORTAL_BASE = "https://unsandbox.com"
     LANGUAGES_CACHE_TTL = 3600  # 1 hour cache TTL
     LANGUAGES_CACHE_FILE = ENVIRON["HOME"] "/.unsandbox/languages.json"
+    LAST_ERROR = ""
 
     # Extension to language map
     split("py:python js:javascript ts:typescript rb:ruby php:php pl:perl lua:lua sh:bash go:go rs:rust c:c cpp:cpp java:java kt:kotlin cs:csharp fs:fsharp hs:haskell ml:ocaml clj:clojure scm:scheme lisp:commonlisp erl:erlang ex:elixir jl:julia r:r cr:crystal d:d nim:nim zig:zig v:v dart:dart groovy:groovy f90:fortran cob:cobol pro:prolog forth:forth tcl:tcl raku:raku m:objc awk:awk ps1:powershell", pairs, " ")
@@ -60,7 +62,48 @@ BEGIN {
     BLUE = "\033[34m"
     RED = "\033[31m"
     GREEN = "\033[32m"
+    YELLOW = "\033[33m"
     RESET = "\033[0m"
+}
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+function version() {
+    return VERSION
+}
+
+function last_error() {
+    return LAST_ERROR
+}
+
+function set_error(msg) {
+    LAST_ERROR = msg
+}
+
+function detect_language(filename    , ext) {
+    if (filename == "") return ""
+    ext = get_extension(filename)
+    if (ext in ext_map) {
+        return ext_map[ext]
+    }
+    return ""
+}
+
+function hmac_sign(secret, message    , cmd, sig) {
+    if (secret == "" || message == "") return ""
+    cmd = "echo -n '" message "' | openssl dgst -sha256 -hmac '" secret "' | sed 's/^.* //'"
+    cmd | getline sig
+    close(cmd)
+    return sig
+}
+
+function health_check(    cmd, result) {
+    cmd = "curl -s -o /dev/null -w '%{http_code}' '" API_BASE "/health'"
+    cmd | getline result
+    close(cmd)
+    return (result == "200")
 }
 
 function get_api_keys(    public_key, secret_key, cmd) {
@@ -242,6 +285,120 @@ function session_kill(id    , timestamp, sig_headers, signature, sig_input, sig_
     print GREEN "Session terminated: " id RESET
 }
 
+# Alias for session_kill
+function session_destroy(id) {
+    session_kill(id)
+}
+
+function session_get(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/sessions/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function session_freeze(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/sessions/" id "/freeze"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Session frozen: " id RESET
+}
+
+function session_unfreeze(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/sessions/" id "/unfreeze"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Session unfreezing: " id RESET
+}
+
+function session_boost(id, vcpu    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json) {
+    get_api_keys()
+    endpoint = "/sessions/" id "/boost"
+    if (vcpu == "") vcpu = 2
+    json = "{\"vcpu\":" vcpu "}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '" json "'"
+    system(cmd " > /dev/null")
+    print GREEN "Session boosted: " id RESET
+}
+
+function session_unboost(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/sessions/" id "/unboost"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Session unboosted: " id RESET
+}
+
+function session_execute(id, command    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json, line, response) {
+    get_api_keys()
+    endpoint = "/sessions/" id "/execute"
+    json = "{\"command\":\"" escape_json(command) "\"}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    print response
+}
+
 function service_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
     get_api_keys()
     timestamp = systime()
@@ -256,6 +413,173 @@ function service_list(    timestamp, sig_headers, signature, sig_input, sig_cmd)
     cmd = "curl -s '" API_BASE "/services' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
     while ((cmd | getline line) > 0) print line
     close(cmd)
+}
+
+function service_get(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/services/" id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function service_freeze(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/services/" id "/freeze"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Service frozen: " id RESET
+}
+
+function service_unfreeze(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/services/" id "/unfreeze"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Service unfreezing: " id RESET
+}
+
+function service_lock(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/services/" id "/lock"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Service locked: " id RESET
+}
+
+function service_unlock(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, cmd, response, line, http_code) {
+    get_api_keys()
+    endpoint = "/services/" id "/unlock"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '{}'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line "\n"
+    }
+    close(cmd)
+
+    # Extract HTTP code
+    http_code = 0
+    if (match(response, /\n([0-9]+)\n?$/, arr)) {
+        http_code = arr[1]
+    }
+
+    if (http_code == 428) {
+        if (handle_sudo_challenge(response, "POST", endpoint, "{}")) {
+            return
+        }
+        exit 1
+    }
+
+    print GREEN "Service unlocked: " id RESET
+}
+
+function service_redeploy(id, bootstrap    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json) {
+    get_api_keys()
+    endpoint = "/services/" id "/redeploy"
+    json = "{}"
+    if (bootstrap != "") {
+        json = "{\"bootstrap\":\"" escape_json(bootstrap) "\"}"
+    }
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '" json "'"
+    system(cmd " > /dev/null")
+    print GREEN "Service redeployed: " id RESET
+}
+
+function service_logs(id, lines    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/services/" id "/logs"
+    if (lines != "") {
+        endpoint = endpoint "?lines=" lines
+    }
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function service_execute(id, command    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json, line, response) {
+    get_api_keys()
+    endpoint = "/services/" id "/execute"
+    json = "{\"command\":\"" escape_json(command) "\"}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    print response
 }
 
 # Handle 428 Sudo OTP challenge - prompt user for OTP and retry
@@ -771,6 +1095,11 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
     }
 }
 
+# Alias for validate_key for API parity
+function validate_keys() {
+    validate_key(0)
+}
+
 function cmd_key(do_extend) {
     validate_key(do_extend)
 }
@@ -965,6 +1294,91 @@ function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, s
     }
 
     print GREEN "Snapshot deleted: " id RESET
+}
+
+# Alias for snapshot_info
+function snapshot_get(id) {
+    snapshot_info(id)
+}
+
+function snapshot_lock(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/snapshots/" id "/lock"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
+    system(cmd " > /dev/null")
+    print GREEN "Snapshot locked: " id RESET
+}
+
+function snapshot_unlock(id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, cmd, response, line, http_code) {
+    get_api_keys()
+    endpoint = "/snapshots/" id "/unlock"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":{}"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '{}'"
+
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line "\n"
+    }
+    close(cmd)
+
+    http_code = 0
+    if (match(response, /\n([0-9]+)\n?$/, arr)) {
+        http_code = arr[1]
+    }
+
+    if (http_code == 428) {
+        if (handle_sudo_challenge(response, "POST", endpoint, "{}")) {
+            return
+        }
+        exit 1
+    }
+
+    print GREEN "Snapshot unlocked: " id RESET
+}
+
+function snapshot_clone(id, clone_type, name    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json, line, response) {
+    get_api_keys()
+    endpoint = "/snapshots/" id "/clone"
+    if (clone_type == "") clone_type = "session"
+    json = "{\"clone_type\":\"" clone_type "\""
+    if (name != "") {
+        json = json ",\"name\":\"" escape_json(name) "\""
+    }
+    json = json "}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    print GREEN "Snapshot cloned" RESET
+    print response
 }
 
 # Image functions
@@ -1253,6 +1667,268 @@ function image_clone(id, name    , endpoint, json, tmp, timestamp, sig_headers, 
     system("rm -f " tmp)
     print GREEN "Image cloned" RESET
     print response
+}
+
+# Alias for image_visibility
+function image_set_visibility(id, visibility) {
+    image_visibility(id, visibility)
+}
+
+function image_grant_access(image_id, trusted_key    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json, line, response) {
+    get_api_keys()
+    endpoint = "/images/" image_id "/access"
+    json = "{\"api_key\":\"" trusted_key "\"}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    print GREEN "Access granted to " trusted_key RESET
+}
+
+function image_revoke_access(image_id, trusted_key    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/images/" image_id "/access/" trusted_key
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    system(cmd " > /dev/null")
+    print GREEN "Access revoked from " trusted_key RESET
+}
+
+function image_list_trusted(image_id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/images/" image_id "/access"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function image_transfer(image_id, to_key    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, json, line, response) {
+    get_api_keys()
+    endpoint = "/images/" image_id "/transfer"
+    json = "{\"to_api_key\":\"" to_key "\"}"
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:" endpoint ":" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    print GREEN "Image transferred to " to_key RESET
+}
+
+# ============================================================================
+# Job Functions (5)
+# ============================================================================
+
+function execute_async(language, code, network_mode    , json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
+    get_api_keys()
+    if (network_mode == "") network_mode = "zerotrust"
+    json = "{\"language\":\"" language "\",\"code\":\"" escape_json(code) "\",\"network_mode\":\"" network_mode "\",\"ttl\":300}"
+    tmp = "/tmp/un_awk_async_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:/execute/async:" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE "/execute/async' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '@" tmp "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+    print response
+}
+
+function get_job(job_id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/jobs/" job_id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function cancel_job(job_id    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+    get_api_keys()
+    endpoint = "/jobs/" job_id
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":DELETE:" endpoint ":"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    system(cmd " > /dev/null")
+    print GREEN "Job cancelled: " job_id RESET
+}
+
+function list_jobs(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
+    get_api_keys()
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":GET:/jobs:"
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+    }
+    cmd = "curl -s '" API_BASE "/jobs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+    while ((cmd | getline line) > 0) print line
+    close(cmd)
+}
+
+function wait_job(job_id    , delays, i, job_response, status, delay) {
+    # Polling delays in milliseconds
+    split("300 450 700 900 650 1600 2000", delays, " ")
+
+    for (i = 0; i < 120; i++) {
+        # Get job status
+        job_response = ""
+        get_api_keys()
+        endpoint = "/jobs/" job_id
+        timestamp = systime()
+        sig_headers = ""
+        if (GLOBAL_SECRET_KEY != "") {
+            sig_input = timestamp ":GET:" endpoint ":"
+            sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+            sig_cmd | getline signature
+            close(sig_cmd)
+            sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
+        }
+        cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
+        while ((cmd | getline line) > 0) {
+            job_response = job_response line
+        }
+        close(cmd)
+
+        # Check status
+        if (match(job_response, /"status":"([^"]+)"/, arr)) {
+            status = arr[1]
+            if (status == "completed") {
+                print job_response
+                return
+            }
+            if (status == "failed") {
+                set_error("Job failed")
+                print RED "Error: Job failed" RESET > "/dev/stderr"
+                exit 1
+            }
+        }
+
+        # Sleep with jitter
+        delay = delays[(i % 7) + 1] / 1000
+        cmd = "sleep " delay
+        system(cmd)
+    }
+
+    set_error("Max polls exceeded")
+    print RED "Error: Max polls exceeded" RESET > "/dev/stderr"
+    exit 1
+}
+
+# Alias for get_languages
+function get_languages(json_output) {
+    languages_list(json_output)
+}
+
+# ============================================================================
+# PaaS Logs Functions (2)
+# ============================================================================
+
+function logs_fetch(source, lines, since, grep_pattern    , timestamp, sig_headers, signature, sig_input, sig_cmd, json, tmp, line, response) {
+    get_api_keys()
+    if (source == "") source = "all"
+    if (lines == "") lines = 100
+    if (since == "") since = "1h"
+
+    json = "{\"source\":\"" source "\",\"lines\":" lines ",\"since\":\"" since "\""
+    if (grep_pattern != "") {
+        json = json ",\"grep\":\"" escape_json(grep_pattern) "\""
+    }
+    json = json "}"
+
+    tmp = "/tmp/un_awk_logs_" PROCINFO["pid"] ".json"
+    print json > tmp
+    close(tmp)
+
+    timestamp = systime()
+    sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig_input = timestamp ":POST:/paas/logs:" json
+        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
+        sig_cmd | getline signature
+        close(sig_cmd)
+        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
+    }
+    cmd = "curl -s -X POST '" API_BASE "/paas/logs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '@" tmp "'"
+    response = ""
+    while ((cmd | getline line) > 0) {
+        response = response line
+    }
+    close(cmd)
+    system("rm -f " tmp)
+    print response
+}
+
+function logs_stream() {
+    set_error("logs_stream requires async support")
+    print RED "Error: logs_stream requires async support" RESET > "/dev/stderr"
+    exit 1
 }
 
 function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {

@@ -6,7 +6,7 @@ unsandbox.com Python SDK (Synchronous)
 
 Library Usage:
     from un import (
-        # Execution
+        # Execution (8)
         execute_code,
         execute_async,
         get_job,
@@ -15,7 +15,7 @@ Library Usage:
         list_jobs,
         get_languages,
         detect_language,
-        # Sessions
+        # Sessions (9)
         list_sessions,
         get_session,
         create_session,
@@ -25,7 +25,7 @@ Library Usage:
         boost_session,
         unboost_session,
         shell_session,
-        # Services
+        # Services (17)
         list_services,
         create_service,
         get_service,
@@ -44,18 +44,42 @@ Library Usage:
         export_service_env,
         redeploy_service,
         execute_in_service,
-        # Snapshots
+        resize_service,
+        # Snapshots (9)
         session_snapshot,
         service_snapshot,
         list_snapshots,
+        get_snapshot,
         restore_snapshot,
         delete_snapshot,
         lock_snapshot,
         unlock_snapshot,
         clone_snapshot,
+        # Images (13)
+        image_publish,
+        list_images,
+        get_image,
+        delete_image,
+        lock_image,
+        unlock_image,
+        set_image_visibility,
+        grant_image_access,
+        revoke_image_access,
+        list_image_trusted,
+        transfer_image,
+        spawn_from_image,
+        clone_image,
+        # PaaS Logs (2)
+        logs_fetch,
+        logs_stream,
         # Key validation
         validate_keys,
-        # Image generation
+        # Utilities
+        version,
+        health_check,
+        last_error,
+        hmac_sign,
+        # Image generation (AI)
         image,
     )
 
@@ -777,7 +801,7 @@ def list_snapshots(
     secret_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    List all snapshots (NEW).
+    List all snapshots.
 
     Args:
         public_key: Optional API key
@@ -794,6 +818,39 @@ def list_snapshots(
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
     response = _make_request("GET", "/snapshots", public_key, secret_key)
     return response.get("snapshots", [])
+
+
+def get_snapshot(
+    snapshot_id: str,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get details of a specific snapshot.
+
+    Args:
+        snapshot_id: Snapshot ID to get details for
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Snapshot details dict containing:
+        - id: Snapshot ID
+        - name: Snapshot name
+        - type: "session" or "service"
+        - source_id: Original resource ID
+        - hot: Whether snapshot preserves running state
+        - locked: Whether snapshot is locked
+        - created_at: Creation timestamp
+        - size_bytes: Size in bytes
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request("GET", f"/snapshots/{snapshot_id}", public_key, secret_key)
 
 
 def restore_snapshot(
@@ -1715,6 +1772,39 @@ def execute_in_service(
     )
 
 
+def resize_service(
+    service_id: str,
+    vcpu: int,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resize a service's vCPU allocation.
+
+    Args:
+        service_id: Service ID to resize
+        vcpu: Number of vCPUs (1-8 typically)
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Response dict with updated service info
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    return _make_request(
+        "PATCH",
+        f"/services/{service_id}",
+        public_key,
+        secret_key,
+        {"vcpu": vcpu},
+    )
+
+
 # =============================================================================
 # Additional Snapshot Functions
 # =============================================================================
@@ -2267,6 +2357,177 @@ def image(
         payload["model"] = model
 
     return _make_request("POST", "/image", public_key, secret_key, payload)
+
+
+# =============================================================================
+# PaaS Logs Functions
+# =============================================================================
+
+_last_error: Optional[str] = None
+
+
+def logs_fetch(
+    source: str = "all",
+    lines: int = 100,
+    since: str = "5m",
+    grep: Optional[str] = None,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Fetch batch logs from the PaaS platform.
+
+    Args:
+        source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+        lines: Number of lines to fetch (1-10000)
+        since: Time window - "1m", "5m", "1h", "1d"
+        grep: Optional filter pattern
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Returns:
+        Dict with log entries
+
+    Raises:
+        requests.RequestException: Network errors
+        ValueError: Invalid response format
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    params = f"?source={source}&lines={lines}&since={since}"
+    if grep:
+        params += f"&grep={grep}"
+    return _make_request("GET", f"/logs{params}", public_key, secret_key)
+
+
+def logs_stream(
+    source: str = "all",
+    grep: Optional[str] = None,
+    callback=None,
+    public_key: Optional[str] = None,
+    secret_key: Optional[str] = None,
+) -> None:
+    """
+    Stream logs via Server-Sent Events.
+
+    Blocks until interrupted or server closes connection.
+
+    Args:
+        source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
+        grep: Optional filter pattern
+        callback: Function called for each log line (signature: callback(source, line))
+        public_key: Optional API key
+        secret_key: Optional API secret
+
+    Raises:
+        requests.RequestException: Network errors
+        CredentialsError: Missing credentials
+    """
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+
+    url = f"{API_BASE}/logs/stream?source={source}"
+    if grep:
+        url += f"&grep={grep}"
+
+    timestamp = int(time.time())
+    path = f"/logs/stream?source={source}"
+    if grep:
+        path += f"&grep={grep}"
+
+    signature = _sign_request(secret_key, timestamp, "GET", path, None)
+
+    headers = {
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": str(timestamp),
+        "X-Signature": signature,
+        "Accept": "text/event-stream",
+    }
+
+    with requests.get(url, headers=headers, stream=True, timeout=None) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if line:
+                decoded = line.decode("utf-8")
+                if decoded.startswith("data: "):
+                    data = decoded[6:]
+                    try:
+                        entry = json.loads(data)
+                        if callback:
+                            callback(entry.get("source", source), entry.get("line", data))
+                        else:
+                            print(f"[{entry.get('source', source)}] {entry.get('line', data)}")
+                    except json.JSONDecodeError:
+                        if callback:
+                            callback(source, data)
+                        else:
+                            print(f"[{source}] {data}")
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+SDK_VERSION = "4.2.0"
+
+
+def version() -> str:
+    """
+    Get the SDK version string.
+
+    Returns:
+        Version string (e.g., "4.2.0")
+    """
+    return SDK_VERSION
+
+
+def health_check() -> bool:
+    """
+    Check if the API is healthy and responding.
+
+    Returns:
+        True if API is healthy, False otherwise
+    """
+    global _last_error
+    try:
+        response = requests.get(f"{API_BASE}/health", timeout=10)
+        if response.status_code == 200:
+            return True
+        _last_error = f"Health check failed: HTTP {response.status_code}"
+        return False
+    except Exception as e:
+        _last_error = f"Health check failed: {str(e)}"
+        return False
+
+
+def last_error() -> Optional[str]:
+    """
+    Get the last error message.
+
+    Returns:
+        Last error message or None
+    """
+    return _last_error
+
+
+def hmac_sign(secret_key: str, message: str) -> str:
+    """
+    Sign a message using HMAC-SHA256.
+
+    This is the underlying signing function used for request authentication.
+    Exposed for testing and debugging purposes.
+
+    Args:
+        secret_key: The secret key for signing
+        message: The message to sign
+
+    Returns:
+        64-character lowercase hex string
+    """
+    return hmac.new(
+        secret_key.encode(),
+        message.encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 # =============================================================================

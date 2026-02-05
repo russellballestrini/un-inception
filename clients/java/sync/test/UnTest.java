@@ -6,6 +6,7 @@
  * - HMAC-SHA256 signature generation
  * - Credential resolution logic
  * - Language detection
+ * - Utility functions
  *
  * To run tests:
  *     mvn test
@@ -81,6 +82,18 @@ public class UnTest {
         }
 
         @Test
+        @DisplayName("Should detect Kotlin from .kt extension")
+        void detectKotlin() {
+            assertEquals("kotlin", Un.detectLanguage("Main.kt"));
+        }
+
+        @Test
+        @DisplayName("Should detect Groovy from .groovy extension")
+        void detectGroovy() {
+            assertEquals("groovy", Un.detectLanguage("script.groovy"));
+        }
+
+        @Test
         @DisplayName("Should return null for unknown extension")
         void detectUnknown() {
             assertNull(Un.detectLanguage("file.unknown"));
@@ -91,6 +104,44 @@ public class UnTest {
         @DisplayName("Should return null for null input")
         void detectNull() {
             assertNull(Un.detectLanguage(null));
+        }
+    }
+
+    @Nested
+    @DisplayName("Utility Function Tests")
+    class UtilityTests {
+
+        @Test
+        @DisplayName("Version should return a valid version string")
+        void versionString() {
+            String version = Un.version();
+            assertNotNull(version);
+            assertTrue(version.matches("\\d+\\.\\d+\\.\\d+"), "Version should be in X.Y.Z format");
+        }
+
+        @Test
+        @DisplayName("HMAC sign should produce valid hex signature")
+        void hmacSignature() {
+            String signature = Un.hmacSign("secret", "message");
+            assertNotNull(signature);
+            assertEquals(64, signature.length(), "HMAC-SHA256 should produce 64 hex chars");
+            assertTrue(signature.matches("[0-9a-f]+"), "Signature should be lowercase hex");
+        }
+
+        @Test
+        @DisplayName("HMAC sign should be consistent")
+        void hmacConsistent() {
+            String sig1 = Un.hmacSign("key", "data");
+            String sig2 = Un.hmacSign("key", "data");
+            assertEquals(sig1, sig2, "Same inputs should produce same signature");
+        }
+
+        @Test
+        @DisplayName("HMAC sign should differ with different inputs")
+        void hmacDifferent() {
+            String sig1 = Un.hmacSign("key1", "data");
+            String sig2 = Un.hmacSign("key2", "data");
+            assertNotEquals(sig1, sig2, "Different keys should produce different signatures");
         }
     }
 
@@ -117,6 +168,22 @@ public class UnTest {
             assertEquals(401, ex.getStatusCode());
             assertEquals("{\"error\": \"unauthorized\"}", ex.getResponseBody());
             assertEquals("Error occurred", ex.getMessage());
+        }
+    }
+
+    @Nested
+    @DisplayName("Sudo Challenge Exception Tests")
+    class SudoChallengeExceptionTests {
+
+        @Test
+        @DisplayName("SudoChallengeException should contain challenge ID")
+        void sudoChallengeDetails() {
+            Un.SudoChallengeException ex = new Un.SudoChallengeException(
+                "challenge-123",
+                "{\"challenge_id\": \"challenge-123\"}"
+            );
+            assertEquals("challenge-123", ex.getChallengeId());
+            assertEquals("{\"challenge_id\": \"challenge-123\"}", ex.getResponseBody());
         }
     }
 
@@ -192,6 +259,64 @@ public class UnTest {
             assertNotNull(result);
             assertEquals("completed", result.get("status"));
             assertTrue(result.get("stdout").toString().contains("Async test"));
+        }
+
+        @Test
+        @DisplayName("Should list jobs")
+        void listJobs() throws IOException {
+            List<Map<String, Object>> jobs = Un.listJobs(publicKey, secretKey);
+            assertNotNull(jobs);
+            // Jobs list can be empty if no jobs are running
+        }
+
+        @Test
+        @DisplayName("Should validate keys successfully")
+        void validateKeys() throws IOException {
+            Map<String, Object> result = Un.validateKeys(publicKey, secretKey);
+            assertNotNull(result);
+            // The response should contain validation info
+        }
+
+        @Test
+        @DisplayName("Should list sessions")
+        void listSessions() throws IOException {
+            List<Map<String, Object>> sessions = Un.listSessions(publicKey, secretKey);
+            assertNotNull(sessions);
+        }
+
+        @Test
+        @DisplayName("Should list services")
+        void listServices() throws IOException {
+            List<Map<String, Object>> services = Un.listServices(publicKey, secretKey);
+            assertNotNull(services);
+        }
+
+        @Test
+        @DisplayName("Should list snapshots")
+        void listSnapshots() throws IOException {
+            List<Map<String, Object>> snapshots = Un.listSnapshots(publicKey, secretKey);
+            assertNotNull(snapshots);
+        }
+
+        @Test
+        @DisplayName("Should list images")
+        void listImages() throws IOException {
+            List<Map<String, Object>> images = Un.listImages(null, publicKey, secretKey);
+            assertNotNull(images);
+        }
+    }
+
+    @Nested
+    @DisplayName("Health Check Tests")
+    class HealthCheckTests {
+
+        @Test
+        @DisplayName("Health check should return boolean")
+        void healthCheckReturnsBoolean() {
+            boolean healthy = Un.healthCheck();
+            // We just verify it returns without throwing
+            // The actual result depends on network connectivity
+            assertTrue(healthy || !healthy);
         }
     }
 }

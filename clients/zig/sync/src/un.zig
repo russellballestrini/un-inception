@@ -319,6 +319,401 @@ fn execCurlPut(allocator: std.mem.Allocator, endpoint: []const u8, body: []const
     return ret == 0;
 }
 
+// ============================================================================
+// Library Functions for Zig SDK (matching C reference un.h)
+// ============================================================================
+
+pub const SDK_VERSION = "4.2.0";
+
+// Generic API request helper
+fn makeApiRequest(allocator: std.mem.Allocator, method: []const u8, path: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const result = try execCurlWithStatus(allocator, method, path, body, public_key, secret_key, "");
+    return result.body;
+}
+
+// Execute code synchronously
+pub fn execute(allocator: std.mem.Allocator, language: []const u8, code: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const body = try std.fmt.allocPrint(allocator, "{{\"language\":\"{s}\",\"code\":\"{s}\"}}", .{ language, code });
+    defer allocator.free(body);
+    return try makeApiRequest(allocator, "POST", "/execute", body, public_key, secret_key);
+}
+
+// Execute code asynchronously (returns job_id)
+pub fn executeAsync(allocator: std.mem.Allocator, language: []const u8, code: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const body = try std.fmt.allocPrint(allocator, "{{\"language\":\"{s}\",\"code\":\"{s}\",\"async\":true}}", .{ language, code });
+    defer allocator.free(body);
+    return try makeApiRequest(allocator, "POST", "/execute", body, public_key, secret_key);
+}
+
+// Get job status
+pub fn getJob(allocator: std.mem.Allocator, job_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/jobs/{s}", .{job_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+// Wait for job completion
+pub fn waitForJob(allocator: std.mem.Allocator, job_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const poll_delays = [_]u64{ 300, 450, 700, 900, 650, 1600, 2000 };
+    var delay_idx: usize = 0;
+
+    while (true) {
+        const result = try getJob(allocator, job_id, public_key, secret_key);
+
+        // Check for terminal states
+        if (mem.indexOf(u8, result, "\"status\":\"completed\"") != null or
+            mem.indexOf(u8, result, "\"status\":\"failed\"") != null or
+            mem.indexOf(u8, result, "\"status\":\"timeout\"") != null or
+            mem.indexOf(u8, result, "\"status\":\"cancelled\"") != null)
+        {
+            return result;
+        }
+
+        allocator.free(result);
+        std.time.sleep(poll_delays[delay_idx] * std.time.ns_per_ms);
+        if (delay_idx < poll_delays.len - 1) delay_idx += 1;
+    }
+}
+
+// Cancel a job
+pub fn cancelJob(allocator: std.mem.Allocator, job_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/jobs/{s}/cancel", .{job_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+// List all jobs
+pub fn listJobs(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return try makeApiRequest(allocator, "GET", "/jobs", "", public_key, secret_key);
+}
+
+// Get supported languages
+pub fn getLanguages(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return try makeApiRequest(allocator, "GET", "/languages", "", public_key, secret_key);
+}
+
+// Detect language from filename
+pub fn detectLanguage(filename: []const u8) ?[]const u8 {
+    const lang_map = [_]struct { ext: []const u8, lang: []const u8 }{
+        .{ .ext = ".py", .lang = "python" },
+        .{ .ext = ".js", .lang = "javascript" },
+        .{ .ext = ".ts", .lang = "typescript" },
+        .{ .ext = ".go", .lang = "go" },
+        .{ .ext = ".rs", .lang = "rust" },
+        .{ .ext = ".c", .lang = "c" },
+        .{ .ext = ".cpp", .lang = "cpp" },
+        .{ .ext = ".cc", .lang = "cpp" },
+        .{ .ext = ".d", .lang = "d" },
+        .{ .ext = ".zig", .lang = "zig" },
+        .{ .ext = ".rb", .lang = "ruby" },
+        .{ .ext = ".php", .lang = "php" },
+        .{ .ext = ".sh", .lang = "bash" },
+        .{ .ext = ".lua", .lang = "lua" },
+        .{ .ext = ".nim", .lang = "nim" },
+        .{ .ext = ".v", .lang = "v" },
+    };
+
+    const idx = mem.lastIndexOfScalar(u8, filename, '.') orelse return null;
+    const ext = filename[idx..];
+
+    for (lang_map) |entry| {
+        if (mem.eql(u8, ext, entry.ext)) {
+            return entry.lang;
+        }
+    }
+    return null;
+}
+
+// Session functions
+pub fn sessionList(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return try makeApiRequest(allocator, "GET", "/sessions", "", public_key, secret_key);
+}
+
+pub fn sessionGet(allocator: std.mem.Allocator, session_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}", .{session_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+pub fn sessionCreate(allocator: std.mem.Allocator, shell: ?[]const u8, network: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    var body_buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&body_buf);
+    const writer = stream.writer();
+    try writer.print("{{\"shell\":\"{s}\"", .{shell orelse "bash"});
+    if (network) |n| try writer.print(",\"network\":\"{s}\"", .{n});
+    try writer.writeAll("}");
+    const body = stream.getWritten();
+    return try makeApiRequest(allocator, "POST", "/sessions", body, public_key, secret_key);
+}
+
+pub fn sessionDestroy(allocator: std.mem.Allocator, session_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}", .{session_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "DELETE", path, "", public_key, secret_key);
+}
+
+pub fn sessionFreeze(allocator: std.mem.Allocator, session_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}/freeze", .{session_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn sessionUnfreeze(allocator: std.mem.Allocator, session_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}/unfreeze", .{session_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn sessionBoost(allocator: std.mem.Allocator, session_id: []const u8, vcpu: ?u32, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}/boost", .{session_id});
+    defer allocator.free(path);
+    var body: []const u8 = "{}";
+    if (vcpu) |v| {
+        body = try std.fmt.allocPrint(allocator, "{{\"vcpu\":{d}}}", .{v});
+    }
+    return try makeApiRequest(allocator, "POST", path, body, public_key, secret_key);
+}
+
+pub fn sessionUnboost(allocator: std.mem.Allocator, session_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}/unboost", .{session_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn sessionExecute(allocator: std.mem.Allocator, session_id: []const u8, command: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/sessions/{s}/shell", .{session_id});
+    defer allocator.free(path);
+    const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\"}}", .{command});
+    defer allocator.free(body);
+    return try makeApiRequest(allocator, "POST", path, body, public_key, secret_key);
+}
+
+// Service functions
+pub fn serviceList(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return try makeApiRequest(allocator, "GET", "/services", "", public_key, secret_key);
+}
+
+pub fn serviceGet(allocator: std.mem.Allocator, service_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+pub fn serviceDestroy(allocator: std.mem.Allocator, service_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "DELETE", path, "", public_key, secret_key);
+}
+
+pub fn serviceFreeze(allocator: std.mem.Allocator, service_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/freeze", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn serviceUnfreeze(allocator: std.mem.Allocator, service_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/unfreeze", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn serviceLock(allocator: std.mem.Allocator, service_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/lock", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn serviceUnlock(allocator: std.mem.Allocator, service_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/unlock", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn serviceRedeploy(allocator: std.mem.Allocator, service_id: []const u8, bootstrap: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/redeploy", .{service_id});
+    defer allocator.free(path);
+    const body = if (bootstrap) |b| try std.fmt.allocPrint(allocator, "{{\"bootstrap\":\"{s}\"}}", .{b}) else try allocator.dupe(u8, "{}");
+    defer allocator.free(body);
+    return try makeApiRequest(allocator, "POST", path, body, public_key, secret_key);
+}
+
+pub fn serviceLogs(allocator: std.mem.Allocator, service_id: []const u8, all: bool, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = if (all)
+        try std.fmt.allocPrint(allocator, "/services/{s}/logs?all=true", .{service_id})
+    else
+        try std.fmt.allocPrint(allocator, "/services/{s}/logs", .{service_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+pub fn serviceExecute(allocator: std.mem.Allocator, service_id: []const u8, command: []const u8, timeout_ms: ?u32, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/execute", .{service_id});
+    defer allocator.free(path);
+    const body = if (timeout_ms) |t|
+        try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"timeout\":{d}}}", .{ command, t })
+    else
+        try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\"}}", .{command});
+    defer allocator.free(body);
+    return try makeApiRequest(allocator, "POST", path, body, public_key, secret_key);
+}
+
+pub fn serviceResize(allocator: std.mem.Allocator, service_id: []const u8, vcpu: u32, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/services/{s}/resize", .{service_id});
+    defer allocator.free(path);
+    const body = try std.fmt.allocPrint(allocator, "{{\"vcpu\":{d}}}", .{vcpu});
+    defer allocator.free(body);
+    return try makeApiRequest(allocator, "POST", path, body, public_key, secret_key);
+}
+
+// Snapshot functions
+pub fn snapshotList(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return try makeApiRequest(allocator, "GET", "/snapshots", "", public_key, secret_key);
+}
+
+pub fn snapshotGet(allocator: std.mem.Allocator, snapshot_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/snapshots/{s}", .{snapshot_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+pub fn snapshotRestore(allocator: std.mem.Allocator, snapshot_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/snapshots/{s}/restore", .{snapshot_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn snapshotDelete(allocator: std.mem.Allocator, snapshot_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/snapshots/{s}", .{snapshot_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "DELETE", path, "", public_key, secret_key);
+}
+
+pub fn snapshotLock(allocator: std.mem.Allocator, snapshot_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/snapshots/{s}/lock", .{snapshot_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn snapshotUnlock(allocator: std.mem.Allocator, snapshot_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/snapshots/{s}/unlock", .{snapshot_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+// Image functions
+pub fn imageList(allocator: std.mem.Allocator, filter: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = if (filter) |f|
+        try std.fmt.allocPrint(allocator, "/images?filter={s}", .{f})
+    else
+        try allocator.dupe(u8, "/images");
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+pub fn imageGet(allocator: std.mem.Allocator, image_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{image_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+pub fn imageDelete(allocator: std.mem.Allocator, image_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{image_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "DELETE", path, "", public_key, secret_key);
+}
+
+pub fn imageLock(allocator: std.mem.Allocator, image_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/images/{s}/lock", .{image_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+pub fn imageUnlock(allocator: std.mem.Allocator, image_id: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(allocator, "/images/{s}/unlock", .{image_id});
+    defer allocator.free(path);
+    return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
+}
+
+// PaaS Logs functions
+pub fn logsFetch(allocator: std.mem.Allocator, source: ?[]const u8, lines: ?u32, since: ?[]const u8, grep: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    var path_buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&path_buf);
+    const writer = stream.writer();
+    try writer.writeAll("/paas/logs?");
+    var has_param = false;
+    if (source) |s| {
+        try writer.print("source={s}", .{s});
+        has_param = true;
+    }
+    if (lines) |l| {
+        if (has_param) try writer.writeAll("&");
+        try writer.print("lines={d}", .{l});
+        has_param = true;
+    }
+    if (since) |s| {
+        if (has_param) try writer.writeAll("&");
+        try writer.print("since={s}", .{s});
+        has_param = true;
+    }
+    if (grep) |g| {
+        if (has_param) try writer.writeAll("&");
+        try writer.print("grep={s}", .{g});
+    }
+    const path = stream.getWritten();
+    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+}
+
+// Key validation
+pub fn validateKeys(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return try makeApiRequest(allocator, "POST", "/keys/validate", "", public_key, secret_key);
+}
+
+// Utility functions
+pub fn hmacSign(allocator: std.mem.Allocator, secret_key: []const u8, message: []const u8) ![]const u8 {
+    const hmac_cmd = try computeHmacCmd(allocator, secret_key, message);
+    defer allocator.free(hmac_cmd);
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", hmac_cmd },
+    });
+    defer allocator.free(result.stderr);
+
+    const trimmed = mem.trim(u8, result.stdout, &std.ascii.whitespace);
+    const signature = try allocator.dupe(u8, trimmed);
+    allocator.free(result.stdout);
+    return signature;
+}
+
+pub fn healthCheck(allocator: std.mem.Allocator) !bool {
+    const cmd = try std.fmt.allocPrint(allocator, "curl -s -o /dev/null -w '%{{http_code}}' '{s}/health' 2>/dev/null", .{API_BASE});
+    defer allocator.free(cmd);
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", cmd },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const trimmed = mem.trim(u8, result.stdout, &std.ascii.whitespace);
+    return mem.eql(u8, trimmed, "200");
+}
+
+pub fn version() []const u8 {
+    return SDK_VERSION;
+}
+
+var last_error_msg: []const u8 = "";
+
+pub fn setLastError(msg: []const u8) void {
+    last_error_msg = msg;
+}
+
+pub fn lastError() []const u8 {
+    return last_error_msg;
+}
+
 fn cmdServiceEnv(allocator: std.mem.Allocator, action: []const u8, target: []const u8, envs: std.ArrayList([]const u8), env_file: ?[]const u8, public_key: []const u8, secret_key: []const u8) !void {
     if (mem.eql(u8, action, "status")) {
         const path = try std.fmt.allocPrint(allocator, "/services/{s}/env", .{target});

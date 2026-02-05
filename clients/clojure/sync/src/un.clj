@@ -732,6 +732,178 @@
     (println (str green "Image cloned" reset))
     (println (curl-post api-key (str "/images/" id "/clone") json))))
 
+;; Image access management functions
+(defn image-grant-access [id trusted-key]
+  (let [api-key (get-api-key)
+        json (str "{\"trusted_api_key\":\"" trusted-key "\"}")]
+    (curl-post api-key (str "/images/" id "/grant-access") json)
+    (println (str green "Access granted to: " trusted-key reset))))
+
+(defn image-revoke-access [id trusted-key]
+  (let [api-key (get-api-key)
+        json (str "{\"trusted_api_key\":\"" trusted-key "\"}")]
+    (curl-post api-key (str "/images/" id "/revoke-access") json)
+    (println (str green "Access revoked from: " trusted-key reset))))
+
+(defn image-list-trusted [id]
+  (let [api-key (get-api-key)]
+    (println (curl-get api-key (str "/images/" id "/trusted")))))
+
+(defn image-transfer [id to-key]
+  (let [api-key (get-api-key)
+        json (str "{\"to_api_key\":\"" to-key "\"}")]
+    (curl-post api-key (str "/images/" id "/transfer") json)
+    (println (str green "Image transferred to: " to-key reset))))
+
+;; Snapshot functions
+(defn snapshot-list []
+  (let [api-key (get-api-key)]
+    (println (curl-get api-key "/snapshots"))))
+
+(defn snapshot-info [id]
+  (let [api-key (get-api-key)]
+    (println (curl-get api-key (str "/snapshots/" id)))))
+
+(defn snapshot-session [session-id name hot]
+  (let [api-key (get-api-key)
+        json (str "{\"session_id\":\"" session-id "\""
+                  (if name (str ",\"name\":\"" (escape-json name) "\"") "")
+                  (if hot ",\"hot\":true" "")
+                  "}")]
+    (println (str green "Snapshot created" reset))
+    (println (curl-post api-key "/snapshots" json))))
+
+(defn snapshot-service [service-id name hot]
+  (let [api-key (get-api-key)
+        json (str "{\"service_id\":\"" service-id "\""
+                  (if name (str ",\"name\":\"" (escape-json name) "\"") "")
+                  (if hot ",\"hot\":true" "")
+                  "}")]
+    (println (str green "Snapshot created" reset))
+    (println (curl-post api-key "/snapshots" json))))
+
+(defn snapshot-restore [id]
+  (let [api-key (get-api-key)]
+    (curl-post api-key (str "/snapshots/" id "/restore") "{}")
+    (println (str green "Snapshot restored: " id reset))))
+
+(defn snapshot-delete [id]
+  (let [api-key (get-api-key)
+        result (curl-delete-with-sudo api-key (str "/snapshots/" id))]
+    (if (:success result)
+      (println (str green "Snapshot deleted: " id reset))
+      (do
+        (binding [*out* *err*]
+          (println (str red "Error deleting snapshot" reset)))
+        (System/exit 1)))))
+
+(defn snapshot-lock [id]
+  (let [api-key (get-api-key)]
+    (curl-post api-key (str "/snapshots/" id "/lock") "{}")
+    (println (str green "Snapshot locked: " id reset))))
+
+(defn snapshot-unlock [id]
+  (let [api-key (get-api-key)
+        result (curl-post-with-sudo api-key (str "/snapshots/" id "/unlock") "{}")]
+    (if (:success result)
+      (println (str green "Snapshot unlocked: " id reset))
+      (do
+        (binding [*out* *err*]
+          (println (str red "Error unlocking snapshot" reset)))
+        (System/exit 1)))))
+
+(defn snapshot-clone [id clone-type name ports shell]
+  (let [api-key (get-api-key)
+        json (str "{\"clone_type\":\"" clone-type "\""
+                  (if name (str ",\"name\":\"" (escape-json name) "\"") "")
+                  (if ports (str ",\"ports\":[" ports "]") "")
+                  (if shell (str ",\"shell\":\"" shell "\"") "")
+                  "}")]
+    (println (str green "Snapshot cloned" reset))
+    (println (curl-post api-key (str "/snapshots/" id "/clone") json))))
+
+(defn snapshot-command [action id name ports shell hot]
+  (case action
+    :list (snapshot-list)
+    :info (snapshot-info id)
+    :session (snapshot-session id name hot)
+    :service (snapshot-service id name hot)
+    :restore (snapshot-restore id)
+    :delete (snapshot-delete id)
+    :lock (snapshot-lock id)
+    :unlock (snapshot-unlock id)
+    :clone (snapshot-clone id "session" name ports shell)))
+
+;; Session additional functions
+(defn session-info [id]
+  (let [api-key (get-api-key)]
+    (println (curl-get api-key (str "/sessions/" id)))))
+
+(defn session-boost [id vcpu]
+  (let [api-key (get-api-key)
+        json (str "{\"vcpu\":" vcpu "}")]
+    (curl-patch api-key (str "/sessions/" id) json)
+    (println (str green "Session boosted to " vcpu " vCPU" reset))))
+
+(defn session-unboost [id]
+  (let [api-key (get-api-key)
+        json "{\"vcpu\":1}"]
+    (curl-patch api-key (str "/sessions/" id) json)
+    (println (str green "Session unboosted to 1 vCPU" reset))))
+
+(defn session-execute [id command]
+  (let [api-key (get-api-key)
+        json (str "{\"command\":\"" (escape-json command) "\"}")
+        response (curl-post api-key (str "/sessions/" id "/execute") json)
+        stdout-val (extract-field "stdout" response)]
+    (when stdout-val
+      (print (str blue (unescape-json stdout-val) reset))
+      (flush))))
+
+;; Service additional functions
+(defn service-lock [id]
+  (let [api-key (get-api-key)]
+    (curl-post api-key (str "/services/" id "/lock") "{}")
+    (println (str green "Service locked: " id reset))))
+
+(defn service-unlock [id]
+  (let [api-key (get-api-key)
+        result (curl-post-with-sudo api-key (str "/services/" id "/unlock") "{}")]
+    (if (:success result)
+      (println (str green "Service unlocked: " id reset))
+      (do
+        (binding [*out* *err*]
+          (println (str red "Error unlocking service" reset)))
+        (System/exit 1)))))
+
+(defn service-redeploy [id bootstrap]
+  (let [api-key (get-api-key)
+        json (if bootstrap
+               (str "{\"bootstrap\":\"" (escape-json bootstrap) "\"}")
+               "{}")]
+    (curl-post api-key (str "/services/" id "/redeploy") json)
+    (println (str green "Service redeploying: " id reset))))
+
+;; PaaS logs functions
+(defn logs-fetch [source lines since grep-pattern]
+  (let [api-key (get-api-key)
+        params (str "?source=" (or source "all")
+                    "&lines=" (or lines 100)
+                    (if since (str "&since=" since) "")
+                    (if grep-pattern (str "&grep=" (java.net.URLEncoder/encode grep-pattern "UTF-8")) ""))]
+    (println (curl-get api-key (str "/logs" params)))))
+
+;; Utility functions
+(defn health-check []
+  (try
+    (let [result (:out (sh "curl" "-s" "https://api.unsandbox.com/health"))]
+      (println result)
+      (str/includes? result "ok"))
+    (catch Exception _ false)))
+
+(defn version []
+  "4.2.0")
+
 (defn image-command [action id source-type visibility name ports]
   (case action
     :list (image-list)
@@ -823,6 +995,22 @@
       (= (first args) "image")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports :image)
+
+      (= (first args) "snapshot")
+      (let [rest-args (rest args)]
+        (cond
+          (empty? rest-args) (do (snapshot-list) (System/exit 0))
+          (= (first rest-args) "--list") (do (snapshot-list) (System/exit 0))
+          (= (first rest-args) "-l") (do (snapshot-list) (System/exit 0))
+          (= (first rest-args) "--info") (do (snapshot-info (second rest-args)) (System/exit 0))
+          (= (first rest-args) "--session") (do (snapshot-session (second rest-args) nil false) (System/exit 0))
+          (= (first rest-args) "--service") (do (snapshot-service (second rest-args) nil false) (System/exit 0))
+          (= (first rest-args) "--restore") (do (snapshot-restore (second rest-args)) (System/exit 0))
+          (= (first rest-args) "--delete") (do (snapshot-delete (second rest-args)) (System/exit 0))
+          (= (first rest-args) "--lock") (do (snapshot-lock (second rest-args)) (System/exit 0))
+          (= (first rest-args) "--unlock") (do (snapshot-unlock (second rest-args)) (System/exit 0))
+          (= (first rest-args) "--clone") (do (snapshot-clone (second rest-args) "session" nil nil nil) (System/exit 0))
+          :else (do (println "Error: Unknown snapshot action") (System/exit 1))))
 
       ;; Image options
       (and (= mode :image) (or (= (first args) "--list") (= (first args) "-l")))

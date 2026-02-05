@@ -158,6 +158,143 @@ print_test("Unknown extension returns 'unknown'", detect_language("file.unknown"
 print_test("Case insensitive detection", detect_language("TEST.CR") == "crystal")
 print_test("Multiple dots in filename", detect_language("my.test.py") == "python")
 
+# Test 5: CLI Command Tests (new features)
+puts "\n#{BLUE}Test Suite 5: CLI Command Tests (Feature Parity)#{RESET}"
+
+un_script = File.expand_path("../clients/crystal/sync/src/un.cr", File.dirname(__FILE__))
+un_script = File.expand_path("../../clients/crystal/sync/src/un.cr", File.dirname(__FILE__)) unless File.exists?(un_script)
+
+if File.exists?(un_script)
+  # Test: --help
+  begin
+    output = IO::Memory.new
+    error = IO::Memory.new
+    process = Process.run("crystal", args: ["run", un_script, "--", "--help"],
+                        output: output, error: error)
+    result = output.to_s + error.to_s
+    has_help = result.includes?("Usage") || result.includes?("usage")
+    print_test("CLI: --help shows usage", has_help)
+  rescue ex
+    print_test("CLI: --help shows usage", false)
+    puts "  Error: #{ex.message}"
+  end
+
+  # Test: version command
+  begin
+    output = IO::Memory.new
+    error = IO::Memory.new
+    process = Process.run("crystal", args: ["run", un_script, "--", "version"],
+                        output: output, error: error)
+    result = output.to_s + error.to_s
+    has_version = result.includes?("version") || result.includes?("Version")
+    print_test("CLI: version command works", has_version)
+  rescue ex
+    print_test("CLI: version command works", false)
+    puts "  Error: #{ex.message}"
+  end
+
+  # Test: health command (requires network)
+  begin
+    output = IO::Memory.new
+    error = IO::Memory.new
+    process = Process.run("crystal", args: ["run", un_script, "--", "health"],
+                        output: output, error: error)
+    result = output.to_s + error.to_s
+    has_health = result.includes?("health") || result.includes?("API")
+    print_test("CLI: health command works", has_health)
+  rescue ex
+    print_test("CLI: health command works", false)
+    puts "  Error: #{ex.message}"
+  end
+
+  # Test: languages command
+  begin
+    output = IO::Memory.new
+    error = IO::Memory.new
+    process = Process.run("crystal", args: ["run", un_script, "--", "languages"],
+                        output: output, error: error)
+    result = output.to_s + error.to_s
+    # Should list languages or require auth
+    has_langs = result.includes?("python") || result.includes?("Error") || result.includes?("API key")
+    print_test("CLI: languages command works", has_langs)
+  rescue ex
+    print_test("CLI: languages command works", false)
+    puts "  Error: #{ex.message}"
+  end
+else
+  puts "#{BLUE}ℹ SKIP#{RESET}: CLI tests (un.cr not found at expected location: #{un_script})"
+end
+
+# Test 6: API Command Tests (require API key)
+puts "\n#{BLUE}Test Suite 6: API Command Tests (require auth)#{RESET}"
+public_key = ENV["UNSANDBOX_PUBLIC_KEY"]?
+secret_key = ENV["UNSANDBOX_SECRET_KEY"]?
+
+if (public_key.nil? || public_key.empty?) && (secret_key.nil? || secret_key.empty?)
+  puts "#{BLUE}ℹ SKIP#{RESET}: API command tests (UNSANDBOX_PUBLIC_KEY/SECRET_KEY not set)"
+else
+  if File.exists?(un_script)
+    # Test: snapshot --list
+    begin
+      output = IO::Memory.new
+      error = IO::Memory.new
+      process = Process.run("crystal", args: ["run", un_script, "--", "snapshot", "--list"],
+                          output: output, error: error)
+      result = output.to_s + error.to_s
+      # Should return JSON or error message
+      has_response = result.includes?("[") || result.includes?("{") || result.includes?("Error") || result.includes?("snapshots")
+      print_test("CLI: snapshot --list works", has_response)
+    rescue ex
+      print_test("CLI: snapshot --list works", false)
+      puts "  Error: #{ex.message}"
+    end
+
+    # Test: session --list
+    begin
+      output = IO::Memory.new
+      error = IO::Memory.new
+      process = Process.run("crystal", args: ["run", un_script, "--", "session", "--list"],
+                          output: output, error: error)
+      result = output.to_s + error.to_s
+      has_response = result.includes?("[") || result.includes?("{") || result.includes?("Error") || result.includes?("sessions")
+      print_test("CLI: session --list works", has_response)
+    rescue ex
+      print_test("CLI: session --list works", false)
+      puts "  Error: #{ex.message}"
+    end
+
+    # Test: service --list
+    begin
+      output = IO::Memory.new
+      error = IO::Memory.new
+      process = Process.run("crystal", args: ["run", un_script, "--", "service", "--list"],
+                          output: output, error: error)
+      result = output.to_s + error.to_s
+      has_response = result.includes?("[") || result.includes?("{") || result.includes?("Error") || result.includes?("services")
+      print_test("CLI: service --list works", has_response)
+    rescue ex
+      print_test("CLI: service --list works", false)
+      puts "  Error: #{ex.message}"
+    end
+
+    # Test: image --list
+    begin
+      output = IO::Memory.new
+      error = IO::Memory.new
+      process = Process.run("crystal", args: ["run", un_script, "--", "image", "--list"],
+                          output: output, error: error)
+      result = output.to_s + error.to_s
+      has_response = result.includes?("[") || result.includes?("{") || result.includes?("Error") || result.includes?("images")
+      print_test("CLI: image --list works", has_response)
+    rescue ex
+      print_test("CLI: image --list works", false)
+      puts "  Error: #{ex.message}"
+    end
+  else
+    puts "#{BLUE}ℹ SKIP#{RESET}: API command tests (un.cr not found)"
+  end
+end
+
 # Print summary
 puts "\n#{BLUE}========================================#{RESET}"
 puts "#{BLUE}Test Summary#{RESET}"

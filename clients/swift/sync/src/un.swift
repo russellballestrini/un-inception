@@ -1197,6 +1197,166 @@ func cloneImage(_ imageId: String, name: String? = nil, description: String? = n
     return try makeRequest(method: "POST", path: "/images/\(imageId)/clone", publicKey: pk, secretKey: sk, data: data)
 }
 
+/// Grant access to an image
+func grantImageAccess(_ imageId: String, trustedApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
+    return try makeRequest(method: "POST", path: "/images/\(imageId)/grant", publicKey: pk, secretKey: sk, data: ["trusted_api_key": trustedApiKey])
+}
+
+/// Revoke access to an image
+func revokeImageAccess(_ imageId: String, trustedApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
+    return try makeRequest(method: "POST", path: "/images/\(imageId)/revoke", publicKey: pk, secretKey: sk, data: ["trusted_api_key": trustedApiKey])
+}
+
+/// List trusted keys for an image
+func listImageTrusted(_ imageId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
+    return try makeRequest(method: "GET", path: "/images/\(imageId)/trusted", publicKey: pk, secretKey: sk)
+}
+
+/// Transfer image ownership
+func transferImage(_ imageId: String, toApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
+    return try makeRequestWithSudo(method: "POST", path: "/images/\(imageId)/transfer", publicKey: pk, secretKey: sk, data: ["to_api_key": toApiKey])
+}
+
+// MARK: - PaaS Logs
+
+/// Fetch batch logs from the portal
+func fetchLogs(source: String = "all", lines: Int = 100, since: String = "1h", grep: String? = nil, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
+    var endpoint = "/paas/logs?source=\(source)&lines=\(lines)&since=\(since)"
+    if let grep = grep {
+        endpoint += "&grep=\(grep.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? grep)"
+    }
+
+    let url = URL(string: "\(PORTAL_BASE)\(endpoint)")!
+    var request = URLRequest(url: url)
+    request.httpMethod = "GET"
+    request.timeoutInterval = 30
+
+    let timestamp = Int(Date().timeIntervalSince1970)
+    let signature = signRequest(secretKey: sk, timestamp: timestamp, method: "GET", path: endpoint, body: nil)
+
+    request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+    request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
+    request.setValue(signature, forHTTPHeaderField: "X-Signature")
+
+    var result: [String: Any]?
+    var requestError: Error?
+
+    let semaphore = DispatchSemaphore(value: 0)
+
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { semaphore.signal() }
+
+        if let error = error {
+            requestError = UnsandboxError.networkError(error.localizedDescription)
+            return
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            requestError = UnsandboxError.invalidResponse("No HTTP response")
+            return
+        }
+
+        guard let data = data else {
+            requestError = UnsandboxError.invalidResponse("No data received")
+            return
+        }
+
+        if httpResponse.statusCode >= 400 {
+            let body = String(data: data, encoding: .utf8) ?? "Unknown error"
+            requestError = UnsandboxError.apiError(httpResponse.statusCode, body)
+            return
+        }
+
+        do {
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                result = json
+            }
+        } catch {
+            requestError = UnsandboxError.invalidResponse("Failed to parse JSON")
+        }
+    }
+
+    task.resume()
+    semaphore.wait()
+
+    if let error = requestError {
+        throw error
+    }
+
+    return result ?? [:]
+}
+
+// MARK: - Health Check
+
+/// Check API health status
+func healthCheck() throws -> [String: Any] {
+    let url = URL(string: "\(API_BASE)/health")!
+    var request = URLRequest(url: url)
+    request.httpMethod = "GET"
+    request.timeoutInterval = 10
+
+    var result: [String: Any]?
+    var requestError: Error?
+
+    let semaphore = DispatchSemaphore(value: 0)
+
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { semaphore.signal() }
+
+        if let error = error {
+            requestError = UnsandboxError.networkError(error.localizedDescription)
+            return
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            requestError = UnsandboxError.invalidResponse("No HTTP response")
+            return
+        }
+
+        guard let data = data else {
+            requestError = UnsandboxError.invalidResponse("No data received")
+            return
+        }
+
+        if httpResponse.statusCode >= 400 {
+            let body = String(data: data, encoding: .utf8) ?? "Unknown error"
+            requestError = UnsandboxError.apiError(httpResponse.statusCode, body)
+            return
+        }
+
+        do {
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                result = json
+            }
+        } catch {
+            requestError = UnsandboxError.invalidResponse("Failed to parse JSON")
+        }
+    }
+
+    task.resume()
+    semaphore.wait()
+
+    if let error = requestError {
+        throw error
+    }
+
+    return result ?? [:]
+}
+
+/// Get SDK version information
+func getVersion() -> [String: String] {
+    return [
+        "version": "1.0.0",
+        "api": API_BASE,
+        "portal": PORTAL_BASE
+    ]
+}
+
 // MARK: - Key Validation
 
 /// Validate API keys against the portal
@@ -1538,6 +1698,19 @@ class CLIArgs {
     var visibility: String?
     var visibilityMode: String?
     var spawn: String?
+    var grant: String?
+    var revoke: String?
+    var trusted: String?
+    var trustedKey: String?
+    var transfer: String?
+    var toKey: String?
+
+    // Logs options
+    var logsSource: String?
+    var logsLines: Int?
+    var logsSince: String?
+    var logsGrep: String?
+    var logsFollow: Bool = false
 
     // Service-env
     var serviceEnvAction: String?
@@ -1704,7 +1877,39 @@ class CLIArgs {
             case "--spawn":
                 i += 1
                 if i < args.count { spawn = args[i] }
-            case "session", "service", "snapshot", "image", "key", "languages":
+            case "--grant":
+                i += 1
+                if i < args.count { grant = args[i] }
+            case "--revoke":
+                i += 1
+                if i < args.count { revoke = args[i] }
+            case "--trusted":
+                i += 1
+                if i < args.count { trusted = args[i] }
+            case "--trusted-key":
+                i += 1
+                if i < args.count { trustedKey = args[i] }
+            case "--transfer":
+                i += 1
+                if i < args.count { transfer = args[i] }
+            case "--to-key":
+                i += 1
+                if i < args.count { toKey = args[i] }
+            case "--source":
+                i += 1
+                if i < args.count { logsSource = args[i] }
+            case "--lines":
+                i += 1
+                if i < args.count { logsLines = Int(args[i]) }
+            case "--since":
+                i += 1
+                if i < args.count { logsSince = args[i] }
+            case "--grep":
+                i += 1
+                if i < args.count { logsGrep = args[i] }
+            case "--follow":
+                logsFollow = true
+            case "session", "service", "snapshot", "image", "key", "languages", "logs", "health", "version":
                 command = arg
             case "service-env":
                 command = "service-env"
@@ -2128,10 +2333,81 @@ func handleImageCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
         let result = try cloneImage(cloneId, name: args.name, publicKey: pk, secretKey: sk)
         let imageId = result["image_id"] as? String ?? result["id"] as? String ?? ""
         print("Image cloned: \(imageId)")
+    } else if let grantId = args.grant {
+        guard let trustedKey = args.trustedKey else {
+            fputs("Error: --trusted-key required for --grant\n", stderr)
+            exit(2)
+        }
+        _ = try grantImageAccess(grantId, trustedApiKey: trustedKey, publicKey: pk, secretKey: sk)
+        print("Access granted to \(trustedKey)")
+    } else if let revokeId = args.revoke {
+        guard let trustedKey = args.trustedKey else {
+            fputs("Error: --trusted-key required for --revoke\n", stderr)
+            exit(2)
+        }
+        _ = try revokeImageAccess(revokeId, trustedApiKey: trustedKey, publicKey: pk, secretKey: sk)
+        print("Access revoked from \(trustedKey)")
+    } else if let trustedId = args.trusted {
+        let result = try listImageTrusted(trustedId, publicKey: pk, secretKey: sk)
+        let jsonData = try JSONSerialization.data(withJSONObject: result, options: .prettyPrinted)
+        print(String(data: jsonData, encoding: .utf8) ?? "{}")
+    } else if let transferId = args.transfer {
+        guard let toKey = args.toKey else {
+            fputs("Error: --to-key required for --transfer\n", stderr)
+            exit(2)
+        }
+        _ = try transferImage(transferId, toApiKey: toKey, publicKey: pk, secretKey: sk)
+        print("Image transferred to \(toKey)")
     } else {
         fputs("Error: No action specified for image command\n", stderr)
         exit(2)
     }
+}
+
+/// Handle logs command
+func handleLogsCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
+    let source = args.logsSource ?? "all"
+    let lines = args.logsLines ?? 100
+    let since = args.logsSince ?? "1h"
+    let grep = args.logsGrep
+
+    let result = try fetchLogs(source: source, lines: lines, since: since, grep: grep, publicKey: pk, secretKey: sk)
+
+    if let logs = result["logs"] as? [[String: Any]] {
+        for log in logs {
+            let src = log["source"] as? String ?? "unknown"
+            let line = log["line"] as? String ?? ""
+            let timestamp = log["timestamp"] as? String ?? ""
+            if timestamp.isEmpty {
+                print("[\(src)] \(line)")
+            } else {
+                print("[\(timestamp)] [\(src)] \(line)")
+            }
+        }
+    } else {
+        let jsonData = try JSONSerialization.data(withJSONObject: result, options: .prettyPrinted)
+        print(String(data: jsonData, encoding: .utf8) ?? "{}")
+    }
+}
+
+/// Handle health command
+func handleHealthCommand() throws {
+    let result = try healthCheck()
+    if result["status"] as? String == "healthy" || result["ok"] as? Bool == true {
+        print("\u{001B}[32mAPI is healthy\u{001B}[0m")
+    } else {
+        print("\u{001B}[31mAPI may be unhealthy\u{001B}[0m")
+    }
+    let jsonData = try JSONSerialization.data(withJSONObject: result, options: .prettyPrinted)
+    print(String(data: jsonData, encoding: .utf8) ?? "{}")
+}
+
+/// Handle version command
+func handleVersionCommand() {
+    let info = getVersion()
+    print("un.swift version \(info["version"] ?? "unknown")")
+    print("API: \(info["api"] ?? "unknown")")
+    print("Portal: \(info["portal"] ?? "unknown")")
 }
 
 /// Format image list output
@@ -2224,6 +2500,12 @@ struct UnCLI {
                 try handleKeyCommand(pk, sk)
             case "languages":
                 try handleLanguagesCommand(args, pk, sk)
+            case "logs":
+                try handleLogsCommand(args, pk, sk)
+            case "health":
+                try handleHealthCommand()
+            case "version":
+                handleVersionCommand()
             default:
                 if args.source != nil || args.shell != nil {
                     try handleExecuteCommand(args, pk, sk)

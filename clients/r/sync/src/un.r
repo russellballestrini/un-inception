@@ -667,6 +667,843 @@ languages <- function(public_key = NULL, secret_key = NULL) {
 }
 
 # =============================================================================
+# Session Library Functions
+# =============================================================================
+
+#' List Sessions
+#'
+#' Retrieves a list of all active sessions.
+#'
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list containing sessions
+#' @export
+session_list <- function(public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request("/sessions", creds$public_key, creds$secret_key)
+    return(result$sessions %||% list())
+}
+
+#' Get Session Details
+#'
+#' @param session_id Session ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Session details
+#' @export
+session_get <- function(session_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    return(api_request(paste0("/sessions/", session_id), creds$public_key, creds$secret_key))
+}
+
+#' Create Session
+#'
+#' @param shell Shell type (default: "bash")
+#' @param network Network mode (default: "zerotrust")
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Created session details
+#' @export
+session_create <- function(shell = "bash", network = "zerotrust",
+                           public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list(shell = shell)
+    if (network != "zerotrust") payload$network <- network
+    return(api_request("/sessions", creds$public_key, creds$secret_key,
+                       method = "POST", data = payload))
+}
+
+#' Destroy Session
+#'
+#' @param session_id Session ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+session_destroy <- function(session_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/sessions/", session_id), creds$public_key, creds$secret_key,
+                method = "DELETE")
+    return(TRUE)
+}
+
+#' Freeze Session
+#'
+#' @param session_id Session ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+session_freeze <- function(session_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/sessions/", session_id, "/freeze"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Unfreeze Session
+#'
+#' @param session_id Session ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+session_unfreeze <- function(session_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/sessions/", session_id, "/unfreeze"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Boost Session
+#'
+#' @param session_id Session ID
+#' @param vcpu vCPU count
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+session_boost <- function(session_id, vcpu, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/sessions/", session_id), creds$public_key, creds$secret_key,
+                method = "PATCH", data = list(vcpu = vcpu))
+    return(TRUE)
+}
+
+#' Unboost Session
+#'
+#' @param session_id Session ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+session_unboost <- function(session_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/sessions/", session_id), creds$public_key, creds$secret_key,
+                method = "PATCH", data = list(vcpu = 1))
+    return(TRUE)
+}
+
+#' Execute Command in Session
+#'
+#' @param session_id Session ID
+#' @param command Command to execute
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Execution result
+#' @export
+session_execute <- function(session_id, command, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    return(api_request(paste0("/sessions/", session_id, "/execute"), creds$public_key, creds$secret_key,
+                       method = "POST", data = list(command = command)))
+}
+
+# =============================================================================
+# Service Library Functions
+# =============================================================================
+
+#' List Services
+#'
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list of services
+#' @export
+service_list <- function(public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request("/services", creds$public_key, creds$secret_key)
+    return(result$services %||% list())
+}
+
+#' Get Service Details
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Service details
+#' @export
+service_get <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    return(api_request(paste0("/services/", service_id), creds$public_key, creds$secret_key))
+}
+
+#' Create Service
+#'
+#' @param name Service name
+#' @param ports Comma-separated ports
+#' @param domains Comma-separated domains
+#' @param bootstrap Bootstrap command
+#' @param network Network mode
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Created service details
+#' @export
+service_create <- function(name, ports = NULL, domains = NULL, bootstrap = NULL,
+                           network = "semitrusted", public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list(name = name)
+    if (!is.null(ports)) payload$ports <- as.integer(strsplit(ports, ",")[[1]])
+    if (!is.null(domains)) payload$domains <- strsplit(domains, ",")[[1]]
+    if (!is.null(bootstrap)) payload$bootstrap <- bootstrap
+    if (network != "semitrusted") payload$network <- network
+    return(api_request("/services", creds$public_key, creds$secret_key,
+                       method = "POST", data = payload))
+}
+
+#' Destroy Service
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_destroy <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request_with_sudo(paste0("/services/", service_id), creds$public_key, creds$secret_key,
+                          method = "DELETE")
+    return(TRUE)
+}
+
+#' Freeze Service
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_freeze <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id, "/freeze"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Unfreeze Service
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_unfreeze <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id, "/unfreeze"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Lock Service
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_lock <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id, "/lock"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Unlock Service
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_unlock <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request_with_sudo(paste0("/services/", service_id, "/unlock"), creds$public_key, creds$secret_key,
+                          method = "POST", data = list())
+    return(TRUE)
+}
+
+#' Set Unfreeze On Demand
+#'
+#' @param service_id Service ID
+#' @param enabled TRUE to enable
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_set_unfreeze_on_demand <- function(service_id, enabled, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id), creds$public_key, creds$secret_key,
+                method = "PATCH", data = list(unfreeze_on_demand = enabled))
+    return(TRUE)
+}
+
+#' Redeploy Service
+#'
+#' @param service_id Service ID
+#' @param bootstrap New bootstrap command (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_redeploy <- function(service_id, bootstrap = NULL, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- if (!is.null(bootstrap)) list(bootstrap = bootstrap) else list()
+    api_request(paste0("/services/", service_id, "/redeploy"), creds$public_key, creds$secret_key,
+                method = "POST", data = payload)
+    return(TRUE)
+}
+
+#' Get Service Logs
+#'
+#' @param service_id Service ID
+#' @param all_logs Get all logs (default: FALSE)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Logs string
+#' @export
+service_logs <- function(service_id, all_logs = FALSE, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    endpoint <- if (all_logs) paste0("/services/", service_id, "/logs?all=true")
+                else paste0("/services/", service_id, "/logs")
+    result <- api_request(endpoint, creds$public_key, creds$secret_key)
+    return(result$logs %||% "")
+}
+
+#' Execute Command in Service
+#'
+#' @param service_id Service ID
+#' @param command Command to execute
+#' @param timeout_ms Timeout in milliseconds
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Execution result
+#' @export
+service_execute <- function(service_id, command, timeout_ms = 30000,
+                            public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    return(api_request(paste0("/services/", service_id, "/execute"), creds$public_key, creds$secret_key,
+                       method = "POST", data = list(command = command, timeout_ms = timeout_ms)))
+}
+
+#' Get Service Environment
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Environment content
+#' @export
+service_env_get <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request(paste0("/services/", service_id, "/env"), creds$public_key, creds$secret_key)
+    return(result$env %||% "")
+}
+
+#' Set Service Environment
+#'
+#' @param service_id Service ID
+#' @param env_content Environment content
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_env_set <- function(service_id, env_content, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id, "/env"), creds$public_key, creds$secret_key,
+                method = "POST", data = list(env = env_content))
+    return(TRUE)
+}
+
+#' Delete Service Environment
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_env_delete <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id, "/env"), creds$public_key, creds$secret_key,
+                method = "DELETE")
+    return(TRUE)
+}
+
+#' Export Service Environment
+#'
+#' @param service_id Service ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Exported environment
+#' @export
+service_env_export <- function(service_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request(paste0("/services/", service_id, "/env/export"), creds$public_key, creds$secret_key)
+    return(result$export %||% "")
+}
+
+#' Resize Service
+#'
+#' @param service_id Service ID
+#' @param vcpu vCPU count
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+service_resize <- function(service_id, vcpu, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/services/", service_id), creds$public_key, creds$secret_key,
+                method = "PATCH", data = list(vcpu = vcpu))
+    return(TRUE)
+}
+
+# =============================================================================
+# Snapshot Library Functions
+# =============================================================================
+
+#' List Snapshots
+#'
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list of snapshots
+#' @export
+snapshot_list <- function(public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request("/snapshots", creds$public_key, creds$secret_key)
+    return(result$snapshots %||% list())
+}
+
+#' Get Snapshot Details
+#'
+#' @param snapshot_id Snapshot ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Snapshot details
+#' @export
+snapshot_get <- function(snapshot_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    return(api_request(paste0("/snapshots/", snapshot_id), creds$public_key, creds$secret_key))
+}
+
+#' Snapshot Session
+#'
+#' @param session_id Session ID
+#' @param name Snapshot name (optional)
+#' @param hot Hot snapshot (default: FALSE)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Snapshot ID
+#' @export
+snapshot_session <- function(session_id, name = NULL, hot = FALSE,
+                             public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list()
+    if (!is.null(name)) payload$name <- name
+    if (hot) payload$hot <- TRUE
+    result <- api_request(paste0("/sessions/", session_id, "/snapshot"), creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result$id %||% "")
+}
+
+#' Snapshot Service
+#'
+#' @param service_id Service ID
+#' @param name Snapshot name (optional)
+#' @param hot Hot snapshot (default: FALSE)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Snapshot ID
+#' @export
+snapshot_service <- function(service_id, name = NULL, hot = FALSE,
+                             public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list()
+    if (!is.null(name)) payload$name <- name
+    if (hot) payload$hot <- TRUE
+    result <- api_request(paste0("/services/", service_id, "/snapshot"), creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result$id %||% "")
+}
+
+#' Restore Snapshot
+#'
+#' @param snapshot_id Snapshot ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+snapshot_restore <- function(snapshot_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/snapshots/", snapshot_id, "/restore"), creds$public_key, creds$secret_key,
+                method = "POST", data = list())
+    return(TRUE)
+}
+
+#' Delete Snapshot
+#'
+#' @param snapshot_id Snapshot ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+snapshot_delete <- function(snapshot_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request_with_sudo(paste0("/snapshots/", snapshot_id), creds$public_key, creds$secret_key,
+                          method = "DELETE")
+    return(TRUE)
+}
+
+#' Lock Snapshot
+#'
+#' @param snapshot_id Snapshot ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+snapshot_lock <- function(snapshot_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/snapshots/", snapshot_id, "/lock"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Unlock Snapshot
+#'
+#' @param snapshot_id Snapshot ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+snapshot_unlock <- function(snapshot_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request_with_sudo(paste0("/snapshots/", snapshot_id, "/unlock"), creds$public_key, creds$secret_key,
+                          method = "POST", data = list())
+    return(TRUE)
+}
+
+#' Clone Snapshot
+#'
+#' @param snapshot_id Snapshot ID
+#' @param clone_type "session" or "service"
+#' @param name Name for cloned resource (optional)
+#' @param ports Ports for service (optional)
+#' @param shell Shell for session (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Cloned resource ID
+#' @export
+snapshot_clone <- function(snapshot_id, clone_type, name = NULL, ports = NULL, shell = NULL,
+                           public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list(type = clone_type)
+    if (!is.null(name)) payload$name <- name
+    if (!is.null(ports)) payload$ports <- as.integer(strsplit(ports, ",")[[1]])
+    if (!is.null(shell)) payload$shell <- shell
+    result <- api_request(paste0("/snapshots/", snapshot_id, "/clone"), creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result$id %||% "")
+}
+
+# =============================================================================
+# Image Library Functions
+# =============================================================================
+
+#' List Images
+#'
+#' @param filter Filter type (optional: "owned", "shared", "public")
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return A list of images
+#' @export
+image_list <- function(filter = NULL, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    endpoint <- if (!is.null(filter)) paste0("/images?filter=", filter) else "/images"
+    result <- api_request(endpoint, creds$public_key, creds$secret_key)
+    return(result$images %||% list())
+}
+
+#' Get Image Details
+#'
+#' @param image_id Image ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Image details
+#' @export
+image_get <- function(image_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    return(api_request(paste0("/images/", image_id), creds$public_key, creds$secret_key))
+}
+
+#' Publish Image
+#'
+#' @param source_type "service" or "snapshot"
+#' @param source_id Source ID
+#' @param name Image name (optional)
+#' @param description Image description (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Image ID
+#' @export
+image_publish <- function(source_type, source_id, name = NULL, description = NULL,
+                          public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list(source_type = source_type, source_id = source_id)
+    if (!is.null(name)) payload$name <- name
+    if (!is.null(description)) payload$description <- description
+    result <- api_request("/images/publish", creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result$id %||% "")
+}
+
+#' Delete Image
+#'
+#' @param image_id Image ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_delete <- function(image_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request_with_sudo(paste0("/images/", image_id), creds$public_key, creds$secret_key,
+                          method = "DELETE")
+    return(TRUE)
+}
+
+#' Lock Image
+#'
+#' @param image_id Image ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_lock <- function(image_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/images/", image_id, "/lock"), creds$public_key, creds$secret_key,
+                method = "POST")
+    return(TRUE)
+}
+
+#' Unlock Image
+#'
+#' @param image_id Image ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_unlock <- function(image_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request_with_sudo(paste0("/images/", image_id, "/unlock"), creds$public_key, creds$secret_key,
+                          method = "POST", data = list())
+    return(TRUE)
+}
+
+#' Set Image Visibility
+#'
+#' @param image_id Image ID
+#' @param visibility "private", "unlisted", or "public"
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_set_visibility <- function(image_id, visibility, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/images/", image_id, "/visibility"), creds$public_key, creds$secret_key,
+                method = "POST", data = list(visibility = visibility))
+    return(TRUE)
+}
+
+#' Grant Image Access
+#'
+#' @param image_id Image ID
+#' @param trusted_api_key API key to grant access
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_grant_access <- function(image_id, trusted_api_key, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/images/", image_id, "/access"), creds$public_key, creds$secret_key,
+                method = "POST", data = list(trusted_api_key = trusted_api_key))
+    return(TRUE)
+}
+
+#' Revoke Image Access
+#'
+#' @param image_id Image ID
+#' @param trusted_api_key API key to revoke access
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_revoke_access <- function(image_id, trusted_api_key, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/images/", image_id, "/access/", trusted_api_key), creds$public_key, creds$secret_key,
+                method = "DELETE")
+    return(TRUE)
+}
+
+#' List Trusted Keys for Image
+#'
+#' @param image_id Image ID
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return List of trusted API keys
+#' @export
+image_list_trusted <- function(image_id, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    result <- api_request(paste0("/images/", image_id, "/access"), creds$public_key, creds$secret_key)
+    return(result$trusted_keys %||% list())
+}
+
+#' Transfer Image
+#'
+#' @param image_id Image ID
+#' @param to_api_key Target API key
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return TRUE on success
+#' @export
+image_transfer <- function(image_id, to_api_key, public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    api_request(paste0("/images/", image_id, "/transfer"), creds$public_key, creds$secret_key,
+                method = "POST", data = list(to_api_key = to_api_key))
+    return(TRUE)
+}
+
+#' Spawn Service from Image
+#'
+#' @param image_id Image ID
+#' @param name Service name (optional)
+#' @param ports Comma-separated ports (optional)
+#' @param bootstrap Bootstrap command (optional)
+#' @param network Network mode (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Service ID
+#' @export
+image_spawn <- function(image_id, name = NULL, ports = NULL, bootstrap = NULL, network = NULL,
+                        public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list()
+    if (!is.null(name)) payload$name <- name
+    if (!is.null(ports)) payload$ports <- as.integer(strsplit(ports, ",")[[1]])
+    if (!is.null(bootstrap)) payload$bootstrap <- bootstrap
+    if (!is.null(network)) payload$network <- network
+    result <- api_request(paste0("/images/", image_id, "/spawn"), creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result$id %||% "")
+}
+
+#' Clone Image
+#'
+#' @param image_id Image ID
+#' @param name Clone name (optional)
+#' @param description Clone description (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Cloned image ID
+#' @export
+image_clone <- function(image_id, name = NULL, description = NULL,
+                        public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    payload <- list()
+    if (!is.null(name)) payload$name <- name
+    if (!is.null(description)) payload$description <- description
+    result <- api_request(paste0("/images/", image_id, "/clone"), creds$public_key, creds$secret_key,
+                          method = "POST", data = payload)
+    return(result$id %||% "")
+}
+
+# =============================================================================
+# PaaS Logs Functions
+# =============================================================================
+
+#' Fetch PaaS Logs
+#'
+#' @param source Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
+#' @param lines Number of lines
+#' @param since Time window ("1m", "5m", "1h", "1d")
+#' @param grep Filter pattern (optional)
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Logs string
+#' @export
+logs_fetch <- function(source = "all", lines = 100, since = "1h", grep = NULL,
+                       public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    endpoint <- sprintf("/logs?source=%s&lines=%d&since=%s", source, lines, since)
+    if (!is.null(grep)) endpoint <- paste0(endpoint, "&grep=", grep)
+    result <- api_request(endpoint, creds$public_key, creds$secret_key)
+    return(result$logs %||% "")
+}
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+#' Validate API Keys
+#'
+#' @param public_key API public key (optional)
+#' @param secret_key API secret key (optional)
+#' @return Validation result
+#' @export
+validate_keys <- function(public_key = NULL, secret_key = NULL) {
+    creds <- get_credentials(public_key, secret_key)
+    timestamp <- as.integer(Sys.time())
+    body <- "{}"
+    message <- paste(timestamp, "POST", "/keys/validate", body, sep = ":")
+    signature <- compute_signature(creds$secret_key, message)
+
+    response <- tryCatch({
+        POST(
+            paste0(PORTAL_BASE, "/keys/validate"),
+            add_headers(
+                "Authorization" = paste("Bearer", creds$public_key),
+                "X-Timestamp" = as.character(timestamp),
+                "X-Signature" = signature,
+                "Content-Type" = "application/json"
+            ),
+            body = body,
+            encode = "raw"
+        )
+    }, error = function(e) {
+        return(list(valid = FALSE, error = conditionMessage(e)))
+    })
+
+    if (inherits(response, "list")) return(response)
+    return(content(response, as = "parsed"))
+}
+
+#' Health Check
+#'
+#' @return TRUE if API is healthy
+#' @export
+health_check <- function() {
+    tryCatch({
+        response <- GET(paste0(API_BASE, "/health"))
+        return(status_code(response) == 200)
+    }, error = function(e) {
+        return(FALSE)
+    })
+}
+
+#' Get SDK Version
+#'
+#' @return Version string
+#' @export
+sdk_version <- function() {
+    return("1.0.0")
+}
+
+#' HMAC Sign
+#'
+#' @param secret_key Secret key
+#' @param message Message to sign
+#' @return HMAC-SHA256 signature
+#' @export
+hmac_sign <- function(secret_key, message) {
+    return(digest(message, algo = "sha256", key = secret_key, serialize = FALSE, hmac = TRUE))
+}
+
+# Null coalescing operator
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+# =============================================================================
 # Client Class (R6)
 # =============================================================================
 

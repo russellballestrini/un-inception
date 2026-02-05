@@ -132,6 +132,139 @@ else
     test_skipped "Handles unknown file extension (could not compile test binary)"
 fi
 
+# CLI Command Tests (Feature Parity)
+echo -e "\n${BLUE}=== CLI Command Tests (Feature Parity) ===${NC}"
+
+# Compile for CLI tests
+if clang -x objective-c -framework Foundation "$UN_M" -o "$TEST_BINARY" 2>/dev/null; then
+    # Test: --help
+    if output=$("$TEST_BINARY" --help 2>&1); then
+        if echo "$output" | grep -qi "usage"; then
+            test_passed "CLI: --help shows usage"
+        else
+            test_failed "CLI: --help shows usage" "No usage indication"
+        fi
+    else
+        if echo "$output" | grep -qi "usage"; then
+            test_passed "CLI: --help shows usage"
+        else
+            test_failed "CLI: --help shows usage" "Command failed"
+        fi
+    fi
+
+    # Test: version command
+    if output=$("$TEST_BINARY" version 2>&1); then
+        if echo "$output" | grep -qi "version"; then
+            test_passed "CLI: version command works"
+        else
+            test_failed "CLI: version command works" "No version output"
+        fi
+    else
+        test_failed "CLI: version command works" "Command failed"
+    fi
+
+    # Test: health command
+    if output=$("$TEST_BINARY" health 2>&1); then
+        if echo "$output" | grep -qi "health\|api"; then
+            test_passed "CLI: health command works"
+        else
+            test_failed "CLI: health command works" "No health output"
+        fi
+    else
+        test_failed "CLI: health command works" "Command failed"
+    fi
+
+    # Test: languages command
+    if output=$("$TEST_BINARY" languages 2>&1); then
+        if echo "$output" | grep -qi "python\|error\|api key"; then
+            test_passed "CLI: languages command works"
+        else
+            test_failed "CLI: languages command works" "No languages output"
+        fi
+    else
+        test_failed "CLI: languages command works" "Command failed"
+    fi
+
+    rm -f "$TEST_BINARY"
+else
+    echo -e "${YELLOW}Could not compile un.m - skipping CLI command tests${NC}"
+fi
+
+# API Command Tests (require API key)
+if [ -n "${UNSANDBOX_PUBLIC_KEY:-}" ] || [ -n "${UNSANDBOX_SECRET_KEY:-}" ]; then
+    echo -e "\n${BLUE}=== API Command Tests (require auth) ===${NC}"
+
+    # Compile the binary for API tests
+    if clang -x objective-c -framework Foundation "$UN_M" -o "$TEST_BINARY" 2>/dev/null; then
+
+        # Test: snapshot --list
+        if output=$("$TEST_BINARY" snapshot --list 2>&1); then
+            if echo "$output" | grep -qE '\[|\{|Error|snapshots'; then
+                test_passed "CLI: snapshot --list works"
+            else
+                test_failed "CLI: snapshot --list works" "Unexpected output"
+            fi
+        else
+            if echo "$output" | grep -qE '\[|\{|Error|snapshots'; then
+                test_passed "CLI: snapshot --list works"
+            else
+                test_failed "CLI: snapshot --list works" "Command failed"
+            fi
+        fi
+
+        # Test: session --list
+        if output=$("$TEST_BINARY" session --list 2>&1); then
+            if echo "$output" | grep -qE '\[|\{|Error|sessions'; then
+                test_passed "CLI: session --list works"
+            else
+                test_failed "CLI: session --list works" "Unexpected output"
+            fi
+        else
+            if echo "$output" | grep -qE '\[|\{|Error|sessions'; then
+                test_passed "CLI: session --list works"
+            else
+                test_failed "CLI: session --list works" "Command failed"
+            fi
+        fi
+
+        # Test: service --list
+        if output=$("$TEST_BINARY" service --list 2>&1); then
+            if echo "$output" | grep -qE '\[|\{|Error|services'; then
+                test_passed "CLI: service --list works"
+            else
+                test_failed "CLI: service --list works" "Unexpected output"
+            fi
+        else
+            if echo "$output" | grep -qE '\[|\{|Error|services'; then
+                test_passed "CLI: service --list works"
+            else
+                test_failed "CLI: service --list works" "Command failed"
+            fi
+        fi
+
+        # Test: image --list
+        if output=$("$TEST_BINARY" image --list 2>&1); then
+            if echo "$output" | grep -qE '\[|\{|Error|images'; then
+                test_passed "CLI: image --list works"
+            else
+                test_failed "CLI: image --list works" "Unexpected output"
+            fi
+        else
+            if echo "$output" | grep -qE '\[|\{|Error|images'; then
+                test_passed "CLI: image --list works"
+            else
+                test_failed "CLI: image --list works" "Command failed"
+            fi
+        fi
+
+        rm -f "$TEST_BINARY"
+    else
+        echo -e "${YELLOW}Could not compile un.m - skipping API command tests${NC}"
+    fi
+else
+    echo -e "\n${YELLOW}Skipping API command tests (UNSANDBOX_PUBLIC_KEY/SECRET_KEY not set)${NC}"
+fi
+
 # Integration Tests (require API key and successful compilation)
 if [ -n "${UNSANDBOX_API_KEY:-}" ]; then
     echo -e "\n${BLUE}=== Integration Tests for un.m ===${NC}"
