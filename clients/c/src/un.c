@@ -6706,6 +6706,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --resize ID        Resize service vCPU/memory (requires --vcpu)\n");
     fprintf(stderr, "  --redeploy ID      Re-run bootstrap script (optional: --bootstrap or --bootstrap-file)\n");
     fprintf(stderr, "  --execute ID CMD   Run a command in a running service (use -f to upload files first)\n");
+    fprintf(stderr, "  -t, --timeout SEC  Timeout for --execute in seconds (default: 30, max: 600)\n");
     fprintf(stderr, "  --dump-bootstrap ID [FILE]  Dump bootstrap script (for migrations)\n");
     fprintf(stderr, "  --snapshot ID      Create snapshot of service (paid tiers only)\n");
     fprintf(stderr, "  --restore SNAPSHOT Restore service from snapshot\n");
@@ -10054,6 +10055,7 @@ int main(int argc, char *argv[]) {
         int do_redeploy = 0;
         int do_execute = 0;
         const char *execute_command = NULL;
+        int execute_timeout = 30000;  // Default 30 seconds
         int do_dump_bootstrap = 0;
         const char *dump_bootstrap_file = NULL;
         int do_snapshot = 0;
@@ -10248,6 +10250,11 @@ int main(int argc, char *argv[]) {
                 service_id = argv[i];
                 i++;
                 execute_command = argv[i];
+            } else if ((strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--timeout") == 0) && i + 1 < argc) {
+                i++;
+                execute_timeout = atoi(argv[i]) * 1000;  // Convert seconds to ms
+                if (execute_timeout < 1000) execute_timeout = 1000;  // Min 1 second
+                if (execute_timeout > 600000) execute_timeout = 600000;  // Max 10 minutes
             } else if (strcmp(argv[i], "--dump-bootstrap") == 0 && i + 1 < argc) {
                 do_dump_bootstrap = 1;
                 i++;
@@ -10474,9 +10481,8 @@ int main(int argc, char *argv[]) {
             const char *bootstrap_to_use = bootstrap_file ? bootstrap_file : service_bootstrap;
             ret = redeploy_service(creds, service_id, bootstrap_to_use);
         } else if (do_execute) {
-            // Default timeout 30 seconds (30000ms)
             // Pass input files if provided (written to /tmp/input/ before command runs)
-            ret = execute_service(creds, service_id, execute_command, 30000, service_input_files, service_input_file_count);
+            ret = execute_service(creds, service_id, execute_command, execute_timeout, service_input_files, service_input_file_count);
             // Free input file memory
             for (int i = 0; i < service_input_file_count; i++) {
                 free(service_input_files[i].filename);
