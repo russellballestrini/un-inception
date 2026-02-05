@@ -584,6 +584,22 @@ clients/
       clients/python/sync/src/un.py --help
    ```
 
+## Git Access
+
+SSH to git.unturf.com uses **port 2222** (GitLab runs in Docker). Configure ~/.ssh/config:
+
+```
+Host git.unturf.com
+  HostName git.unturf.com
+  Port 2222
+  User git
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+Clone URLs: `git@git.unturf.com:engineering/unturf/un-inception.git`
+
+**CRITICAL LESSON (2026-02-05):** Two hours were wasted debugging "GitLab SSH authentication failures" when the root cause was missing `Port 2222`. SSH was hitting the host's sshd (which banned the IP via fail2ban), never reaching GitLab at all. Always check the obvious first.
+
 ## Related Repos
 
 - `~/git/unsandbox.com/` - Portal (contains un.c CLI at cli/un.c)
