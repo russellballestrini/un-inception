@@ -44,3 +44,4 @@ Tracking compile and test execution times across releases.
 | 4.2.50 | 2026-01-30 | 860 | 93.0% | 183s | go | fortran |
 | 4.2.51 | 2026-01-31 | 860 | 93.7% | 162s | go | powershell |
 | 4.2.52 | 2026-01-31 | 860 | 94.0% | 136s | go | awk |
+| 4.3.0 | 2026-02-06 | 820 | 90.8% | 376s | typescript | c |
