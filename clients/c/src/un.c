@@ -493,6 +493,8 @@ static struct curl_slist* add_hmac_auth_headers(struct curl_slist *headers,
 // Cumulative: 300ms, 750ms, 1450ms, 2350ms, 3000ms, 4600ms, 6600ms+
 static const int POLL_DELAYS[] = {300, 450, 700, 900, 650, 1600, 2000};
 #define POLL_DELAYS_COUNT 7
+#define POLL_MAX_CONSECUTIVE_ERRORS 30
+#define POLL_ERROR_BACKOFF_MS 2000
 
 // Response buffer structure
 struct ResponseBuffer {
@@ -1091,7 +1093,7 @@ const char* get_basename(const char *path) {
     return base ? base + 1 : path;
 }
 
-// Poll job status with exponential backoff
+// Poll job status with exponential backoff and transient error resilience
 // Returns the final response JSON (caller must free), or NULL on error
 static char* poll_job_status(const UnsandboxCredentials *creds, const char *job_id) {
     CURL *curl = curl_easy_init();
@@ -1103,12 +1105,18 @@ static char* poll_job_status(const UnsandboxCredentials *creds, const char *job_
     snprintf(url, sizeof(url), "%s%s", API_BASE, path);
 
     int poll_count = 0;
+    int consecutive_errors = 0;
     char *final_response = NULL;
 
     while (1) {
-        // Sleep before polling (except first iteration handled by caller)
-        int delay_idx = poll_count < POLL_DELAYS_COUNT ? poll_count : POLL_DELAYS_COUNT - 1;
-        usleep(POLL_DELAYS[delay_idx] * 1000);
+        // Sleep before polling — use backoff schedule for normal polls,
+        // fixed backoff during error recovery
+        if (consecutive_errors > 0) {
+            usleep(POLL_ERROR_BACKOFF_MS * 1000);
+        } else {
+            int delay_idx = poll_count < POLL_DELAYS_COUNT ? poll_count : POLL_DELAYS_COUNT - 1;
+            usleep(POLL_DELAYS[delay_idx] * 1000);
+        }
         poll_count++;
 
         struct ResponseBuffer response = {0};
@@ -1129,25 +1137,55 @@ static char* poll_job_status(const UnsandboxCredentials *creds, const char *job_
         curl_slist_free_all(headers);
 
         if (res != CURLE_OK) {
-            fprintf(stderr, "Error polling job: %s\n", curl_easy_strerror(res));
+            consecutive_errors++;
+            if (consecutive_errors >= POLL_MAX_CONSECUTIVE_ERRORS) {
+                fprintf(stderr, "Error: Lost connection to API after %d retries\n", consecutive_errors);
+                fprintf(stderr, "Job ID: %s — check later with: un jobs --get %s\n", job_id, job_id);
+                free(response.data);
+                break;
+            }
+            fprintf(stderr, "Connection error, retrying... (%d/%d)\n", consecutive_errors, POLL_MAX_CONSECUTIVE_ERRORS);
             free(response.data);
-            break;
+            continue;
         }
 
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
         if (http_code == 404) {
-            fprintf(stderr, "Error: job not found\n");
+            // Job might not be registered yet (brief race window)
+            consecutive_errors++;
+            if (consecutive_errors > 5) {
+                fprintf(stderr, "Error: job not found\n");
+                free(response.data);
+                break;
+            }
             free(response.data);
-            break;
+            continue;
+        }
+
+        if (http_code >= 500) {
+            consecutive_errors++;
+            if (consecutive_errors >= POLL_MAX_CONSECUTIVE_ERRORS) {
+                fprintf(stderr, "Error: Server errors after %d retries\n", consecutive_errors);
+                fprintf(stderr, "Job ID: %s — check later with: un jobs --get %s\n", job_id, job_id);
+                free(response.data);
+                break;
+            }
+            fprintf(stderr, "Server error %ld, retrying... (%d/%d)\n", http_code, consecutive_errors, POLL_MAX_CONSECUTIVE_ERRORS);
+            free(response.data);
+            continue;
         }
 
         if (http_code != 200) {
+            // 4xx (non-404) — not transient, bail immediately
             fprintf(stderr, "Error: HTTP %ld while polling job\n", http_code);
             free(response.data);
             break;
         }
+
+        // Success — reset error counter
+        consecutive_errors = 0;
 
         // Check status field
         char *status = extract_json_string(response.data, "status");
@@ -4832,77 +4870,33 @@ static int execute_service(const UnsandboxCredentials *creds, const char *servic
         return 1;
     }
 
-    // Poll for job completion
-    char job_url[512];
-    snprintf(job_url, sizeof(job_url), "%s/jobs/%s", API_BASE, job_id);
+    fprintf(stderr, "job %s\n", job_id);
 
-    char job_path[256];
-    snprintf(job_path, sizeof(job_path), "/jobs/%s", job_id);
+    // Poll for job completion using shared resilient poller
+    char *final_response = poll_job_status(creds, job_id);
 
-    int poll_count = 0;
-    int max_polls = timeout_ms == 0 ? INT_MAX : (timeout_ms / 1000) + 10;  // 0 = unlimited
-
-    while (poll_count < max_polls) {
-        usleep(500000);  // 500ms between polls
-        poll_count++;
-
-        curl = curl_easy_init();
-        if (!curl) {
-            free(job_id);
-            return 1;
-        }
-
-        struct ResponseBuffer job_response = {0};
-        job_response.data = malloc(1);
-        job_response.size = 0;
-
-        headers = NULL;
-        headers = add_hmac_auth_headers(headers, creds, "GET", job_path, NULL);
-
-        curl_easy_setopt(curl, CURLOPT_URL, job_url);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &job_response);
-
-        res = curl_easy_perform(curl);
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
-
-        if (res != CURLE_OK || http_code != 200) {
-            free(job_response.data);
-            continue;
-        }
-
-        // Check job status
-        char *status = extract_json_string(job_response.data, "status");
-        if (status && strcmp(status, "completed") == 0) {
-            // Job completed - print result using same format as code execution
-            parse_and_print_response(job_response.data, 0, NULL, NULL);
-            free(status);
-            free(job_response.data);
-            free(job_id);
-            return 0;
-        }
-
-        if (status && (strcmp(status, "failed") == 0 || strcmp(status, "cancelled") == 0)) {
-            char *error = extract_json_string(job_response.data, "error");
-            fprintf(stderr, "Error: Job %s: %s\n", status, error ? error : "unknown");
-            if (error) free(error);
-            free(status);
-            free(job_response.data);
-            free(job_id);
-            return 1;
-        }
-
-        if (status) free(status);
-        free(job_response.data);
+    if (!final_response) {
+        free(job_id);
+        return 1;
     }
 
-    fprintf(stderr, "Error: Command timed out after %d seconds\n", timeout_ms / 1000);
+    // Check terminal status
+    char *status = extract_json_string(final_response, "status");
+    int ret = 0;
+
+    if (status && (strcmp(status, "failed") == 0 || strcmp(status, "cancelled") == 0)) {
+        char *error = extract_json_string(final_response, "error");
+        fprintf(stderr, "Error: Job %s: %s\n", status, error ? error : "unknown");
+        if (error) free(error);
+        ret = 1;
+    } else {
+        parse_and_print_response(final_response, 0, NULL, NULL);
+    }
+
+    if (status) free(status);
+    free(final_response);
     free(job_id);
-    return 1;
+    return ret;
 }
 
 // Execute a command in a service and capture output (returns malloc'd string or NULL)
@@ -6641,6 +6635,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "       %s snapshot [options]\n", prog);
     fprintf(stderr, "       %s image [options]\n", prog);
     fprintf(stderr, "       %s languages [--json]\n", prog);
+    fprintf(stderr, "       %s jobs [options]\n", prog);
     fprintf(stderr, "       %s paas <command> [options]\n", prog);
     fprintf(stderr, "       %s key\n\n", prog);
     fprintf(stderr, "Commands:\n");
@@ -6650,6 +6645,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  snapshot         Manage container snapshots\n");
     fprintf(stderr, "  image            Manage images (publish, spawn, clone)\n");
     fprintf(stderr, "  languages        List available languages (--json for JSON output)\n");
+    fprintf(stderr, "  jobs             List, inspect, or cancel async jobs\n");
     fprintf(stderr, "  paas             PaaS platform management (logs, etc.)\n");
     fprintf(stderr, "  key              Check API key validity and expiration\n");
     fprintf(stderr, "\nOptions:\n");
@@ -6805,6 +6801,9 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s snapshot --info unsb-snapshot-xxxx  # get snapshot details\n", prog);
     fprintf(stderr, "  %s snapshot --delete unsb-snapshot-xxxx  # delete a snapshot\n", prog);
     fprintf(stderr, "  %s snapshot --clone unsb-snapshot-xxxx --type service --name myapp\n", prog);
+    fprintf(stderr, "  %s jobs                                  # list all jobs\n", prog);
+    fprintf(stderr, "  %s jobs --get JOB_ID                    # get job status and result\n", prog);
+    fprintf(stderr, "  %s jobs --cancel JOB_ID                 # cancel a running job\n", prog);
     fprintf(stderr, "  %s paas logs                             # last 100 lines from all sources\n", prog);
     fprintf(stderr, "  %s paas logs --api -n 500               # last 500 API log lines\n", prog);
     fprintf(stderr, "  %s paas logs --portal --grep error       # portal logs matching 'error'\n", prog);
@@ -10627,6 +10626,223 @@ int main(int argc, char *argv[]) {
         return ret;
     }
 
+    // Check for jobs command (async job management)
+    if (argc >= 2 && strcmp(argv[1], "jobs") == 0) {
+        const char *get_id = NULL;
+        const char *cancel_id = NULL;
+
+        // Parse options
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+                i++;
+                cli_public_key = argv[i];
+            } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
+                i++;
+                cli_secret_key = argv[i];
+            } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
+                i++;
+                cli_account_index = atoi(argv[i]);
+            } else if (strcmp(argv[i], "--get") == 0 && i + 1 < argc) {
+                i++;
+                get_id = argv[i];
+            } else if (strcmp(argv[i], "--cancel") == 0 && i + 1 < argc) {
+                i++;
+                cancel_id = argv[i];
+            } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
+                // --list is default, no-op
+            } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                fprintf(stderr, "Usage: %s jobs [options]\n\n", argv[0]);
+                fprintf(stderr, "Commands:\n");
+                fprintf(stderr, "  (default)          List all jobs\n");
+                fprintf(stderr, "  -l, --list         List all jobs\n");
+                fprintf(stderr, "  --get ID           Get job status and result\n");
+                fprintf(stderr, "  --cancel ID        Cancel a running job\n");
+                return 0;
+            }
+        }
+
+        UnsandboxCredentials *creds = get_credentials(cli_public_key, cli_secret_key, cli_account_index);
+        if (!creds || !creds->public_key || strlen(creds->public_key) == 0) {
+            fprintf(stderr, "Error: API credentials required.\n");
+            fprintf(stderr, "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n");
+            fprintf(stderr, "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n");
+            fprintf(stderr, "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n");
+            free_credentials(creds);
+            return 1;
+        }
+
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        int ret = 0;
+
+        if (cancel_id) {
+            // un jobs --cancel ID — DELETE /jobs/:id
+            char path[256], url[512];
+            snprintf(path, sizeof(path), "/jobs/%s", cancel_id);
+            snprintf(url, sizeof(url), "%s%s", API_BASE, path);
+
+            CURL *curl = curl_easy_init();
+            if (!curl) { ret = 1; goto jobs_cleanup; }
+
+            struct curl_slist *hdrs = NULL;
+            hdrs = add_hmac_auth_headers(hdrs, creds, "DELETE", path, NULL);
+
+            curl_easy_setopt(curl, CURLOPT_URL, url);
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+            curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+            CURLcode cres = curl_easy_perform(curl);
+            long hcode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &hcode);
+            curl_slist_free_all(hdrs);
+            curl_easy_cleanup(curl);
+
+            if (cres == CURLE_OK && (hcode == 200 || hcode == 204)) {
+                printf("Job %s cancelled\n", cancel_id);
+            } else {
+                fprintf(stderr, "Error: Failed to cancel job %s (HTTP %ld)\n", cancel_id, hcode);
+                ret = 1;
+            }
+        } else if (get_id) {
+            // un jobs --get ID — GET /jobs/:id
+            char path[256], url[512];
+            snprintf(path, sizeof(path), "/jobs/%s", get_id);
+            snprintf(url, sizeof(url), "%s%s", API_BASE, path);
+
+            CURL *curl = curl_easy_init();
+            if (!curl) { ret = 1; goto jobs_cleanup; }
+
+            struct ResponseBuffer resp = {0};
+            resp.data = malloc(1);
+            resp.size = 0;
+
+            struct curl_slist *hdrs = NULL;
+            hdrs = add_hmac_auth_headers(hdrs, creds, "GET", path, NULL);
+
+            curl_easy_setopt(curl, CURLOPT_URL, url);
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+            CURLcode cres = curl_easy_perform(curl);
+            long hcode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &hcode);
+            curl_slist_free_all(hdrs);
+            curl_easy_cleanup(curl);
+
+            if (cres != CURLE_OK || hcode != 200) {
+                fprintf(stderr, "Error: Failed to get job %s (HTTP %ld)\n", get_id, hcode);
+                free(resp.data);
+                ret = 1;
+            } else {
+                char *jid = extract_json_string(resp.data, "job_id");
+                char *jstatus = extract_json_string(resp.data, "status");
+                char *jlang = extract_json_string(resp.data, "language");
+                char *jerror = extract_json_string(resp.data, "error");
+                int64_t created = extract_json_number(resp.data, "created_at");
+                int64_t completed = extract_json_number(resp.data, "completed_at");
+
+                printf("%-12s %s\n", "Job ID:", jid ? jid : get_id);
+                printf("%-12s %s\n", "Status:", jstatus ? jstatus : "unknown");
+                if (jlang) printf("%-12s %s\n", "Language:", jlang);
+                if (created > 0) printf("%-12s %ld\n", "Created:", (long)created);
+                if (completed > 0) printf("%-12s %ld\n", "Completed:", (long)completed);
+                if (jerror) printf("%-12s %s\n", "Error:", jerror);
+
+                // If completed, also show stdout/stderr
+                if (jstatus && strcmp(jstatus, "completed") == 0) {
+                    char *jstdout = extract_json_string(resp.data, "stdout");
+                    char *jstderr = extract_json_string(resp.data, "stderr");
+                    if (jstdout && strlen(jstdout) > 0) {
+                        printf("\n--- stdout ---\n%s", jstdout);
+                        if (jstdout[strlen(jstdout)-1] != '\n') printf("\n");
+                    }
+                    if (jstderr && strlen(jstderr) > 0) {
+                        fprintf(stderr, "\n--- stderr ---\n%s", jstderr);
+                        if (jstderr[strlen(jstderr)-1] != '\n') fprintf(stderr, "\n");
+                    }
+                    free(jstdout);
+                    free(jstderr);
+                }
+
+                free(jid);
+                free(jstatus);
+                free(jlang);
+                free(jerror);
+                free(resp.data);
+            }
+        } else {
+            // un jobs --list (default) — GET /jobs
+            char url[256];
+            snprintf(url, sizeof(url), "%s/jobs", API_BASE);
+
+            CURL *curl = curl_easy_init();
+            if (!curl) { ret = 1; goto jobs_cleanup; }
+
+            struct ResponseBuffer resp = {0};
+            resp.data = malloc(1);
+            resp.size = 0;
+
+            struct curl_slist *hdrs = NULL;
+            hdrs = add_hmac_auth_headers(hdrs, creds, "GET", "/jobs", NULL);
+
+            curl_easy_setopt(curl, CURLOPT_URL, url);
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
+
+            CURLcode cres = curl_easy_perform(curl);
+            long hcode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &hcode);
+            curl_slist_free_all(hdrs);
+            curl_easy_cleanup(curl);
+
+            if (cres != CURLE_OK || hcode != 200) {
+                fprintf(stderr, "Error: Failed to list jobs (HTTP %ld)\n", hcode);
+                free(resp.data);
+                ret = 1;
+            } else {
+                int count = count_json_array_objects(resp.data, "jobs");
+                if (count <= 0) {
+                    printf("No jobs found\n");
+                } else {
+                    printf("%-38s %-12s %-14s %s\n", "JOB ID", "STATUS", "LANGUAGE", "CREATED");
+                    printf("%-38s %-12s %-14s %s\n", "------", "------", "--------", "-------");
+
+                    const char *jobs_start = strstr(resp.data, "\"jobs\":[");
+                    if (jobs_start) {
+                        const char *pos = jobs_start + 8;
+                        for (int i = 0; i < count && pos; i++) {
+                            pos = strchr(pos, '{');
+                            if (!pos) break;
+                            char *jid = extract_json_string(pos, "job_id");
+                            char *jstatus = extract_json_string(pos, "status");
+                            char *jlang = extract_json_string(pos, "language");
+                            int64_t created = extract_json_number(pos, "created_at");
+                            printf("%-38s %-12s %-14s %ld\n",
+                                jid ? jid : "?",
+                                jstatus ? jstatus : "?",
+                                jlang ? jlang : "?",
+                                (long)created);
+                            free(jid);
+                            free(jstatus);
+                            free(jlang);
+                            pos = skip_json_object(pos);
+                        }
+                    }
+                }
+                free(resp.data);
+            }
+        }
+
+jobs_cleanup:
+        curl_global_cleanup();
+        free_credentials(creds);
+        return ret;
+    }
+
     // Check for paas command (PaaS platform management)
     if (argc >= 2 && strcmp(argv[1], "paas") == 0) {
         // paas requires a sub-subcommand
@@ -11312,6 +11528,7 @@ int main(int argc, char *argv[]) {
                         strcmp(status, "running") == 0);
 
         if (need_poll) {
+            fprintf(stderr, "job %s\n", job_id);
             // Free initial response, poll for final result
             free(response.data);
             final_data = poll_job_status(creds, job_id);
