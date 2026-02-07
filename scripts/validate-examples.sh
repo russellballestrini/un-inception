@@ -327,16 +327,51 @@ validate_examples_parallel() {
 
         # Limit parallel jobs
         if [[ $job_count -ge $PARALLEL_JOBS ]]; then
-            wait -n
+            wait -n 2>/dev/null || true
             pids=("${pids[@]:1}")
             job_count=$((job_count - 1))
         fi
     done
 
-    # Wait for remaining jobs
+    # Wait for ALL remaining jobs to complete
     for pid in "${pids[@]}"; do
-        wait "$pid"
+        wait "$pid" 2>/dev/null || true
     done
+
+    # Wait a bit more to ensure all file writes are complete
+    sleep 0.5
+
+    # Aggregate results from result files (since subshell variables don't propagate)
+    aggregate_results
+}
+
+# Aggregate results from temp files into parent shell variables
+aggregate_results() {
+    local result_file
+    TOTAL_VALIDATED=0
+    TOTAL_FAILED=0
+
+    # Count result files and their status
+    for result_file in "$TEMP_DIR"/result-*.json; do
+        [[ -f "$result_file" ]] || continue
+
+        local status
+        status=$(jq -r '.status // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
+        local lang
+        lang=$(jq -r '.language // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
+        local time_ms
+        time_ms=$(jq -r '.execution_time_ms // 0' "$result_file" 2>/dev/null || echo "0")
+
+        if [[ "$status" == "pass" ]]; then
+            TOTAL_VALIDATED=$((TOTAL_VALIDATED + 1))
+            LANGUAGE_STATS[$lang]=$((${LANGUAGE_STATS[$lang]:-0} + 1))
+            EXECUTION_TIMES[$lang]=$((${EXECUTION_TIMES[$lang]:-0} + time_ms))
+        elif [[ "$status" == "fail" ]]; then
+            TOTAL_FAILED=$((TOTAL_FAILED + 1))
+        fi
+    done
+
+    debug "Aggregated: $TOTAL_VALIDATED validated, $TOTAL_FAILED failed"
 }
 
 # Find all example files

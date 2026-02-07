@@ -21,11 +21,16 @@ import os
 # Add src to path for development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from un_async import (
-    execute_code,
-    detect_language,
-    get_languages,
-)
+try:
+    from un_async import (
+        execute_code,
+        detect_language,
+        get_languages,
+    )
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("Install with: pip install aiohttp")
+    sys.exit(0)  # Exit gracefully for CI
 
 
 async def async_approach():

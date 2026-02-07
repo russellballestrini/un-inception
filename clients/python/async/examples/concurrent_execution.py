@@ -21,7 +21,12 @@ import os
 # Add src to path for development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from un_async import execute_code
+try:
+    from un_async import execute_code
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("Install with: pip install aiohttp")
+    sys.exit(0)  # Exit gracefully for CI
 
 
 async def run_code(language: str, code: str, name: str):

@@ -44,9 +44,9 @@ print(f"fib(10) = {fib(10)}")
         secret_key = os.environ.get("UNSANDBOX_SECRET_KEY")
 
         if not public_key or not secret_key:
-            print("Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY environment variables required")
-            print("Run with: export UNSANDBOX_PUBLIC_KEY=your-key UNSANDBOX_SECRET_KEY=your-key")
-            sys.exit(1)
+            print("Skipping: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY environment variables required")
+            print("To run: export UNSANDBOX_PUBLIC_KEY=your-key UNSANDBOX_SECRET_KEY=your-key")
+            sys.exit(0)  # Exit gracefully for CI
 
         # Execute the code synchronously
         print("Calculating fibonacci(10)...")

@@ -103,10 +103,17 @@ import hashlib
 import hmac
 import json
 import os
+import sys
 import time
-import aiohttp
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+    aiohttp = None  # type: ignore
 
 
 API_BASE = "https://api.unsandbox.com"
@@ -117,6 +124,20 @@ LANGUAGES_CACHE_TTL = 3600  # 1 hour
 class CredentialsError(Exception):
     """Raised when credentials cannot be found or are invalid."""
     pass
+
+
+class DependencyError(Exception):
+    """Raised when a required dependency is not installed."""
+    pass
+
+
+def _check_aiohttp():
+    """Check if aiohttp is available, raise helpful error if not."""
+    if not AIOHTTP_AVAILABLE:
+        raise DependencyError(
+            "aiohttp is required for async operations. "
+            "Install with: pip install aiohttp"
+        )
 
 
 def _get_unsandbox_dir() -> Path:
@@ -230,7 +251,9 @@ async def _make_request(
 
     Raises aiohttp.ClientError on network errors.
     Raises ValueError if response is not valid JSON.
+    Raises DependencyError if aiohttp is not installed.
     """
+    _check_aiohttp()
     url = f"{API_BASE}{path}"
     timestamp = int(time.time())
     body = json.dumps(data) if data else ""

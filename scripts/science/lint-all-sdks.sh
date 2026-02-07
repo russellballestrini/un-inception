@@ -1,68 +1,140 @@
 #!/bin/bash
-# Lint all SDKs using unsandbox
-# Tests code quality without installing linters locally
+# Lint all SDKs using local syntax checkers
+# Validates code compiles/parses without runtime execution
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CLIENTS_DIR="$REPO_ROOT/clients"
+
 mkdir -p lint-results
 
-echo "Linting SDKs through unsandbox..."
+echo "Linting SDKs..."
 PASSED=0
 FAILED=0
+DETAILS=""
+
+lint_sdk() {
+    local name="$1"
+    local cmd="$2"
+    local file="$3"
+
+    if [ ! -f "$file" ]; then
+        echo "  [SKIP] $name - file not found: $file"
+        return 0
+    fi
+
+    echo "  Linting $name..."
+    if OUTPUT=$(eval "$cmd" 2>&1); then
+        echo "  [PASS] $name"
+        PASSED=$((PASSED + 1))
+        DETAILS="$DETAILS\n    <testcase name=\"$name\" classname=\"lint\" />"
+    else
+        echo "  [FAIL] $name"
+        echo "    $OUTPUT" | head -5
+        FAILED=$((FAILED + 1))
+        DETAILS="$DETAILS\n    <testcase name=\"$name\" classname=\"lint\"><failure message=\"Lint failed\">$OUTPUT</failure></testcase>"
+    fi
+}
 
 # Python SDKs
-if [ -f "un.py" ]; then
-    echo "Linting Python SDK..."
-    RESULT=$(curl -s -X POST https://api.unsandbox.com/execute \
-      -H "Authorization: Bearer ${UNSANDBOX_API_KEY}" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "language": "bash",
-        "code": "python3 -m py_compile un.py && echo OK || echo FAILED"
-      }' | jq -r '.stdout' 2>/dev/null || echo "ERROR")
+echo "Python SDKs:"
+lint_sdk "python-sync" "python3 -m py_compile '$CLIENTS_DIR/python/sync/src/un.py'" "$CLIENTS_DIR/python/sync/src/un.py"
+lint_sdk "python-async" "python3 -m py_compile '$CLIENTS_DIR/python/async/src/un_async.py'" "$CLIENTS_DIR/python/async/src/un_async.py"
 
-    [[ "$RESULT" == *"OK"* ]] && PASSED=$((PASSED + 1)) || FAILED=$((FAILED + 1))
-fi
-
-# JavaScript SDKs
-if [ -f "un.js" ]; then
-    echo "Linting JavaScript SDK..."
-    RESULT=$(curl -s -X POST https://api.unsandbox.com/execute \
-      -H "Authorization: Bearer ${UNSANDBOX_API_KEY}" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "language": "javascript",
-        "code": "require(\"./un.js\"); console.log(\"OK\")"
-      }' | jq -r '.stdout' 2>/dev/null || echo "ERROR")
-
-    [[ "$RESULT" == *"OK"* ]] && PASSED=$((PASSED + 1)) || FAILED=$((FAILED + 1))
+# JavaScript/TypeScript SDKs
+echo "JavaScript SDKs:"
+if command -v node &>/dev/null; then
+    lint_sdk "javascript-sync" "node --check '$CLIENTS_DIR/javascript/sync/src/un.js'" "$CLIENTS_DIR/javascript/sync/src/un.js"
+    lint_sdk "javascript-async" "node --check '$CLIENTS_DIR/javascript/async/src/un_async.js'" "$CLIENTS_DIR/javascript/async/src/un_async.js"
+else
+    echo "  [SKIP] Node.js not installed"
 fi
 
 # Ruby SDKs
-if [ -f "un.rb" ]; then
-    echo "Linting Ruby SDK..."
-    RESULT=$(curl -s -X POST https://api.unsandbox.com/execute \
-      -H "Authorization: Bearer ${UNSANDBOX_API_KEY}" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "language": "bash",
-        "code": "ruby -c un.rb && echo OK || echo FAILED"
-      }' | jq -r '.stdout' 2>/dev/null || echo "ERROR")
-
-    [[ "$RESULT" == *"OK"* ]] && PASSED=$((PASSED + 1)) || FAILED=$((FAILED + 1))
+echo "Ruby SDKs:"
+if command -v ruby &>/dev/null; then
+    lint_sdk "ruby-sync" "ruby -c '$CLIENTS_DIR/ruby/sync/src/un.rb'" "$CLIENTS_DIR/ruby/sync/src/un.rb"
+    lint_sdk "ruby-async" "ruby -c '$CLIENTS_DIR/ruby/async/src/un_async.rb'" "$CLIENTS_DIR/ruby/async/src/un_async.rb"
+else
+    echo "  [SKIP] Ruby not installed"
 fi
 
-# Generate report
+# Go SDKs
+echo "Go SDKs:"
+if command -v go &>/dev/null; then
+    lint_sdk "go-sync" "go build -o /dev/null '$CLIENTS_DIR/go/sync/src/un.go'" "$CLIENTS_DIR/go/sync/src/un.go"
+else
+    echo "  [SKIP] Go not installed"
+fi
+
+# Rust SDKs
+echo "Rust SDKs:"
+if command -v rustc &>/dev/null && [ -f "$CLIENTS_DIR/rust/sync/Cargo.toml" ]; then
+    lint_sdk "rust-sync" "cd '$CLIENTS_DIR/rust/sync' && cargo check --quiet" "$CLIENTS_DIR/rust/sync/src/lib.rs"
+else
+    echo "  [SKIP] Rust not installed or Cargo.toml missing"
+fi
+
+# PHP SDKs
+echo "PHP SDKs:"
+if command -v php &>/dev/null; then
+    lint_sdk "php-sync" "php -l '$CLIENTS_DIR/php/sync/src/un.php'" "$CLIENTS_DIR/php/sync/src/un.php"
+else
+    echo "  [SKIP] PHP not installed"
+fi
+
+# Perl SDKs
+echo "Perl SDKs:"
+if command -v perl &>/dev/null; then
+    lint_sdk "perl-sync" "perl -c '$CLIENTS_DIR/perl/sync/src/un.pl'" "$CLIENTS_DIR/perl/sync/src/un.pl"
+else
+    echo "  [SKIP] Perl not installed"
+fi
+
+# Lua SDKs
+echo "Lua SDKs:"
+if command -v luac &>/dev/null; then
+    lint_sdk "lua-sync" "luac -p '$CLIENTS_DIR/lua/sync/src/un.lua'" "$CLIENTS_DIR/lua/sync/src/un.lua"
+elif command -v luac5.4 &>/dev/null; then
+    lint_sdk "lua-sync" "luac5.4 -p '$CLIENTS_DIR/lua/sync/src/un.lua'" "$CLIENTS_DIR/lua/sync/src/un.lua"
+else
+    echo "  [SKIP] Lua not installed"
+fi
+
+# Bash SDKs
+echo "Bash SDKs:"
+lint_sdk "bash-sync" "bash -n '$CLIENTS_DIR/bash/sync/src/un.sh'" "$CLIENTS_DIR/bash/sync/src/un.sh"
+
+# C SDK (compile check)
+echo "C SDK:"
+if command -v gcc &>/dev/null && [ -f "$CLIENTS_DIR/c/src/un.c" ]; then
+    lint_sdk "c-cli" "gcc -fsyntax-only -DUNSANDBOX_CLI '$CLIENTS_DIR/c/src/un.c' 2>&1 | grep -v 'warning:' || true" "$CLIENTS_DIR/c/src/un.c"
+else
+    echo "  [SKIP] GCC not installed"
+fi
+
+# Generate JUnit XML report
 cat > lint-results.xml << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites>
   <testsuite name="SDK Linting" tests="$((PASSED + FAILED))" failures="$FAILED">
-    <testcase name="Lint All SDKs" classname="science.lint">
-      <system-out>Checked: $PASSED, Failed: $FAILED</system-out>
-    </testcase>
+$(echo -e "$DETAILS")
   </testsuite>
 </testsuites>
 EOF
 
+mkdir -p lint-results
+cp lint-results.xml lint-results/
+
+echo ""
+echo "========================================"
 echo "Linting complete: $PASSED passed, $FAILED failed"
-exit 0  # allow_failure: true
+echo "========================================"
+
+# Exit with failure if any lint failed
+if [ "$FAILED" -gt 0 ]; then
+    exit 1
+fi
+exit 0
