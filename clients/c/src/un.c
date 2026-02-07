@@ -1106,6 +1106,7 @@ static char* poll_job_status(const UnsandboxCredentials *creds, const char *job_
 
     int poll_count = 0;
     int consecutive_errors = 0;
+    int saw_server_errors = 0;
     char *final_response = NULL;
 
     while (1) {
@@ -1153,19 +1154,28 @@ static char* poll_job_status(const UnsandboxCredentials *creds, const char *job_
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
         if (http_code == 404) {
-            // Job might not be registered yet (brief race window)
             consecutive_errors++;
-            if (consecutive_errors > 5) {
-                fprintf(stderr, "Error: job not found\n");
+            if (saw_server_errors) {
+                // API restarted (502/503 then 404) — job state lost
+                fprintf(stderr, "Error: API restarted — job result lost (in-memory job state cleared)\n");
+                fprintf(stderr, "The command may have completed on the container.\n");
+                fprintf(stderr, "Job ID: %s\n", job_id);
                 free(response.data);
                 break;
             }
+            if (consecutive_errors > 5) {
+                fprintf(stderr, "Error: job %s not found\n", job_id);
+                free(response.data);
+                break;
+            }
+            // Job might not be registered yet (brief race window)
             free(response.data);
             continue;
         }
 
         if (http_code >= 500) {
             consecutive_errors++;
+            saw_server_errors = 1;
             if (consecutive_errors >= POLL_MAX_CONSECUTIVE_ERRORS) {
                 fprintf(stderr, "Error: Server errors after %d retries\n", consecutive_errors);
                 fprintf(stderr, "Job ID: %s — check later with: un jobs --get %s\n", job_id, job_id);
