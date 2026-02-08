@@ -12,7 +12,7 @@ using System.Text.Json.Serialization;
 
 const string API_BASE = "https://api.unsandbox.com";
 const string PORTAL_BASE = "https://unsandbox.com";
-const string VERSION = "4.3.1";
+const string VERSION = "4.3.2";
 
 // ANSI colors
 const string BLUE = "\x1B[34m";

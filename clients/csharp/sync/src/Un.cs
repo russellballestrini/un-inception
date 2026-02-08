@@ -1368,7 +1368,7 @@ Key options:
 public static class Unsandbox
 {
     private const string API_BASE = "https://api.unsandbox.com";
-    private const string VERSION = "4.3.1";
+    private const string VERSION = "4.3.2";
     private static string _lastError;
 
     /// <summary>Extension map for language detection</summary>

@@ -1638,7 +1638,7 @@ func LogsStream(creds *Credentials, source, grep string, callback LogCallback) e
 // ============================================================================
 
 // SDKVersion is the version of this SDK.
-const SDKVersion = "4.3.1"
+const SDKVersion = "4.3.2"
 
 // HmacSign computes an HMAC-SHA256 signature for the given message using the secret key.
 // Returns the signature as a lowercase hex string.
