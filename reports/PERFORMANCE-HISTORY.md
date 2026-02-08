@@ -47,3 +47,4 @@ Tracking compile and test execution times across releases.
 | 4.3.0 | 2026-02-06 | 820 | 90.8% | 376s | typescript | c |
 | 4.3.1 | 2026-02-08 | 824 | 93.4% | 238s | go | prolog |
 | 4.3.2 | 2026-02-08 | 860 | 95.8% | 132s | crystal | c |
+| 4.3.3 | 2026-02-08 | 848 | 95.0% | 175s | go | v |
