@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="SDK Linting" tests="7" failures="0">
+
+    <testcase name="python-sync" classname="lint" />
+    <testcase name="python-async" classname="lint" />
+    <testcase name="javascript-sync" classname="lint" />
+    <testcase name="javascript-async" classname="lint" />
+    <testcase name="perl-sync" classname="lint" />
+    <testcase name="bash-sync" classname="lint" />
+    <testcase name="c-cli" classname="lint" />
+  </testsuite>
+</testsuites>

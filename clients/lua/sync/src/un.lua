@@ -26,7 +26,7 @@ local mime = require("mime")
 local Un = {}
 Un.API_BASE = "https://api.unsandbox.com"
 Un.PORTAL_BASE = "https://unsandbox.com"
-Un.VERSION = "4.3.0"
+Un.VERSION = "4.3.1"
 Un.LAST_ERROR = ""
 
 -- Colors

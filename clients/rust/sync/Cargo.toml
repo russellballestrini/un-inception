@@ -7,7 +7,7 @@
 
 [package]
 name = "un-sync"
-version = "4.3.0"
+version = "4.3.1"
 edition = "2021"
 authors = ["unsandbox.com"]
 description = "Synchronous Rust SDK for unsandbox.com secure code execution API"

@@ -38,7 +38,7 @@ use Time::HiRes qw(time sleep);
 
 package Un;
 
-our $VERSION = "4.3.0";
+our $VERSION = "4.3.1";
 our $API_BASE = 'https://api.unsandbox.com';
 our $PORTAL_BASE = 'https://unsandbox.com';
 
