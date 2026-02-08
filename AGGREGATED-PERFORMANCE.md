@@ -1,13 +1,22 @@
 # UN Inception: Aggregated Performance Analysis
 
+<<<<<<< Updated upstream
 **Analysis Date:** 1770551195.2485962
 **Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.23, 4.2.24, 4.2.25, 4.2.26, 4.2.27, 4.2.28, 4.2.29, 4.2.3, 4.2.30, 4.2.31, 4.2.32, 4.2.36, 4.2.37, 4.2.38, 4.2.4, 4.2.46, 4.2.5, 4.2.50, 4.2.51, 4.2.52, 4.2.6, 4.2.7, 4.2.8, 4.2.9, 4.3.0, 4.3.1
+=======
+**Analysis Date:** 1770575731.1513839
+**Reports Analyzed:** 4.2.0, 4.2.10, 4.2.11, 4.2.12, 4.2.13, 4.2.14, 4.2.15, 4.2.16, 4.2.17, 4.2.18, 4.2.19, 4.2.20, 4.2.21, 4.2.22, 4.2.23, 4.2.24, 4.2.25, 4.2.26, 4.2.27, 4.2.28, 4.2.29, 4.2.3, 4.2.30, 4.2.31, 4.2.32, 4.2.36, 4.2.37, 4.2.38, 4.2.4, 4.2.46, 4.2.5, 4.2.50, 4.2.51, 4.2.52, 4.2.6, 4.2.7, 4.2.8, 4.2.9, 4.3.0, 4.3.1, 4.3.2
+>>>>>>> Stashed changes
 
 ---
 
 ## Executive Summary
 
+<<<<<<< Updated upstream
 Analysis of 40 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+=======
+Analysis of 41 performance reports reveals **significant variance** in execution metrics across releases. Different languages rank as slowest/fastest in different runs, indicating **non-deterministic execution patterns** likely caused by:
+>>>>>>> Stashed changes
 
 1. **Orchestrator placement on CPU-bound pool** (not an SRE best practice)
 2. **Resource contention** between the orchestrator & test jobs
@@ -62,6 +71,10 @@ Analysis of 40 performance reports reveals **significant variance** in execution
 | 4.2.9 | 107s | ruby (279s) | d (19s) | -4s (-3.6%) |
 | 4.3.0 | 376s | typescript (829s) | c (47s) | +269s (+251.4%) |
 | 4.3.1 | 238s | go (414s) | prolog (58s) | -138s (-36.7%) |
+<<<<<<< Updated upstream
+=======
+| 4.3.2 | 132s | crystal (314s) | c (66s) | -106s (-44.5%) |
+>>>>>>> Stashed changes
 
 **Observation:** Average duration increased **0.0%** from 0s to 0s.
 
@@ -118,6 +131,10 @@ The same language changes dramatically in rank between runs:
   - 4.2.9: 166s
   - 4.3.0: 196s
   - 4.3.1: 164s
+<<<<<<< Updated upstream
+=======
+  - 4.3.2: 193s
+>>>>>>> Stashed changes
   - **Range:** 32s → 2173s (6690.6% variance)
 
 **R:**
@@ -161,6 +178,10 @@ The same language changes dramatically in rank between runs:
   - 4.2.9: 54s
   - 4.3.0: 453s
   - 4.3.1: 163s
+<<<<<<< Updated upstream
+=======
+  - 4.3.2: 179s
+>>>>>>> Stashed changes
   - **Range:** 9s → 1834s (20277.8% variance)
 
 **SCHEME:**
@@ -204,6 +225,10 @@ The same language changes dramatically in rank between runs:
   - 4.2.9: 153s
   - 4.3.0: 171s
   - 4.3.1: 276s
+<<<<<<< Updated upstream
+=======
+  - 4.3.2: 132s
+>>>>>>> Stashed changes
   - **Range:** 15s → 1574s (10393.3% variance)
 
 **PYTHON:**
@@ -247,6 +272,10 @@ The same language changes dramatically in rank between runs:
   - 4.2.9: 165s
   - 4.3.0: 671s
   - 4.3.1: 148s
+<<<<<<< Updated upstream
+=======
+  - 4.3.2: 85s
+>>>>>>> Stashed changes
   - **Range:** 19s → 1574s (8184.2% variance)
 
 **TCL:**
@@ -290,6 +319,10 @@ The same language changes dramatically in rank between runs:
   - 4.2.9: 54s
   - 4.3.0: 476s
   - 4.3.1: 132s
+<<<<<<< Updated upstream
+=======
+  - 4.3.2: 80s
+>>>>>>> Stashed changes
   - **Range:** 20s → 1572s (7760.0% variance)
 
 
@@ -339,6 +372,10 @@ The same language changes dramatically in rank between runs:
 4.2.9: d, julia, csharp, v, objc
 4.3.0: c, bash, php, fortran, ruby
 4.3.1: prolog, awk, powershell, typescript, dart
+<<<<<<< Updated upstream
+=======
+4.3.2: c, cpp, fsharp, perl, csharp
+>>>>>>> Stashed changes
 
 **Slowest Languages by Run:**
 
@@ -382,6 +419,10 @@ The same language changes dramatically in rank between runs:
 4.2.9: ruby, deno, rust, crystal, java
 4.3.0: typescript, go, python, java, objc
 4.3.1: go, groovy, perl, deno, objc
+<<<<<<< Updated upstream
+=======
+4.3.2: crystal, erlang, elixir, rust, groovy
+>>>>>>> Stashed changes
 
 **Conclusion:** No consistent "fast" or "slow" languages across runs. This proves:
 - Execution order is random or system-dependent
@@ -392,9 +433,15 @@ The same language changes dramatically in rank between runs:
 
 ### 4. API Health Trends
 
+<<<<<<< Updated upstream
 **Overall API Health:** 6.9/100 (avg across 9 releases)
 **Trend:** STABLE
 **Total Retries (all releases):** 4293
+=======
+**Overall API Health:** 6.2/100 (avg across 10 releases)
+**Trend:** STABLE
+**Total Retries (all releases):** 4510
+>>>>>>> Stashed changes
 
 | Release | Health Score | Total Retries | 429 (Rate Limit) | 5xx (Server) | Timeout | Connection |
 |---------|--------------|---------------|------------------|--------------|---------|------------|
@@ -407,6 +454,10 @@ The same language changes dramatically in rank between runs:
 | 4.2.52 | 34/100 | 33 | 0 | 33 | 0 | 0 |
 | 4.3.0 | 0/100 | 876 | 839 | 27 | 10 | 0 |
 | 4.3.1 | 0/100 | 649 | 634 | 5 | 10 | 0 |
+<<<<<<< Updated upstream
+=======
+| 4.3.2 | 0/100 | 217 | 207 | 0 | 10 | 0 |
+>>>>>>> Stashed changes
 
 **Interpretation:**
 - **Score 95-100:** API healthy, tests pass on first attempt
@@ -562,6 +613,7 @@ Keep it as-is for stress testing, but in separate test environment.
 
 | Language | Min (s) | Max (s) | Avg (s) | Range (s) | Variance % |
 |----------|---------|---------|---------|-----------|------------|
+<<<<<<< Updated upstream
 | DOTNET | 5 | 1539 | 173.6 | 1534 | 30680.0% |
 | R | 9 | 1834 | 227.0 | 1825 | 20277.8% |
 | NIM | 8 | 1557 | 175.9 | 1549 | 19362.5% |
@@ -582,6 +634,28 @@ Keep it as-is for stress testing, but in separate test environment.
 | PYTHON | 19 | 1574 | 174.8 | 1555 | 8184.2% |
 | OCAML | 19 | 1537 | 168.4 | 1518 | 7989.5% |
 | TCL | 20 | 1572 | 187.1 | 1552 | 7760.0% |
+=======
+| DOTNET | 5 | 1539 | 171.1 | 1534 | 30680.0% |
+| R | 9 | 1834 | 225.8 | 1825 | 20277.8% |
+| NIM | 8 | 1557 | 174.4 | 1549 | 19362.5% |
+| CLOJURE | 8 | 1549 | 186.8 | 1541 | 19262.5% |
+| FORTRAN | 8 | 1547 | 138.9 | 1539 | 19237.5% |
+| PERL | 8 | 1546 | 179.5 | 1538 | 19225.0% |
+| D | 8 | 1545 | 142.1 | 1537 | 19212.5% |
+| ZIG | 8 | 1542 | 216.1 | 1534 | 19175.0% |
+| FORTH | 8 | 1540 | 172.7 | 1532 | 19150.0% |
+| KOTLIN | 8 | 1536 | 161.9 | 1528 | 19100.0% |
+| CSHARP | 8 | 1534 | 160.4 | 1526 | 19075.0% |
+| LUA | 9 | 1548 | 206.3 | 1539 | 17100.0% |
+| PROLOG | 9 | 1540 | 123.6 | 1531 | 17011.1% |
+| RUST | 9 | 1537 | 192.1 | 1528 | 16977.8% |
+| SCHEME | 15 | 1574 | 167.1 | 1559 | 10393.3% |
+| OBJC | 17 | 1559 | 168.6 | 1542 | 9070.6% |
+| POWERSHELL | 14 | 1269 | 127.1 | 1255 | 8964.3% |
+| PYTHON | 19 | 1574 | 172.6 | 1555 | 8184.2% |
+| OCAML | 19 | 1537 | 166.4 | 1518 | 7989.5% |
+| TCL | 20 | 1572 | 184.5 | 1552 | 7760.0% |
+>>>>>>> Stashed changes
 
 
 ---
@@ -676,6 +750,10 @@ Individual Reports → Aggregation Script → Chart Generation (via UN) → Fina
 - `reports/4.2.9/perf.json` - 645 tests, generated 2026-01-23T10:05:34Z
 - `reports/4.3.0/perf.json` - 820 tests, generated 2026-02-06T15:25:06Z
 - `reports/4.3.1/perf.json` - 824 tests, generated 2026-02-08T11:44:58Z
+<<<<<<< Updated upstream
+=======
+- `reports/4.3.2/perf.json` - 860 tests, generated 2026-02-08T18:34:37Z
+>>>>>>> Stashed changes
 
 
 Each `perf.json` contains:
@@ -872,5 +950,9 @@ For questions about this methodology or to report issues:
 ---
 
 **Generated by UN Inception Performance Analysis Pipeline**
+<<<<<<< Updated upstream
 **Analysis Date:** 2026-02-08T06:46:35.375632
+=======
+**Analysis Date:** 2026-02-08T13:35:31.282306
+>>>>>>> Stashed changes
 **Report Version:** 1.0.0
