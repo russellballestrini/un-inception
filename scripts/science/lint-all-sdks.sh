@@ -88,7 +88,21 @@ fi
 # Perl SDKs
 echo "Perl SDKs:"
 if command -v perl &>/dev/null; then
-    lint_sdk "perl-sync" "perl -c '$CLIENTS_DIR/perl/sync/src/un.pl'" "$CLIENTS_DIR/perl/sync/src/un.pl"
+    # perl -c loads modules which may not be installed, so check for missing module errors
+    PERL_OUTPUT=$(perl -c "$CLIENTS_DIR/perl/sync/src/un.pl" 2>&1)
+    PERL_EXIT=$?
+    if [[ $PERL_EXIT -eq 0 ]]; then
+        echo "  [PASS] perl-sync"
+        PASSED=$((PASSED + 1))
+        DETAILS="$DETAILS\n    <testcase name=\"perl-sync\" classname=\"lint\" />"
+    elif echo "$PERL_OUTPUT" | grep -q "Can't locate"; then
+        echo "  [SKIP] perl-sync - missing Perl modules (LWP::UserAgent, etc.)"
+    else
+        echo "  [FAIL] perl-sync"
+        echo "    $PERL_OUTPUT" | head -3
+        FAILED=$((FAILED + 1))
+        DETAILS="$DETAILS\n    <testcase name=\"perl-sync\" classname=\"lint\"><failure message=\"Lint failed\">$PERL_OUTPUT</failure></testcase>"
+    fi
 else
     echo "  [SKIP] Perl not installed"
 fi
