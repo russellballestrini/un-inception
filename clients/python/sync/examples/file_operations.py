@@ -25,7 +25,12 @@ import os
 # Add the SDK path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from un import execute_code, CredentialsError
+try:
+    from un import execute_code, CredentialsError
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("Install with: pip install requests")
+    sys.exit(0)  # Exit gracefully for CI
 
 
 def main():

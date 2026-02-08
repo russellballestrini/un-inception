@@ -139,10 +139,16 @@ import hmac
 import json
 import os
 import time
-import requests
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    requests = None  # type: ignore
 
 
 API_BASE = "https://api.unsandbox.com"
@@ -152,6 +158,20 @@ LANGUAGES_CACHE_TTL = 3600  # 1 hour
 
 class CredentialsError(Exception):
     """Raised when credentials cannot be found or are invalid."""
+
+
+class DependencyError(Exception):
+    """Raised when a required dependency is not installed."""
+    pass
+
+
+def _check_requests():
+    """Check if requests is available, raise helpful error if not."""
+    if not REQUESTS_AVAILABLE:
+        raise DependencyError(
+            "requests is required for HTTP operations. "
+            "Install with: pip install requests"
+        )
     pass
 
 
@@ -266,7 +286,9 @@ def _make_request(
 
     Raises requests.RequestException on network errors.
     Raises ValueError if response is not valid JSON.
+    Raises DependencyError if requests is not installed.
     """
+    _check_requests()
     url = f"{API_BASE}{path}"
     timestamp = int(time.time())
     body = json.dumps(data) if data else ""
