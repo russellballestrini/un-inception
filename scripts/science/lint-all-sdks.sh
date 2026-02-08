@@ -89,8 +89,11 @@ fi
 echo "Perl SDKs:"
 if command -v perl &>/dev/null; then
     # perl -c loads modules which may not be installed, so check for missing module errors
+    # Capture output and status separately to avoid set -e triggering
+    set +e
     PERL_OUTPUT=$(perl -c "$CLIENTS_DIR/perl/sync/src/un.pl" 2>&1)
     PERL_EXIT=$?
+    set -e
     if [[ $PERL_EXIT -eq 0 ]]; then
         echo "  [PASS] perl-sync"
         PASSED=$((PASSED + 1))
