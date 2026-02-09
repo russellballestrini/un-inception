@@ -333,12 +333,12 @@ validate_examples_parallel() {
         fi
     done
 
-    # Wait for ALL remaining jobs to complete
-    for pid in "${pids[@]}"; do
-        wait "$pid" 2>/dev/null || true
-    done
+    # Wait for ALL background jobs to complete (not just tracked pids)
+    # Using bare 'wait' ensures we catch all subprocesses, even those
+    # whose pids were incorrectly removed from the array by wait -n
+    wait
 
-    # Wait a bit more to ensure all file writes are complete
+    # Extra safety margin for filesystem sync
     sleep 0.5
 
     # Aggregate results from result files (since subshell variables don't propagate)
