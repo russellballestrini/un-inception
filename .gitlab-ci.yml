@@ -157,6 +157,10 @@ science-validate-examples:
   needs:
     - build
   script:
+    # Set up Python venv with dependencies for example validation
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install --quiet requests aiohttp
     - bash scripts/validate-examples.sh
   artifacts:
     reports:
