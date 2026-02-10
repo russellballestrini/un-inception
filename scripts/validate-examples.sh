@@ -16,7 +16,6 @@
 # Environment:
 #   UNSANDBOX_PUBLIC_KEY - Public key for HMAC authentication
 #   UNSANDBOX_SECRET_KEY - Secret key for HMAC authentication
-#   (Legacy: UNSANDBOX_API_KEY - still supported for API mode)
 #   UNSANDBOX_API_URL - API endpoint (default: https://api.unsandbox.com)
 #   PARALLEL_JOBS - Number of parallel executions (default: 4)
 
@@ -48,6 +47,22 @@ NC='\033[0m' # No Color
 TOTAL_EXAMPLES=0
 TOTAL_VALIDATED=0
 TOTAL_FAILED=0
+
+# Check if we have valid API credentials
+has_api_credentials() {
+    [[ -n "$UNSANDBOX_PUBLIC_KEY" && -n "$UNSANDBOX_SECRET_KEY" ]]
+}
+
+# Generate HMAC signature for API request
+generate_hmac_signature() {
+    local method=$1
+    local path=$2
+    local body=$3
+    local timestamp=$4
+
+    local message="${timestamp}:${method}:${path}:${body}"
+    echo -n "$message" | openssl dgst -sha256 -hmac "$UNSANDBOX_SECRET_KEY" | awk '{print $2}'
+}
 declare -A LANGUAGE_STATS
 declare -A EXECUTION_TIMES
 
@@ -232,15 +247,15 @@ validate_example() {
     start_time=$(date +%s%N)
 
     # Determine execution method
-    # If no API key, try local execution for C and Python
-    if [[ -z "$UNSANDBOX_API_KEY" ]]; then
+    # If no credentials, try local execution for C and Python
+    if ! has_api_credentials; then
         case "$language" in
             c|python)
-                debug "No API key - attempting local execution for $language"
+                debug "No credentials - attempting local execution for $language"
                 execution_method="local"
                 ;;
             *)
-                log_warn "$example_file - UNSANDBOX_API_KEY not set, skipping execution"
+                log_warn "$example_file - No API credentials, skipping execution"
                 return 0
                 ;;
         esac
@@ -254,16 +269,21 @@ validate_example() {
         stdout_content="$api_response"
         stderr_content=""
     else
-        # API execution (default for all languages when key is available)
+        # API execution with HMAC authentication
         api_lang=$(get_api_language "$language")
+        local body="{\"language\": \"${api_lang}\", \"code\": $(echo "$code" | jq -R -s .)}"
+        local timestamp=$(date +%s)
+        local signature=$(generate_hmac_signature "POST" "/execute" "$body" "$timestamp")
 
         # Execute via API with timeout
         debug "Executing $example_file ($api_lang) via API"
         api_response=$(curl -s -X POST "${UNSANDBOX_API_URL}/execute" \
-            -H "Authorization: Bearer ${UNSANDBOX_API_KEY}" \
+            -H "Authorization: Bearer ${UNSANDBOX_PUBLIC_KEY}" \
+            -H "X-Timestamp: ${timestamp}" \
+            -H "X-Signature: ${signature}" \
             -H "Content-Type: application/json" \
             --max-time "$TIMEOUT_SECONDS" \
-            -d "{\"language\": \"${api_lang}\", \"code\": $(echo "$code" | jq -R -s .)}" \
+            -d "$body" \
             2>&1)
 
         exit_code=$?
@@ -670,11 +690,9 @@ main() {
     log "Results directory: $RESULTS_DIR"
     log "Parallel jobs: $PARALLEL_JOBS"
 
-    # Check for credentials (HMAC or legacy API key)
-    if [[ -n "$UNSANDBOX_PUBLIC_KEY" && -n "$UNSANDBOX_SECRET_KEY" ]]; then
+    # Check for HMAC credentials
+    if has_api_credentials; then
         log "HMAC credentials detected - examples will execute with API access"
-    elif [[ -n "$UNSANDBOX_API_KEY" ]]; then
-        log "Legacy API key detected - examples will execute with API access"
     else
         log_warn "No credentials set - examples will run locally (may exit early)"
     fi
