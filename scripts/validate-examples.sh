@@ -689,8 +689,11 @@ main() {
         TOTAL_EXAMPLES=$(echo "$examples" | wc -l)
         log "Found $TOTAL_EXAMPLES example files"
 
-        # Validate examples
+        # Validate examples (runs in subshell due to pipe)
         echo "$examples" | validate_examples_parallel
+
+        # Re-aggregate in main shell (subshell variables don't propagate)
+        aggregate_results
     fi
 
     # Generate reports
