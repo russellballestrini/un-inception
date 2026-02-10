@@ -14,7 +14,9 @@
 #   bash scripts/validate-examples.sh
 #
 # Environment:
-#   UNSANDBOX_API_KEY - API key for authentication (required)
+#   UNSANDBOX_PUBLIC_KEY - Public key for HMAC authentication
+#   UNSANDBOX_SECRET_KEY - Secret key for HMAC authentication
+#   (Legacy: UNSANDBOX_API_KEY - still supported for API mode)
 #   UNSANDBOX_API_URL - API endpoint (default: https://api.unsandbox.com)
 #   PARALLEL_JOBS - Number of parallel executions (default: 4)
 
@@ -668,9 +670,13 @@ main() {
     log "Results directory: $RESULTS_DIR"
     log "Parallel jobs: $PARALLEL_JOBS"
 
-    # Check for API key
-    if [[ -z "$UNSANDBOX_API_KEY" ]]; then
-        log_warn "UNSANDBOX_API_KEY not set - will scan for examples but skip execution"
+    # Check for credentials (HMAC or legacy API key)
+    if [[ -n "$UNSANDBOX_PUBLIC_KEY" && -n "$UNSANDBOX_SECRET_KEY" ]]; then
+        log "HMAC credentials detected - examples will execute with API access"
+    elif [[ -n "$UNSANDBOX_API_KEY" ]]; then
+        log "Legacy API key detected - examples will execute with API access"
+    else
+        log_warn "No credentials set - examples will run locally (may exit early)"
     fi
 
     # Find all examples
