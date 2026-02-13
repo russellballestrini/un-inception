@@ -243,6 +243,11 @@ validate_example() {
         return 1
     fi
 
+    # Strip shebang and PHP opening tag for PHP files (API uses -r flag)
+    if [[ "$language" == "php" ]]; then
+        code=$(echo "$code" | sed '1{/^#!/d}' | sed '1{/^<?php/d}')
+    fi
+
     # Measure execution time
     start_time=$(date +%s%N)
 
