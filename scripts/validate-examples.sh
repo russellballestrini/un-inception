@@ -276,7 +276,16 @@ validate_example() {
     else
         # API execution with HMAC authentication
         api_lang=$(get_api_language "$language")
-        local body="{\"language\": \"${api_lang}\", \"code\": $(echo "$code" | jq -R -s .)}"
+
+        # Build JSON body with credentials passed to sandbox via env
+        local body
+        body=$(jq -n \
+            --arg lang "$api_lang" \
+            --arg code "$code" \
+            --arg pk "$UNSANDBOX_PUBLIC_KEY" \
+            --arg sk "$UNSANDBOX_SECRET_KEY" \
+            '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}}')
+
         local timestamp=$(date +%s)
         local signature=$(generate_hmac_signature "POST" "/execute" "$body" "$timestamp")
 
