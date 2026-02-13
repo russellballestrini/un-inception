@@ -313,6 +313,20 @@ validate_example() {
         TOTAL_VALIDATED=$((TOTAL_VALIDATED + 1))
     else
         log_fail "$example_file ($language) - exit code $exit_code [$execution_method]"
+        # Always show error details for failures
+        if [[ -n "$stderr_content" && "$stderr_content" != "null" ]]; then
+            echo "  stderr: ${stderr_content:0:200}" >&2
+        fi
+        if [[ -n "$stdout_content" && "$stdout_content" != "null" ]]; then
+            echo "  stdout: ${stdout_content:0:200}" >&2
+        fi
+        if [[ -n "$api_response" && "$execution_method" == "api" ]]; then
+            # Check for API error messages
+            local error_msg=$(echo "$api_response" | jq -r '.error // .message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" ]]; then
+                echo "  API error: $error_msg" >&2
+            fi
+        fi
         if [[ -n "$stderr_content" ]]; then
             debug "stderr: $stderr_content"
         fi
