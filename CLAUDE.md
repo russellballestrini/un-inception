@@ -73,6 +73,28 @@ On 2026-01-28, we discovered our "100% pass rate" was a lie:
 
 **Never**: `PASS (API issue)`, `PASS (timeout)`, `PASS (sandbox state)`
 
+### Green Christmas Tree Policy
+
+**Every failure stays visible until fixed.** No skipping. No `allow_failure: true` to hide problems. No workarounds.
+
+The goal is a **green christmas tree** - all tests passing, all examples validating, all lights green. Until then:
+
+1. **Failures are features** - They tell us what to fix next
+2. **Red stays red** - Don't mask failures to make CI "pass"
+3. **Iterate until green** - Keep fixing until everything works
+4. **Log errors loudly** - Show stderr, stdout, API errors on every failure
+
+When CI fails, the response is:
+- ❌ NOT: "Let's skip this test" or "Let's allow this to fail"
+- ✅ YES: "Let's fix this test" or "Let's fix the code"
+
+**Current known issues to fix (2026-02-13):**
+- SDK client examples fail in sandbox (no credentials, no SDK installed)
+- PHP examples have `<?php` tag parsing issue
+- Go/JS/Java examples can't find SDK modules in sandbox
+
+These are real defects. They stay red until fixed.
+
 ---
 
 ## ⚠️ CRITICAL: NEVER USE RAW LXC COMMANDS
