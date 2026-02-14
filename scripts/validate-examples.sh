@@ -297,21 +297,21 @@ validate_example() {
             done
         fi
 
-        # Build input_files JSON array
+        # Build input_files JSON array - put SDK files in src/ subdirectory
         if [[ ${#sdk_files[@]} -gt 0 ]]; then
             input_files_json=$(for f in "${sdk_files[@]}"; do
-                local fname=$(basename "$f")
+                local fname="src/$(basename "$f")"  # Put in src/ subdir to match import paths
                 jq -n --arg fn "$fname" --rawfile content "$f" '{filename: $fn, content: $content}'
             done | jq -s '.')
 
-            # Prepend code to add /tmp to import path so SDK can be found
+            # Prepend code to add /tmp/src to import path so SDK can be found
             case "$language" in
                 python)
-                    code="import sys; sys.path.insert(0, '/tmp')
+                    code="import sys; sys.path.insert(0, '/tmp/src')
 $code"
                     ;;
                 ruby)
-                    code="\$LOAD_PATH.unshift('/tmp')
+                    code="\$LOAD_PATH.unshift('/tmp/src')
 $code"
                     ;;
                 javascript|typescript)

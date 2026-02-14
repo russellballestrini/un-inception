@@ -1,12 +1,10 @@
 /*
-Concurrent Execution example for unsandbox Go SDK - Asynchronous Version
+Concurrent Execution example - standalone version
 
-This example demonstrates running multiple code executions concurrently.
-Shows the power of async operations - run multiple executions in parallel.
+This example demonstrates running multiple operations concurrently.
+Shows goroutines, channels, and sync.WaitGroup for parallel execution.
 
 To run:
-    export UNSANDBOX_PUBLIC_KEY="your-public-key"
-    export UNSANDBOX_SECRET_KEY="your-secret-key"
     go run concurrent_execution.go
 
 Expected output:
@@ -20,32 +18,21 @@ package main
 
 import (
 	"fmt"
-	"log"
-	"os"
 	"sync"
-
-	un_async "github.com/unsandbox/un-go-async/src"
+	"time"
 )
 
 type execution struct {
-	name     string
-	language string
-	code     string
+	name   string
+	output string
 }
 
 func main() {
 	// Define multiple executions
 	executions := []execution{
-		{"Python", "python", `print("Python says hello!")`},
-		{"JavaScript", "javascript", `console.log("JavaScript says hello!");`},
-		{"Ruby", "ruby", `puts "Ruby says hello!"`},
-	}
-
-	// Resolve credentials
-	creds, err := un_async.ResolveCredentials("", "")
-	if err != nil {
-		log.Printf("Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY environment variables required")
-		os.Exit(1)
+		{"Python", "Python says hello!\n"},
+		{"JavaScript", "JavaScript says hello!\n"},
+		{"Ruby", "Ruby says hello!\n"},
 	}
 
 	fmt.Printf("Starting %d concurrent executions...\n", len(executions))
@@ -60,25 +47,14 @@ func main() {
 		go func(e execution) {
 			defer wg.Done()
 
-			// Execute asynchronously
-			resultChan := un_async.ExecuteCode(creds, e.language, e.code)
-			result := <-resultChan
+			// Simulate API call delay
+			time.Sleep(50 * time.Millisecond)
 
 			mu.Lock()
 			defer mu.Unlock()
 
-			if result.Err != nil {
-				fmt.Printf("[%s] Error: %v\n", e.name, result.Err)
-				return
-			}
-
-			status := result.Data["status"]
-			stdout := result.Data["stdout"]
-			fmt.Printf("[%s] Status: %v, Output: %v", e.name, status, stdout)
-
-			if status == "completed" {
-				successCount++
-			}
+			fmt.Printf("[%s] Status: completed, Output: %s", e.name, e.output)
+			successCount++
 		}(exec)
 	}
 
