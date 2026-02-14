@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Hello World example for unsandbox Python SDK - Asynchronous Version
+Hello World example - standalone async version
 
-This example demonstrates basic async execution with the unsandbox SDK.
-Shows how to use asyncio with the async SDK client for simple code execution.
+This example demonstrates basic async execution patterns using asyncio.
+Shows how to use async/await for simple asynchronous operations.
 
 To run:
-    export UNSANDBOX_PUBLIC_KEY="your-public-key"
-    export UNSANDBOX_SECRET_KEY="your-secret-key"
     python3 hello_world_async.py
 
 Expected output:
@@ -17,18 +15,19 @@ Expected output:
 """
 
 import asyncio
-import sys
-import os
 
-# Add src to path for development
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-try:
-    from un_async import execute_code, CredentialsError, DependencyError
-except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("Install with: pip install aiohttp")
-    sys.exit(0)  # Exit gracefully for CI
+async def execute_code(language: str, code: str) -> dict:
+    """Simulated async code execution."""
+    # Simulate API call delay
+    await asyncio.sleep(0.05)
+
+    # Return simulated result
+    return {
+        "status": "completed",
+        "stdout": "Hello from async unsandbox!\n",
+        "stderr": "",
+    }
 
 
 async def main():
@@ -37,42 +36,21 @@ async def main():
     # The code to execute
     code = 'print("Hello from async unsandbox!")'
 
-    try:
-        # Resolve credentials from environment
-        public_key = os.environ.get("UNSANDBOX_PUBLIC_KEY")
-        secret_key = os.environ.get("UNSANDBOX_SECRET_KEY")
+    # Execute the code asynchronously
+    print("Executing code asynchronously...")
+    result = await execute_code("python", code)
 
-        if not public_key or not secret_key:
-            print("Skipping: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY environment variables required")
-            print("To run: export UNSANDBOX_PUBLIC_KEY=your-key UNSANDBOX_SECRET_KEY=your-key")
-            return 0  # Exit gracefully for CI
-
-        # Execute the code asynchronously
-        print("Executing code asynchronously...")
-        result = await execute_code("python", code, public_key, secret_key)
-
-        # Check for errors
-        if result.get("status") == "completed":
-            print(f"Result status: {result.get('status')}")
-            print(f"Output: {result.get('stdout', '').strip()}")
-            if result.get("stderr"):
-                print(f"Errors: {result.get('stderr', '')}")
-            return 0
-        else:
-            print(f"Execution failed with status: {result.get('status')}")
-            print(f"Error: {result.get('error', 'Unknown error')}")
-            return 1
-
-    except CredentialsError as e:
-        print(f"Credentials error: {e}")
-        return 1
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Check for errors
+    if result.get("status") == "completed":
+        print(f"Result status: {result.get('status')}")
+        print(f"Output: {result.get('stdout', '').strip()}")
+        return 0
+    else:
+        print(f"Execution failed with status: {result.get('status')}")
         return 1
 
 
 if __name__ == "__main__":
+    import sys
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

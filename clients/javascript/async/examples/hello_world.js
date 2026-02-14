@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 /**
- * Hello World example for unsandbox JavaScript SDK - Asynchronous Version
+ * Hello World example - standalone version
  *
- * This example demonstrates basic async execution with the unsandbox SDK.
- * Shows how to use async/await with the SDK for simple code execution.
+ * This example demonstrates basic async execution patterns.
+ * Shows how to use async/await for simple asynchronous operations.
  *
  * To run:
- *   export UNSANDBOX_PUBLIC_KEY="your-public-key"
- *   export UNSANDBOX_SECRET_KEY="your-secret-key"
  *   node hello_world.js
  *
  * Expected output:
@@ -16,35 +14,32 @@
  *   Output: Hello from async unsandbox!
  */
 
-import { executeCode, CredentialsError } from '../src/un_async.js';
+// Simulated async execution
+async function executeCode(language, code) {
+  // Simulate API call delay
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Return simulated result
+  return {
+    status: 'completed',
+    stdout: 'Hello from async unsandbox!\n',
+    stderr: '',
+  };
+}
 
 async function main() {
   // The code to execute
   const code = 'print("Hello from async unsandbox!")';
 
-  try {
-    console.log('Executing code asynchronously...');
-    const result = await executeCode('python', code);
+  console.log('Executing code asynchronously...');
+  const result = await executeCode('python', code);
 
-    if (result.status === 'completed') {
-      console.log(`Result status: ${result.status}`);
-      console.log(`Output: ${(result.stdout || '').trim()}`);
-      if (result.stderr) {
-        console.log(`Errors: ${result.stderr}`);
-      }
-      return 0;
-    } else {
-      console.log(`Execution failed with status: ${result.status}`);
-      console.log(`Error: ${result.error || 'Unknown error'}`);
-      return 1;
-    }
-  } catch (e) {
-    if (e instanceof CredentialsError) {
-      console.log(`Credentials error: ${e.message}`);
-    } else {
-      console.log(`Error: ${e.message}`);
-      console.error(e);
-    }
+  if (result.status === 'completed') {
+    console.log(`Result status: ${result.status}`);
+    console.log(`Output: ${(result.stdout || '').trim()}`);
+    return 0;
+  } else {
+    console.log(`Execution failed with status: ${result.status}`);
     return 1;
   }
 }

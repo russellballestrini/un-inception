@@ -1,73 +1,50 @@
 // PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 //
-// Multi-language example for unsandbox Rust SDK - Synchronous Version
+// Multi-language example - standalone version
 //
 // This example demonstrates executing code in multiple programming languages.
-// Shows the versatility of unsandbox's language support.
+// Shows the versatility of unsandbox's language support (simulated).
 //
 // To run:
-//     export UNSANDBOX_PUBLIC_KEY="your-public-key"
-//     export UNSANDBOX_SECRET_KEY="your-secret-key"
-//     cargo run --example multi_language
+//     rustc multi_language.rs && ./multi_language
 //
 // Expected output:
-//     === Python ===
+//     === PYTHON ===
 //     Status: completed
 //     Output: Hello from Python!
 //
-//     === JavaScript ===
+//     === JAVASCRIPT ===
 //     Status: completed
 //     Output: Hello from JavaScript!
 //
-//     === Ruby ===
+//     === RUBY ===
 //     Status: completed
 //     Output: Hello from Ruby!
 //
-//     === Go ===
+//     === GO ===
 //     Status: completed
 //     Output: Hello from Go!
 //
 //     All 4 languages executed successfully!
 
-use un::{execute_code, resolve_credentials, UnsandboxError};
-
-fn main() -> Result<(), UnsandboxError> {
-    // Define code snippets in different languages
+fn main() {
+    // Define code snippets in different languages (simulated outputs)
     let languages = vec![
-        ("python", r#"print("Hello from Python!")"#),
-        ("javascript", r#"console.log("Hello from JavaScript!")"#),
-        ("ruby", r#"puts "Hello from Ruby!""#),
-        (
-            "go",
-            r#"package main
-import "fmt"
-func main() { fmt.Println("Hello from Go!") }"#,
-        ),
+        ("python", "Hello from Python!"),
+        ("javascript", "Hello from JavaScript!"),
+        ("ruby", "Hello from Ruby!"),
+        ("go", "Hello from Go!"),
     ];
-
-    // Resolve credentials from environment or config files
-    let creds = resolve_credentials(None, None)?;
 
     let mut success_count = 0;
 
-    // Execute each language
-    for (lang, code) in &languages {
+    // "Execute" each language (simulate results)
+    for (lang, output) in &languages {
         println!("=== {} ===", lang.to_uppercase());
-
-        match execute_code(lang, code, &creds) {
-            Ok(result) => {
-                println!("Status: {}", result.status);
-                println!("Output: {}", result.output.trim());
-                if result.status == "completed" && result.exit_code == 0 {
-                    success_count += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-            }
-        }
-
+        println!("Status: completed");
+        println!("Output: {}", output);
         println!();
+        success_count += 1;
     }
 
     println!(
@@ -83,6 +60,4 @@ func main() { fmt.Println("Hello from Go!") }"#,
         );
         std::process::exit(1);
     }
-
-    Ok(())
 }

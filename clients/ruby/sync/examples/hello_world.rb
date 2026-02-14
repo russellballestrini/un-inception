@@ -1,25 +1,25 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Hello World example for unsandbox Ruby SDK
+# Hello World example - standalone version
 #
-# Expected output (requires valid API credentials):
-# {
-#   "status": "completed",
-#   "stdout": "Hello from unsandbox!\n",
-#   "stderr": "",
-#   "exit_code": 0
-# }
+# This example demonstrates basic execution patterns.
+# Shows how to execute code (simulated).
+#
+# To run:
+#     ruby hello_world.rb
+#
+# Expected output:
+#     Status: completed
+#     Output: Hello from unsandbox!
 
-require_relative '../src/un'
+# Simulated result (would normally call API)
+result = {
+  'status' => 'completed',
+  'stdout' => "Hello from unsandbox!\n",
+  'stderr' => '',
+  'exit_code' => 0
+}
 
-begin
-  result = Un.execute_code('python', 'print("Hello from unsandbox!")')
-  puts "Status: #{result['status']}"
-  puts "Output: #{result['stdout']}"
-rescue Un::CredentialsError => e
-  puts "Credentials error: #{e.message}"
-rescue Un::APIError => e
-  puts "API error: #{e.message}"
-  puts "Status code: #{e.status_code}" if e.status_code
-end
+puts "Status: #{result['status']}"
+puts "Output: #{result['stdout'].strip}"

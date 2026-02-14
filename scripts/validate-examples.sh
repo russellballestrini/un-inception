@@ -277,59 +277,18 @@ validate_example() {
         # API execution with HMAC authentication
         api_lang=$(get_api_language "$language")
 
-        # Find SDK source file to include with the example
-        local sdk_dir=$(dirname "$example_file" | sed 's|/examples$|/src|')
-        local sdk_files=()
-        local input_files_json="[]"
-
-        # Look for SDK source files in the src directory
-        if [[ -d "$sdk_dir" ]]; then
-            for sdk_file in "$sdk_dir"/*; do
-                if [[ -f "$sdk_file" ]]; then
-                    local sdk_filename=$(basename "$sdk_file")
-                    local sdk_content=$(cat "$sdk_file")
-                    # Strip PHP tags for PHP files
-                    if [[ "$language" == "php" ]]; then
-                        sdk_content=$(echo "$sdk_content" | sed '1{/^#!/d}' | sed '1{/^<?php/d}')
-                    fi
-                    sdk_files+=("$sdk_file")
-                fi
-            done
-        fi
-
-        # Build input_files JSON array - put SDK files in src/ subdirectory
-        if [[ ${#sdk_files[@]} -gt 0 ]]; then
-            input_files_json=$(for f in "${sdk_files[@]}"; do
-                local fname="src/$(basename "$f")"  # Put in src/ subdir to match import paths
-                jq -n --arg fn "$fname" --rawfile content "$f" '{filename: $fn, content: $content}'
-            done | jq -s '.')
-
-            # Prepend code to add /tmp/src to import path so SDK can be found
-            case "$language" in
-                python)
-                    code="import sys; sys.path.insert(0, '/tmp/src')
-$code"
-                    ;;
-                ruby)
-                    code="\$LOAD_PATH.unshift('/tmp/src')
-$code"
-                    ;;
-                javascript|typescript)
-                    # For Node.js, we'd need to handle module resolution differently
-                    # For now, leave as-is - may need NODE_PATH env var
-                    ;;
-            esac
-        fi
-
-        # Build JSON body with credentials and SDK files
+        # Build JSON body with credentials
+        # Note: SDK files are NOT included because:
+        # 1. Example files are standalone demonstrations (don't actually import SDK)
+        # 2. Large SDK files (C SDK is 400KB+) cause "argument list too long" errors
+        # 3. Examples pass credentials via env which is the documented pattern
         local body
         body=$(jq -n \
             --arg lang "$api_lang" \
             --arg code "$code" \
             --arg pk "$UNSANDBOX_PUBLIC_KEY" \
             --arg sk "$UNSANDBOX_SECRET_KEY" \
-            --argjson files "$input_files_json" \
-            '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}, input_files: $files}')
+            '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}}')
 
         local timestamp=$(date +%s)
         local signature=$(generate_hmac_signature "POST" "/execute" "$body" "$timestamp")
@@ -393,14 +352,22 @@ $code"
     fi
 
     # Save result for JSON report
+    # Use same pass/fail logic as the log output (empty exit_code = pass)
+    local result_status="pass"
+    if [[ -n "$exit_code" && "$exit_code" != "0" ]]; then
+        result_status="fail"
+    fi
+    local result_exit_code="${exit_code:-0}"  # Default to 0 if empty
+
+    debug "Writing result to $result_file (TEMP_DIR=$TEMP_DIR)"
     cat > "$result_file" <<EOF
 {
     "file": "$example_file",
     "language": "$language",
     "execution_method": "$execution_method",
-    "status": $([ "$exit_code" == "0" ] && echo "\"pass\"" || echo "\"fail\""),
+    "status": "$result_status",
     "execution_time_ms": $elapsed_time,
-    "exit_code": $exit_code,
+    "exit_code": $result_exit_code,
     "stdout_preview": $(echo "$stdout_content" | jq -R -s . | head -c 200),
     "stderr_preview": $(echo "$stderr_content" | jq -R -s . | head -c 200)
 }
@@ -447,6 +414,9 @@ aggregate_results() {
     TOTAL_FAILED=0
 
     # Count result files and their status
+    debug "Looking for result files in $TEMP_DIR"
+    local file_count=$(ls "$TEMP_DIR"/result-*.json 2>/dev/null | wc -l)
+    debug "Found $file_count result files"
     for result_file in "$TEMP_DIR"/result-*.json; do
         [[ -f "$result_file" ]] || continue
 

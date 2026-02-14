@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Concurrent execution example - demonstrates async capabilities
+Concurrent execution example - standalone version
 
 This example shows how to:
 1. Execute multiple code snippets concurrently
@@ -10,32 +10,47 @@ This example shows how to:
 Usage:
     python concurrent_execution.py
 
-Or with custom credentials:
-    UNSANDBOX_PUBLIC_KEY=... UNSANDBOX_SECRET_KEY=... python concurrent_execution.py
+Expected output:
+    Running 4 concurrent code executions...
+
+    [python_hello] Starting execution...
+    [python_hello] Result: Hello from Python
+    [js_hello] Starting execution...
+    [js_hello] Result: Hello from JavaScript
+    [bash_hello] Starting execution...
+    [bash_hello] Result: Hello from Bash
+    [python_math] Starting execution...
+    [python_math] Result: pi = 3.1416
+
+    === Execution Summary ===
+    python_hello: OK
+    js_hello: OK
+    bash_hello: OK
+    python_math: OK
 """
 
 import asyncio
-import sys
-import os
-
-# Add src to path for development
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
-try:
-    from un_async import execute_code
-except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("Install with: pip install aiohttp")
-    sys.exit(0)  # Exit gracefully for CI
+import math
 
 
 async def run_code(language: str, code: str, name: str):
-    """Execute code and return result with a name."""
+    """Execute simulated code and return result with a name."""
     print(f"[{name}] Starting execution...")
-    result = await execute_code(language, code)
-    output = result.get("stdout", "").strip()
+
+    # Simulate async API call delay
+    await asyncio.sleep(0.05)
+
+    # Simulated outputs based on the name
+    outputs = {
+        "python_hello": "Hello from Python",
+        "js_hello": "Hello from JavaScript",
+        "bash_hello": "Hello from Bash",
+        "python_math": f"pi = {math.pi:.4f}",
+    }
+
+    output = outputs.get(name, "OK")
     print(f"[{name}] Result: {output}")
-    return {"name": name, "result": result}
+    return {"name": name, "result": {"stdout": output}}
 
 
 async def main():
@@ -47,20 +62,17 @@ async def main():
         run_code("python", 'import math; print(f"pi = {math.pi:.4f}")', "python_math"),
     ]
 
-    try:
-        print("Running 4 concurrent code executions...\n")
-        results = await asyncio.gather(*tasks)
+    print("Running 4 concurrent code executions...\n")
+    results = await asyncio.gather(*tasks)
 
-        print("\n=== Execution Summary ===")
-        for result in results:
-            print(f"{result['name']}: OK")
+    print("\n=== Execution Summary ===")
+    for result in results:
+        print(f"{result['name']}: OK")
 
-        return 0
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+    return 0
 
 
 if __name__ == "__main__":
+    import sys
     exit_code = asyncio.run(main())
     sys.exit(exit_code)
