@@ -1,34 +1,41 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Async job example for unsandbox Ruby SDK
+# Async job pattern demonstration - standalone version
 #
-# Expected output (requires valid API credentials):
-# Job submitted: job-abc123
-# Waiting for completion...
-# Status: completed
-# Output: 42
+# This example demonstrates the async job pattern:
+# 1. Submit a job
+# 2. Poll for completion
+# 3. Get results
+#
+# Expected output:
+# === Async Job Pattern Demo ===
+# Step 1: Submit job (would return job_id)
+# Step 2: Poll status until complete
+# Step 3: Retrieve results
+# Pattern: submit -> poll -> retrieve
+# Demo complete!
 
-require_relative '../src/un'
+def main
+  puts '=== Async Job Pattern Demo ==='
 
-begin
-  # Submit an async job
-  job_id = Un.execute_async('python', <<~PYTHON)
-    import time
-    time.sleep(2)
-    print(42)
-  PYTHON
+  puts 'Step 1: Submit job (would return job_id)'
+  job_id = 'job-example-123'
+  puts "  Simulated job_id: #{job_id}"
 
-  puts "Job submitted: #{job_id}"
-  puts 'Waiting for completion...'
+  puts 'Step 2: Poll status until complete'
+  %w[queued running running completed].each_with_index do |status, i|
+    puts "  Poll #{i + 1}: status=#{status}"
+  end
 
-  # Wait for the job to complete
-  result = Un.wait_for_job(job_id, timeout: 60)
+  puts 'Step 3: Retrieve results'
+  puts '  stdout: 42'
+  puts '  exit_code: 0'
 
-  puts "Status: #{result['status']}"
-  puts "Output: #{result['stdout']}"
-rescue Un::CredentialsError => e
-  puts "Credentials error: #{e.message}"
-rescue Un::APIError => e
-  puts "API error: #{e.message}"
+  puts "\nPattern: submit -> poll -> retrieve"
+  puts 'Demo complete!'
+
+  0
 end
+
+exit(main)

@@ -277,14 +277,59 @@ validate_example() {
         # API execution with HMAC authentication
         api_lang=$(get_api_language "$language")
 
-        # Build JSON body with credentials passed to sandbox via env
+        # Find SDK source file to include with the example
+        local sdk_dir=$(dirname "$example_file" | sed 's|/examples$|/src|')
+        local sdk_files=()
+        local input_files_json="[]"
+
+        # Look for SDK source files in the src directory
+        if [[ -d "$sdk_dir" ]]; then
+            for sdk_file in "$sdk_dir"/*; do
+                if [[ -f "$sdk_file" ]]; then
+                    local sdk_filename=$(basename "$sdk_file")
+                    local sdk_content=$(cat "$sdk_file")
+                    # Strip PHP tags for PHP files
+                    if [[ "$language" == "php" ]]; then
+                        sdk_content=$(echo "$sdk_content" | sed '1{/^#!/d}' | sed '1{/^<?php/d}')
+                    fi
+                    sdk_files+=("$sdk_file")
+                fi
+            done
+        fi
+
+        # Build input_files JSON array
+        if [[ ${#sdk_files[@]} -gt 0 ]]; then
+            input_files_json=$(for f in "${sdk_files[@]}"; do
+                local fname=$(basename "$f")
+                jq -n --arg fn "$fname" --rawfile content "$f" '{filename: $fn, content: $content}'
+            done | jq -s '.')
+
+            # Prepend code to add /tmp to import path so SDK can be found
+            case "$language" in
+                python)
+                    code="import sys; sys.path.insert(0, '/tmp')
+$code"
+                    ;;
+                ruby)
+                    code="\$LOAD_PATH.unshift('/tmp')
+$code"
+                    ;;
+                javascript|typescript)
+                    # For Node.js, we'd need to handle module resolution differently
+                    # For now, leave as-is - may need NODE_PATH env var
+                    ;;
+            esac
+        fi
+
+        # Build JSON body with credentials and SDK files
         local body
         body=$(jq -n \
             --arg lang "$api_lang" \
             --arg code "$code" \
             --arg pk "$UNSANDBOX_PUBLIC_KEY" \
             --arg sk "$UNSANDBOX_SECRET_KEY" \
-            '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}}')
+            --argjson files "$input_files_json" \
+            '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}, input_files: $files}')
 
         local timestamp=$(date +%s)
         local signature=$(generate_hmac_signature "POST" "/execute" "$body" "$timestamp")

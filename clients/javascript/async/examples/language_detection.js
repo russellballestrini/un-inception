@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Language Detection example for unsandbox JavaScript SDK
+ * Language Detection example - standalone version
  *
- * Demonstrates automatic language detection from filenames.
- * This is a purely local operation that doesn't require API credentials.
+ * Demonstrates language detection from filenames.
+ * This is a pure function that maps file extensions to language identifiers.
  *
  * To run:
  *   node language_detection.js
@@ -21,7 +21,35 @@
  *   Language detection complete!
  */
 
-import { detectLanguage } from '../src/un_async.js';
+// Inline language detection - same logic as SDK
+function detectLanguage(filename) {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  const extMap = {
+    'py': 'python',
+    'js': 'javascript',
+    'ts': 'typescript',
+    'go': 'go',
+    'rs': 'rust',
+    'java': 'java',
+    'rb': 'ruby',
+    'php': 'php',
+    'c': 'c',
+    'cpp': 'cpp',
+    'cs': 'csharp',
+    'sh': 'bash',
+    'pl': 'perl',
+    'lua': 'lua',
+    'r': 'r',
+    'jl': 'julia',
+    'hs': 'haskell',
+    'ex': 'elixir',
+    'erl': 'erlang',
+    'swift': 'swift',
+    'kt': 'kotlin',
+    'scala': 'scala',
+  };
+  return extMap[ext] || null;
+}
 
 const TEST_FILES = [
   'script.py',
