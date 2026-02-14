@@ -1,15 +1,15 @@
 {
     "report_type": "examples_validation",
-    "timestamp": "2026-01-15T21:18:04Z",
-    "timestamp_readable": "2026-01-15 21:18:04 UTC",
+    "timestamp": "2026-02-14T14:39:10Z",
+    "timestamp_readable": "2026-02-14 14:39:10 UTC",
     "summary": {
-        "total_examples": 21,
-        "total_validated": 0,
+        "total_examples": 46,
+        "total_validated": 41,
         "total_failed": 0,
-        "success_rate": "0%"
+        "success_rate": "100.0%"
     },
     "language_stats": [
-
+      {"language": "java", "validated": 6, "total_time_ms": 3015, "avg_time_ms": 502},      {"language": "ruby", "validated": 4, "total_time_ms": 765, "avg_time_ms": 191},      {"language": "c", "validated": 1, "total_time_ms": 347, "avg_time_ms": 347},      {"language": "python", "validated": 14, "total_time_ms": 9157, "avg_time_ms": 654},      {"language": "php", "validated": 4, "total_time_ms": 5013, "avg_time_ms": 1253},      {"language": "go", "validated": 4, "total_time_ms": 841, "avg_time_ms": 210},      {"language": "rust", "validated": 4, "total_time_ms": 780, "avg_time_ms": 195},      {"language": "javascript", "validated": 4, "total_time_ms": 701, "avg_time_ms": 175}
     ],
     "notes": "Examples validated through unsandbox API. Each example executed with 30s timeout."
 }

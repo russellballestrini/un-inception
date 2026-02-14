@@ -7,7 +7,7 @@
 
 [package]
 name = "un-async"
-version = "4.3.3"
+version = "4.3.4"
 edition = "2021"
 authors = ["unsandbox.com"]
 description = "Asynchronous Rust SDK for unsandbox.com secure code execution API"
