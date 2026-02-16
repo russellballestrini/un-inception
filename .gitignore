@@ -40,6 +40,8 @@ Thumbs.db
 /output/
 __pycache__/
 *.pyc
+science-results/
+science-results.xml
 clients/c/un
 clients/c/examples/fibonacci
 clients/c/examples/hello_world

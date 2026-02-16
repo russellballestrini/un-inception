@@ -143,6 +143,87 @@ extract_expected_output() {
         head -1
 }
 
+# Helper: Get SDK source directory from example file path
+# clients/python/sync/examples/foo.py -> clients/python/sync/src/
+get_sdk_src_dir() {
+    local example_file=$1
+    local src_dir
+    # Replace /examples/ with /src/ in the path
+    src_dir=$(echo "$example_file" | sed 's|/examples/.*|/src/|')
+    if [[ -d "$src_dir" ]]; then
+        echo "$src_dir"
+    fi
+}
+
+# Helper: Build input_files JSON array from SDK source directory
+# Returns JSON array of {filename, content} objects with base64-encoded content
+build_input_files_json() {
+    local src_dir=$1
+    local language=$2
+    local input_files="["
+    local first=true
+
+    # Only include relevant source files (skip __pycache__, .pyc, etc.)
+    while IFS= read -r -d '' src_file; do
+        local basename
+        basename=$(basename "$src_file")
+
+        # Skip compiled/cache files
+        case "$basename" in
+            *.pyc|*.pyo|*.class|*.o) continue ;;
+        esac
+
+        # Skip __pycache__ directories
+        [[ "$src_file" == *__pycache__* ]] && continue
+
+        local b64_content
+        b64_content=$(base64 -w0 "$src_file" 2>/dev/null || base64 "$src_file" 2>/dev/null)
+
+        if [[ "$first" == "true" ]]; then
+            first=false
+        else
+            input_files+=","
+        fi
+        input_files+="{\"filename\":\"$basename\",\"content\":\"$b64_content\"}"
+    done < <(find "$src_dir" -maxdepth 1 -type f -print0 2>/dev/null)
+
+    input_files+="]"
+    echo "$input_files"
+}
+
+# Helper: Rewrite import paths in example code so they resolve to /tmp/input/
+# The API places input_files at /tmp/input/<filename>
+rewrite_import_paths() {
+    local code=$1
+    local language=$2
+
+    case "$language" in
+        python)
+            # Rewrite sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+            # to sys.path.insert(0, '/tmp/input')
+            code=$(echo "$code" | sed "s|os\.path\.join(os\.path\.dirname(__file__), \"\.\.\", \"src\")|'/tmp/input'|g")
+            code=$(echo "$code" | sed "s|os\.path\.join(os\.path\.dirname(__file__), '\.\.', 'src')|'/tmp/input'|g")
+            ;;
+        javascript)
+            # Rewrite from '../src/un_async.js' to '/tmp/input/un_async.js'
+            # Rewrite from '../src/un.js' to '/tmp/input/un.js'
+            code=$(echo "$code" | sed "s|from ['\"]\.\.\/src\/\([^'\"]*\)['\"]|from '/tmp/input/\1'|g")
+            # Also handle require('../src/...')
+            code=$(echo "$code" | sed "s|require(['\"]\.\.\/src\/\([^'\"]*\)['\"])|require('/tmp/input/\1')|g")
+            ;;
+        ruby)
+            # Rewrite require_relative '../src/un' to require '/tmp/input/un'
+            code=$(echo "$code" | sed "s|require_relative ['\"]\.\.\/src\/\([^'\"]*\)['\"]|require '/tmp/input/\1'|g")
+            ;;
+        php)
+            # Rewrite __DIR__ . '/../src/un.php' to '/tmp/input/un.php'
+            code=$(echo "$code" | sed "s|__DIR__ \. ['\"]\/\.\.\/src\/\([^'\"]*\)['\"]|'/tmp/input/\1'|g")
+            ;;
+    esac
+
+    echo "$code"
+}
+
 # Helper: Parse JSON response safely
 safe_json_extract() {
     local json=$1
@@ -277,31 +358,51 @@ validate_example() {
         # API execution with HMAC authentication
         api_lang=$(get_api_language "$language")
 
-        # Build JSON body with credentials
-        # Note: SDK files are NOT included because:
-        # 1. Example files are standalone demonstrations (don't actually import SDK)
-        # 2. Large SDK files (C SDK is 400KB+) cause "argument list too long" errors
-        # 3. Examples pass credentials via env which is the documented pattern
+        # Detect SDK source directory and build input_files if available
+        local sdk_src_dir
+        sdk_src_dir=$(get_sdk_src_dir "$example_file")
+        local input_files_json=""
+
+        if [[ -n "$sdk_src_dir" ]]; then
+            debug "SDK source dir: $sdk_src_dir"
+            # Rewrite import paths in the code to use /tmp/input/
+            code=$(rewrite_import_paths "$code" "$language")
+            # Build input_files JSON with base64-encoded SDK files
+            input_files_json=$(build_input_files_json "$sdk_src_dir" "$language")
+            debug "Built input_files with $(echo "$input_files_json" | jq 'length' 2>/dev/null || echo '?') files"
+        fi
+
+        # Build JSON body with credentials and optional input_files
         local body
-        body=$(jq -n \
-            --arg lang "$api_lang" \
-            --arg code "$code" \
-            --arg pk "$UNSANDBOX_PUBLIC_KEY" \
-            --arg sk "$UNSANDBOX_SECRET_KEY" \
-            '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}}')
+        if [[ -n "$input_files_json" && "$input_files_json" != "[]" ]]; then
+            body=$(jq -n \
+                --arg lang "$api_lang" \
+                --arg code "$code" \
+                --arg pk "$UNSANDBOX_PUBLIC_KEY" \
+                --arg sk "$UNSANDBOX_SECRET_KEY" \
+                --argjson input_files "$input_files_json" \
+                '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}, input_files: $input_files}')
+        else
+            body=$(jq -n \
+                --arg lang "$api_lang" \
+                --arg code "$code" \
+                --arg pk "$UNSANDBOX_PUBLIC_KEY" \
+                --arg sk "$UNSANDBOX_SECRET_KEY" \
+                '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}}')
+        fi
 
         local timestamp=$(date +%s)
         local signature=$(generate_hmac_signature "POST" "/execute" "$body" "$timestamp")
 
-        # Execute via API with timeout
+        # Execute via API with timeout - pipe body via stdin to avoid arg length limits
         debug "Executing $example_file ($api_lang) via API"
-        api_response=$(curl -s -X POST "${UNSANDBOX_API_URL}/execute" \
+        api_response=$(echo "$body" | curl -s -X POST "${UNSANDBOX_API_URL}/execute" \
             -H "Authorization: Bearer ${UNSANDBOX_PUBLIC_KEY}" \
             -H "X-Timestamp: ${timestamp}" \
             -H "X-Signature: ${signature}" \
             -H "Content-Type: application/json" \
             --max-time "$TIMEOUT_SECONDS" \
-            -d "$body" \
+            --data @- \
             2>&1)
 
         exit_code=$?
@@ -726,6 +827,61 @@ HTMLEOF
     log "HTML report generated: $REPORT_HTML"
 }
 
+# Generate JUnit XML report for CI integration
+generate_junit_xml() {
+    local junit_file="${PROJECT_ROOT}/science-results.xml"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local total=$((TOTAL_VALIDATED + TOTAL_FAILED))
+
+    cat > "$junit_file" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="SDK Examples Validation" tests="$total" failures="$TOTAL_FAILED" time="0" timestamp="$timestamp">
+  <testsuite name="examples" tests="$total" failures="$TOTAL_FAILED">
+EOF
+
+    # Add individual test cases from result files
+    for result_file in "$TEMP_DIR"/result-*.json; do
+        [[ -f "$result_file" ]] || continue
+
+        local file lang status time_ms exit_code stderr_preview
+        file=$(jq -r '.file // "unknown"' "$result_file" 2>/dev/null)
+        lang=$(jq -r '.language // "unknown"' "$result_file" 2>/dev/null)
+        status=$(jq -r '.status // "unknown"' "$result_file" 2>/dev/null)
+        time_ms=$(jq -r '.execution_time_ms // 0' "$result_file" 2>/dev/null)
+        exit_code=$(jq -r '.exit_code // 0' "$result_file" 2>/dev/null)
+        stderr_preview=$(jq -r '.stderr_preview // ""' "$result_file" 2>/dev/null)
+
+        # Convert ms to seconds for JUnit
+        local time_sec
+        time_sec=$(echo "scale=3; $time_ms / 1000" | bc 2>/dev/null || echo "0")
+
+        # XML-escape the file path for use as classname/name
+        local safe_file
+        safe_file=$(echo "$file" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')
+
+        if [[ "$status" == "pass" ]]; then
+            cat >> "$junit_file" <<EOF
+    <testcase classname="$lang" name="$safe_file" time="$time_sec" />
+EOF
+        else
+            local safe_stderr
+            safe_stderr=$(echo "$stderr_preview" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')
+            cat >> "$junit_file" <<EOF
+    <testcase classname="$lang" name="$safe_file" time="$time_sec">
+      <failure message="exit code $exit_code">$safe_stderr</failure>
+    </testcase>
+EOF
+        fi
+    done
+
+    cat >> "$junit_file" <<EOF
+  </testsuite>
+</testsuites>
+EOF
+
+    log "JUnit XML report generated: $junit_file"
+}
+
 # Main execution
 main() {
     log "Starting SDK examples validation"
@@ -761,6 +917,7 @@ main() {
     log "Generating reports..."
     generate_json_report
     generate_html_report
+    generate_junit_xml
 
     # Print summary
     echo ""

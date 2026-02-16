@@ -168,7 +168,6 @@ science-validate-examples:
     paths:
       - science-results/
     expire_in: 30 days
-  allow_failure: true
   only:
     - main
     - /^\d+\.\d+\.\d+$/
@@ -231,7 +230,6 @@ validate-examples:
     paths:
       - science-results/
     expire_in: 30 days
-  allow_failure: true
   only:
     - main
     - /^\d+\.\d+\.\d+$/
