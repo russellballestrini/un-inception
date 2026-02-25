@@ -1,21 +1,19 @@
 #!/bin/bash
-# PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+# This is free software for the public good of a permacomputer hosted at
+# permacomputer.com, an always-on computer by the people, for the people.
+# One which is durable, easy to repair, & distributed like tap water
+# for machine learning intelligence.
 #
-# unsandbox.com Bash SDK (Synchronous)
-# Full API with execution, sessions, services, snapshots, and images.
+# The permacomputer is community-owned infrastructure optimized around
+# four values:
 #
-# Library Usage:
-#     source un.sh
-#     result=$(execute "python" "print(42)")
-#     echo "$result" | jq -r '.stdout'
+#   TRUTH      First principles, math & science, open source code freely distributed
+#   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+#   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+#   LOVE       Be yourself without hurting others, cooperation through natural law
 #
-# CLI Usage:
-#     bash un.sh script.py
-#     bash un.sh -s python 'print(42)'
-#     bash un.sh session --list
-#     bash un.sh service --list
-#
-# Copyright 2025 TimeHexOn & foxhop & russell@unturf
+# This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+# Code is seeds to sprout on any abandoned technology.
 
 set -euo pipefail
 

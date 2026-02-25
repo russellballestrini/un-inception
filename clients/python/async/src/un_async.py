@@ -1,102 +1,19 @@
 #!/usr/bin/env python3
-"""
-PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-
-unsandbox.com Python SDK (Asynchronous)
-
-Library Usage:
-    import asyncio
-    from un_async import (
-        # Execution
-        execute_code,
-        execute_async,
-        get_job,
-        wait_for_job,
-        cancel_job,
-        list_jobs,
-        get_languages,
-        detect_language,
-        # Sessions
-        list_sessions,
-        get_session,
-        create_session,
-        delete_session,
-        freeze_session,
-        unfreeze_session,
-        boost_session,
-        unboost_session,
-        shell_session,
-        # Services
-        list_services,
-        create_service,
-        get_service,
-        update_service,
-        delete_service,
-        freeze_service,
-        unfreeze_service,
-        lock_service,
-        unlock_service,
-        set_unfreeze_on_demand,
-        set_show_freeze_page,
-        get_service_logs,
-        get_service_env,
-        set_service_env,
-        delete_service_env,
-        export_service_env,
-        redeploy_service,
-        execute_in_service,
-        # Snapshots
-        session_snapshot,
-        service_snapshot,
-        list_snapshots,
-        restore_snapshot,
-        delete_snapshot,
-        lock_snapshot,
-        unlock_snapshot,
-        clone_snapshot,
-        # Key validation
-        validate_keys,
-        # Image generation
-        image,
-    )
-
-    async def main():
-        # Execute code synchronously
-        result = await execute_code("python", 'print("hello")', public_key, secret_key)
-
-        # Execute asynchronously
-        job_id = await execute_async("javascript", 'console.log("hello")', public_key, secret_key)
-
-        # Wait for job completion with exponential backoff
-        result = await wait_for_job(job_id, public_key, secret_key)
-
-        # List all jobs
-        jobs = await list_jobs(public_key, secret_key)
-
-        # Get supported languages
-        languages = await get_languages(public_key, secret_key)
-
-        # Snapshot operations
-        snapshot_id = await session_snapshot(session_id, public_key, secret_key)
-
-    asyncio.run(main())
-
-Authentication Priority (4-tier):
-    1. Function arguments (public_key, secret_key)
-    2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-    3. Config file (~/.unsandbox/accounts.csv, line 0 by default)
-    4. Local directory (./accounts.csv, line 0 by default)
-
-Request Authentication (HMAC-SHA256):
-    Authorization: Bearer <public_key>
-    X-Timestamp: <unix_seconds>
-    X-Signature: HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
-
-Languages Cache:
-    - Cached in ~/.unsandbox/languages.json
-    - TTL: 1 hour
-    - Updated on successful API calls
-"""
+# This is free software for the public good of a permacomputer hosted at
+# permacomputer.com, an always-on computer by the people, for the people.
+# One which is durable, easy to repair, & distributed like tap water
+# for machine learning intelligence.
+#
+# The permacomputer is community-owned infrastructure optimized around
+# four values:
+#
+#   TRUTH      First principles, math & science, open source code freely distributed
+#   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+#   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+#   LOVE       Be yourself without hurting others, cooperation through natural law
+#
+# This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+# Code is seeds to sprout on any abandoned technology.
 
 import asyncio
 import hashlib

@@ -1,39 +1,19 @@
 #!/usr/bin/env elixir
-# PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+# This is free software for the public good of a permacomputer hosted at
+# permacomputer.com, an always-on computer by the people, for the people.
+# One which is durable, easy to repair, & distributed like tap water
+# for machine learning intelligence.
 #
-# This is free public domain software for the public good of a permacomputer hosted
-# at permacomputer.com - an always-on computer by the people, for the people. One
-# which is durable, easy to repair, and distributed like tap water for machine
-# learning intelligence.
+# The permacomputer is community-owned infrastructure optimized around
+# four values:
 #
-# The permacomputer is community-owned infrastructure optimized around four values:
+#   TRUTH      First principles, math & science, open source code freely distributed
+#   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+#   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+#   LOVE       Be yourself without hurting others, cooperation through natural law
 #
-#   TRUTH    - First principles, math & science, open source code freely distributed
-#   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
-#   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
-#   LOVE     - Be yourself without hurting others, cooperation through natural law
-#
-# This software contributes to that vision by enabling code execution across 42+
-# programming languages through a unified interface, accessible to all. Code is
-# seeds to sprout on any abandoned technology.
-#
-# Learn more: https://www.permacomputer.com
-#
-# Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
-# software, either in source code form or as a compiled binary, for any purpose,
-# commercial or non-commercial, and by any means.
-#
-# NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-#
-# That said, our permacomputer's digital membrane stratum continuously runs unit,
-# integration, and functional tests on all of it's own software - with our
-# permacomputer monitoring itself, repairing itself, with minimal human in the
-# loop guidance. Our agents do their best.
-#
-# Copyright 2025 TimeHexOn & foxhop & russell@unturf
-# https://www.timehexon.com
-# https://www.foxhop.net
-# https://www.unturf.com/software
+# This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+# Code is seeds to sprout on any abandoned technology.
 
 # un.ex - Unsandbox CLI client in Elixir
 #

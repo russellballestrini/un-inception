@@ -1,138 +1,19 @@
 #!/usr/bin/env python3
-"""
-PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-
-unsandbox.com Python SDK (Synchronous)
-
-Library Usage:
-    from un import (
-        # Execution (8)
-        execute_code,
-        execute_async,
-        get_job,
-        wait_for_job,
-        cancel_job,
-        list_jobs,
-        get_languages,
-        detect_language,
-        # Sessions (9)
-        list_sessions,
-        get_session,
-        create_session,
-        delete_session,
-        freeze_session,
-        unfreeze_session,
-        boost_session,
-        unboost_session,
-        shell_session,
-        # Services (17)
-        list_services,
-        create_service,
-        get_service,
-        update_service,
-        delete_service,
-        freeze_service,
-        unfreeze_service,
-        lock_service,
-        unlock_service,
-        set_unfreeze_on_demand,
-        set_show_freeze_page,
-        get_service_logs,
-        get_service_env,
-        set_service_env,
-        delete_service_env,
-        export_service_env,
-        redeploy_service,
-        execute_in_service,
-        resize_service,
-        # Snapshots (9)
-        session_snapshot,
-        service_snapshot,
-        list_snapshots,
-        get_snapshot,
-        restore_snapshot,
-        delete_snapshot,
-        lock_snapshot,
-        unlock_snapshot,
-        clone_snapshot,
-        # Images (13)
-        image_publish,
-        list_images,
-        get_image,
-        delete_image,
-        lock_image,
-        unlock_image,
-        set_image_visibility,
-        grant_image_access,
-        revoke_image_access,
-        list_image_trusted,
-        transfer_image,
-        spawn_from_image,
-        clone_image,
-        # PaaS Logs (2)
-        logs_fetch,
-        logs_stream,
-        # Key validation
-        validate_keys,
-        # Utilities
-        version,
-        health_check,
-        last_error,
-        hmac_sign,
-        # Image generation (AI)
-        image,
-    )
-
-    # Execute code synchronously
-    result = execute_code("python", 'print("hello")', public_key, secret_key)
-
-    # Execute asynchronously
-    job_id = execute_async("javascript", 'console.log("hello")', public_key, secret_key)
-
-    # Wait for job completion with exponential backoff
-    result = wait_for_job(job_id, public_key, secret_key)
-
-    # List all jobs
-    jobs = list_jobs(public_key, secret_key)
-
-    # Get supported languages
-    languages = get_languages(public_key, secret_key)
-
-    # Detect language from filename
-    lang = detect_language("script.py")  # Returns "python"
-
-    # Snapshot operations
-    snapshot_id = session_snapshot(session_id, public_key, secret_key, name="my-snapshot")
-    snapshot_id = service_snapshot(service_id, public_key, secret_key, name="svc-snapshot")
-    snapshots = list_snapshots(public_key, secret_key)
-    result = restore_snapshot(snapshot_id, public_key, secret_key)
-    delete_snapshot(snapshot_id, public_key, secret_key)
-
-Authentication Priority (4-tier):
-    1. Function arguments (public_key, secret_key)
-    2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-    3. Config file (~/.unsandbox/accounts.csv, line 0 by default)
-    4. Local directory (./accounts.csv, line 0 by default)
-
-    Format: public_key,secret_key (one per line)
-    Account selection: UNSANDBOX_ACCOUNT=N env var (0-based index)
-
-Request Authentication (HMAC-SHA256):
-    Authorization: Bearer <public_key>                  (identifies account)
-    X-Timestamp: <unix_seconds>                         (replay prevention)
-    X-Signature: HMAC-SHA256(secret_key, msg)           (proves secret + body integrity)
-
-    Message format: "timestamp:METHOD:path:body"
-    - timestamp: seconds since epoch
-    - METHOD: GET, POST, DELETE, etc. (uppercase)
-    - path: e.g., "/execute", "/jobs/123"
-    - body: JSON payload (empty string for GET/DELETE)
-
-Languages Cache:
-    - Cached in ~/.unsandbox/languages.json
-    - TTL: 1 hour
-    - Updated on successful API calls
-"""
+# This is free software for the public good of a permacomputer hosted at
+# permacomputer.com, an always-on computer by the people, for the people.
+# One which is durable, easy to repair, & distributed like tap water
+# for machine learning intelligence.
+#
+# The permacomputer is community-owned infrastructure optimized around
+# four values:
+#
+#   TRUTH      First principles, math & science, open source code freely distributed
+#   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+#   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+#   LOVE       Be yourself without hurting others, cooperation through natural law
+#
+# This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+# Code is seeds to sprout on any abandoned technology.
 
 import hashlib
 import hmac

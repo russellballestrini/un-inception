@@ -1,90 +1,18 @@
-/*
-PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-
-unsandbox.com Go SDK (Asynchronous)
-
-Library Usage:
-    import "un_async"
-
-    // Create credentials
-    creds, err := un_async.ResolveCredentials("", "")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Execute code asynchronously (returns channel)
-    resultChan := un_async.ExecuteCode(creds, "python", `print("hello")`)
-    result := <-resultChan
-    if result.Err != nil {
-        log.Fatal(result.Err)
-    }
-    fmt.Println(result.Data)
-
-    // Submit async job and get job ID
-    jobChan := un_async.ExecuteAsync(creds, "javascript", `console.log("hello")`)
-    jobResult := <-jobChan
-    if jobResult.Err != nil {
-        log.Fatal(jobResult.Err)
-    }
-    fmt.Println(jobResult.JobID)
-
-    // Wait for job completion with timeout
-    waitChan := un_async.WaitForJob(creds, jobResult.JobID, 60*time.Second)
-    waitResult := <-waitChan
-    if waitResult.Err != nil {
-        log.Fatal(waitResult.Err)
-    }
-
-    // List all jobs
-    listChan := un_async.ListJobs(creds)
-    listResult := <-listChan
-    if listResult.Err == nil {
-        for _, job := range listResult.Jobs {
-            fmt.Println(job)
-        }
-    }
-
-    // Get supported languages (cached)
-    langChan := un_async.GetLanguages(creds)
-    langResult := <-langChan
-    if langResult.Err == nil {
-        for _, lang := range langResult.Languages {
-            fmt.Println(lang)
-        }
-    }
-
-    // Detect language from filename (synchronous, no I/O)
-    lang := un_async.DetectLanguage("script.py")  // Returns "python"
-
-    // Snapshot operations
-    snapChan := un_async.SessionSnapshot(creds, sessionID, "my_snapshot", false)
-    snapResult := <-snapChan
-
-Authentication Priority (4-tier):
-    1. Function arguments (creds struct with PublicKey, SecretKey)
-    2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-    3. Config file (~/.unsandbox/accounts.csv, line 0 by default)
-    4. Local directory (./accounts.csv, line 0 by default)
-
-    Format: public_key,secret_key (one per line)
-    Account selection: UNSANDBOX_ACCOUNT=N env var (0-based index)
-
-Request Authentication (HMAC-SHA256):
-    Authorization: Bearer <public_key>                  (identifies account)
-    X-Timestamp: <unix_seconds>                         (replay prevention)
-    X-Signature: HMAC-SHA256(secret_key, msg)           (proves secret + body integrity)
-
-    Message format: "timestamp:METHOD:path:body"
-    - timestamp: seconds since epoch
-    - METHOD: GET, POST, DELETE, etc. (uppercase)
-    - path: e.g., "/execute", "/jobs/123"
-    - body: JSON payload (empty string for GET/DELETE)
-
-Languages Cache:
-    - Cached in ~/.unsandbox/languages.json
-    - TTL: 1 hour
-    - Updated on successful API calls
-*/
+// This is free software for the public good of a permacomputer hosted at
+// permacomputer.com, an always-on computer by the people, for the people.
+// One which is durable, easy to repair, & distributed like tap water
+// for machine learning intelligence.
+//
+// The permacomputer is community-owned infrastructure optimized around
+// four values:
+//
+//   TRUTH      First principles, math & science, open source code freely distributed
+//   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+//   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+//   LOVE       Be yourself without hurting others, cooperation through natural law
+//
+// This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+// Code is seeds to sprout on any abandoned technology.
 
 package un_async
 

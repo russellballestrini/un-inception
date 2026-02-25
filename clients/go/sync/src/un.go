@@ -1,81 +1,18 @@
-/*
-PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-
-unsandbox.com Go SDK (Synchronous)
-
-Library Usage:
-    import "un"
-
-    // Create credentials
-    creds, err := un.ResolveCredentials("", "")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Execute code synchronously
-    result, err := un.ExecuteCode(creds, "python", `print("hello")`)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Execute asynchronously
-    jobID, err := un.ExecuteAsync(creds, "javascript", `console.log("hello")`)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Wait for job completion with exponential backoff
-    result, err := un.WaitForJob(creds, jobID)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // List all jobs
-    jobs, err := un.ListJobs(creds)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Get supported languages
-    languages, err := un.GetLanguages(creds)
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Detect language from filename
-    lang := un.DetectLanguage("script.py")  // Returns "python"
-
-    // Snapshot operations (NEW)
-    snapshotID, err := un.SessionSnapshot(creds, sessionID, "my_snapshot", false)
-    snapshots, err := un.ListSnapshots(creds)
-    result, err := un.RestoreSnapshot(creds, snapshotID)
-    err = un.DeleteSnapshot(creds, snapshotID)
-
-Authentication Priority (4-tier):
-    1. Function arguments (publicKey, secretKey)
-    2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-    3. Config file (~/.unsandbox/accounts.csv, line 0 by default)
-    4. Local directory (./accounts.csv, line 0 by default)
-
-    Format: public_key,secret_key (one per line)
-    Account selection: UNSANDBOX_ACCOUNT=N env var (0-based index)
-
-Request Authentication (HMAC-SHA256):
-    Authorization: Bearer <public_key>                  (identifies account)
-    X-Timestamp: <unix_seconds>                         (replay prevention)
-    X-Signature: HMAC-SHA256(secret_key, msg)           (proves secret + body integrity)
-
-    Message format: "timestamp:METHOD:path:body"
-    - timestamp: seconds since epoch
-    - METHOD: GET, POST, DELETE, etc. (uppercase)
-    - path: e.g., "/execute", "/jobs/123"
-    - body: JSON payload (empty string for GET/DELETE)
-
-Languages Cache:
-    - Cached in ~/.unsandbox/languages.json
-    - TTL: 1 hour
-    - Updated on successful API calls
-*/
+// This is free software for the public good of a permacomputer hosted at
+// permacomputer.com, an always-on computer by the people, for the people.
+// One which is durable, easy to repair, & distributed like tap water
+// for machine learning intelligence.
+//
+// The permacomputer is community-owned infrastructure optimized around
+// four values:
+//
+//   TRUTH      First principles, math & science, open source code freely distributed
+//   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+//   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+//   LOVE       Be yourself without hurting others, cooperation through natural law
+//
+// This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+// Code is seeds to sprout on any abandoned technology.
 
 package un
 

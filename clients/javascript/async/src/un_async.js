@@ -1,68 +1,19 @@
 #!/usr/bin/env node
-/**
- * PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
- *
- * unsandbox.com JavaScript SDK (Asynchronous with native fetch)
- * Isomorphic: Works in Node.js (CLI + SDK) and Browser environments
- *
- * Library Usage:
- *   import {
- *     // Code execution
- *     executeCode, executeAsync, getJob, waitForJob, cancelJob, listJobs,
- *     getLanguages, detectLanguage,
- *     // Session management
- *     listSessions, getSession, createSession, deleteSession,
- *     freezeSession, unfreezeSession, boostSession, unboostSession, shellSession,
- *     // Service management
- *     listServices, createService, getService, updateService, deleteService,
- *     freezeService, unfreezeService, lockService, unlockService, setUnfreezeOnDemand, setShowFreezePage,
- *     getServiceLogs, getServiceEnv, setServiceEnv, deleteServiceEnv,
- *     exportServiceEnv, redeployService, executeInService,
- *     // Snapshot management
- *     sessionSnapshot, serviceSnapshot, listSnapshots, restoreSnapshot,
- *     deleteSnapshot, lockSnapshot, unlockSnapshot, cloneSnapshot,
- *     // Key validation
- *     validateKeys,
- *   } from './un_async.js';
- *
- *   // Execute code (awaits until completion)
- *   const result = await executeCode('python', 'print("hello")', publicKey, secretKey);
- *
- *   // Execute asynchronously (returns job_id immediately)
- *   const jobId = await executeAsync('javascript', 'console.log("hello")', publicKey, secretKey);
- *
- *   // Wait for job completion with exponential backoff
- *   const result = await waitForJob(jobId, publicKey, secretKey);
- *
- *   // Snapshot operations
- *   const snapshotId = await sessionSnapshot(sessionId, publicKey, secretKey, 'my-snapshot');
- *   const snapshots = await listSnapshots(publicKey, secretKey);
- *
- * Authentication Priority (5-tier):
- *   1. Function arguments (publicKey, secretKey)
- *   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY) [Node.js]
- *   3. Encrypted vault or localStorage [Browser] (vault preferred if CryptoJS available)
- *   4. ~/.unsandbox/accounts.csv [Node.js]
- *   5. ./accounts.csv [Node.js]
- *
- * Request Authentication (HMAC-SHA256):
- *   Authorization: Bearer <publicKey>
- *   X-Timestamp: <unixSeconds>
- *   X-Signature: HMAC-SHA256(secretKey, "timestamp:METHOD:path:body")
- *
- * Languages Cache:
- *   - Cached in ~/.unsandbox/languages.json (Node.js only)
- *   - TTL: 1 hour
- *   - Updated on successful API calls
- *
- * Browser Usage:
- *   - Import as ES module: <script type="module">
- *   - Credentials stored in encrypted vault (requires CryptoJS):
- *       UnsandboxVault.createVault('mypassword');
- *       UnsandboxVault.saveKeysToVault(vaultId, [{publicKey, secretKey}], 'mypassword');
- *   - Or pass credentials directly to functions
- *   - Uses Web Crypto API for HMAC-SHA256 signing
- */
+// This is free software for the public good of a permacomputer hosted at
+// permacomputer.com, an always-on computer by the people, for the people.
+// One which is durable, easy to repair, & distributed like tap water
+// for machine learning intelligence.
+//
+// The permacomputer is community-owned infrastructure optimized around
+// four values:
+//
+//   TRUTH      First principles, math & science, open source code freely distributed
+//   FREEDOM    Voluntary partnerships, freedom from tyranny & corporate control
+//   HARMONY    Minimal waste, self-renewing systems with diverse thriving connections
+//   LOVE       Be yourself without hurting others, cooperation through natural law
+//
+// This software contributes to that vision by enabling code execution across 42+ programming languages through a unified interface, accessible to all.
+// Code is seeds to sprout on any abandoned technology.
 
 // Environment detection for isomorphic support (Node.js + Browser)
 const IS_BROWSER = typeof window !== 'undefined' && typeof window.document !== 'undefined';
