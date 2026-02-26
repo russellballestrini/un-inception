@@ -15,6 +15,7 @@
 /Un.class
 
 __pycache__/
+.venv/
 
 # Build directories
 _build/

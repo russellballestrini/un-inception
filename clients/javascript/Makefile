@@ -5,21 +5,17 @@
 #   - async/ : Async/Await SDK (Node.js)
 #
 # Usage:
-#   make              # Run all tests
-#   make test         # Run all 4 test modes
+#   make test         # Run all 4 test modes (auto-installs jest)
 #   make test-cli     # CLI mode only
 #   make test-library # Library mode only
-#   make test-integration # Integration mode only
-#   make test-functional  # Functional mode only
 #   make test-sync    # Test sync SDK only
 #   make test-async   # Test async SDK only
-#   make clean        # Remove build artifacts
+#   make clean        # Remove node_modules + build artifacts
 #
-# Dependencies:
-#   npm install (or yarn install)
+# The Makefile runs npm install automatically when node_modules is missing.
 
 .PHONY: all test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async install dev-install lint format clean help examples
+.PHONY: test-sync test-async lint format clean help examples
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -38,7 +34,7 @@ help:
 	@echo "UN JavaScript Client - Build and Test"
 	@echo ""
 	@echo "Test (all 4 modes):"
-	@echo "  make test               All 4 modes for both sync and async"
+	@echo "  make test               All 4 modes (auto-installs deps)"
 	@echo "  make test-cli           CLI mode (command-line interface)"
 	@echo "  make test-library       Library mode (require and use)"
 	@echo "  make test-integration   Integration mode (API contract)"
@@ -49,23 +45,30 @@ help:
 	@echo "  make test-async         Test asynchronous SDK"
 	@echo ""
 	@echo "Development:"
-	@echo "  make install            Install dependencies"
 	@echo "  make lint               Lint with ESLint"
 	@echo "  make format             Format with Prettier"
 	@echo "  make examples           Run example scripts"
 	@echo ""
 	@echo "Utility:"
-	@echo "  make clean              Remove build artifacts"
-	@echo "  make deps               Show required dependencies"
+	@echo "  make clean              Remove node_modules + build artifacts"
 	@echo ""
 
 all: test
 
-deps:
-	@echo "Required packages:"
-	@echo "  npm install jest eslint prettier"
-	@echo ""
-	@node --version 2>/dev/null || echo "Node.js not installed"
+# ============================================================================
+# Dependency Management
+# ============================================================================
+
+$(SYNC_DIR)/node_modules/.package-lock.json: $(SYNC_DIR)/package.json
+	@echo "Installing sync SDK dependencies..."
+	@cd $(SYNC_DIR) && npm install --no-audit --no-fund -q 2>&1 | tail -1
+
+$(ASYNC_DIR)/node_modules/.package-lock.json: $(ASYNC_DIR)/package.json
+	@echo "Installing async SDK dependencies..."
+	@cd $(ASYNC_DIR) && npm install --no-audit --no-fund -q 2>&1 | tail -1
+
+sync-deps: $(SYNC_DIR)/node_modules/.package-lock.json
+async-deps: $(ASYNC_DIR)/node_modules/.package-lock.json
 
 # ============================================================================
 # TEST: All 4 Modes
@@ -85,15 +88,12 @@ test-cli:
 	@echo "CLI MODE: Testing JavaScript CLI interface"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@# Test root-level un.js if it exists
 	@if [ -f "$(ROOT_DIR)/un.js" ]; then \
 		node --check "$(ROOT_DIR)/un.js" 2>/dev/null && echo "  $(GREEN)✓$(NC) CLI: Syntax valid (un.js)" || echo "  $(RED)✗$(NC) CLI: Syntax error in un.js"; \
 	fi
-	@# Test sync SDK syntax
 	@if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
 		node --check "$(SYNC_DIR)/src/un.js" 2>/dev/null && echo "  $(GREEN)✓$(NC) CLI: Sync SDK syntax valid" || echo "  $(RED)✗$(NC) CLI: Sync SDK syntax error"; \
 	fi
-	@# Test async SDK syntax (ES module with .mjs extension check)
 	@if [ -f "$(ASYNC_DIR)/src/un_async.js" ]; then \
 		node --check "$(ASYNC_DIR)/src/un_async.js" 2>/dev/null && echo "  $(GREEN)✓$(NC) CLI: Async SDK syntax valid" || echo "  $(YELLOW)⊘$(NC) CLI: Async SDK ES module (use --input-type=module)"; \
 	fi
@@ -102,30 +102,25 @@ test-cli:
 # TEST: Library Mode
 # ============================================================================
 
-test-library:
+test-library: sync-deps
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "LIBRARY MODE: Testing JavaScript imports"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@# Test sync SDK import
 	@if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
-		node -e "const un = require('./$(SYNC_DIR)/src/un.js'); console.log('  ✓ Library: Sync SDK importable, exports:', Object.keys(un).length, 'functions')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Sync import needs dependencies"; \
+		node --input-type=module -e "const un = await import('./$(SYNC_DIR)/src/un.js'); const fns = Object.keys(un).filter(k => typeof un[k] === 'function'); console.log('  ✓ Library: Sync SDK importable, exports:', fns.length, 'functions')" 2>/dev/null || echo "  $(RED)✗$(NC) Library: Sync import failed"; \
 	fi
-	@# Test async SDK import (ES module)
 	@if [ -f "$(ASYNC_DIR)/src/un_async.js" ]; then \
-		node --input-type=module -e "import un from './$(ASYNC_DIR)/src/un_async.js'; console.log('  ✓ Library: Async SDK importable, exports:', Object.keys(un).length, 'functions')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Async import check (ES module)"; \
+		node --input-type=module -e "const un = await import('./$(ASYNC_DIR)/src/un_async.js'); const fns = Object.keys(un).filter(k => typeof un[k] === 'function'); console.log('  ✓ Library: Async SDK importable, exports:', fns.length, 'functions')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Async import check (ES module)"; \
 	fi
-	@# Run jest tests
 	@echo ""
 	@echo "Running unit tests..."
 	@if [ -d "$(SYNC_DIR)/tests" ] && [ -f "$(SYNC_DIR)/package.json" ]; then \
-		cd $(SYNC_DIR) && npm test 2>/dev/null && echo "  $(GREEN)✓$(NC) Sync SDK tests passed" || echo "  $(YELLOW)⊘$(NC) Sync tests need: npm install"; \
-	elif [ -d "$(SYNC_DIR)/tests" ]; then \
-		echo "  $(YELLOW)⊘$(NC) Sync tests need package.json"; \
+		cd $(SYNC_DIR) && npm test 2>&1 && echo "  $(GREEN)✓$(NC) Sync SDK tests passed" || echo "  $(RED)✗$(NC) Sync tests failed"; \
 	fi
 	@if [ -d "$(ASYNC_DIR)/tests" ] && [ -f "$(ASYNC_DIR)/package.json" ]; then \
-		cd $(ASYNC_DIR) && npm test 2>/dev/null && echo "  $(GREEN)✓$(NC) Async SDK tests passed" || echo "  $(YELLOW)⊘$(NC) Async tests need: npm install"; \
+		cd $(ASYNC_DIR) && npm test 2>&1 && echo "  $(GREEN)✓$(NC) Async SDK tests passed" || echo "  $(RED)✗$(NC) Async tests failed"; \
 	fi
 
 # ============================================================================
@@ -144,7 +139,7 @@ test-integration:
 	else \
 		echo "  Testing API authentication..."; \
 		if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
-			node -e "const un = require('./$(SYNC_DIR)/src/un.js'); un.executeCode('python', 'print(42)').then(r => { if(r.stdout && r.stdout.includes('42')) console.log('  ✓ Integration: API auth works'); else console.log('  ✗ Integration: Unexpected response'); }).catch(e => console.log('  ✗ Integration:', e.message))" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Integration: Check SDK"; \
+			node --input-type=module -e "const un = await import('./$(SYNC_DIR)/src/un.js'); const r = await un.executeCode('python', 'print(42)'); if(r.stdout && r.stdout.includes('42')) console.log('  ✓ Integration: API auth works'); else console.log('  ✗ Integration: Unexpected response');" 2>/dev/null || echo "  $(RED)✗$(NC) Integration: SDK error"; \
 		fi; \
 	fi
 
@@ -163,7 +158,7 @@ test-functional:
 	else \
 		echo "  Running functional tests..."; \
 		if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
-			node -e "const un = require('./$(SYNC_DIR)/src/un.js'); un.executeCode('python', 'def fib(n): return n if n<2 else fib(n-1)+fib(n-2); print(fib(10))').then(r => { if(r.stdout && r.stdout.includes('55')) console.log('  ✓ Functional: Fibonacci'); else console.log('  ⊘ Functional: Check output'); }).catch(e => console.log('  ⊘ Functional:', e.message))" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Functional: Check SDK"; \
+			node --input-type=module -e "const un = await import('./$(SYNC_DIR)/src/un.js'); const r = await un.executeCode('python', 'def fib(n): return n if n<2 else fib(n-1)+fib(n-2); print(fib(10))'); if(r.stdout && r.stdout.includes('55')) console.log('  ✓ Functional: Fibonacci'); else console.log('  ✗ Functional: Check output');" 2>/dev/null || echo "  $(RED)✗$(NC) Functional: SDK error"; \
 		fi; \
 	fi
 
@@ -171,35 +166,25 @@ test-functional:
 # TEST: By SDK Type
 # ============================================================================
 
-test-sync:
+test-sync: sync-deps
 	@echo "Testing Sync SDK..."
 	@if [ -f "$(SYNC_DIR)/package.json" ]; then \
 		cd $(SYNC_DIR) && npm test; \
-	elif [ -d "$(SYNC_DIR)/tests" ]; then \
-		echo "  $(YELLOW)⊘$(NC) Sync SDK needs package.json with test script"; \
 	else \
-		echo "  $(YELLOW)⊘$(NC) Sync SDK tests not found"; \
+		echo "  $(YELLOW)⊘$(NC) Sync SDK needs package.json"; \
 	fi
 
-test-async:
+test-async: async-deps
 	@echo "Testing Async SDK..."
 	@if [ -f "$(ASYNC_DIR)/package.json" ]; then \
 		cd $(ASYNC_DIR) && npm test; \
-	elif [ -d "$(ASYNC_DIR)/tests" ]; then \
-		echo "  $(YELLOW)⊘$(NC) Async SDK needs package.json with test script"; \
 	else \
-		echo "  $(YELLOW)⊘$(NC) Async SDK tests not found"; \
+		echo "  $(YELLOW)⊘$(NC) Async SDK needs package.json"; \
 	fi
 
 # ============================================================================
 # Development
 # ============================================================================
-
-install:
-	@echo "Installing JavaScript SDK dependencies..."
-	@if [ -f "$(SYNC_DIR)/package.json" ]; then cd $(SYNC_DIR) && npm install; fi
-	@if [ -f "$(ASYNC_DIR)/package.json" ]; then cd $(ASYNC_DIR) && npm install; fi
-	@echo "$(GREEN)✓$(NC) Installation complete"
 
 lint:
 	@echo "Linting JavaScript SDKs..."
@@ -230,5 +215,4 @@ clean:
 	@echo "Cleaning JavaScript build artifacts..."
 	@rm -rf $(SYNC_DIR)/node_modules $(ASYNC_DIR)/node_modules 2>/dev/null || true
 	@rm -rf $(SYNC_DIR)/coverage $(ASYNC_DIR)/coverage 2>/dev/null || true
-	@rm -f $(SYNC_DIR)/package-lock.json $(ASYNC_DIR)/package-lock.json 2>/dev/null || true
-	@echo "$(GREEN)✓$(NC) Cleaned build artifacts"
+	@echo "$(GREEN)✓$(NC) Cleaned node_modules + build artifacts"

@@ -5,26 +5,25 @@
 #   - async/ : Asynchronous Python SDK (aiohttp-based)
 #
 # Usage:
-#   make              # Run all tests
-#   make test         # Run all 4 test modes
+#   make test         # Run all 4 test modes (auto-creates venv)
 #   make test-cli     # CLI mode only
 #   make test-library # Library mode only
-#   make test-integration # Integration mode only
-#   make test-functional  # Functional mode only
 #   make test-sync    # Test sync SDK only
 #   make test-async   # Test async SDK only
-#   make clean        # Remove build artifacts
+#   make clean        # Remove build artifacts + venv
 #
-# Dependencies:
-#   pip install pytest pytest-cov pytest-asyncio aiohttp requests
+# The Makefile manages a .venv automatically. No manual pip install needed.
 
 .PHONY: all test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async install dev-install lint format clean help examples
+.PHONY: test-sync test-async lint format clean help examples venv
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
 ASYNC_DIR := async
+VENV := .venv
+PYTHON := $(VENV)/bin/python
+PYTEST := $(VENV)/bin/pytest
 
 # Colors
 GREEN := \033[32m
@@ -38,7 +37,7 @@ help:
 	@echo "UN Python Client - Build and Test"
 	@echo ""
 	@echo "Test (all 4 modes):"
-	@echo "  make test               All 4 modes for both sync and async"
+	@echo "  make test               All 4 modes (auto-creates venv)"
 	@echo "  make test-cli           CLI mode (command-line interface)"
 	@echo "  make test-library       Library mode (import and use)"
 	@echo "  make test-integration   Integration mode (API contract)"
@@ -49,22 +48,39 @@ help:
 	@echo "  make test-async         Test asynchronous SDK"
 	@echo ""
 	@echo "Development:"
-	@echo "  make install            Install both SDKs"
-	@echo "  make dev-install        Install with dev dependencies"
+	@echo "  make venv               Create/update virtual environment"
 	@echo "  make lint               Lint both SDKs"
 	@echo "  make format             Format both SDKs"
 	@echo "  make examples           Run example scripts"
 	@echo ""
 	@echo "Utility:"
-	@echo "  make clean              Remove build artifacts"
-	@echo "  make deps               Show required dependencies"
+	@echo "  make clean              Remove build artifacts + venv"
 	@echo ""
 
 all: test
 
-deps:
-	@echo "Required packages:"
-	@echo "  pip install pytest pytest-cov pytest-asyncio aiohttp requests black flake8 mypy"
+# ============================================================================
+# Virtual Environment
+# ============================================================================
+
+$(VENV)/bin/activate:
+	@echo "Creating virtual environment..."
+	@python3 -m venv $(VENV)
+	@$(VENV)/bin/pip install --upgrade pip -q
+
+$(VENV)/.deps-installed: $(VENV)/bin/activate
+	@echo "Installing test dependencies into venv..."
+	@$(VENV)/bin/pip install -q requests pytest pytest-cov pytest-asyncio aiohttp
+	@if [ -f "$(SYNC_DIR)/setup.py" ]; then \
+		cd $(SYNC_DIR) && ../$(VENV)/bin/pip install -q -e . 2>/dev/null || true; \
+	fi
+	@if [ -f "$(ASYNC_DIR)/setup.py" ]; then \
+		cd $(ASYNC_DIR) && ../$(VENV)/bin/pip install -q -e . 2>/dev/null || true; \
+	fi
+	@touch $(VENV)/.deps-installed
+
+venv: $(VENV)/.deps-installed
+	@echo "$(GREEN)✓$(NC) Virtual environment ready at $(VENV)/"
 
 # ============================================================================
 # TEST: All 4 Modes
@@ -78,61 +94,55 @@ test: test-cli test-library test-integration test-functional
 # TEST: CLI Mode
 # ============================================================================
 
-test-cli:
+test-cli: $(VENV)/.deps-installed
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "CLI MODE: Testing Python CLI interface"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@# Test root-level un.py if it exists
 	@if [ -f "$(ROOT_DIR)/un.py" ]; then \
-		python3 -m py_compile "$(ROOT_DIR)/un.py" && echo "  $(GREEN)✓$(NC) CLI: Syntax valid (un.py)"; \
-		python3 "$(ROOT_DIR)/un.py" --help > /dev/null 2>&1 && echo "  $(GREEN)✓$(NC) CLI: --help works" || echo "  $(YELLOW)⊘$(NC) CLI: --help (may need API)"; \
+		$(PYTHON) -m py_compile "$(ROOT_DIR)/un.py" && echo "  $(GREEN)✓$(NC) CLI: Syntax valid (un.py)"; \
+		$(PYTHON) "$(ROOT_DIR)/un.py" --help > /dev/null 2>&1 && echo "  $(GREEN)✓$(NC) CLI: --help works" || echo "  $(YELLOW)⊘$(NC) CLI: --help (may need API)"; \
 	else \
 		echo "  $(YELLOW)⊘$(NC) Root un.py not found"; \
 	fi
-	@# Test sync SDK CLI
 	@if [ -f "$(SYNC_DIR)/src/unsandbox/__main__.py" ]; then \
-		python3 -m py_compile "$(SYNC_DIR)/src/unsandbox/__main__.py" && echo "  $(GREEN)✓$(NC) CLI: Sync SDK syntax valid"; \
+		$(PYTHON) -m py_compile "$(SYNC_DIR)/src/unsandbox/__main__.py" && echo "  $(GREEN)✓$(NC) CLI: Sync SDK syntax valid"; \
 	fi
-	@# Test async SDK CLI
 	@if [ -f "$(ASYNC_DIR)/src/un_async/__main__.py" ]; then \
-		python3 -m py_compile "$(ASYNC_DIR)/src/un_async/__main__.py" && echo "  $(GREEN)✓$(NC) CLI: Async SDK syntax valid"; \
+		$(PYTHON) -m py_compile "$(ASYNC_DIR)/src/un_async/__main__.py" && echo "  $(GREEN)✓$(NC) CLI: Async SDK syntax valid"; \
 	fi
 
 # ============================================================================
 # TEST: Library Mode
 # ============================================================================
 
-test-library:
+test-library: $(VENV)/.deps-installed
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "LIBRARY MODE: Testing Python imports"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@# Test sync SDK import
 	@if [ -d "$(SYNC_DIR)/src/unsandbox" ]; then \
-		cd $(SYNC_DIR) && PYTHONPATH=src python3 -c "from unsandbox import UnsandboxClient; print('  ✓ Library: Sync UnsandboxClient importable')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Sync import needs install"; \
+		cd $(SYNC_DIR) && PYTHONPATH=src ../$(PYTHON) -c "from unsandbox import UnsandboxClient; print('  ✓ Library: Sync UnsandboxClient importable')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Sync import failed"; \
 	fi
-	@# Test async SDK import
 	@if [ -d "$(ASYNC_DIR)/src/un_async" ]; then \
-		cd $(ASYNC_DIR) && PYTHONPATH=src python3 -c "from un_async import AsyncUnsandboxClient; print('  ✓ Library: Async AsyncUnsandboxClient importable')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Async import needs install"; \
+		cd $(ASYNC_DIR) && PYTHONPATH=src ../$(PYTHON) -c "from un_async import AsyncUnsandboxClient; print('  ✓ Library: Async AsyncUnsandboxClient importable')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Async import failed"; \
 	fi
-	@# Run pytest for library tests
 	@echo ""
 	@echo "Running unit tests..."
 	@if [ -d "$(SYNC_DIR)/tests" ]; then \
-		cd $(SYNC_DIR) && pytest tests/ -q --tb=no 2>/dev/null && echo "  $(GREEN)✓$(NC) Sync SDK tests passed" || echo "  $(YELLOW)⊘$(NC) Sync tests need dependencies"; \
+		cd $(SYNC_DIR) && PYTHONPATH=src ../$(PYTEST) tests/ -q --tb=short 2>&1 && echo "  $(GREEN)✓$(NC) Sync SDK tests passed" || echo "  $(RED)✗$(NC) Sync tests failed"; \
 	fi
 	@if [ -d "$(ASYNC_DIR)/tests" ]; then \
-		cd $(ASYNC_DIR) && pytest tests/ -q --tb=no 2>/dev/null && echo "  $(GREEN)✓$(NC) Async SDK tests passed" || echo "  $(YELLOW)⊘$(NC) Async tests need dependencies"; \
+		cd $(ASYNC_DIR) && PYTHONPATH=src ../$(PYTEST) tests/ -q --tb=short 2>&1 && echo "  $(GREEN)✓$(NC) Async SDK tests passed" || echo "  $(RED)✗$(NC) Async tests failed"; \
 	fi
 
 # ============================================================================
 # TEST: Integration Mode
 # ============================================================================
 
-test-integration:
+test-integration: $(VENV)/.deps-installed
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "INTEGRATION MODE: Testing API contract"
@@ -143,14 +153,14 @@ test-integration:
 		echo "  Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY"; \
 	else \
 		echo "  Testing API authentication..."; \
-		python3 -c "import sys; sys.path.insert(0, '$(SYNC_DIR)/src'); from unsandbox import UnsandboxClient; c = UnsandboxClient(); r = c.execute('python', 'print(42)'); print('  ✓ Integration: API auth works') if r else print('  ✗ Integration: API auth failed')" 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Integration: Need to install SDK first"; \
+		$(PYTHON) -c "import sys; sys.path.insert(0, '$(SYNC_DIR)/src'); from unsandbox import UnsandboxClient; c = UnsandboxClient(); r = c.execute('python', 'print(42)'); print('  ✓ Integration: API auth works') if r else print('  ✗ Integration: API auth failed')" 2>/dev/null || echo "  $(RED)✗$(NC) Integration: SDK error"; \
 	fi
 
 # ============================================================================
 # TEST: Functional Mode
 # ============================================================================
 
-test-functional:
+test-functional: $(VENV)/.deps-installed
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "FUNCTIONAL MODE: Real-world scenarios"
@@ -161,7 +171,7 @@ test-functional:
 	else \
 		echo "  Running functional tests..."; \
 		if [ -f "$(SYNC_DIR)/verify_sdk.py" ]; then \
-			cd $(SYNC_DIR) && python3 verify_sdk.py 2>/dev/null && echo "  $(GREEN)✓$(NC) Functional: Sync SDK verified" || echo "  $(YELLOW)⊘$(NC) Functional: Sync verification incomplete"; \
+			cd $(SYNC_DIR) && ../$(PYTHON) verify_sdk.py 2>/dev/null && echo "  $(GREEN)✓$(NC) Functional: Sync SDK verified" || echo "  $(RED)✗$(NC) Functional: Sync verification failed"; \
 		fi; \
 	fi
 
@@ -169,22 +179,18 @@ test-functional:
 # TEST: By SDK Type
 # ============================================================================
 
-test-sync:
+test-sync: $(VENV)/.deps-installed
 	@echo "Testing Sync SDK..."
-	@if [ -f "$(SYNC_DIR)/Makefile" ]; then \
-		$(MAKE) -C $(SYNC_DIR) test; \
-	elif [ -d "$(SYNC_DIR)/tests" ]; then \
-		cd $(SYNC_DIR) && pytest tests/ -v; \
+	@if [ -d "$(SYNC_DIR)/tests" ]; then \
+		cd $(SYNC_DIR) && PYTHONPATH=src ../$(PYTEST) tests/ -v; \
 	else \
 		echo "  $(YELLOW)⊘$(NC) Sync SDK tests not found"; \
 	fi
 
-test-async:
+test-async: $(VENV)/.deps-installed
 	@echo "Testing Async SDK..."
-	@if [ -f "$(ASYNC_DIR)/Makefile" ]; then \
-		$(MAKE) -C $(ASYNC_DIR) test; \
-	elif [ -d "$(ASYNC_DIR)/tests" ]; then \
-		cd $(ASYNC_DIR) && pytest tests/ -v; \
+	@if [ -d "$(ASYNC_DIR)/tests" ]; then \
+		cd $(ASYNC_DIR) && PYTHONPATH=src ../$(PYTEST) tests/ -v; \
 	else \
 		echo "  $(YELLOW)⊘$(NC) Async SDK tests not found"; \
 	fi
@@ -193,32 +199,21 @@ test-async:
 # Development
 # ============================================================================
 
-install:
-	@echo "Installing Python SDKs..."
-	@if [ -f "$(SYNC_DIR)/setup.py" ]; then cd $(SYNC_DIR) && pip install -e . ; fi
-	@if [ -f "$(ASYNC_DIR)/setup.py" ]; then cd $(ASYNC_DIR) && pip install -e . ; fi
-	@echo "$(GREEN)✓$(NC) Installation complete"
-
-dev-install:
-	@echo "Installing Python SDKs with dev dependencies..."
-	@if [ -f "$(SYNC_DIR)/setup.py" ]; then cd $(SYNC_DIR) && pip install -e ".[dev]" 2>/dev/null || pip install -e . ; fi
-	@if [ -f "$(ASYNC_DIR)/setup.py" ]; then cd $(ASYNC_DIR) && pip install -e ".[dev]" 2>/dev/null || pip install -e . ; fi
-	@pip install pytest pytest-cov pytest-asyncio black flake8 mypy 2>/dev/null || true
-	@echo "$(GREEN)✓$(NC) Dev installation complete"
-
-lint:
+lint: $(VENV)/.deps-installed
 	@echo "Linting Python SDKs..."
-	@if [ -d "$(SYNC_DIR)/src" ]; then flake8 $(SYNC_DIR)/src/ --max-line-length=120 || true; fi
-	@if [ -d "$(ASYNC_DIR)/src" ]; then flake8 $(ASYNC_DIR)/src/ --max-line-length=120 || true; fi
+	@$(VENV)/bin/pip install -q flake8 2>/dev/null || true
+	@if [ -d "$(SYNC_DIR)/src" ]; then $(VENV)/bin/flake8 $(SYNC_DIR)/src/ --max-line-length=120 || true; fi
+	@if [ -d "$(ASYNC_DIR)/src" ]; then $(VENV)/bin/flake8 $(ASYNC_DIR)/src/ --max-line-length=120 || true; fi
 	@echo "$(GREEN)✓$(NC) Lint complete"
 
-format:
+format: $(VENV)/.deps-installed
 	@echo "Formatting Python SDKs..."
-	@if [ -d "$(SYNC_DIR)/src" ]; then black $(SYNC_DIR)/src/ $(SYNC_DIR)/tests/ 2>/dev/null || true; fi
-	@if [ -d "$(ASYNC_DIR)/src" ]; then black $(ASYNC_DIR)/src/ $(ASYNC_DIR)/tests/ 2>/dev/null || true; fi
+	@$(VENV)/bin/pip install -q black 2>/dev/null || true
+	@if [ -d "$(SYNC_DIR)/src" ]; then $(VENV)/bin/black $(SYNC_DIR)/src/ $(SYNC_DIR)/tests/ 2>/dev/null || true; fi
+	@if [ -d "$(ASYNC_DIR)/src" ]; then $(VENV)/bin/black $(ASYNC_DIR)/src/ $(ASYNC_DIR)/tests/ 2>/dev/null || true; fi
 	@echo "$(GREEN)✓$(NC) Format complete"
 
-examples:
+examples: $(VENV)/.deps-installed
 	@echo "Running Python examples..."
 	@if [ -f "$(ASYNC_DIR)/Makefile" ]; then $(MAKE) -C $(ASYNC_DIR) examples; fi
 
@@ -228,6 +223,7 @@ examples:
 
 clean:
 	@echo "Cleaning Python build artifacts..."
+	@rm -rf $(VENV)
 	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	@find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
@@ -236,4 +232,4 @@ clean:
 	@find . -type d -name "htmlcov" -exec rm -rf {} + 2>/dev/null || true
 	@find . -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
 	@find . -type d -name "build" -exec rm -rf {} + 2>/dev/null || true
-	@echo "$(GREEN)✓$(NC) Cleaned build artifacts"
+	@echo "$(GREEN)✓$(NC) Cleaned build artifacts + venv"
