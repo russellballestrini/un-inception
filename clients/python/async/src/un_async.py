@@ -72,14 +72,16 @@ def _load_credentials_from_csv(csv_path: Path, account_index: int = 0) -> Option
 
     try:
         with open(csv_path, "r") as f:
-            for i, line in enumerate(f):
+            data_index = 0
+            for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                if i == account_index:
+                if data_index == account_index:
                     parts = line.split(",")
                     if len(parts) >= 2:
                         return (parts[0].strip(), parts[1].strip())
+                data_index += 1
         return None
     except Exception:
         return None

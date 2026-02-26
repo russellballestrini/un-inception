@@ -110,29 +110,17 @@ def test_credentials_csv_nonexistent_file():
     assert result is None
 
 
-def test_credentials_missing_all():
+def test_credentials_missing_all(tmp_path, monkeypatch):
     """Test that CredentialsError is raised when no credentials available"""
     from un import _resolve_credentials
+    import un
 
-    # Save original values
-    orig_pk = os.environ.get("UNSANDBOX_PUBLIC_KEY")
-    orig_sk = os.environ.get("UNSANDBOX_SECRET_KEY")
+    monkeypatch.delenv("UNSANDBOX_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("UNSANDBOX_SECRET_KEY", raising=False)
+    # Point _get_unsandbox_dir to empty tmp dir so CSV lookup finds nothing
+    monkeypatch.setattr(un, "_get_unsandbox_dir", lambda: tmp_path)
+    # Also run from tmp_path so ./accounts.csv doesn't exist
+    monkeypatch.chdir(tmp_path)
 
-    try:
-        os.environ.pop("UNSANDBOX_PUBLIC_KEY", None)
-        os.environ.pop("UNSANDBOX_SECRET_KEY", None)
-
-        # This should raise because we're not providing args and env vars don't exist
-        # (and we don't have test CSV files)
-        with pytest.raises(CredentialsError):
-            _resolve_credentials()
-    finally:
-        if orig_pk is not None:
-            os.environ["UNSANDBOX_PUBLIC_KEY"] = orig_pk
-        else:
-            os.environ.pop("UNSANDBOX_PUBLIC_KEY", None)
-
-        if orig_sk is not None:
-            os.environ["UNSANDBOX_SECRET_KEY"] = orig_sk
-        else:
-            os.environ.pop("UNSANDBOX_SECRET_KEY", None)
+    with pytest.raises(CredentialsError):
+        _resolve_credentials()

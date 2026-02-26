@@ -53,11 +53,15 @@ class TestCredentialResolution:
         assert pk == "env_pk"
         assert sk == "env_sk"
 
-    def test_credentials_error_no_sources(self, monkeypatch):
+    def test_credentials_error_no_sources(self, monkeypatch, tmp_path):
         """Test CredentialsError when no credentials found."""
+        import un_async
         # Clear environment
         monkeypatch.delenv("UNSANDBOX_PUBLIC_KEY", raising=False)
         monkeypatch.delenv("UNSANDBOX_SECRET_KEY", raising=False)
+        # Point _get_unsandbox_dir to empty tmp dir so CSV lookup finds nothing
+        monkeypatch.setattr(un_async, "_get_unsandbox_dir", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
 
         with pytest.raises(CredentialsError) as exc_info:
             _resolve_credentials(None, None)
