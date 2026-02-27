@@ -163,7 +163,9 @@ test-functional:
 		echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else \
 		echo "  Running functional tests..."; \
-		echo "  $(YELLOW)⊘$(NC) Functional: SDK not yet implemented"; \
+		if [ -f "$(SYNC_DIR)/tests/FunctionalTest.php" ]; then \
+			cd $(SYNC_DIR) && php vendor/bin/phpunit tests/FunctionalTest.php 2>&1 && echo "  $(GREEN)✓$(NC) Functional: All tests passed" || echo "  $(RED)✗$(NC) Functional: Tests failed"; \
+		fi; \
 	fi
 
 # ============================================================================

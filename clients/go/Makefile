@@ -204,8 +204,10 @@ test-functional: check-go
 		echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else \
 		echo "  Running functional tests..."; \
-		if [ -d "$(SYNC_DIR)/tests" ]; then \
-			cd $(SYNC_DIR) && $(GO) test -v -run TestFunctional ./tests/ 2>&1 || true; \
+		if [ -d "$(SYNC_DIR)/tests" ] && [ -d "$(SYNC_DIR)/src" ]; then \
+			cp $(SYNC_DIR)/tests/functional_test.go $(SYNC_DIR)/src/ 2>/dev/null; \
+			cd $(SYNC_DIR)/src && $(GO) test -v -run TestFunctional . 2>&1; \
+			rm -f $(SYNC_DIR)/src/functional_test.go; \
 		fi; \
 	fi
 

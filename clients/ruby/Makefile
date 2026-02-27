@@ -162,7 +162,9 @@ test-functional:
 		echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else \
 		echo "  Running functional tests..."; \
-		echo "  $(YELLOW)⊘$(NC) Functional: SDK not yet implemented"; \
+		if [ -f "$(SYNC_DIR)/test/test_functional.rb" ]; then \
+			cd $(SYNC_DIR) && ruby test/test_functional.rb 2>&1 && echo "  $(GREEN)✓$(NC) Functional: All tests passed" || echo "  $(RED)✗$(NC) Functional: Tests failed"; \
+		fi; \
 	fi
 
 # ============================================================================

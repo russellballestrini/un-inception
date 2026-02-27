@@ -196,7 +196,12 @@ test-functional:
 		echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else \
 		echo "  Running functional tests..."; \
-		echo "  $(YELLOW)⊘$(NC) Functional: SDK not yet implemented"; \
+		if [ -f "$(SYNC_DIR)/tests/TestFunctional.java" ] && [ -f "$(SYNC_DIR)/src/Un.java" ]; then \
+			$(JAVAC) -cp $(SYNC_DIR)/src $(SYNC_DIR)/tests/TestFunctional.java -d /tmp/un-java-test 2>&1 && \
+			$(JAVA) -cp /tmp/un-java-test:$(SYNC_DIR)/src TestFunctional 2>&1 && \
+			echo "  $(GREEN)✓$(NC) Functional: All tests passed" || echo "  $(RED)✗$(NC) Functional: Tests failed"; \
+			rm -rf /tmp/un-java-test; \
+		fi; \
 	fi
 
 # ============================================================================

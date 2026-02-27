@@ -157,8 +157,8 @@ test-functional:
 		echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else \
 		echo "  Running functional tests..."; \
-		if [ -f "$(SYNC_DIR)/src/un.js" ]; then \
-			node --input-type=module -e "const un = await import('./$(SYNC_DIR)/src/un.js'); const r = await un.executeCode('python', 'def fib(n): return n if n<2 else fib(n-1)+fib(n-2); print(fib(10))'); if(r.stdout && r.stdout.includes('55')) console.log('  ✓ Functional: Fibonacci'); else console.log('  ✗ Functional: Check output');" 2>/dev/null || echo "  $(RED)✗$(NC) Functional: SDK error"; \
+		if [ -f "$(SYNC_DIR)/tests/test_functional.mjs" ]; then \
+			node $(SYNC_DIR)/tests/test_functional.mjs 2>&1 && echo "  $(GREEN)✓$(NC) Functional: All tests passed" || echo "  $(RED)✗$(NC) Functional: Tests failed"; \
 		fi; \
 	fi
 

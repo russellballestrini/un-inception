@@ -170,9 +170,7 @@ test-functional: $(VENV)/.deps-installed
 		echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else \
 		echo "  Running functional tests..."; \
-		if [ -f "$(SYNC_DIR)/verify_sdk.py" ]; then \
-			cd $(SYNC_DIR) && ../$(PYTHON) verify_sdk.py 2>/dev/null && echo "  $(GREEN)✓$(NC) Functional: Sync SDK verified" || echo "  $(RED)✗$(NC) Functional: Sync verification failed"; \
-		fi; \
+		cd $(SYNC_DIR) && PYTHONPATH=src ../$(PYTEST) tests/test_functional.py -v 2>&1 && echo "  $(GREEN)✓$(NC) Functional: Sync SDK verified" || echo "  $(RED)✗$(NC) Functional: Sync verification failed"; \
 	fi
 
 # ============================================================================

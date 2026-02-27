@@ -187,7 +187,7 @@ test-functional:
 	else \
 		echo "  Running functional tests..."; \
 		if [ -f "$(SYNC_DIR)/Cargo.toml" ]; then \
-			cd $(SYNC_DIR) && cargo run --release -- -s python -c 'def fib(n): return n if n<2 else fib(n-1)+fib(n-2); print(fib(10))' 2>&1 | grep -q "55" && echo "  $(GREEN)✓$(NC) Functional: Fibonacci" || echo "  $(YELLOW)⊘$(NC) Functional: Fibonacci (check output)"; \
+			cd $(SYNC_DIR) && cargo test --test functional_test -- --nocapture 2>&1 && echo "  $(GREEN)✓$(NC) Functional: All tests passed" || echo "  $(RED)✗$(NC) Functional: Tests failed"; \
 		fi; \
 	fi
 
