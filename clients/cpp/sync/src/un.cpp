@@ -705,9 +705,32 @@ string service_unlock(const string& service_id, const string& public_key, const 
     return exec_curl(cmd);
 }
 
-string service_redeploy(const string& service_id, const string& bootstrap, const string& public_key, const string& secret_key) {
+string service_redeploy(const string& service_id, const string& bootstrap, const vector<string>& input_files, const string& public_key, const string& secret_key) {
     string path = "/services/" + service_id + "/redeploy";
-    string body = bootstrap.empty() ? "{}" : "{\"bootstrap\":\"" + escape_json(bootstrap) + "\"}";
+    ostringstream json;
+    json << "{";
+    bool has_field = false;
+    if (!bootstrap.empty()) {
+        json << "\"bootstrap\":\"" << escape_json(bootstrap) << "\"";
+        has_field = true;
+    }
+    if (!input_files.empty()) {
+        if (has_field) json << ",";
+        json << "\"input_files\":[";
+        for (size_t i = 0; i < input_files.size(); i++) {
+            if (i > 0) json << ",";
+            ifstream file(input_files[i], ios::binary);
+            if (!file) continue;
+            ostringstream content;
+            content << file.rdbuf();
+            string b64 = base64_encode(content.str());
+            string filename = input_files[i].substr(input_files[i].find_last_of("/\\") + 1);
+            json << "{\"filename\":\"" << filename << "\",\"content_base64\":\"" << b64 << "\"}";
+        }
+        json << "]";
+    }
+    json << "}";
+    string body = json.str();
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
@@ -1202,7 +1225,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     cout << exec_curl(cmd) << endl;
 }
 
-void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& resize, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& set_unfreeze_on_demand_id, int set_unfreeze_on_demand_enabled, int unfreeze_on_demand, const string& public_key, const string& secret_key) {
+void cmd_service(const string& name, const string& ports, const string& type, const string& bootstrap, const string& bootstrap_file, const vector<string>& files, bool list, const string& info, const string& logs, const string& tail, const string& sleep, const string& wake, const string& destroy, const string& resize, const string& execute, const string& command, const string& dump_bootstrap, const string& dump_file, const string& redeploy, const string& network, int vcpu, const vector<string>& envs, const string& env_file, const string& env_action, const string& env_target, const string& set_unfreeze_on_demand_id, int set_unfreeze_on_demand_enabled, int unfreeze_on_demand, const string& public_key, const string& secret_key) {
     // Handle service env subcommand
     if (!env_action.empty()) {
         cmd_service_env(env_action, env_target, envs, env_file, public_key, secret_key);
@@ -1325,6 +1348,62 @@ void cmd_service(const string& name, const string& ports, const string& type, co
                 cerr << RED << err << RESET;
             }
         }
+        return;
+    }
+
+    if (!redeploy.empty()) {
+        // Bootstrap is optional for redeploy:
+        // - If provided via --bootstrap or --bootstrap-file, use it
+        // - If omitted, API will use the stored encrypted bootstrap
+        string bootstrap_to_use = bootstrap;
+        if (!bootstrap_file.empty()) {
+            struct stat st;
+            if (stat(bootstrap_file.c_str(), &st) == 0) {
+                bootstrap_to_use = read_file(bootstrap_file);
+            } else {
+                cerr << RED << "Error: Bootstrap file not found: " << bootstrap_file << RESET << endl;
+                exit(1);
+            }
+        }
+        cout << YELLOW << "Redeploying service " << redeploy << "..." << RESET << endl;
+        ostringstream json;
+        json << "{";
+        bool has_field = false;
+        if (!bootstrap_to_use.empty()) {
+            if (!bootstrap_file.empty()) {
+                json << "\"bootstrap_content\":\"" << escape_json(bootstrap_to_use) << "\"";
+            } else {
+                json << "\"bootstrap\":\"" << escape_json(bootstrap_to_use) << "\"";
+            }
+            has_field = true;
+        }
+        if (!files.empty()) {
+            if (has_field) json << ",";
+            json << "\"input_files\":[";
+            for (size_t i = 0; i < files.size(); i++) {
+                if (i > 0) json << ",";
+                ifstream file(files[i], ios::binary);
+                if (!file) {
+                    cerr << RED << "Error: Input file not found: " << files[i] << RESET << endl;
+                    exit(1);
+                }
+                ostringstream content;
+                content << file.rdbuf();
+                string b64 = base64_encode(content.str());
+                string filename = files[i].substr(files[i].find_last_of("/\\") + 1);
+                json << "{\"filename\":\"" << filename << "\",\"content_base64\":\"" << b64 << "\"}";
+            }
+            json << "]";
+        }
+        json << "}";
+        string path = "/services/" + redeploy + "/redeploy";
+        string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
+        string cmd = "curl -s -X POST '" + API_BASE + path + "' "
+                     "-H 'Content-Type: application/json' "
+                     + auth_headers + " "
+                     "-d '" + json.str() + "'";
+        string result = exec_curl(cmd);
+        cout << result << endl;
         return;
     }
 
@@ -1778,7 +1857,7 @@ int main(int argc, char* argv[]) {
     if (cmd_type == "service") {
         string name, ports, type, bootstrap, bootstrap_file;
         bool list = false;
-        string info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network;
+        string info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network, redeploy;
         int vcpu = 0;
         vector<string> files;
         vector<string> envs;
@@ -1816,6 +1895,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "--resize" && i+1 < argc) resize = argv[++i];
             else if (arg == "--execute" && i+1 < argc) execute = argv[++i];
             else if (arg == "--command" && i+1 < argc) command = argv[++i];
+            else if (arg == "--redeploy" && i+1 < argc) redeploy = argv[++i];
             else if (arg == "--dump-bootstrap" && i+1 < argc) dump_bootstrap = argv[++i];
             else if (arg == "--dump-file" && i+1 < argc) dump_file = argv[++i];
             else if (arg == "-n" && i+1 < argc) network = argv[++i];
@@ -1832,7 +1912,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
         }
 
-        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network, vcpu, envs, env_file, env_action, env_target, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, unfreeze_on_demand, public_key, secret_key);
+        cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, redeploy, network, vcpu, envs, env_file, env_action, env_target, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, unfreeze_on_demand, public_key, secret_key);
         return 0;
     }
 

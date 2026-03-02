@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -840,12 +841,19 @@ func ShellSession(creds *Credentials, sessionID, command string) (map[string]int
 // Service Operations
 // ============================================================================
 
+// InputFile represents a file to upload with a service create or redeploy.
+type InputFile struct {
+	Filename string `json:"filename"`
+	Content  string `json:"content"` // base64-encoded
+}
+
 // ServiceOptions contains optional parameters for service creation.
 type ServiceOptions struct {
-	NetworkMode      string // "zerotrust" (default) or "semitrusted"
-	Shell            string // Shell to use for bootstrap
-	VCPU             int    // Number of virtual CPUs
-	UnfreezeOnDemand bool   // Enable automatic unfreezing on HTTP request
+	NetworkMode      string      // "zerotrust" (default) or "semitrusted"
+	Shell            string      // Shell to use for bootstrap
+	VCPU             int         // Number of virtual CPUs
+	UnfreezeOnDemand bool        // Enable automatic unfreezing on HTTP request
+	InputFiles       []InputFile // Files to include (written to /tmp/ in container)
 }
 
 // ServiceUpdateOptions contains optional parameters for service updates.
@@ -901,6 +909,9 @@ func CreateService(creds *Credentials, name string, ports []int, bootstrap strin
 		}
 		if opts.UnfreezeOnDemand {
 			data["unfreeze_on_demand"] = true
+		}
+		if len(opts.InputFiles) > 0 {
+			data["input_files"] = opts.InputFiles
 		}
 	}
 
@@ -1017,10 +1028,14 @@ func ExportServiceEnv(creds *Credentials, serviceID string) (map[string]interfac
 //	creds: API credentials
 //	serviceID: Service ID
 //	bootstrap: New bootstrap script (empty string to keep existing)
-func RedeployService(creds *Credentials, serviceID string, bootstrap string) (map[string]interface{}, error) {
+//	inputFiles: Optional files to include (written to /tmp/ in container)
+func RedeployService(creds *Credentials, serviceID string, bootstrap string, inputFiles []InputFile) (map[string]interface{}, error) {
 	data := make(map[string]interface{})
 	if bootstrap != "" {
 		data["bootstrap"] = bootstrap
+	}
+	if len(inputFiles) > 0 {
+		data["input_files"] = inputFiles
 	}
 	return makeRequest("POST", fmt.Sprintf("/services/%s/redeploy", serviceID), creds, data)
 }
@@ -1899,6 +1914,22 @@ func readFileContents(path string) (string, error) {
 	return string(data), nil
 }
 
+// buildInputFiles reads files from paths and returns InputFile structs with base64-encoded content.
+func buildInputFiles(paths []string) ([]InputFile, error) {
+	var files []InputFile
+	for _, fpath := range paths {
+		data, err := os.ReadFile(fpath)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read input file %s: %w", fpath, err)
+		}
+		files = append(files, InputFile{
+			Filename: filepath.Base(fpath),
+			Content:  base64.StdEncoding.EncodeToString(data),
+		})
+	}
+	return files, nil
+}
+
 // readEnvFile reads environment variables from a .env file
 func readEnvFile(path string) (map[string]string, error) {
 	data, err := os.ReadFile(path)
@@ -2353,7 +2384,15 @@ func runService(creds *Credentials, args []string, opts *CLIOptions) int {
 
 	// Redeploy service
 	if fs.redeploy != "" {
-		_, err := RedeployService(creds, fs.redeploy, fs.bootstrap)
+		var inputFiles []InputFile
+		if len(opts.Files) > 0 {
+			var err error
+			inputFiles, err = buildInputFiles(opts.Files)
+			if err != nil {
+				return cliError(err.Error(), ExitGeneralError)
+			}
+		}
+		_, err := RedeployService(creds, fs.redeploy, fs.bootstrap, inputFiles)
 		if err != nil {
 			return cliError(err.Error(), ExitAPIError)
 		}
@@ -2411,6 +2450,13 @@ func runService(creds *Credentials, args []string, opts *CLIOptions) int {
 		}
 		if opts.VCPU > 0 {
 			serviceOpts.VCPU = opts.VCPU
+		}
+		if len(opts.Files) > 0 {
+			inputFiles, err := buildInputFiles(opts.Files)
+			if err != nil {
+				return cliError(err.Error(), ExitGeneralError)
+			}
+			serviceOpts.InputFiles = inputFiles
 		}
 
 		service, err := CreateService(creds, fs.name, ports, bootstrap, serviceOpts)

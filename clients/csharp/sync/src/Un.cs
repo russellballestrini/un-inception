@@ -92,6 +92,10 @@ class Un
             {
                 CmdKey(parsedArgs);
             }
+            else if (parsedArgs.Command == "languages")
+            {
+                CmdLanguages(parsedArgs);
+            }
             else if (parsedArgs.SourceFile != null)
             {
                 CmdExecute(parsedArgs);
@@ -438,6 +442,32 @@ class Un
             return;
         }
 
+        if (args.ServiceRedeploy != null)
+        {
+            var payload = new Dictionary<string, object>();
+            if (args.ServiceBootstrap != null)
+            {
+                payload["bootstrap"] = args.ServiceBootstrap;
+            }
+            if (args.Files.Count > 0)
+            {
+                var inputFiles = new List<Dictionary<string, string>>();
+                foreach (var filepath in args.Files)
+                {
+                    var content = File.ReadAllBytes(filepath);
+                    inputFiles.Add(new Dictionary<string, string>
+                    {
+                        ["filename"] = Path.GetFileName(filepath),
+                        ["content"] = Convert.ToBase64String(content)
+                    });
+                }
+                payload["input_files"] = inputFiles;
+            }
+            ApiRequest($"/services/{args.ServiceRedeploy}/redeploy", "POST", payload.Count > 0 ? payload : null, publicKey, secretKey);
+            Console.WriteLine($"{GREEN}Service redeployed: {args.ServiceRedeploy}{RESET}");
+            return;
+        }
+
         if (args.ServiceExecute != null)
         {
             var payload = new Dictionary<string, object>
@@ -528,6 +558,20 @@ class Un
             if (args.ServiceCreateUnfreezeOnDemand)
             {
                 payload["unfreeze_on_demand"] = true;
+            }
+            if (args.Files.Count > 0)
+            {
+                var inputFiles = new List<Dictionary<string, string>>();
+                foreach (var filepath in args.Files)
+                {
+                    var content = File.ReadAllBytes(filepath);
+                    inputFiles.Add(new Dictionary<string, string>
+                    {
+                        ["filename"] = Path.GetFileName(filepath),
+                        ["content"] = Convert.ToBase64String(content)
+                    });
+                }
+                payload["input_files"] = inputFiles;
             }
 
             var result = ApiRequest("/services", "POST", payload, publicKey, secretKey);
@@ -1234,10 +1278,12 @@ class Un
         public string ServiceShowFreezePage = null;
         public bool ServiceShowFreezePageEnabled = true;
         public bool ServiceCreateUnfreezeOnDemand = false;
+        public string ServiceRedeploy = null;
         public string EnvFile = null;
         public string EnvAction = null;
         public string EnvTarget = null;
         public bool KeyExtend = false;
+        public bool LanguagesJson = false;
     }
 
     static Args ParseArgs(string[] args)
@@ -1249,6 +1295,7 @@ class Un
             if (arg == "session") result.Command = "session";
             else if (arg == "service") result.Command = "service";
             else if (arg == "key") result.Command = "key";
+            else if (arg == "languages") result.Command = "languages";
             else if (arg == "env" && result.Command == "service")
             {
                 // Parse: service env <action> <target>
@@ -1295,10 +1342,96 @@ class Un
             else if (arg == "--show-freeze-page") result.ServiceShowFreezePage = args[++i];
             else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
             else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
+            else if (arg == "--redeploy") result.ServiceRedeploy = args[++i];
             else if (arg == "--extend") result.KeyExtend = true;
+            else if (arg == "--json") result.LanguagesJson = true;
             else if (!arg.StartsWith("-")) result.SourceFile = arg;
         }
         return result;
+    }
+
+    static string GetLanguagesCachePath()
+    {
+        string home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE")
+            ?? ".";
+        return Path.Combine(home, ".unsandbox", "languages.json");
+    }
+
+    static List<string> LoadLanguagesCache()
+    {
+        string cachePath = GetLanguagesCachePath();
+        if (!File.Exists(cachePath)) return null;
+
+        try
+        {
+            string content = File.ReadAllText(cachePath);
+            double mtime = new DateTimeOffset(File.GetLastWriteTimeUtc(cachePath)).ToUnixTimeSeconds();
+            double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            if (now - mtime < 3600)
+            {
+                var data = ParseJson(content);
+                if (data.ContainsKey("languages") && data["languages"] is List<object> langs)
+                    return langs.ConvertAll(x => x.ToString());
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    static void SaveLanguagesCache(List<string> languages)
+    {
+        try
+        {
+            string cachePath = GetLanguagesCachePath();
+            string cacheDir = Path.GetDirectoryName(cachePath);
+            if (!Directory.Exists(cacheDir)) Directory.CreateDirectory(cacheDir);
+
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var sb = new StringBuilder();
+            sb.Append("{\"languages\":[");
+            for (int i = 0; i < languages.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append("\"").Append(languages[i]).Append("\"");
+            }
+            sb.Append("],\"timestamp\":").Append(timestamp).Append("}");
+            File.WriteAllText(cachePath, sb.ToString());
+        }
+        catch { }
+    }
+
+    static void CmdLanguages(Args args)
+    {
+        // Try cache first
+        var languages = LoadLanguagesCache();
+
+        if (languages == null)
+        {
+            var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+            var result = ApiRequest("/languages", "GET", null, publicKey, secretKey);
+            languages = new List<string>();
+            if (result.ContainsKey("languages") && result["languages"] is List<object> langs)
+                languages = langs.ConvertAll(x => x.ToString());
+            SaveLanguagesCache(languages);
+        }
+
+        if (args.LanguagesJson)
+        {
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < languages.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append("\"").Append(languages[i]).Append("\"");
+            }
+            sb.Append("]");
+            Console.WriteLine(sb.ToString());
+        }
+        else
+        {
+            foreach (var lang in languages)
+                Console.WriteLine(lang);
+        }
     }
 
     static void PrintHelp()
@@ -1308,6 +1441,7 @@ class Un
        Un service [options]
        Un service env <action> <service_id> [options]
        Un key [options]
+       Un languages [--json]
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -1340,6 +1474,7 @@ Service options:
   --show-freeze-page-enabled BOOL   Enable/disable (default: true)
   --with-unfreeze-on-demand   Enable unfreeze-on-demand when creating service
   --destroy ID      Destroy service
+  --redeploy ID     Re-run bootstrap (with optional --bootstrap, -f)
   --execute ID      Execute command in service
   --command CMD     Command to execute (with --execute)
   --dump-bootstrap ID   Dump bootstrap script
@@ -1354,7 +1489,10 @@ Service env commands:
   env delete ID     Delete vault
 
 Key options:
-  --extend          Open browser to extend expired key");
+  --extend          Open browser to extend expired key
+
+Languages options:
+  --json            Output as JSON array");
     }
 }
 
@@ -1486,15 +1624,76 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return new List<JobInfo>(); }
     }
 
-    /// <summary>Get available programming languages</summary>
+    private const int LANGUAGES_CACHE_TTL = 3600; // 1 hour
+
+    private static string GetLanguagesCachePath()
+    {
+        string home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE")
+            ?? ".";
+        return Path.Combine(home, ".unsandbox", "languages.json");
+    }
+
+    private static List<string> LoadLanguagesCache()
+    {
+        string cachePath = GetLanguagesCachePath();
+        if (!File.Exists(cachePath)) return null;
+
+        try
+        {
+            string content = File.ReadAllText(cachePath);
+            double mtime = new DateTimeOffset(File.GetLastWriteTimeUtc(cachePath)).ToUnixTimeSeconds();
+            double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            if (now - mtime < LANGUAGES_CACHE_TTL)
+            {
+                var data = ParseJson(content);
+                if (data.ContainsKey("languages") && data["languages"] is List<object> langs)
+                    return langs.ConvertAll(x => x.ToString());
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static void SaveLanguagesCache(List<string> languages)
+    {
+        try
+        {
+            string cachePath = GetLanguagesCachePath();
+            string cacheDir = Path.GetDirectoryName(cachePath);
+            if (!Directory.Exists(cacheDir)) Directory.CreateDirectory(cacheDir);
+
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var sb = new StringBuilder();
+            sb.Append("{\"languages\":[");
+            for (int i = 0; i < languages.Count; i++)
+            {
+                if (i > 0) sb.Append(",");
+                sb.Append("\"").Append(languages[i]).Append("\"");
+            }
+            sb.Append("],\"timestamp\":").Append(timestamp).Append("}");
+            File.WriteAllText(cachePath, sb.ToString());
+        }
+        catch { }
+    }
+
+    /// <summary>Get available programming languages (cached for 1 hour)</summary>
     public static List<string> GetLanguages(string publicKey = null, string secretKey = null)
     {
+        // Try cache first
+        var cached = LoadLanguagesCache();
+        if (cached != null) return cached;
+
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         try
         {
             var result = ApiCall("/languages", "GET", null, pk, sk);
             if (result.ContainsKey("languages") && result["languages"] is List<object> langs)
-                return langs.ConvertAll(x => x.ToString());
+            {
+                var languages = langs.ConvertAll(x => x.ToString());
+                SaveLanguagesCache(languages);
+                return languages;
+            }
             return new List<string>();
         }
         catch (Exception ex) { _lastError = ex.Message; return new List<string>(); }
@@ -1632,7 +1831,7 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return null; }
     }
 
-    public static string ServiceCreate(string name, string ports = null, string domains = null, string bootstrap = null, string networkMode = null, string publicKey = null, string secretKey = null)
+    public static string ServiceCreate(string name, string ports = null, string domains = null, string bootstrap = null, string networkMode = null, List<Dictionary<string, string>> inputFiles = null, string publicKey = null, string secretKey = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         var payload = new Dictionary<string, object> { ["name"] = name };
@@ -1645,6 +1844,7 @@ public static class Unsandbox
         if (domains != null) payload["domains"] = domains;
         if (bootstrap != null) payload["bootstrap"] = bootstrap;
         if (networkMode != null) payload["network"] = networkMode;
+        if (inputFiles != null && inputFiles.Count > 0) payload["input_files"] = inputFiles;
         try
         {
             var result = ApiCall("/services", "POST", payload, pk, sk);
@@ -1696,10 +1896,16 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return false; }
     }
 
-    public static bool ServiceRedeploy(string serviceId, string bootstrap = null, string publicKey = null, string secretKey = null)
+    public static bool ServiceRedeploy(string serviceId, string bootstrap = null, List<Dictionary<string, string>> inputFiles = null, string publicKey = null, string secretKey = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
-        var payload = bootstrap != null ? new Dictionary<string, object> { ["bootstrap"] = bootstrap } : null;
+        Dictionary<string, object> payload = null;
+        if (bootstrap != null || (inputFiles != null && inputFiles.Count > 0))
+        {
+            payload = new Dictionary<string, object>();
+            if (bootstrap != null) payload["bootstrap"] = bootstrap;
+            if (inputFiles != null && inputFiles.Count > 0) payload["input_files"] = inputFiles;
+        }
         try { ApiCall($"/services/{serviceId}/redeploy", "POST", payload, pk, sk); return true; }
         catch (Exception ex) { _lastError = ex.Message; return false; }
     }

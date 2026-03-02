@@ -472,6 +472,7 @@ sub service_redeploy {
     my ($service_id, %opts) = @_;
     my $body = {};
     $body->{bootstrap} = $opts{bootstrap} if $opts{bootstrap};
+    $body->{input_files} = $opts{input_files} if $opts{input_files};
     return api_request('POST', "/services/$service_id/redeploy", $body, %opts);
 }
 
@@ -998,7 +999,12 @@ sub cmd_service {
     }
 
     if ($options->{redeploy}) {
-        Un::service_redeploy($options->{redeploy}, bootstrap => $options->{bootstrap});
+        my %opts;
+        $opts{bootstrap} = $options->{bootstrap} if $options->{bootstrap};
+        if ($options->{files} && @{$options->{files}}) {
+            $opts{input_files} = build_input_files(@{$options->{files}});
+        }
+        Un::service_redeploy($options->{redeploy}, %opts);
         print "${GREEN}Service redeployed: $options->{redeploy}${RESET}\n";
         return;
     }

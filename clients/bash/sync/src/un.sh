@@ -424,6 +424,7 @@ service_create() {
     local name="$1"
     local ports="${2:-}"
     local bootstrap="${3:-}"
+    local input_files_json="${4:-}"
 
     local body
     body=$(jq -n --arg name "$name" '{name: $name}')
@@ -433,6 +434,9 @@ service_create() {
     fi
     if [ -n "$bootstrap" ]; then
         body=$(echo "$body" | jq --arg boot "$bootstrap" '. + {bootstrap: $boot}')
+    fi
+    if [ -n "$input_files_json" ]; then
+        body=$(echo "$body" | jq --argjson files "$input_files_json" '. + {input_files: $files}')
     fi
 
     api_request "POST" "/services" "$body"
@@ -472,9 +476,13 @@ service_set_unfreeze_on_demand() {
 service_redeploy() {
     local service_id="$1"
     local bootstrap="${2:-}"
+    local input_files_json="${3:-}"
     local body="{}"
     if [ -n "$bootstrap" ]; then
         body=$(jq -n --arg boot "$bootstrap" '{bootstrap: $boot}')
+    fi
+    if [ -n "$input_files_json" ]; then
+        body=$(echo "$body" | jq --argjson files "$input_files_json" '. + {input_files: $files}')
     fi
     api_request "POST" "/services/$service_id/redeploy" "$body"
 }
@@ -902,6 +910,9 @@ cmd_service() {
     local target=""
     local name=""
     local ports=""
+    local bootstrap=""
+    local bootstrap_file=""
+    local -a files=()
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -913,12 +924,46 @@ cmd_service() {
             --lock) action="lock"; target="$2"; shift ;;
             --unlock) action="unlock"; target="$2"; shift ;;
             --logs) action="logs"; target="$2"; shift ;;
+            --redeploy) action="redeploy"; target="$2"; shift ;;
             --name) name="$2"; shift ;;
             --ports) ports="$2"; shift ;;
+            --bootstrap) bootstrap="$2"; shift ;;
+            --bootstrap-file) bootstrap_file="$2"; shift ;;
+            -f|--file) files+=("$2"); shift ;;
             *) ;;
         esac
         shift
     done
+
+    # Build input_files JSON from -f args
+    local input_files_json=""
+    if [ ${#files[@]} -gt 0 ]; then
+        input_files_json="["
+        local first=1
+        for fpath in "${files[@]}"; do
+            if [ ! -f "$fpath" ]; then
+                echo -e "${RED}Error: File not found: $fpath${RESET}" >&2
+                exit 1
+            fi
+            local encoded
+            encoded=$(base64 -w0 "$fpath" 2>/dev/null || base64 "$fpath" 2>/dev/null)
+            local fname
+            fname=$(basename "$fpath")
+            [ "$first" -eq 0 ] && input_files_json="$input_files_json,"
+            input_files_json="$input_files_json{\"filename\":$(echo "$fname" | jq -Rs .),\"content\":$(echo "$encoded" | jq -Rs .)}"
+            first=0
+        done
+        input_files_json="$input_files_json]"
+    fi
+
+    # Resolve bootstrap from file if provided
+    if [ -n "$bootstrap_file" ]; then
+        if [ ! -f "$bootstrap_file" ]; then
+            echo -e "${RED}Error: Bootstrap file not found: $bootstrap_file${RESET}" >&2
+            exit 1
+        fi
+        bootstrap=$(cat "$bootstrap_file")
+    fi
 
     case "$action" in
         list)
@@ -954,14 +999,19 @@ cmd_service() {
             result=$(service_logs "$target")
             echo "$result" | jq -r '.logs // empty'
             ;;
+        redeploy)
+            local result
+            result=$(service_redeploy "$target" "$bootstrap" "$input_files_json")
+            echo -e "${GREEN}Service redeployed: $target${RESET}"
+            ;;
         *)
             if [ -n "$name" ]; then
                 local result
-                result=$(service_create "$name" "$ports" "")
+                result=$(service_create "$name" "$ports" "$bootstrap" "$input_files_json")
                 echo -e "${GREEN}Service created${RESET}"
                 echo "$result" | jq -r '"ID: \(.id)\nName: \(.name)"'
             else
-                echo "Usage: bash un.sh service --list|--info ID|--destroy ID|--name NAME" >&2
+                echo "Usage: bash un.sh service --list|--info ID|--destroy ID|--redeploy ID|--name NAME" >&2
                 exit 1
             fi
             ;;
@@ -1138,8 +1188,12 @@ Service options:
   --lock ID     Lock service
   --unlock ID   Unlock service
   --logs ID     Get service logs
+  --redeploy ID Re-run bootstrap (supports -f, --bootstrap)
   --name NAME   Create service with name
   --ports PORTS Service ports (comma-separated)
+  --bootstrap CMD       Bootstrap command
+  --bootstrap-file FILE Bootstrap from file
+  -f, --file FILE       Add input file (can repeat)
 
 Snapshot options:
   --list        List all snapshots

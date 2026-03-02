@@ -1093,6 +1093,7 @@ async function listServices(publicKey, secretKey) {
  *     - domains: Array of custom domains
  *     - serviceType: Service type for SRV records (minecraft, mumble, etc.)
  *     - unfreezeOnDemand: If true, frozen services wake automatically on HTTP traffic
+ *     - inputFiles: Array of {filename, content} objects (content is base64-encoded)
  *
  * Returns: Promise<Object> (service info with service_id)
  */
@@ -1114,6 +1115,7 @@ async function createService(name, ports, bootstrap, opts = {}, publicKey, secre
   if (opts.domains) data.custom_domains = opts.domains;
   if (opts.serviceType) data.service_type = opts.serviceType;
   if (opts.unfreezeOnDemand) data.unfreeze_on_demand = true;
+  if (opts.inputFiles && opts.inputFiles.length > 0) data.input_files = opts.inputFiles;
 
   return makeRequest('POST', '/services', publicKey, secretKey, data);
 }
@@ -1331,10 +1333,11 @@ async function exportServiceEnv(serviceId, publicKey, secretKey) {
  * Args:
  *   serviceId: Service ID to redeploy
  *   bootstrap: Optional new bootstrap script content or URL
+ *   inputFiles: Optional array of {filename, content} objects (content is base64-encoded)
  *
  * Returns: Promise<Object> (redeploy confirmation)
  */
-async function redeployService(serviceId, bootstrap = null, publicKey, secretKey) {
+async function redeployService(serviceId, bootstrap = null, inputFiles = null, publicKey, secretKey) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
   const data = {};
   if (bootstrap) {
@@ -1344,6 +1347,7 @@ async function redeployService(serviceId, bootstrap = null, publicKey, secretKey
       data.bootstrap_content = bootstrap;
     }
   }
+  if (inputFiles && inputFiles.length > 0) data.input_files = inputFiles;
   return makeRequest('POST', `/services/${serviceId}/redeploy`, publicKey, secretKey, data);
 }
 
@@ -2146,7 +2150,7 @@ SERVICE COMMANDS:
   node un.js service --lock <id>         Prevent deletion
   node un.js service --unlock <id>       Allow deletion
   node un.js service --execute <id> <cmd> Run command in service
-  node un.js service --redeploy <id>     Re-run bootstrap
+  node un.js service --redeploy <id>     Re-run bootstrap (supports -f)
   node un.js service --snapshot <id>     Create snapshot
 
 SERVICE ENV COMMANDS:
@@ -2732,7 +2736,19 @@ async function handleService(opts) {
     if (opts.bootstrapFile) {
       bootstrap = fs.readFileSync(opts.bootstrapFile, 'utf-8');
     }
-    await redeployService(opts.redeploy, bootstrap, pk, sk);
+    // Build input_files from -f args
+    let inputFiles = null;
+    if (opts.files && opts.files.length > 0) {
+      inputFiles = [];
+      for (const fpath of opts.files) {
+        const content = fs.readFileSync(fpath);
+        inputFiles.push({
+          filename: path.basename(fpath),
+          content: content.toString('base64'),
+        });
+      }
+    }
+    await redeployService(opts.redeploy, bootstrap, inputFiles, pk, sk);
     console.log(`Service ${opts.redeploy} redeployed.`);
     return;
   }
@@ -2785,6 +2801,17 @@ async function handleService(opts) {
     }
     if (opts.type) {
       serviceOpts.serviceType = opts.type;
+    }
+    // Build input_files from -f args
+    if (opts.files && opts.files.length > 0) {
+      serviceOpts.inputFiles = [];
+      for (const fpath of opts.files) {
+        const content = fs.readFileSync(fpath);
+        serviceOpts.inputFiles.push({
+          filename: path.basename(fpath),
+          content: content.toString('base64'),
+        });
+      }
     }
 
     const service = await createService(opts.name, ports, bootstrap, serviceOpts, pk, sk);

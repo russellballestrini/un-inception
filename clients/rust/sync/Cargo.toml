@@ -32,6 +32,9 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Base64 encoding (for input_files)
+base64 = "0.22"
+
 # HMAC-SHA256 authentication
 hmac = "0.12"
 sha2 = "0.10"

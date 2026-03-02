@@ -1494,6 +1494,31 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
+        return createService(name, ports, bootstrap, null, publicKey, secretKey);
+    }
+
+    /**
+     * Create a new service (long-running container) with optional input files.
+     *
+     * @param name Service name
+     * @param ports Comma-separated list of ports to expose (e.g., "80,443")
+     * @param bootstrap Bootstrap script or URL to run on service creation
+     * @param inputFiles Optional list of maps with "filename" and "content" (base64-encoded)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing service_id
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> createService(
+        String name,
+        String ports,
+        String bootstrap,
+        List<Map<String, String>> inputFiles,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
 
         Map<String, Object> data = new LinkedHashMap<>();
@@ -1516,6 +1541,9 @@ public class Un {
             } else {
                 data.put("bootstrap", bootstrap);
             }
+        }
+        if (inputFiles != null && !inputFiles.isEmpty()) {
+            data.put("input_files", inputFiles);
         }
 
         return makeRequest("POST", "/services", creds[0], creds[1], data);
@@ -1540,6 +1568,33 @@ public class Un {
         String ports,
         String bootstrap,
         boolean unfreezeOnDemand,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        return createService(name, ports, bootstrap, unfreezeOnDemand, null, publicKey, secretKey);
+    }
+
+    /**
+     * Create a new service (long-running container) with unfreeze-on-demand option and input files.
+     *
+     * @param name Service name (used for hostname)
+     * @param ports Comma-separated list of ports to expose (e.g., "80,443")
+     * @param bootstrap Bootstrap script or URL to run on service creation
+     * @param unfreezeOnDemand If true, frozen service will auto-wake on HTTP request
+     * @param inputFiles Optional list of maps with "filename" and "content" (base64-encoded)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map containing service_id
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> createService(
+        String name,
+        String ports,
+        String bootstrap,
+        boolean unfreezeOnDemand,
+        List<Map<String, String>> inputFiles,
         String publicKey,
         String secretKey
     ) throws IOException {
@@ -1568,6 +1623,9 @@ public class Un {
         }
         if (unfreezeOnDemand) {
             data.put("unfreeze_on_demand", true);
+        }
+        if (inputFiles != null && !inputFiles.isEmpty()) {
+            data.put("input_files", inputFiles);
         }
 
         return makeRequest("POST", "/services", creds[0], creds[1], data);
@@ -1902,8 +1960,33 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
+        return redeployService(serviceId, null, publicKey, secretKey);
+    }
+
+    /**
+     * Redeploy a service (re-run bootstrap script) with optional input files.
+     *
+     * @param serviceId Service ID to redeploy
+     * @param inputFiles Optional list of maps with "filename" and "content" (base64-encoded)
+     * @param publicKey Optional API key
+     * @param secretKey Optional API secret
+     * @return Response map with redeploy confirmation
+     * @throws IOException on network errors
+     * @throws CredentialsException if credentials cannot be found
+     * @throws ApiException if API returns an error
+     */
+    public static Map<String, Object> redeployService(
+        String serviceId,
+        List<Map<String, String>> inputFiles,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        return makeRequest("POST", "/services/" + serviceId + "/redeploy", creds[0], creds[1], new LinkedHashMap<>());
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (inputFiles != null && !inputFiles.isEmpty()) {
+            data.put("input_files", inputFiles);
+        }
+        return makeRequest("POST", "/services/" + serviceId + "/redeploy", creds[0], creds[1], data);
     }
 
     /**
@@ -2859,7 +2942,7 @@ public class Un {
                 handleSession(positionalArgs, publicKey, secretKey, networkMode, vcpu, language);
                 break;
             case "service":
-                handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars);
+                handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars, files);
                 break;
             case "snapshot":
                 handleSnapshot(positionalArgs, publicKey, secretKey);
@@ -3181,7 +3264,8 @@ public class Un {
         String secretKey,
         String networkMode,
         int vcpu,
-        List<String> envVars
+        List<String> envVars,
+        List<String> files
     ) throws Exception {
         // Check for "env" subcommand
         if (args.size() > 1 && args.get(1).equals("env")) {
@@ -3347,20 +3431,43 @@ public class Un {
                 System.err.print(stderr);
             }
         } else if (redeployId != null) {
-            redeployService(redeployId, publicKey, secretKey);
+            // Build input_files from -f args
+            List<Map<String, String>> inputFiles = buildInputFiles(files);
+            redeployService(redeployId, inputFiles, publicKey, secretKey);
             System.out.println("Service redeployed: " + redeployId);
         } else if (snapshotId != null) {
             String snapId = serviceSnapshot(snapshotId, publicKey, secretKey, null);
             System.out.println("Snapshot created: " + snapId);
         } else if (name != null) {
-            // Create new service
-            Map<String, Object> result = createService(name, ports, bootstrap, publicKey, secretKey);
+            // Build input_files from -f args
+            List<Map<String, String>> inputFiles = buildInputFiles(files);
+            Map<String, Object> result = createService(name, ports, bootstrap, inputFiles, publicKey, secretKey);
             System.out.println("Service created:");
             printMap(result);
         } else {
             System.err.println("Error: No service action specified. Use --list, --name, --info, etc.");
             System.exit(2);
         }
+    }
+
+    /**
+     * Build input_files list from -f file paths: read each file, base64-encode, return list of maps.
+     */
+    private static List<Map<String, String>> buildInputFiles(List<String> filePaths) throws IOException {
+        if (filePaths == null || filePaths.isEmpty()) {
+            return null;
+        }
+        List<Map<String, String>> inputFiles = new ArrayList<>();
+        for (String fpath : filePaths) {
+            Path p = Paths.get(fpath);
+            byte[] content = Files.readAllBytes(p);
+            String encoded = Base64.getEncoder().encodeToString(content);
+            Map<String, String> entry = new LinkedHashMap<>();
+            entry.put("filename", p.getFileName().toString());
+            entry.put("content", encoded);
+            inputFiles.add(entry);
+        }
+        return inputFiles;
     }
 
     private static void handleServiceEnv(

@@ -58,6 +58,7 @@
 //     - TTL: 1 hour
 //     - Updated on successful API calls
 
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -382,6 +383,17 @@ pub struct ServiceCreateOptions {
     pub bootstrap_url: Option<String>,
     /// Whether to enable automatic unfreezing on incoming HTTP requests
     pub unfreeze_on_demand: Option<bool>,
+    /// Input files to upload (filename + base64-encoded content)
+    pub input_files: Option<Vec<InputFile>>,
+}
+
+/// A file to upload with a service create or redeploy request
+#[derive(Debug, Clone, Serialize)]
+pub struct InputFile {
+    /// Filename (basename only)
+    pub filename: String,
+    /// Base64-encoded file content
+    pub content: String,
 }
 
 /// Options for updating a service
@@ -1997,6 +2009,11 @@ pub fn create_service(
         if let Some(unfreeze_on_demand) = opts.unfreeze_on_demand {
             body["unfreeze_on_demand"] = serde_json::json!(unfreeze_on_demand);
         }
+        if let Some(input_files) = opts.input_files {
+            if !input_files.is_empty() {
+                body["input_files"] = serde_json::json!(input_files);
+            }
+        }
     }
 
     make_request("POST", "/services", creds, Some(&body))
@@ -2269,12 +2286,22 @@ pub fn export_service_env(service_id: &str, creds: &Credentials) -> Result<Strin
 /// # Arguments
 /// * `service_id` - Service ID to redeploy
 /// * `creds` - API credentials
+/// * `input_files` - Optional files to upload (filename + base64-encoded content)
 ///
 /// # Returns
 /// Updated Service information
-pub fn redeploy_service(service_id: &str, creds: &Credentials) -> Result<Service> {
+pub fn redeploy_service(
+    service_id: &str,
+    creds: &Credentials,
+    input_files: Option<Vec<InputFile>>,
+) -> Result<Service> {
     let path = format!("/services/{}/redeploy", service_id);
-    let body = serde_json::json!({});
+    let mut body = serde_json::json!({});
+    if let Some(files) = input_files {
+        if !files.is_empty() {
+            body["input_files"] = serde_json::json!(files);
+        }
+    }
     make_request("POST", &path, creds, Some(&body))
 }
 
@@ -2861,7 +2888,7 @@ SESSION COMMANDS:
 
 SERVICE COMMANDS:
     un service --list                          List all services
-    un service --name NAME --ports P           Create service
+    un service --name NAME --ports P [-f FILE]  Create service
     un service --info ID                       Get service details
     un service --logs ID                       Get all logs
     un service --tail ID                       Get last 9000 lines
@@ -2871,7 +2898,7 @@ SERVICE COMMANDS:
     un service --lock ID                       Prevent deletion
     un service --unlock ID                     Allow deletion
     un service --execute ID 'cmd'              Run command
-    un service --redeploy ID                   Re-run bootstrap
+    un service --redeploy ID [-f FILE]          Re-run bootstrap
     un service --snapshot ID                   Create snapshot
     un service env status ID                   Show vault status
     un service env set ID                      Set env vars
@@ -3586,6 +3613,33 @@ fn cmd_session(opts: &CliOptions) -> i32 {
     }
 }
 
+/// Build input_files from -f file paths: read each file, base64 encode, return as InputFile vec.
+fn build_input_files(files: &[String]) -> Option<Vec<InputFile>> {
+    if files.is_empty() {
+        return None;
+    }
+    let engine = base64::engine::general_purpose::STANDARD;
+    let mut input_files = Vec::new();
+    for fpath in files {
+        let path = std::path::Path::new(fpath);
+        match fs::read(path) {
+            Ok(data) => {
+                let filename = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| fpath.clone());
+                input_files.push(InputFile {
+                    filename,
+                    content: engine.encode(&data),
+                });
+            }
+            Err(e) => {
+                eprintln!("Warning: Cannot read file '{}': {}", fpath, e);
+            }
+        }
+    }
+    if input_files.is_empty() { None } else { Some(input_files) }
+}
+
 fn cmd_service(opts: &CliOptions) -> i32 {
     let creds = match get_credentials(opts) {
         Ok(c) => c,
@@ -3736,7 +3790,9 @@ fn cmd_service(opts: &CliOptions) -> i32 {
     }
 
     if let Some(ref id) = opts.service_redeploy {
-        match redeploy_service(id, &creds) {
+        // Build input_files from -f args
+        let service_input_files = build_input_files(&opts.files);
+        match redeploy_service(id, &creds, service_input_files) {
             Ok(service) => {
                 println!("Service {} redeployed.", service.service_id);
                 return EXIT_SUCCESS;
@@ -3809,12 +3865,16 @@ fn cmd_service(opts: &CliOptions) -> i32 {
             String::new()
         };
 
+        // Build input_files from -f args
+        let service_input_files = build_input_files(&opts.files);
+
         let service_opts = ServiceCreateOptions {
             network_mode: opts.network.clone(),
             vcpu: opts.vcpu,
             domains: opts.service_domains.as_ref().map(|d| {
                 d.split(',').map(|s| s.trim().to_string()).collect()
             }),
+            input_files: service_input_files,
             ..Default::default()
         };
 

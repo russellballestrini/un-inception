@@ -195,6 +195,7 @@ interface Args {
   setUnfreezeOnDemand: string | null;
   showFreezePage: boolean | null;
   setShowFreezePage: string | null;
+  redeploy: string | null;
 }
 
 interface ApiKeys {
@@ -897,6 +898,37 @@ async function cmdService(args: Args): Promise<void> {
     return;
   }
 
+  if (args.redeploy) {
+    const payload: any = {};
+    if (args.bootstrap) {
+      payload.bootstrap = args.bootstrap;
+    }
+    if (args.bootstrapFile) {
+      if (!fs.existsSync(args.bootstrapFile)) {
+        console.error(`${RED}Error: Bootstrap file not found: ${args.bootstrapFile}${RESET}`);
+        process.exit(1);
+      }
+      payload.bootstrap_content = fs.readFileSync(args.bootstrapFile, 'utf-8');
+    }
+    if (args.files && args.files.length > 0) {
+      payload.input_files = args.files.map(filepath => {
+        try {
+          const content = fs.readFileSync(filepath);
+          return {
+            filename: path.basename(filepath),
+            content_base64: content.toString('base64')
+          };
+        } catch (e) {
+          console.error(`${RED}Error: Input file not found: ${filepath}${RESET}`);
+          process.exit(1);
+        }
+      });
+    }
+    await apiRequest(`/services/${args.redeploy}/redeploy`, "POST", payload, keys);
+    console.log(`${GREEN}Service redeployed: ${args.redeploy}${RESET}`);
+    return;
+  }
+
   if (args.execute) {
     const payload = { command: args.command_arg };
     const result = await apiRequest(`/services/${args.execute}/execute`, "POST", payload, keys);
@@ -1225,6 +1257,7 @@ function parseArgs(argv: string[]): Args {
     setUnfreezeOnDemand: null,
     showFreezePage: null,
     setShowFreezePage: null,
+    redeploy: null,
   };
 
   let i = 2;
@@ -1397,6 +1430,9 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--set-show-freeze-page' && i + 1 < argv.length) {
       args.setShowFreezePage = argv[++i];
       i++;
+    } else if (arg === '--redeploy' && i + 1 < argv.length) {
+      args.redeploy = argv[++i];
+      i++;
     } else if (!arg.startsWith('-')) {
       args.sourceFile = arg;
       i++;
@@ -1474,6 +1510,7 @@ Service options:
   --unfreeze ID        Unfreeze service
   --destroy ID     Destroy service
   --resize ID      Resize service (requires -v)
+  --redeploy ID    Re-run bootstrap (with optional --bootstrap, --bootstrap-file, -f)
   --execute ID     Execute command in service
   --command CMD    Command to execute (with --execute)
   --dump-bootstrap ID  Dump bootstrap script

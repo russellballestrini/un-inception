@@ -57,6 +57,7 @@ require 'openssl'
 require 'fileutils'
 require 'optparse'
 require 'cgi'
+require 'base64'
 
 # Unsandbox Ruby SDK module (synchronous)
 module Un
@@ -922,6 +923,7 @@ module Un
     # @param custom_domains [Array<String>, nil] Custom domains for the service
     # @param service_type [String, nil] Service type for SRV records (e.g., "minecraft")
     # @param unfreeze_on_demand [Boolean] If true, service will auto-wake on HTTP request (default: false)
+    # @param input_files [Array<Hash>, nil] Optional list of hashes with "filename" and "content" (base64)
     # @return [Hash] Response hash with service_id
     # @raise [CredentialsError] If no credentials found
     # @raise [APIError] If API request fails
@@ -929,7 +931,7 @@ module Un
     # @example
     #     result = Un.create_service("web", [80, 443], "apt install -y nginx && nginx")
     #     puts result["service_id"]
-    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false)
+    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false, input_files: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
       data = {
         name: name,
@@ -941,6 +943,7 @@ module Un
       data[:custom_domains] = custom_domains if custom_domains
       data[:service_type] = service_type if service_type
       data[:unfreeze_on_demand] = unfreeze_on_demand if unfreeze_on_demand
+      data[:input_files] = input_files if input_files && !input_files.empty?
       make_request('POST', '/services', pk, sk, data)
     end
 
@@ -1202,16 +1205,18 @@ module Un
     # @param public_key [String, nil] Optional API key
     # @param secret_key [String, nil] Optional API secret
     # @param bootstrap [String, nil] New bootstrap script (optional)
+    # @param input_files [Array<Hash>, nil] Optional list of hashes with "filename" and "content" (base64)
     # @return [Hash] Response hash with redeploy confirmation
     # @raise [CredentialsError] If no credentials found
     # @raise [APIError] If API request fails
     #
     # @example
     #     Un.redeploy_service(service_id)
-    def redeploy_service(service_id, public_key: nil, secret_key: nil, bootstrap: nil)
+    def redeploy_service(service_id, public_key: nil, secret_key: nil, bootstrap: nil, input_files: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
       data = {}
       data[:bootstrap] = bootstrap if bootstrap
+      data[:input_files] = input_files if input_files && !input_files.empty?
       make_request('POST', "/services/#{service_id}/redeploy", pk, sk, data)
     end
 
@@ -2420,7 +2425,17 @@ module Un
         elsif service_opts[:bootstrap]
           bootstrap = service_opts[:bootstrap]
         end
-        redeploy_service(service_opts[:redeploy], bootstrap: bootstrap, **creds)
+        # Build input_files from -f args
+        service_input_files = nil
+        unless options[:files].empty?
+          service_input_files = options[:files].map do |fpath|
+            {
+              filename: File.basename(fpath),
+              content: Base64.strict_encode64(File.binread(fpath))
+            }
+          end
+        end
+        redeploy_service(service_opts[:redeploy], bootstrap: bootstrap, input_files: service_input_files, **creds)
         puts "Service #{service_opts[:redeploy]} redeployed"
       elsif service_opts[:execute]
         cmd = service_opts[:execute_cmd]
@@ -2453,6 +2468,17 @@ module Un
           exit(EXIT_INVALID_ARGS)
         end
 
+        # Build input_files from -f args
+        service_input_files = nil
+        unless options[:files].empty?
+          service_input_files = options[:files].map do |fpath|
+            {
+              filename: File.basename(fpath),
+              content: Base64.strict_encode64(File.binread(fpath))
+            }
+          end
+        end
+
         result = create_service(
           service_opts[:name],
           service_opts[:ports],
@@ -2461,6 +2487,7 @@ module Un
           vcpu: options[:vcpu],
           custom_domains: service_opts[:domains],
           service_type: service_opts[:type],
+          input_files: service_input_files,
           **creds
         )
         puts "Service created: #{result['service_id']}"

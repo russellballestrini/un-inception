@@ -1339,13 +1339,18 @@ class Unsandbox {
      * @param string $serviceId Service ID
      * @param string|null $publicKey Optional API key
      * @param string|null $secretKey Optional API secret
+     * @param array $opts Optional parameters: 'input_files'
      * @return array Response array with redeploy confirmation
      * @throws CredentialsException Missing credentials
      * @throws ApiException API request failed
      */
-    public function redeployService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null): array {
+    public function redeployService(string $serviceId, ?string $publicKey = null, ?string $secretKey = null, array $opts = []): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        return $this->makeRequest('POST', "/services/{$serviceId}/redeploy", $publicKey, $secretKey, []);
+        $data = [];
+        if (isset($opts['input_files'])) {
+            $data['input_files'] = $opts['input_files'];
+        }
+        return $this->makeRequest('POST', "/services/{$serviceId}/redeploy", $publicKey, $secretKey, $data);
     }
 
     /**
@@ -2603,7 +2608,31 @@ class Unsandbox {
         }
 
         if ($serviceOpts['redeploy']) {
-            $result = $this->redeployService($serviceOpts['redeploy']);
+            $redeployOpts = [];
+            $inputFiles = [];
+            foreach ($opts['files'] as $filepath) {
+                if (file_exists($filepath)) {
+                    $content = file_get_contents($filepath);
+                    $inputFiles[] = [
+                        'name' => basename($filepath),
+                        'content' => base64_encode($content),
+                    ];
+                }
+            }
+            foreach ($opts['files_path'] as $filepath) {
+                if (file_exists($filepath)) {
+                    $content = file_get_contents($filepath);
+                    $inputFiles[] = [
+                        'name' => $filepath,
+                        'content' => base64_encode($content),
+                        'preserve_path' => true,
+                    ];
+                }
+            }
+            if (!empty($inputFiles)) {
+                $redeployOpts['input_files'] = $inputFiles;
+            }
+            $result = $this->redeployService($serviceOpts['redeploy'], null, null, $redeployOpts);
             echo "Service redeploying: " . $serviceOpts['redeploy'] . "\n";
             return;
         }
@@ -2645,6 +2674,31 @@ class Unsandbox {
             }
             if ($serviceOpts['unfreeze_on_demand']) {
                 $createOpts['unfreeze_on_demand'] = true;
+            }
+
+            // Handle input files
+            $inputFiles = [];
+            foreach ($opts['files'] as $filepath) {
+                if (file_exists($filepath)) {
+                    $content = file_get_contents($filepath);
+                    $inputFiles[] = [
+                        'name' => basename($filepath),
+                        'content' => base64_encode($content),
+                    ];
+                }
+            }
+            foreach ($opts['files_path'] as $filepath) {
+                if (file_exists($filepath)) {
+                    $content = file_get_contents($filepath);
+                    $inputFiles[] = [
+                        'name' => $filepath,
+                        'content' => base64_encode($content),
+                        'preserve_path' => true,
+                    ];
+                }
+            }
+            if (!empty($inputFiles)) {
+                $createOpts['input_files'] = $inputFiles;
             }
 
             // Handle bootstrap from file
@@ -3438,7 +3492,7 @@ SERVICE OPTIONS:
     --lock ID               Prevent service deletion
     --unlock ID             Allow service deletion
     --resize ID             Resize service (with --vcpu)
-    --redeploy ID           Re-run bootstrap
+    --redeploy ID           Re-run bootstrap (supports -f/-F for input files)
     --execute ID 'cmd'      Execute command in service
     --snapshot ID           Create service snapshot
 

@@ -392,7 +392,22 @@ void CmdService(Args args)
 
     if (args.ServiceRedeploy != null)
     {
-        ApiRequest($"/services/{args.ServiceRedeploy}/redeploy", HttpMethod.Post, null, publicKey, secretKey);
+        var payload = new Dictionary<string, object>();
+        if (args.Files.Count > 0)
+        {
+            var inputFiles = new List<Dictionary<string, string>>();
+            foreach (var filepath in args.Files)
+            {
+                var content = File.ReadAllBytes(filepath);
+                inputFiles.Add(new Dictionary<string, string>
+                {
+                    ["filename"] = Path.GetFileName(filepath),
+                    ["content"] = Convert.ToBase64String(content)
+                });
+            }
+            payload["input_files"] = inputFiles;
+        }
+        ApiRequest($"/services/{args.ServiceRedeploy}/redeploy", HttpMethod.Post, payload.Count > 0 ? payload : null, publicKey, secretKey);
         Console.WriteLine($"{GREEN}Service redeploying: {args.ServiceRedeploy}{RESET}");
         return;
     }
@@ -452,6 +467,20 @@ void CmdService(Args args)
         if (args.Network != null) payload["network"] = args.Network;
         if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
         if (args.ServiceCreateUnfreezeOnDemand) payload["unfreeze_on_demand"] = true;
+        if (args.Files.Count > 0)
+        {
+            var inputFiles = new List<Dictionary<string, string>>();
+            foreach (var filepath in args.Files)
+            {
+                var content = File.ReadAllBytes(filepath);
+                inputFiles.Add(new Dictionary<string, string>
+                {
+                    ["filename"] = Path.GetFileName(filepath),
+                    ["content"] = Convert.ToBase64String(content)
+                });
+            }
+            payload["input_files"] = inputFiles;
+        }
 
         var result = ApiRequest("/services", HttpMethod.Post, payload, publicKey, secretKey);
         var serviceId = result.TryGetValue("id", out var id) && id is JsonElement idEl ? idEl.GetString() : null;
@@ -1085,7 +1114,7 @@ Service options:
   --lock ID         Prevent deletion
   --unlock ID       Allow deletion
   --resize ID       Resize (use with -v)
-  --redeploy ID     Re-run bootstrap
+  --redeploy ID     Re-run bootstrap (use -f to include input files)
   --snapshot ID     Create snapshot from service
   --unfreeze-on-demand ID   Set unfreeze-on-demand for service
   --unfreeze-on-demand-enabled BOOL   Enable/disable (default: true)
@@ -1098,6 +1127,7 @@ Service options:
   --dump-bootstrap ID   Dump bootstrap script
   --dump-file FILE      File to save bootstrap (with --dump-bootstrap)
   -e KEY=VALUE      Set vault env var (with --name or env set)
+  -f FILE           Add input file (with --name or --redeploy)
   --env-file FILE   Load vault vars from file
 
 Service env commands:
@@ -1406,7 +1436,7 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return null; }
     }
 
-    public static string? ServiceCreate(string name, string? ports = null, string? domains = null, string? bootstrap = null, string? networkMode = null, string? publicKey = null, string? secretKey = null)
+    public static string? ServiceCreate(string name, string? ports = null, string? domains = null, string? bootstrap = null, string? networkMode = null, List<Dictionary<string, string>>? inputFiles = null, string? publicKey = null, string? secretKey = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         var payload = new Dictionary<string, object> { ["name"] = name };
@@ -1414,6 +1444,7 @@ public static class Unsandbox
         if (domains != null) payload["domains"] = domains;
         if (bootstrap != null) payload["bootstrap"] = bootstrap;
         if (networkMode != null) payload["network"] = networkMode;
+        if (inputFiles != null && inputFiles.Count > 0) payload["input_files"] = inputFiles;
         try
         {
             var result = ApiCall("/services", HttpMethod.Post, payload, pk, sk);
@@ -1465,10 +1496,16 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return false; }
     }
 
-    public static bool ServiceRedeploy(string serviceId, string? bootstrap = null, string? publicKey = null, string? secretKey = null)
+    public static bool ServiceRedeploy(string serviceId, string? bootstrap = null, List<Dictionary<string, string>>? inputFiles = null, string? publicKey = null, string? secretKey = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
-        var payload = bootstrap != null ? new Dictionary<string, object> { ["bootstrap"] = bootstrap } : null;
+        Dictionary<string, object>? payload = null;
+        if (bootstrap != null || inputFiles != null)
+        {
+            payload = new Dictionary<string, object>();
+            if (bootstrap != null) payload["bootstrap"] = bootstrap;
+            if (inputFiles != null && inputFiles.Count > 0) payload["input_files"] = inputFiles;
+        }
         try { ApiCall($"/services/{serviceId}/redeploy", HttpMethod.Post, payload, pk, sk); return true; }
         catch (Exception ex) { _lastError = ex.Message; return false; }
     }
