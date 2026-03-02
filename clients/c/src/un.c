@@ -4643,7 +4643,7 @@ static char* read_env_stdin(void) {
 
 // Redeploy a service (re-run bootstrap script)
 // Bootstrap scripts should be idempotent for proper upgrade behavior
-static int redeploy_service(const UnsandboxCredentials *creds, const char *service_id, const char *bootstrap) {
+static int redeploy_service(const UnsandboxCredentials *creds, const char *service_id, const char *bootstrap, struct InputFile *input_files, int input_file_count) {
     CURL *curl = curl_easy_init();
     if (!curl) return 1;
 
@@ -4692,6 +4692,9 @@ static int redeploy_service(const UnsandboxCredentials *creds, const char *servi
     } else if (bootstrap_url) {
         payload_size += strlen(bootstrap_url) * 2 + 100;
     }
+    for (int i = 0; i < input_file_count; i++) {
+        payload_size += strlen(input_files[i].content_base64) + 256;
+    }
 
     // Build JSON payload manually (matching create_service pattern)
     char *payload = malloc(payload_size);
@@ -4704,15 +4707,31 @@ static int redeploy_service(const UnsandboxCredentials *creds, const char *servi
     char *p = payload;
     p += sprintf(p, "{");
 
+    int has_field = 0;
     if (bootstrap_content) {
         char *esc_content = escape_json_string(bootstrap_content);
         p += sprintf(p, "\"bootstrap_content\":\"%s\"", esc_content);
         free(esc_content);
         free(bootstrap_content);
+        has_field = 1;
     } else if (bootstrap_url) {
         char *esc_url = escape_json_string(bootstrap_url);
         p += sprintf(p, "\"bootstrap\":\"%s\"", esc_url);
         free(esc_url);
+        has_field = 1;
+    }
+
+    if (input_file_count > 0) {
+        if (has_field) p += sprintf(p, ",");
+        p += sprintf(p, "\"input_files\":[");
+        for (int i = 0; i < input_file_count; i++) {
+            if (i > 0) p += sprintf(p, ",");
+            char *esc_filename = escape_json_string(input_files[i].filename);
+            p += sprintf(p, "{\"filename\":\"%s\",\"content\":\"%s\"}",
+                        esc_filename, input_files[i].content_base64);
+            free(esc_filename);
+        }
+        p += sprintf(p, "]");
     }
 
     p += sprintf(p, "}");
@@ -7100,7 +7119,7 @@ int unsandbox_service_redeploy(const char *service_id, const char *bootstrap,
                                const char *public_key, const char *secret_key) {
     UnsandboxCredentials *creds = get_credentials(public_key, secret_key, -1);
     if (!creds) return -1;
-    int result = redeploy_service(creds, service_id, bootstrap);
+    int result = redeploy_service(creds, service_id, bootstrap, NULL, 0);
     free_credentials(creds);
     return result;
 }
@@ -10489,7 +10508,12 @@ int main(int argc, char *argv[]) {
             // - If provided via --bootstrap or --bootstrap-file, use it
             // - If omitted, API will use the stored encrypted bootstrap
             const char *bootstrap_to_use = bootstrap_file ? bootstrap_file : service_bootstrap;
-            ret = redeploy_service(creds, service_id, bootstrap_to_use);
+            ret = redeploy_service(creds, service_id, bootstrap_to_use, service_input_files, service_input_file_count);
+            // Free input file memory
+            for (int i = 0; i < service_input_file_count; i++) {
+                free(service_input_files[i].filename);
+                free(service_input_files[i].content_base64);
+            }
         } else if (do_execute) {
             // Pass input files if provided (written to /tmp/input/ before command runs)
             ret = execute_service(creds, service_id, execute_command, execute_timeout, service_input_files, service_input_file_count);

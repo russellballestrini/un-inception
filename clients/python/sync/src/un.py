@@ -1609,6 +1609,7 @@ def redeploy_service(
     bootstrap: Optional[str] = None,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    input_files: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
     Redeploy a service (re-run bootstrap script).
@@ -1620,6 +1621,7 @@ def redeploy_service(
         bootstrap: Optional new bootstrap script/URL (uses existing if not provided)
         public_key: Optional API key
         secret_key: Optional API secret
+        input_files: Optional list of dicts with "filename" and "content" (base64)
 
     Returns:
         Response dict with redeploy confirmation
@@ -1636,6 +1638,8 @@ def redeploy_service(
             data["bootstrap"] = bootstrap
         else:
             data["bootstrap_content"] = bootstrap
+    if input_files:
+        data["input_files"] = input_files
 
     return _make_request("POST", f"/services/{service_id}/redeploy", public_key, secret_key, data)
 
@@ -2983,7 +2987,21 @@ def _handle_service_command(args, public_key: str, secret_key: str):
                 bootstrap = f.read()
         elif args.bootstrap:
             bootstrap = args.bootstrap
-        result = redeploy_service(args.redeploy, bootstrap=bootstrap, public_key=public_key, secret_key=secret_key)
+
+        # Build input_files from -f args
+        service_input_files = None
+        if getattr(args, 'files', None):
+            import base64 as _b64
+            service_input_files = []
+            for fpath in args.files:
+                with open(fpath, "rb") as ff:
+                    encoded = _b64.b64encode(ff.read()).decode("ascii")
+                service_input_files.append({
+                    "filename": os.path.basename(fpath),
+                    "content": encoded,
+                })
+
+        result = redeploy_service(args.redeploy, bootstrap=bootstrap, input_files=service_input_files, public_key=public_key, secret_key=secret_key)
         print(f"Service {args.redeploy} redeployed")
     elif args.execute:
         service_id, command = args.execute
