@@ -43,7 +43,7 @@
 #   un.nim session --list
 #   un.nim service --name web --ports 8080
 
-import os, strutils, osproc, strformat, times
+import os, strutils, osproc, strformat, times, sequtils
 
 const
   API_BASE = "https://api.unsandbox.com"
@@ -1220,13 +1220,95 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
   stderr.writeLine(RED & "Error: Use --list, --info, --delete, --lock, --unlock, --publish, --visibility, --spawn, --clone, --grant, --revoke, --trusted, or --transfer" & RESET)
   quit(1)
 
-proc main() =
-  var publicKey = getEnv("UNSANDBOX_PUBLIC_KEY", "")
-  var secretKey = getEnv("UNSANDBOX_SECRET_KEY", "")
+proc loadCredentialsFromCsv(csvPath: string, accountIndex: int): tuple[pk: string, sk: string] =
+  ## Load public_key,secret_key from CSV at given row index (0-based, skipping comments/blanks).
+  result = ("", "")
+  if not fileExists(csvPath):
+    return
+  try:
+    let content = readFile(csvPath)
+    var dataIndex = 0
+    for line in content.splitLines():
+      let trimmed = line.strip()
+      if trimmed.len == 0 or trimmed.startsWith("#"):
+        continue
+      if dataIndex == accountIndex:
+        let parts = trimmed.split(',')
+        if parts.len >= 2:
+          result = (parts[0].strip(), parts[1].strip())
+        return
+      dataIndex.inc
+  except:
+    discard
 
-  # Fall back to UNSANDBOX_API_KEY for backwards compatibility
-  if publicKey == "":
-    publicKey = getEnv("UNSANDBOX_API_KEY", "")
+proc resolveCredentials(argPk: string, argSk: string, accountIndex: int): tuple[pk: string, sk: string] =
+  ## Resolve credentials using 5-tier priority:
+  ##   1. Explicit -p/-k flags (argPk/argSk)
+  ##   2. --account N -> accounts.csv row N (bypasses env vars)
+  ##   3. UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY env vars
+  ##   4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+  ##   5. ./accounts.csv row 0
+  # Tier 1: explicit key flags
+  if argPk != "" and argSk != "":
+    return (argPk, argSk)
+  # Tier 2: --account N bypasses env vars
+  if accountIndex >= 0:
+    let homeDir = getHomeDir()
+    let homeCsv = homeDir / ".unsandbox" / "accounts.csv"
+    var creds = loadCredentialsFromCsv(homeCsv, accountIndex)
+    if creds.pk != "":
+      return creds
+    creds = loadCredentialsFromCsv("accounts.csv", accountIndex)
+    if creds.pk != "":
+      return creds
+    stderr.writeLine(RED & fmt"Error: No credentials found for account index {accountIndex} in accounts.csv" & RESET)
+    quit(1)
+  # Tier 3: env vars
+  let envPk = getEnv("UNSANDBOX_PUBLIC_KEY", "")
+  let envSk = getEnv("UNSANDBOX_SECRET_KEY", "")
+  if envPk != "" and envSk != "":
+    return (envPk, envSk)
+  # Tier 4: ~/.unsandbox/accounts.csv (default row or UNSANDBOX_ACCOUNT)
+  let defaultIndex = parseInt(getEnv("UNSANDBOX_ACCOUNT", "0"))
+  let homeDir = getHomeDir()
+  let homeCsv = homeDir / ".unsandbox" / "accounts.csv"
+  var creds = loadCredentialsFromCsv(homeCsv, defaultIndex)
+  if creds.pk != "":
+    return creds
+  # Tier 5: ./accounts.csv
+  creds = loadCredentialsFromCsv("accounts.csv", defaultIndex)
+  if creds.pk != "":
+    return creds
+  # Legacy UNSANDBOX_API_KEY
+  let legacyKey = getEnv("UNSANDBOX_API_KEY", "")
+  if legacyKey != "":
+    return (legacyKey, legacyKey)
+  stderr.writeLine(RED & "Error: No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY" & RESET)
+  quit(1)
+
+proc main() =
+  var argPublicKey = ""
+  var argSecretKey = ""
+  var accountIndex = -1  # -1 means not set
+
+  # Pre-scan for --account, -p, and -k before subcommand dispatch
+  let rawArgs = commandLineParams()
+  var i = 0
+  while i < rawArgs.len:
+    if rawArgs[i] == "--account" and i + 1 < rawArgs.len:
+      accountIndex = parseInt(rawArgs[i + 1])
+      i.inc
+    elif rawArgs[i] == "-p" and i + 1 < rawArgs.len:
+      argPublicKey = rawArgs[i + 1]
+      i.inc
+    elif rawArgs[i] == "-k" and i + 1 < rawArgs.len:
+      argSecretKey = rawArgs[i + 1]
+      i.inc
+    i.inc
+
+  let resolved = resolveCredentials(argPublicKey, argSecretKey, accountIndex)
+  var publicKey = resolved.pk
+  var secretKey = resolved.sk
 
   let args = commandLineParams()
 
@@ -1265,6 +1347,11 @@ proc main() =
     stderr.writeLine("Service options:")
     stderr.writeLine("  -e KEY=VALUE        Set environment variable (for vault)")
     stderr.writeLine("  --env-file FILE     Load env vars from file (for vault)")
+    stderr.writeLine("")
+    stderr.writeLine("Credential options (global):")
+    stderr.writeLine("  -p PUBLIC_KEY       Explicit public key")
+    stderr.writeLine("  -k SECRET_KEY       Explicit secret key")
+    stderr.writeLine("  --account N         Use row N from accounts.csv (bypasses env vars)")
     quit(1)
 
   if args[0] == "languages":
@@ -1506,6 +1593,8 @@ proc main() =
     of "-n": network = args[i+1]; inc i
     of "-v": vcpu = parseInt(args[i+1]); inc i
     of "-k": publicKey = args[i+1]; inc i
+    of "-p": publicKey = args[i+1]; inc i
+    of "--account": inc i  # already handled in pre-scan
     else:
       if args[i].startsWith("-"):
         stderr.writeLine(RED & "Unknown option: " & args[i] & RESET)

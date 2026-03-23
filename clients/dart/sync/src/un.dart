@@ -73,6 +73,8 @@ class Args {
   String? command;
   String? sourceFile;
   String? apiKey;
+  String? publicKey;
+  int? account;
   String? network;
   int vcpu = 0;
   List<String> env = [];
@@ -141,21 +143,73 @@ class Args {
   bool snapshotHot = false;
 }
 
-List<String?> getApiKeys(String? argsKey) {
-  final publicKey = Platform.environment['UNSANDBOX_PUBLIC_KEY'];
-  final secretKey = Platform.environment['UNSANDBOX_SECRET_KEY'];
+Map<String, String>? loadAccountsCSV(String path, int index) {
+  try {
+    final file = File(path);
+    if (!file.existsSync()) return null;
+    final lines = file.readAsLinesSync().where((l) {
+      final t = l.trim();
+      return t.isNotEmpty && !t.startsWith('#');
+    }).toList();
+    if (index < 0 || index >= lines.length) return null;
+    final parts = lines[index].split(',');
+    if (parts.length < 2) return null;
+    final pk = parts[0].trim();
+    final sk = parts[1].trim();
+    if (pk.isEmpty || sk.isEmpty) return null;
+    return {'pk': pk, 'sk': sk};
+  } catch (e) {
+    return null;
+  }
+}
 
-  // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-  if (publicKey == null || publicKey.isEmpty || secretKey == null || secretKey.isEmpty) {
-    final legacyKey = argsKey ?? Platform.environment['UNSANDBOX_API_KEY'];
-    if (legacyKey == null || legacyKey.isEmpty) {
-      stderr.writeln('${red}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set$reset');
-      exit(1);
+List<String?> getApiKeys(String? argsKey, {String? argsPublicKey, int? account}) {
+  // Tier 1: explicit -p/-k flags
+  if (argsPublicKey != null && argsPublicKey.isNotEmpty && argsKey != null && argsKey.isNotEmpty) {
+    return [argsPublicKey, argsKey];
+  }
+
+  // Tier 2: --account N → accounts.csv row N (bypasses env vars)
+  if (account != null) {
+    final home = Platform.environment['HOME'] ?? '';
+    if (home.isNotEmpty) {
+      final fromHome = loadAccountsCSV('$home/.unsandbox/accounts.csv', account);
+      if (fromHome != null) return [fromHome['pk'], fromHome['sk']];
     }
+    final fromLocal = loadAccountsCSV('./accounts.csv', account);
+    if (fromLocal != null) return [fromLocal['pk'], fromLocal['sk']];
+    stderr.writeln('${red}Error: --account $account not found in accounts.csv$reset');
+    exit(1);
+  }
+
+  // Tier 3: env vars
+  final envPk = Platform.environment['UNSANDBOX_PUBLIC_KEY'];
+  final envSk = Platform.environment['UNSANDBOX_SECRET_KEY'];
+  if (envPk != null && envPk.isNotEmpty && envSk != null && envSk.isNotEmpty) {
+    return [envPk, envSk];
+  }
+
+  // Tier 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+  final home = Platform.environment['HOME'] ?? '';
+  final defIndexStr = Platform.environment['UNSANDBOX_ACCOUNT'] ?? '0';
+  final defIndex = int.tryParse(defIndexStr) ?? 0;
+  if (home.isNotEmpty) {
+    final fromHome = loadAccountsCSV('$home/.unsandbox/accounts.csv', defIndex);
+    if (fromHome != null) return [fromHome['pk'], fromHome['sk']];
+  }
+
+  // Tier 5: ./accounts.csv row 0
+  final fromLocal = loadAccountsCSV('./accounts.csv', defIndex);
+  if (fromLocal != null) return [fromLocal['pk'], fromLocal['sk']];
+
+  // Legacy UNSANDBOX_API_KEY fallback
+  final legacyKey = argsKey ?? Platform.environment['UNSANDBOX_API_KEY'];
+  if (legacyKey != null && legacyKey.isNotEmpty) {
     return [legacyKey, null];
   }
 
-  return [publicKey, secretKey];
+  stderr.writeln('${red}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set$reset');
+  exit(1);
 }
 
 String detectLanguage(String filename) {
@@ -509,7 +563,7 @@ Future<bool> serviceEnvDelete(String serviceId, String publicKey, String? secret
 }
 
 Future<void> cmdServiceEnv(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
   final action = args.envAction;
@@ -579,7 +633,7 @@ Future<void> cmdServiceEnv(Args args) async {
 }
 
 Future<void> cmdExecute(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
   final code = await File(args.sourceFile!).readAsString();
@@ -657,7 +711,7 @@ Future<void> cmdExecute(Args args) async {
 }
 
 Future<void> cmdSession(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
@@ -717,7 +771,7 @@ Future<void> cmdSession(Args args) async {
 }
 
 Future<void> cmdService(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
@@ -941,7 +995,7 @@ Future<void> cmdService(Args args) async {
 }
 
 Future<void> cmdLanguages(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
@@ -973,7 +1027,7 @@ Future<void> cmdLanguages(Args args) async {
 }
 
 Future<void> cmdImage(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
@@ -1115,7 +1169,7 @@ Future<void> imageTransfer(String id, String toKey, String publicKey, String? se
 
 // Snapshot functions
 Future<void> cmdSnapshot(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
@@ -1319,7 +1373,7 @@ String sdkVersion() {
 }
 
 Future<void> cmdKey(Args args) async {
-  final keys = getApiKeys(args.apiKey);
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
@@ -1407,6 +1461,13 @@ Args parseArgs(List<String> argv) {
       case '-k':
       case '--api-key':
         args.apiKey = argv[++i];
+        break;
+      case '-p':
+      case '--public-key':
+        args.publicKey = argv[++i];
+        break;
+      case '--account':
+        args.account = int.parse(argv[++i]);
         break;
       case '-n':
       case '--network':
@@ -1658,7 +1719,9 @@ Execute options:
   -o DIR            Output directory for artifacts
   -n MODE           Network mode (zerotrust/semitrusted)
   -v N              vCPU count (1-8)
-  -k KEY            API key
+  -p KEY            Public key (use with -k for secret key)
+  -k KEY            Secret/API key
+  --account N       Use row N from accounts.csv (0-based)
 
 Session options:
   --list            List active sessions

@@ -141,6 +141,8 @@ interface Args {
   network: string | null;
   vcpu: number | null;
   apiKey: string | null;
+  publicKey: string | null;
+  account: number | null;
   shell: string | null;
   list: boolean;
   attach: string | null;
@@ -203,23 +205,71 @@ interface ApiKeys {
   secretKey: string;
 }
 
-function getApiKeys(argsKey: string | null): ApiKeys {
-  let publicKey = process.env.UNSANDBOX_PUBLIC_KEY;
-  let secretKey = process.env.UNSANDBOX_SECRET_KEY;
+function loadAccountsCSV(filePath: string, index: number): { pk: string; sk: string } | null {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n').filter(l => {
+      const t = l.trim();
+      return t.length > 0 && !t.startsWith('#');
+    });
+    if (index < 0 || index >= lines.length) return null;
+    const parts = lines[index].split(',');
+    if (parts.length < 2) return null;
+    const pk = parts[0].trim();
+    const sk = parts[1].trim();
+    if (!pk || !sk) return null;
+    return { pk, sk };
+  } catch (e) {
+    return null;
+  }
+}
 
-  if (!publicKey || !secretKey) {
-    const oldKey = argsKey || process.env.UNSANDBOX_API_KEY;
-    if (oldKey) {
-      publicKey = oldKey;
-      secretKey = oldKey;
-    } else {
-      console.error(`${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}`);
-      console.error(`${RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility)${RESET}`);
-      process.exit(1);
-    }
+function getApiKeys(argsPublicKey: string | null, argsSecretKey: string | null, account: number | null): ApiKeys {
+  // Tier 1: explicit -p/-k flags
+  if (argsPublicKey && argsSecretKey) {
+    return { publicKey: argsPublicKey, secretKey: argsSecretKey };
   }
 
-  return { publicKey, secretKey };
+  // Tier 2: --account N → accounts.csv row N (bypasses env vars)
+  if (account !== null) {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+    const homeCsv = path.join(homeDir, '.unsandbox', 'accounts.csv');
+    const localCsv = './accounts.csv';
+    const fromHome = loadAccountsCSV(homeCsv, account);
+    if (fromHome) return { publicKey: fromHome.pk, secretKey: fromHome.sk };
+    const fromLocal = loadAccountsCSV(localCsv, account);
+    if (fromLocal) return { publicKey: fromLocal.pk, secretKey: fromLocal.sk };
+    console.error(`${RED}Error: --account ${account} not found in accounts.csv${RESET}`);
+    process.exit(1);
+  }
+
+  // Tier 3: env vars
+  let publicKey = process.env.UNSANDBOX_PUBLIC_KEY;
+  let secretKey = process.env.UNSANDBOX_SECRET_KEY;
+  if (publicKey && secretKey) {
+    return { publicKey, secretKey };
+  }
+
+  // Tier 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+  const accountIndex = process.env.UNSANDBOX_ACCOUNT ? parseInt(process.env.UNSANDBOX_ACCOUNT) : 0;
+  const homeCsv = path.join(homeDir, '.unsandbox', 'accounts.csv');
+  const fromHome = loadAccountsCSV(homeCsv, accountIndex);
+  if (fromHome) return { publicKey: fromHome.pk, secretKey: fromHome.sk };
+
+  // Tier 5: ./accounts.csv row 0
+  const fromLocal = loadAccountsCSV('./accounts.csv', accountIndex);
+  if (fromLocal) return { publicKey: fromLocal.pk, secretKey: fromLocal.sk };
+
+  // Legacy UNSANDBOX_API_KEY fallback
+  const oldKey = process.env.UNSANDBOX_API_KEY;
+  if (oldKey) {
+    return { publicKey: oldKey, secretKey: oldKey };
+  }
+
+  console.error(`${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}`);
+  console.error(`${RED}       (or legacy UNSANDBOX_API_KEY for backwards compatibility)${RESET}`);
+  process.exit(1);
 }
 
 function detectLanguage(filename: string): string {
@@ -695,7 +745,7 @@ async function cmdServiceEnv(action: string, target: string, envs: string[], env
 }
 
 async function cmdExecute(args: Args): Promise<void> {
-  const keys = getApiKeys(args.apiKey);
+  const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
 
   let code: string;
   try {
@@ -759,7 +809,7 @@ async function cmdExecute(args: Args): Promise<void> {
 }
 
 async function cmdSession(args: Args): Promise<void> {
-  const keys = getApiKeys(args.apiKey);
+  const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
 
   if (args.list) {
     const result = await apiRequest("/sessions", "GET", null, keys);
@@ -817,7 +867,7 @@ async function cmdSession(args: Args): Promise<void> {
 }
 
 async function cmdService(args: Args): Promise<void> {
-  const keys = getApiKeys(args.apiKey);
+  const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
 
   if (args.list) {
     const result = await apiRequest("/services", "GET", null, keys);
@@ -1083,7 +1133,7 @@ async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> 
 }
 
 async function cmdLanguages(args: Args): Promise<void> {
-  const keys = getApiKeys(args.apiKey);
+  const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
 
   // Try cache first
   let langs = loadLanguagesCache();
@@ -1106,7 +1156,7 @@ async function cmdLanguages(args: Args): Promise<void> {
 }
 
 async function cmdImage(args: Args): Promise<void> {
-  const keys = getApiKeys(args.apiKey);
+  const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
 
   if (args.list) {
     const result = await apiRequest("/images", "GET", null, keys);
@@ -1199,7 +1249,7 @@ async function cmdImage(args: Args): Promise<void> {
 }
 
 async function cmdKey(args: Args): Promise<void> {
-  const keys = getApiKeys(args.apiKey);
+  const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
   await validateKey(keys, args.extend);
 }
 
@@ -1214,6 +1264,8 @@ function parseArgs(argv: string[]): Args {
     network: null,
     vcpu: null,
     apiKey: null,
+    publicKey: null,
+    account: null,
     shell: null,
     list: false,
     attach: null,
@@ -1290,6 +1342,12 @@ function parseArgs(argv: string[]): Args {
       i++;
     } else if (arg === '-k' && i + 1 < argv.length) {
       args.apiKey = argv[++i];
+      i++;
+    } else if (arg === '-p' && i + 1 < argv.length) {
+      args.publicKey = argv[++i];
+      i++;
+    } else if (arg === '--account' && i + 1 < argv.length) {
+      args.account = parseInt(argv[++i]);
       i++;
     } else if (arg === '-s' || arg === '--shell') {
       args.shell = argv[++i];
@@ -1453,7 +1511,7 @@ async function main(): Promise<void> {
   } else if (args.command === 'service') {
     // Check for "service env" subcommand
     if (args.envAction) {
-      const keys = getApiKeys(args.apiKey);
+      const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
       await cmdServiceEnv(args.envAction, args.envTarget!, args.env, args.envFile, keys);
     } else {
       await cmdService(args);
@@ -1484,7 +1542,9 @@ Execute options:
   -o DIR           Output directory for artifacts
   -n MODE          Network mode (zerotrust|semitrusted)
   -v N             vCPU count (1-8)
-  -k KEY           API key
+  -p KEY           Public key (use with -k for secret key)
+  -k KEY           Secret/API key
+  --account N      Use row N from accounts.csv (0-based)
 
 Session options:
   -s, --shell NAME  Shell/REPL (default: bash)

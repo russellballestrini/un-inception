@@ -132,21 +132,72 @@ def save_languages_cache(response : JSON::Any)
   end
 end
 
-def get_api_keys(args_key : String?) : {String, String?}
-  public_key = ENV["UNSANDBOX_PUBLIC_KEY"]?
-  secret_key = ENV["UNSANDBOX_SECRET_KEY"]?
-
-  # Fall back to UNSANDBOX_API_KEY for backwards compatibility
-  if public_key.nil? || public_key.empty? || secret_key.nil? || secret_key.empty?
-    legacy_key = args_key || ENV["UNSANDBOX_API_KEY"]?
-    if legacy_key.nil? || legacy_key.empty?
-      STDERR.puts "#{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set#{RESET}"
-      exit 1
+def load_accounts_csv(path : String, index : Int32) : {String, String}?
+  return nil unless File.exists?(path)
+  begin
+    lines = File.read(path).split('\n').select do |l|
+      t = l.strip
+      !t.empty? && !t.starts_with?('#')
     end
+    return nil if index < 0 || index >= lines.size
+    parts = lines[index].split(',')
+    return nil if parts.size < 2
+    pk = parts[0].strip
+    sk = parts[1].strip
+    return nil if pk.empty? || sk.empty?
+    {pk, sk}
+  rescue
+    nil
+  end
+end
+
+def get_api_keys(args_key : String?, args_public_key : String? = nil, account : Int32? = nil) : {String, String?}
+  # Tier 1: explicit -p/-k flags
+  if args_public_key && !args_public_key.empty? && args_key && !args_key.empty?
+    return {args_public_key, args_key}
+  end
+
+  # Tier 2: --account N → accounts.csv row N (bypasses env vars)
+  if !account.nil?
+    idx = account.not_nil!
+    home = ENV["HOME"]?
+    if home && !home.empty?
+      result = load_accounts_csv(File.join(home, ".unsandbox", "accounts.csv"), idx)
+      return {result[0], result[1]} if result
+    end
+    result = load_accounts_csv("accounts.csv", idx)
+    return {result[0], result[1]} if result
+    STDERR.puts "#{RED}Error: --account #{idx} not found in accounts.csv#{RESET}"
+    exit 1
+  end
+
+  # Tier 3: env vars
+  env_pk = ENV["UNSANDBOX_PUBLIC_KEY"]?
+  env_sk = ENV["UNSANDBOX_SECRET_KEY"]?
+  if env_pk && !env_pk.empty? && env_sk && !env_sk.empty?
+    return {env_pk, env_sk}
+  end
+
+  # Tier 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+  home = ENV["HOME"]?
+  def_index = (ENV["UNSANDBOX_ACCOUNT"]?.try(&.to_i?) || 0).to_i32
+  if home && !home.empty?
+    result = load_accounts_csv(File.join(home, ".unsandbox", "accounts.csv"), def_index)
+    return {result[0], result[1]} if result
+  end
+
+  # Tier 5: ./accounts.csv row 0
+  result = load_accounts_csv("accounts.csv", def_index)
+  return {result[0], result[1]} if result
+
+  # Legacy UNSANDBOX_API_KEY fallback
+  legacy_key = args_key || ENV["UNSANDBOX_API_KEY"]?
+  if legacy_key && !legacy_key.empty?
     return {legacy_key, nil}
   end
 
-  {public_key, secret_key}
+  STDERR.puts "#{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set#{RESET}"
+  exit 1
 end
 
 def extract_challenge_id(response_body : String) : String?
@@ -394,7 +445,7 @@ def build_env_content(envs : Array(String), env_file : String?) : String
 end
 
 def cmd_service_env(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String))
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   action = args[:env_action]?.as?(String) || ""
   target = args[:env_target]?.as?(String) || ""
@@ -463,7 +514,7 @@ def cmd_service_env(args)
 end
 
 def cmd_execute(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   filename = args[:source_file].as(String)
   unless File.exists?(filename)
@@ -553,7 +604,7 @@ def cmd_execute(args)
 end
 
 def cmd_session(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   if args[:list]?.as?(Bool)
     result = api_request("/sessions", public_key, secret_key)
@@ -661,7 +712,7 @@ def cmd_session(args)
 end
 
 def cmd_languages(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   # Try to load from cache first
   cached_response = load_languages_cache
@@ -694,7 +745,7 @@ def cmd_languages(args)
 end
 
 def cmd_key(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   # Validate key
   url = URI.parse(PORTAL_BASE + "/keys/validate")
@@ -788,7 +839,7 @@ def cmd_key(args)
 end
 
 def cmd_image(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   if args[:list]?.as?(Bool)
     result = api_request("/images", public_key, secret_key)
@@ -949,7 +1000,7 @@ def cmd_image(args)
 end
 
 def cmd_snapshot(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   if args[:list]?.as?(Bool)
     result = api_request("/snapshots", public_key, secret_key)
@@ -1072,7 +1123,7 @@ def cmd_snapshot(args)
 end
 
 def cmd_logs(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   source = args[:logs_source]?.as?(String) || "all"
   lines = args[:logs_lines]?.as?(Int32) || 100
@@ -1187,7 +1238,7 @@ def cmd_service(args)
     end
   end
 
-  public_key, secret_key = get_api_keys(args[:api_key]?)
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   if args[:list]?.as?(Bool)
     result = api_request("/services", public_key, secret_key)
@@ -1441,6 +1492,8 @@ def main
   args = {
     source_file: nil,
     api_key: nil,
+    public_key: nil,
+    account: nil,
     network: nil,
     env: [] of String,
     files: [] of String,
@@ -1529,7 +1582,9 @@ def main
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr languages [--json]\n       un.cr session [options]\n       un.cr service [options]\n       un.cr service env <action> <service_id> [options]\n       un.cr snapshot [options]\n       un.cr image [options]\n       un.cr logs [options]\n       un.cr key [options]\n       un.cr health\n       un.cr version\n\nService env commands:\n  env status <id>     Show vault status\n  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n  env export <id>     Export vault contents\n  env delete <id>     Delete vault"
 
-    opts.on("-k API_KEY", "--api-key=API_KEY", "API key") { |k| args[:api_key] = k }
+    opts.on("-k API_KEY", "--api-key=API_KEY", "Secret/API key") { |k| args[:api_key] = k }
+    opts.on("-p PUBLIC_KEY", "--public-key=PUBLIC_KEY", "Public key (use with -k for secret key)") { |k| args[:public_key] = k }
+    opts.on("--account=N", "Use row N from accounts.csv (0-based)") { |n| args[:account] = n.to_i32 }
     opts.on("-n NETWORK", "--network=NETWORK", "Network mode") { |n| args[:network] = n }
     opts.on("-e ENV", "--env=ENV", "Environment variable (KEY=VALUE)") { |e|
       args[:env].as(Array(String)) << e
