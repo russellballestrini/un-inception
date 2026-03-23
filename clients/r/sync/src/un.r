@@ -121,29 +121,64 @@ MAX_ENV_CONTENT_SIZE <- 65536
 #' creds <- get_credentials()
 #' creds <- get_credentials(public_key = "unsb-pk-xxxx", secret_key = "unsb-sk-xxxx")
 #' }
-get_credentials <- function(public_key = NULL, secret_key = NULL) {
+get_credentials <- function(public_key = NULL, secret_key = NULL, account_index = -1) {
     # Priority 1: Function arguments
     if (!is.null(public_key) && !is.null(secret_key)) {
         return(list(public_key = public_key, secret_key = secret_key))
     }
 
-    # Priority 2: Environment variables
+    # Priority 2: --account N => accounts.csv row N (bypasses env vars)
+    load_account_from_csv <- function(idx) {
+        search_paths <- c(
+            file.path(Sys.getenv("HOME"), ".unsandbox", "accounts.csv"),
+            "accounts.csv"
+        )
+        for (accounts_file in search_paths) {
+            if (file.exists(accounts_file)) {
+                lines <- readLines(accounts_file, warn = FALSE)
+                valid <- list()
+                for (line in lines) {
+                    trimmed <- trimws(line)
+                    if (nchar(trimmed) == 0 || startsWith(trimmed, "#")) next
+                    parts <- strsplit(trimmed, ",")[[1]]
+                    if (length(parts) >= 2 &&
+                        startsWith(parts[1], "unsb-pk-") &&
+                        startsWith(parts[2], "unsb-sk-")) {
+                        valid <- c(valid, list(list(public_key = parts[1], secret_key = parts[2])))
+                    }
+                }
+                if (length(valid) > idx) {
+                    return(valid[[idx + 1]])
+                }
+            }
+        }
+        return(NULL)
+    }
+
+    if (account_index >= 0) {
+        result <- load_account_from_csv(account_index)
+        if (!is.null(result)) {
+            return(result)
+        }
+        stop(sprintf("No account at index %d in accounts.csv", account_index))
+    }
+
+    # Priority 3: Environment variables
     env_public <- Sys.getenv("UNSANDBOX_PUBLIC_KEY")
     env_secret <- Sys.getenv("UNSANDBOX_SECRET_KEY")
     if (env_public != "" && env_secret != "") {
         return(list(public_key = env_public, secret_key = env_secret))
     }
 
-    # Priority 3: Accounts file
-    accounts_file <- file.path(Sys.getenv("HOME"), ".unsandbox", "accounts.csv")
-    if (file.exists(accounts_file)) {
-        lines <- readLines(accounts_file, warn = FALSE)
-        for (line in lines) {
-            parts <- strsplit(trimws(line), ",")[[1]]
-            if (length(parts) >= 2) {
-                return(list(public_key = parts[1], secret_key = parts[2]))
-            }
-        }
+    # Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+    default_idx <- 0
+    env_account <- Sys.getenv("UNSANDBOX_ACCOUNT")
+    if (env_account != "") {
+        default_idx <- as.integer(env_account)
+    }
+    result <- load_account_from_csv(default_idx)
+    if (!is.null(result)) {
+        return(result)
     }
 
     # Fallback to legacy UNSANDBOX_API_KEY
@@ -1665,7 +1700,7 @@ build_env_content <- function(envs, env_file) {
 }
 
 cmd_service_env <- function(args) {
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -1743,7 +1778,7 @@ cmd_service_env <- function(args) {
 }
 
 cmd_execute <- function(args) {
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -1837,7 +1872,7 @@ cmd_execute <- function(args) {
 }
 
 cmd_session <- function(args) {
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -1995,7 +2030,7 @@ cmd_languages <- function(args) {
 
     if (is.null(langs)) {
         # Cache miss or expired, fetch from API
-        keys <- get_api_keys(args$api_key)
+        keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
         public_key <- keys$public_key
         secret_key <- keys$secret_key
 
@@ -2016,7 +2051,7 @@ cmd_languages <- function(args) {
 }
 
 cmd_key <- function(args) {
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -2115,7 +2150,7 @@ cmd_key <- function(args) {
 }
 
 cmd_snapshot <- function(args) {
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -2195,7 +2230,7 @@ cmd_snapshot <- function(args) {
 }
 
 cmd_image <- function(args) {
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -2308,7 +2343,7 @@ cmd_service <- function(args) {
         return()
     }
 
-    keys <- get_api_keys(args$api_key)
+    keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
@@ -2532,6 +2567,7 @@ parse_args <- function() {
     result <- list(
         source_file = NULL,
         api_key = NULL,
+        account_index = -1L,
         network = NULL,
         env = NULL,
         files = NULL,
@@ -2627,6 +2663,10 @@ parse_args <- function() {
         } else if (arg %in% c("-k", "--api-key")) {
             i <- i + 1
             result$api_key <- args[i]
+            i <- i + 1
+        } else if (arg == "--account") {
+            i <- i + 1
+            result$account_index <- as.integer(args[i])
             i <- i + 1
         } else if (arg %in% c("-n", "--network")) {
             i <- i + 1

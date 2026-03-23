@@ -222,42 +222,67 @@ def signRequest(String secretKey, long timestamp, String method, String path, St
  * @return Tuple of [publicKey, secretKey]
  * @throws AuthenticationError if no credentials found
  */
-def getCredentials(String publicKey = null, String secretKey = null, int accountIndex = 0) {
+def loadAccountsFromCsv(File path) {
+    def validAccounts = []
+    if (!path.exists()) return validAccounts
+    try {
+        def lines = path.text.trim().split('\n')
+        lines.each { line ->
+            def trimmed = line.trim()
+            if (!trimmed || trimmed.startsWith('#')) return
+            if (trimmed.contains(',')) {
+                def parts = trimmed.split(',', 2)
+                def pk = parts[0].trim()
+                def sk = parts[1].trim()
+                if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
+                    validAccounts << [pk, sk]
+                }
+            }
+        }
+    } catch (Exception e) {
+        // Ignore file read errors
+    }
+    return validAccounts
+}
+
+def getCredentials(String publicKey = null, String secretKey = null, int accountIndex = -1) {
     // Priority 1: Function arguments
     if (publicKey && secretKey) {
         return [publicKey, secretKey]
     }
 
-    // Priority 2: Environment variables
+    // Priority 2: --account N => accounts.csv row N (bypasses env vars)
+    if (accountIndex >= 0) {
+        def searchPaths = [
+            new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+            new File('accounts.csv')
+        ]
+        for (path in searchPaths) {
+            def accts = loadAccountsFromCsv(path)
+            if (accts && accountIndex < accts.size()) {
+                return accts[accountIndex]
+            }
+        }
+        throw new AuthenticationError("No account at index ${accountIndex} in accounts.csv")
+    }
+
+    // Priority 3: Environment variables
     def envPk = System.getenv('UNSANDBOX_PUBLIC_KEY')
     def envSk = System.getenv('UNSANDBOX_SECRET_KEY')
     if (envPk && envSk) {
         return [envPk, envSk]
     }
 
-    // Priority 3: Config file
-    def accountsPath = new File(System.getProperty('user.home'), '.unsandbox/accounts.csv')
-    if (accountsPath.exists()) {
-        try {
-            def lines = accountsPath.text.trim().split('\n')
-            def validAccounts = []
-            lines.each { line ->
-                def trimmed = line.trim()
-                if (!trimmed || trimmed.startsWith('#')) return
-                if (trimmed.contains(',')) {
-                    def parts = trimmed.split(',', 2)
-                    def pk = parts[0]
-                    def sk = parts[1]
-                    if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
-                        validAccounts << [pk, sk]
-                    }
-                }
-            }
-            if (validAccounts && accountIndex < validAccounts.size()) {
-                return validAccounts[accountIndex]
-            }
-        } catch (Exception e) {
-            // Ignore file read errors
+    // Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+    def defaultIdx = (System.getenv('UNSANDBOX_ACCOUNT') ?: '0').toInteger()
+    def searchPaths = [
+        new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+        new File('accounts.csv')
+    ]
+    for (path in searchPaths) {
+        def accts = loadAccountsFromCsv(path)
+        if (accts && defaultIdx < accts.size()) {
+            return accts[defaultIdx]
         }
     }
 
@@ -267,21 +292,14 @@ def getCredentials(String publicKey = null, String secretKey = null, int account
     )
 }
 
-// Legacy compatibility
-def getApiKeys(argsKey) {
-    def publicKey = System.getenv('UNSANDBOX_PUBLIC_KEY')
-    def secretKey = System.getenv('UNSANDBOX_SECRET_KEY')
-
-    if (!publicKey || !secretKey) {
-        def legacyKey = argsKey ?: System.getenv('UNSANDBOX_API_KEY')
-        if (!legacyKey) {
-            System.err.println("${RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set${RESET}")
-            System.exit(1)
-        }
-        return [legacyKey, null]
+// Legacy compatibility - now delegates to getCredentials for proper priority
+def getApiKeys(argsKey, int accountIndex = -1) {
+    try {
+        return getCredentials(argsKey ?: null, null, accountIndex)
+    } catch (AuthenticationError e) {
+        System.err.println("${RED}Error: ${e.message}${RESET}")
+        System.exit(1)
     }
-
-    return [publicKey, secretKey]
 }
 
 // ============================================================================
@@ -606,7 +624,7 @@ def execute(String language, String code, Map options = [:]) {
     def (publicKey, secretKey) = getCredentials(
         options.publicKey,
         options.secretKey,
-        options.accountIndex ?: 0
+        options.accountIndex != null ? options.accountIndex : -1
     )
 
     def payload = [
@@ -656,7 +674,7 @@ def executeAsync(String language, String code, Map options = [:]) {
     def (publicKey, secretKey) = getCredentials(
         options.publicKey,
         options.secretKey,
-        options.accountIndex ?: 0
+        options.accountIndex != null ? options.accountIndex : -1
     )
 
     def payload = [
@@ -703,7 +721,7 @@ def run(String code, Map options = [:]) {
     def (publicKey, secretKey) = getCredentials(
         options.publicKey,
         options.secretKey,
-        options.accountIndex ?: 0
+        options.accountIndex != null ? options.accountIndex : -1
     )
 
     def ttl = options.ttl ?: DEFAULT_TTL
@@ -728,7 +746,7 @@ def runAsync(String code, Map options = [:]) {
     def (publicKey, secretKey) = getCredentials(
         options.publicKey,
         options.secretKey,
-        options.accountIndex ?: 0
+        options.accountIndex != null ? options.accountIndex : -1
     )
 
     def ttl = options.ttl ?: DEFAULT_TTL
@@ -1589,45 +1607,72 @@ class Client {
         def creds = getCredentialsStatic(
             options.publicKey,
             options.secretKey,
-            options.accountIndex ?: 0
+            options.accountIndex != null ? options.accountIndex : -1
         )
         this.publicKey = creds[0]
         this.secretKey = creds[1]
     }
 
+    private static loadCsvAccounts(File path) {
+        def accounts = []
+        if (!path.exists()) return accounts
+        try {
+            path.text.trim().split('\n').each { line ->
+                def trimmed = line.trim()
+                if (!trimmed || trimmed.startsWith('#')) return
+                if (trimmed.contains(',')) {
+                    def parts = trimmed.split(',', 2)
+                    def pk = parts[0].trim()
+                    def sk = parts[1].trim()
+                    if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
+                        accounts << [pk, sk]
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
+        return accounts
+    }
+
     private static getCredentialsStatic(String publicKey, String secretKey, int accountIndex) {
+        // Priority 1: explicit arguments
         if (publicKey && secretKey) {
             return [publicKey, secretKey]
         }
 
+        // Priority 2: --account N => CSV row N (bypasses env vars)
+        if (accountIndex >= 0) {
+            def searchPaths = [
+                new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+                new File('accounts.csv')
+            ]
+            for (path in searchPaths) {
+                def accts = loadCsvAccounts(path)
+                if (accts && accountIndex < accts.size()) {
+                    return accts[accountIndex]
+                }
+            }
+            throw new AuthenticationError("No account at index ${accountIndex} in accounts.csv")
+        }
+
+        // Priority 3: Environment variables
         def envPk = System.getenv('UNSANDBOX_PUBLIC_KEY')
         def envSk = System.getenv('UNSANDBOX_SECRET_KEY')
         if (envPk && envSk) {
             return [envPk, envSk]
         }
 
-        def accountsPath = new File(System.getProperty('user.home'), '.unsandbox/accounts.csv')
-        if (accountsPath.exists()) {
-            try {
-                def lines = accountsPath.text.trim().split('\n')
-                def validAccounts = []
-                lines.each { line ->
-                    def trimmed = line.trim()
-                    if (!trimmed || trimmed.startsWith('#')) return
-                    if (trimmed.contains(',')) {
-                        def parts = trimmed.split(',', 2)
-                        def pk = parts[0]
-                        def sk = parts[1]
-                        if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
-                            validAccounts << [pk, sk]
-                        }
-                    }
-                }
-                if (validAccounts && accountIndex < validAccounts.size()) {
-                    return validAccounts[accountIndex]
-                }
-            } catch (Exception e) {
-                // Ignore
+        // Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+        def defaultIdx = (System.getenv('UNSANDBOX_ACCOUNT') ?: '0').toInteger()
+        def searchPaths = [
+            new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+            new File('accounts.csv')
+        ]
+        for (path in searchPaths) {
+            def accts = loadCsvAccounts(path)
+            if (accts && defaultIdx < accts.size()) {
+                return accts[defaultIdx]
             }
         }
 
@@ -1738,6 +1783,7 @@ class Args {
     String sourceFile = null
     String inlineLang = null
     String apiKey = null
+    Integer accountIndex = -1
     String network = null
     Integer vcpu = 0
     List<String> env = []
@@ -1839,7 +1885,7 @@ def serviceEnvSet(serviceId, content, publicKey, secretKey) {
 }
 
 def cmdServiceEnv(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     switch (args.envAction) {
         case 'status':
@@ -1875,7 +1921,7 @@ def cmdServiceEnv(args) {
 }
 
 def cmdExecute(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     String code
     String language
@@ -1956,7 +2002,7 @@ def cmdExecute(args) {
 }
 
 def cmdSession(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     if (args.sessionSnapshot) {
         def payload = [:]
@@ -2033,7 +2079,7 @@ def openBrowser(url) {
 }
 
 def cmdSnapshot(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     if (args.snapshotList) {
         def output = apiRequest('/snapshots', 'GET', null, publicKey, secretKey)
@@ -2073,7 +2119,7 @@ def cmdSnapshot(args) {
 }
 
 def cmdImage(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     if (args.imageList) {
         def output = apiRequest('/images', 'GET', null, publicKey, secretKey)
@@ -2153,7 +2199,7 @@ def cmdImage(args) {
 }
 
 def cmdLanguages(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     def result = languages([publicKey: publicKey, secretKey: secretKey, forceRefresh: true])
     def langList = result.languages ?: []
@@ -2168,7 +2214,7 @@ def cmdLanguages(args) {
 }
 
 def cmdKey(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     def curlCmd = ['curl', '-s', '-X', 'POST', "${PORTAL_BASE}/keys/validate",
                    '-H', 'Content-Type: application/json']
@@ -2240,7 +2286,7 @@ def cmdKey(args) {
 }
 
 def cmdService(args) {
-    def (publicKey, secretKey) = getApiKeys(args.apiKey)
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     if (args.serviceSnapshot) {
         def payload = [:]
@@ -2456,6 +2502,9 @@ def parseArgs(argv) {
             case '-p':
             case '--public-key':
                 args.apiKey = argv[++i]  // For compatibility
+                break
+            case '--account':
+                args.accountIndex = argv[++i].toInteger()
                 break
             case '-n':
             case '--network':

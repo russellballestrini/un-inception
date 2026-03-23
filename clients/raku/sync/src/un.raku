@@ -143,38 +143,59 @@ sub sign-request(Str $secret-key, Int $timestamp, Str $method, Str $path, Str $b
 #| 1. Function arguments
 #| 2. Environment variables
 #| 3. ~/.unsandbox/accounts.csv
-sub get-credentials(Str :$public-key, Str :$secret-key, Int :$account-index = 0) returns List is export {
+sub get-credentials(Str :$public-key, Str :$secret-key, Int :$account-index = -1) returns List is export {
     # Priority 1: Function arguments
     if $public-key && $secret-key {
         return ($public-key, $secret-key);
     }
 
-    # Priority 2: Environment variables
+    # Helper: load valid accounts from a CSV path
+    sub load-accounts-from(IO::Path $path) {
+        my @valid;
+        if $path.e {
+            try {
+                my @lines = $path.slurp.trim.split("\n");
+                for @lines -> $line {
+                    my $trimmed = $line.trim;
+                    next if !$trimmed || $trimmed.starts-with('#');
+                    if $trimmed.contains(',') {
+                        my ($pk, $sk) = $trimmed.split(',', 2);
+                        if $pk.starts-with('unsb-pk-') && $sk.starts-with('unsb-sk-') {
+                            @valid.push(($pk, $sk));
+                        }
+                    }
+                }
+            }
+        }
+        return @valid;
+    }
+
+    # Priority 2: --account N => accounts.csv row N (bypasses env vars)
+    if $account-index >= 0 {
+        for ($*HOME.add('.unsandbox').add('accounts.csv'),
+             'accounts.csv'.IO) -> $path {
+            my @accts = load-accounts-from($path);
+            if @accts && $account-index < @accts.elems {
+                return @accts[$account-index];
+            }
+        }
+        die AuthenticationError.new("No account at index $account-index in accounts.csv");
+    }
+
+    # Priority 3: Environment variables
     my $env-pk = %*ENV<UNSANDBOX_PUBLIC_KEY> // '';
     my $env-sk = %*ENV<UNSANDBOX_SECRET_KEY> // '';
     if $env-pk && $env-sk {
         return ($env-pk, $env-sk);
     }
 
-    # Priority 3: Config file
-    my $accounts-path = $*HOME.add('.unsandbox').add('accounts.csv');
-    if $accounts-path.e {
-        try {
-            my @lines = $accounts-path.slurp.trim.split("\n");
-            my @valid-accounts;
-            for @lines -> $line {
-                my $trimmed = $line.trim;
-                next if !$trimmed || $trimmed.starts-with('#');
-                if $trimmed.contains(',') {
-                    my ($pk, $sk) = $trimmed.split(',', 2);
-                    if $pk.starts-with('unsb-pk-') && $sk.starts-with('unsb-sk-') {
-                        @valid-accounts.push(($pk, $sk));
-                    }
-                }
-            }
-            if @valid-accounts && $account-index < @valid-accounts.elems {
-                return @valid-accounts[$account-index];
-            }
+    # Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+    my $default-idx = (%*ENV<UNSANDBOX_ACCOUNT> // '0').Int;
+    for ($*HOME.add('.unsandbox').add('accounts.csv'),
+         'accounts.csv'.IO) -> $path {
+        my @accts = load-accounts-from($path);
+        if @accts && $default-idx < @accts.elems {
+            return @accts[$default-idx];
         }
     }
 
@@ -1366,8 +1387,8 @@ sub uri-encode(Str $s) {
     return $s.subst(/<-[A-Za-z0-9\-_.~]>/, { .encode.list.map({ '%' ~ .fmt('%02X') }).join }, :g);
 }
 
-sub cmd-execute(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-execute(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $source-file = '';
     my %env-vars;
     my @input-files;
@@ -1490,8 +1511,8 @@ sub cmd-execute(@args) {
     exit %result<exit_code> // 0;
 }
 
-sub cmd-session(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-session(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $list-mode = False;
     my $kill-id = '';
     my $shell = '';
@@ -1579,8 +1600,8 @@ sub cmd-session(@args) {
     say "{$YELLOW}(Interactive sessions require WebSocket - use un2 for full support){$RESET}";
 }
 
-sub cmd-service(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-service(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $list-mode = False;
     my $info-id = '';
     my $logs-id = '';
@@ -1813,8 +1834,8 @@ sub cmd-service(@args) {
     exit 1;
 }
 
-sub cmd-languages(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-languages(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $json-output = False;
 
     for @args -> $arg {
@@ -1837,8 +1858,8 @@ sub cmd-languages(@args) {
     }
 }
 
-sub cmd-key(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-key(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $extend = False;
 
     for @args -> $arg {
@@ -1897,8 +1918,8 @@ sub cmd-key(@args) {
     say "Concurrency: {%result<concurrency> // 'N/A'}";
 }
 
-sub cmd-image(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-image(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $list-mode = False;
     my $info-id = '';
     my $delete-id = '';
@@ -2090,8 +2111,8 @@ sub cmd-image(@args) {
     exit 1;
 }
 
-sub cmd-snapshot(@args) {
-    my ($public-key, $secret-key) = get-credentials();
+sub cmd-snapshot(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $list-mode = False;
     my $info-id = '';
     my $delete-id = '';
@@ -2224,7 +2245,19 @@ sub cmd-snapshot(@args) {
     exit 1;
 }
 
-sub MAIN(*@args) is export {
+sub MAIN(*@args is copy) is export {
+    # Pre-parse --account N (global credential flag) before dispatching
+    my $account-index = -1;
+    my $i = 0;
+    while $i < @args.elems {
+        if @args[$i] eq '--account' && $i + 1 < @args.elems {
+            $account-index = @args[$i + 1].Int;
+            @args.splice($i, 2);
+        } else {
+            $i++;
+        }
+    }
+
     unless @args {
         note "Usage: un.raku [options] <source_file>";
         note "       un.raku session [options]";
@@ -2275,25 +2308,25 @@ sub MAIN(*@args) is export {
 
     given @args[0] {
         when 'session' {
-            cmd-session(@args[1..*]);
+            cmd-session(@args[1..*], :$account-index);
         }
         when 'service' {
-            cmd-service(@args[1..*]);
+            cmd-service(@args[1..*], :$account-index);
         }
         when 'snapshot' {
-            cmd-snapshot(@args[1..*]);
+            cmd-snapshot(@args[1..*], :$account-index);
         }
         when 'image' {
-            cmd-image(@args[1..*]);
+            cmd-image(@args[1..*], :$account-index);
         }
         when 'key' {
-            cmd-key(@args[1..*]);
+            cmd-key(@args[1..*], :$account-index);
         }
         when 'languages' {
-            cmd-languages(@args[1..*]);
+            cmd-languages(@args[1..*], :$account-index);
         }
         default {
-            cmd-execute(@args);
+            cmd-execute(@args, :$account-index);
         }
     }
 }

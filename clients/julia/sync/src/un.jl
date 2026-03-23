@@ -78,28 +78,77 @@ function detect_language(filename::String)::String
     return get(EXT_MAP, ext, "unknown")
 end
 
-function get_api_keys(args_key=nothing)::Tuple{String,String}
-    # Try new-style keys first
-    public_key = something(args_key, get(ENV, "UNSANDBOX_PUBLIC_KEY", ""))
-    secret_key = get(ENV, "UNSANDBOX_SECRET_KEY", "")
-
-    # Fall back to old-style single key for backwards compatibility
-    if isempty(public_key)
-        old_key = get(ENV, "UNSANDBOX_API_KEY", "")
-        if isempty(old_key)
-            println(stderr, "$(RED)Error: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set$(RESET)")
-            exit(1)
+function load_accounts_csv(path::String)::Vector{Tuple{String,String}}
+    accounts = Tuple{String,String}[]
+    isfile(path) || return accounts
+    try
+        for line in eachline(path)
+            trimmed = strip(line)
+            isempty(trimmed) && continue
+            startswith(trimmed, "#") && continue
+            parts = split(trimmed, ","; limit=2)
+            length(parts) >= 2 || continue
+            pk = strip(parts[1])
+            sk = strip(parts[2])
+            if startswith(pk, "unsb-pk-") && startswith(sk, "unsb-sk-")
+                push!(accounts, (pk, sk))
+            end
         end
-        # Old-style: use same key for both public and secret
-        return (old_key, old_key)
+    catch
     end
+    return accounts
+end
 
-    if isempty(secret_key)
-        println(stderr, "$(RED)Error: UNSANDBOX_SECRET_KEY not set$(RESET)")
+function get_credentials(; account_index::Int=-1)::Tuple{String,String}
+    # Priority 2: --account N => accounts.csv row N (bypasses env vars)
+    if account_index >= 0
+        for path in [joinpath(homedir(), ".unsandbox", "accounts.csv"), "accounts.csv"]
+            accts = load_accounts_csv(path)
+            if account_index < length(accts)
+                return accts[account_index + 1]
+            end
+        end
+        println(stderr, "$(RED)Error: No account at index $account_index in accounts.csv$(RESET)")
         exit(1)
     end
 
-    return (public_key, secret_key)
+    # Priority 3: Environment variables
+    public_key = get(ENV, "UNSANDBOX_PUBLIC_KEY", "")
+    secret_key = get(ENV, "UNSANDBOX_SECRET_KEY", "")
+    if !isempty(public_key) && !isempty(secret_key)
+        return (public_key, secret_key)
+    end
+
+    # Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+    default_idx = tryparse(Int, get(ENV, "UNSANDBOX_ACCOUNT", "0"))
+    default_idx = something(default_idx, 0)
+    for path in [joinpath(homedir(), ".unsandbox", "accounts.csv"), "accounts.csv"]
+        accts = load_accounts_csv(path)
+        if default_idx < length(accts)
+            return accts[default_idx + 1]
+        end
+    end
+
+    # Legacy fallback
+    old_key = get(ENV, "UNSANDBOX_API_KEY", "")
+    if !isempty(old_key)
+        return (old_key, old_key)
+    end
+
+    println(stderr, "$(RED)Error: UNSANDBOX_PUBLIC_KEY/UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set$(RESET)")
+    exit(1)
+end
+
+function get_api_keys(args_key=nothing; account_index::Int=-1)::Tuple{String,String}
+    # Priority 1: explicit -k flag
+    if args_key !== nothing && !isempty(string(args_key))
+        public_key = string(args_key)
+        secret_key = get(ENV, "UNSANDBOX_SECRET_KEY", "")
+        if !isempty(secret_key)
+            return (public_key, secret_key)
+        end
+    end
+    return get_credentials(account_index=account_index)
 end
 
 function hmac_sha256_hex(key::String, message::String)::String
@@ -356,7 +405,7 @@ function service_env_delete(service_id::String, public_key::String, secret_key::
 end
 
 function cmd_service_env(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
     action = get(args, "env-action", nothing)
     target = get(args, "env-target", nothing)
@@ -428,7 +477,7 @@ function cmd_service_env(args)
 end
 
 function cmd_execute(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
     filename = args["source_file"]
     if !isfile(filename)
@@ -518,7 +567,7 @@ function cmd_execute(args)
 end
 
 function cmd_session(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
     if args["list"]
         result = api_request("/sessions", public_key, secret_key)
@@ -577,7 +626,7 @@ function cmd_session(args)
 end
 
 function cmd_service(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
     # Handle env subcommand
     if get(args, "env-action", nothing) !== nothing
@@ -914,7 +963,7 @@ function cmd_languages(args)
 
     if langs === nothing
         # Cache miss or expired, fetch from API
-        (public_key, secret_key) = get_api_keys(args["api-key"])
+        (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
         result = api_request("/languages", public_key, secret_key)
         langs = get(result, "languages", [])
         save_languages_cache(langs)
@@ -930,7 +979,7 @@ function cmd_languages(args)
 end
 
 function cmd_key(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
     # For portal validation, we still use public_key as bearer token
     api_key = public_key
 
@@ -996,6 +1045,9 @@ function main()
             required = false
         "--api-key", "-k"
             help = "API key (or set UNSANDBOX_API_KEY)"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
         "--network", "-n"
             help = "Network mode"
             arg_type = String
@@ -1057,6 +1109,9 @@ function main()
             help = "Comma-separated ports for cloned service"
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
     end
 
     @add_arg_table! s["session"] begin
@@ -1074,6 +1129,9 @@ function main()
             range_tester = x -> x in ["zerotrust", "semitrusted"]
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
     end
 
     @add_arg_table! s["service"] begin
@@ -1135,6 +1193,9 @@ function main()
             help = "Service ID for env commands"
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
         "env"
             help = "Manage service environment vault"
             action = :command
@@ -1155,6 +1216,9 @@ function main()
             help = "Load vault variables from file"
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
     end
 
     @add_arg_table! s["key"] begin
@@ -1163,6 +1227,9 @@ function main()
             action = :store_true
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
     end
 
     @add_arg_table! s["languages"] begin
@@ -1171,6 +1238,9 @@ function main()
             action = :store_true
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
     end
 
     @add_arg_table! s["image"] begin
@@ -1203,6 +1273,9 @@ function main()
             help = "Comma-separated ports for spawned service"
         "--api-key", "-k"
             help = "API key"
+        "--account"
+            help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
+            arg_type = Int
     end
 
     args = parse_args(ARGS, s)
@@ -1220,6 +1293,7 @@ function main()
             service_args["vault-env"] = get(env_args, "vault-env", nothing)
             service_args["env-file"] = get(env_args, "env-file", nothing)
             service_args["api-key"] = get(env_args, "api-key", nothing)
+            service_args["account"] = get(env_args, "account", nothing)
         end
         cmd_service(service_args)
     elseif args["%COMMAND%"] == "languages"
@@ -1239,7 +1313,7 @@ function main()
 end
 
 function cmd_image(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
     if args["list"]
         result = api_request("/images", public_key, secret_key)
@@ -1330,7 +1404,7 @@ function cmd_image(args)
 end
 
 function cmd_snapshot(args)
-    (public_key, secret_key) = get_api_keys(args["api-key"])
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
     if args["list"]
         result = api_request("/snapshots", public_key, secret_key)
