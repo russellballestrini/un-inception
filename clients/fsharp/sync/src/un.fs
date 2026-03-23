@@ -77,6 +77,7 @@ type Args = {
     mutable Command: string option
     mutable SourceFile: string option
     mutable ApiKey: string option
+    mutable AccountIndex: int option
     mutable Network: string option
     mutable Vcpu: int
     Env: ResizeArray<string>
@@ -144,19 +145,70 @@ type Args = {
     mutable ImagePorts: string option
 }
 
-let getApiKeys (argsKey: string option) =
-    let publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY")
-    let secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY")
+let loadCredentialsFromCsv (csvPath: string) (accountIndex: int) =
+    if File.Exists(csvPath) then
+        try
+            let lines = File.ReadAllLines(csvPath)
+            let accounts =
+                lines
+                |> Array.map (fun l -> l.Trim())
+                |> Array.filter (fun l -> l.Length > 0 && not (l.StartsWith("#")))
+                |> Array.choose (fun line ->
+                    let parts = line.Split(',')
+                    if parts.Length >= 2 then
+                        let pk = parts.[0].Trim()
+                        let sk = parts.[1].Trim()
+                        if pk.Length > 8 && sk.Length > 8 then Some (pk, sk)
+                        else None
+                    else None)
+            if accountIndex < accounts.Length then Some accounts.[accountIndex]
+            else None
+        with _ -> None
+    else None
 
-    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-    if String.IsNullOrEmpty(publicKey) || String.IsNullOrEmpty(secretKey) then
-        let legacyKey = match argsKey with | Some k -> k | None -> Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY")
-        if String.IsNullOrEmpty(legacyKey) then
-            eprintfn "%sError: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set%s" red reset
+let getApiKeys (argsKey: string option) (accountIndex: int option) =
+    let home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+    let homeCsv = Path.Combine(home, ".unsandbox", "accounts.csv")
+
+    // Priority 1: --account N -> accounts.csv row N (bypasses env vars)
+    match accountIndex with
+    | Some idx ->
+        let creds =
+            match loadCredentialsFromCsv homeCsv idx with
+            | Some c -> Some c
+            | None -> loadCredentialsFromCsv "accounts.csv" idx
+        match creds with
+        | Some (pk, sk) -> (pk, sk)
+        | None ->
+            eprintfn "%sError: No credentials found for account index %d in accounts.csv%s" red idx reset
             exit 1
-        (legacyKey, null)
-    else
-        (publicKey, secretKey)
+    | None ->
+        let publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY")
+        let secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY")
+
+        // Priority 2: environment variables
+        if not (String.IsNullOrEmpty(publicKey)) && not (String.IsNullOrEmpty(secretKey)) then
+            (publicKey, secretKey)
+        else
+            // Fall back to legacy UNSANDBOX_API_KEY
+            let legacyKey = match argsKey with | Some k -> k | None -> Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY")
+            if not (String.IsNullOrEmpty(legacyKey)) then
+                (legacyKey, null)
+            else
+                // Priority 3: ~/.unsandbox/accounts.csv (or UNSANDBOX_ACCOUNT index)
+                let defaultIndex =
+                    let envIdx = Environment.GetEnvironmentVariable("UNSANDBOX_ACCOUNT")
+                    if String.IsNullOrEmpty(envIdx) then 0
+                    else match System.Int32.TryParse(envIdx) with | (true, n) -> n | _ -> 0
+                let creds =
+                    match loadCredentialsFromCsv homeCsv defaultIndex with
+                    | Some c -> Some c
+                    | None -> loadCredentialsFromCsv "accounts.csv" defaultIndex
+                match creds with
+                | Some (pk, sk) -> (pk, sk)
+                | None ->
+                    eprintfn "%sError: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set%s" red reset
+                    exit 1
 
 let detectLanguage (filename: string) =
     let dotIndex = filename.LastIndexOf('.')
@@ -631,7 +683,7 @@ let cmdServiceEnv (args: Args) (publicKey: string) (secretKey: string) =
         exit 1
 
 let cmdExecute (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
     let code = File.ReadAllText(args.SourceFile.Value)
     let language = detectLanguage args.SourceFile.Value
 
@@ -680,7 +732,7 @@ let cmdExecute (args: Args) =
     exit exitCode
 
 let cmdSession (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     if args.SessionSnapshot.IsSome then
         let mutable payload = []
@@ -740,7 +792,7 @@ let openBrowser (url: string) =
         eprintfn "%sError opening browser: %s%s" red ex.Message reset
 
 let cmdKey (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
 
@@ -817,7 +869,7 @@ let cmdKey (args: Args) =
         exit 1
 
 let cmdLanguages (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     // Try to load from cache first
     let cachedResponse = loadLanguagesCache ()
@@ -872,7 +924,7 @@ let cmdLanguages (args: Args) =
             printfn "%s" lang
 
 let cmdImage (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     if args.ImageList then
         let result = apiRequest "/images" "GET" None publicKey secretKey
@@ -928,7 +980,7 @@ let cmdImage (args: Args) =
         exit 1
 
 let cmdSnapshot (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     if args.SnapshotList then
         let result = apiRequest "/snapshots" "GET" None publicKey secretKey
@@ -959,7 +1011,7 @@ let cmdSnapshot (args: Args) =
         exit 1
 
 let cmdService (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     // Handle env subcommand
     if args.EnvAction.IsSome then
@@ -1107,6 +1159,7 @@ let parseArgs (argv: string[]) =
         Command = None
         SourceFile = None
         ApiKey = None
+        AccountIndex = None
         Network = None
         Vcpu = 0
         Env = ResizeArray<string>()
@@ -1192,6 +1245,13 @@ let parseArgs (argv: string[]) =
                     i <- i + 1
                     args.EnvTarget <- Some argv.[i]
         | "-k" | "--api-key" -> i <- i + 1; args.ApiKey <- Some argv.[i]
+        | "--account" ->
+            i <- i + 1
+            match System.Int32.TryParse(argv.[i]) with
+            | (true, n) -> args.AccountIndex <- Some n
+            | _ ->
+                eprintfn "Error: --account requires an integer argument"
+                Environment.Exit(1)
         | "-n" | "--network" -> i <- i + 1; args.Network <- Some argv.[i]
         | "-v" | "--vcpu" -> i <- i + 1; args.Vcpu <- int argv.[i]
         | "-e" | "--env" -> i <- i + 1; args.Env.Add(argv.[i])
@@ -1358,6 +1418,7 @@ let printHelp () =
     printfn "  -n MODE           Network mode (zerotrust/semitrusted)"
     printfn "  -v N              vCPU count (1-8)"
     printfn "  -k KEY            API key"
+    printfn "  --account N       Use accounts.csv row N (bypasses env vars)"
     printfn ""
     printfn "Session options:"
     printfn "  --list            List active sessions"

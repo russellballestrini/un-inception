@@ -281,39 +281,53 @@ let extract_json_int json_str key =
    Credentials Management
    ============================================================================ *)
 
-(** Get credentials from config file ~/.unsandbox/accounts.csv *)
-let get_credentials_from_file ?(account_index=0) () =
-  let home = try Sys.getenv "HOME" with Not_found -> "." in
-  let accounts_path = Filename.concat home ".unsandbox/accounts.csv" in
-  if Sys.file_exists accounts_path then
+(** Global account index set by --account N CLI flag; -1 means not set *)
+let cli_account_index = ref (-1)
+
+(** Parse accounts from CSV content, return list of (pk, sk) pairs *)
+let parse_accounts_csv content =
+  let lines = String.split_on_char '\n' content in
+  List.filter_map (fun line ->
+    let line = String.trim line in
+    if String.length line = 0 || line.[0] = '#' then None
+    else
+      try
+        let comma_pos = String.index line ',' in
+        let pk = String.trim (String.sub line 0 comma_pos) in
+        let sk = String.trim (String.sub line (comma_pos + 1) (String.length line - comma_pos - 1)) in
+        if String.length pk > 8 && String.length sk > 8 then
+          Some (pk, sk)
+        else None
+      with Not_found -> None
+  ) lines
+
+(** Load credentials from a specific CSV path at the given account index *)
+let load_csv_at path account_index =
+  if Sys.file_exists path then
     try
-      let content = read_file accounts_path in
-      let lines = String.split_on_char '\n' content in
-      let valid_accounts = List.filter_map (fun line ->
-        let line = String.trim line in
-        if String.length line = 0 || line.[0] = '#' then None
-        else
-          try
-            let comma_pos = String.index line ',' in
-            let pk = String.sub line 0 comma_pos in
-            let sk = String.sub line (comma_pos + 1) (String.length line - comma_pos - 1) in
-            if String.length pk > 8 && String.sub pk 0 8 = "unsb-pk-" &&
-               String.length sk > 8 && String.sub sk 0 8 = "unsb-sk-" then
-              Some (pk, sk)
-            else None
-          with Not_found -> None
-      ) lines in
-      if account_index < List.length valid_accounts then
-        Some (List.nth valid_accounts account_index)
+      let content = read_file path in
+      let accounts = parse_accounts_csv content in
+      if account_index < List.length accounts then
+        Some (List.nth accounts account_index)
       else None
     with _ -> None
   else None
 
+(** Get credentials from config file ~/.unsandbox/accounts.csv *)
+let get_credentials_from_file ?(account_index=0) () =
+  let home = try Sys.getenv "HOME" with Not_found -> "." in
+  let home_csv = Filename.concat home ".unsandbox/accounts.csv" in
+  match load_csv_at home_csv account_index with
+  | Some _ as r -> r
+  | None -> load_csv_at "accounts.csv" account_index
+
 (**
    Get API credentials in priority order:
-   1. Function arguments
-   2. Environment variables
-   3. ~/.unsandbox/accounts.csv
+   1. Function arguments (public_key, secret_key)
+   2. --account N (cli_account_index ref) -> accounts.csv row N
+   3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+   4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+   5. ./accounts.csv row 0
 
    @param public_key Optional public key override
    @param secret_key Optional secret key override
@@ -326,18 +340,32 @@ let get_credentials ?public_key ?secret_key ?(account_index=0) () =
   match (public_key, secret_key) with
   | (Some pk, Some sk) -> (pk, sk)
   | _ ->
-    (* Priority 2: Environment variables *)
-    let env_pk = try Some (Sys.getenv "UNSANDBOX_PUBLIC_KEY") with Not_found -> None in
-    let env_sk = try Some (Sys.getenv "UNSANDBOX_SECRET_KEY") with Not_found -> None in
-    match (env_pk, env_sk) with
-    | (Some pk, Some sk) -> (pk, sk)
-    | _ ->
-      (* Priority 3: Config file *)
-      match get_credentials_from_file ~account_index () with
+    (* Priority 2: --account N CLI flag overrides env vars *)
+    let effective_index = if !cli_account_index >= 0 then !cli_account_index else account_index in
+    if !cli_account_index >= 0 then begin
+      match get_credentials_from_file ~account_index:effective_index () with
       | Some (pk, sk) -> (pk, sk)
       | None ->
-        failwith "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY, \
-                  or create ~/.unsandbox/accounts.csv, or pass credentials to function."
+        Printf.fprintf stderr "Error: No credentials found for account index %d in accounts.csv\n" !cli_account_index;
+        exit 1
+    end else begin
+      (* Priority 3: Environment variables *)
+      let env_pk = try Some (Sys.getenv "UNSANDBOX_PUBLIC_KEY") with Not_found -> None in
+      let env_sk = try Some (Sys.getenv "UNSANDBOX_SECRET_KEY") with Not_found -> None in
+      match (env_pk, env_sk) with
+      | (Some pk, Some sk) -> (pk, sk)
+      | _ ->
+        (* Priority 4: ~/.unsandbox/accounts.csv (or UNSANDBOX_ACCOUNT index) *)
+        let default_index =
+          try int_of_string (String.trim (Sys.getenv "UNSANDBOX_ACCOUNT"))
+          with Not_found | Failure _ -> 0
+        in
+        match get_credentials_from_file ~account_index:default_index () with
+        | Some (pk, sk) -> (pk, sk)
+        | None ->
+          failwith "No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY, \
+                    or create ~/.unsandbox/accounts.csv, or pass credentials to function."
+    end
 
 (* Legacy function for backward compatibility *)
 let get_api_keys () =
@@ -2038,18 +2066,34 @@ let image_command args =
   in
   parse_args false "" "" "" "" "" "" "" "" "" "" "" "" args
 
+let strip_account_arg args =
+  let rec aux = function
+    | [] -> []
+    | "--account" :: n_str :: rest ->
+      (try cli_account_index := int_of_string (String.trim n_str)
+       with Failure _ ->
+         Printf.fprintf stderr "Error: --account requires an integer argument\n";
+         exit 1);
+      aux rest
+    | arg :: rest -> arg :: aux rest
+  in
+  aux args
+
 let () =
   Random.self_init ();
-  let args = Array.to_list Sys.argv in
-  match List.tl args with
+  let raw_args = Array.to_list Sys.argv in
+  let args = strip_account_arg (List.tl raw_args) in
+  match args with
   | [] ->
-    Printf.printf "Usage: un.ml [options] <source_file>\n";
-    Printf.printf "       un.ml session [options]\n";
-    Printf.printf "       un.ml service [options]\n";
-    Printf.printf "       un.ml image [options]\n";
-    Printf.printf "       un.ml service env <action> <service_id>\n";
+    Printf.printf "Usage: un.ml [--account N] [options] <source_file>\n";
+    Printf.printf "       un.ml [--account N] session [options]\n";
+    Printf.printf "       un.ml [--account N] service [options]\n";
+    Printf.printf "       un.ml [--account N] image [options]\n";
+    Printf.printf "       un.ml [--account N] service env <action> <service_id>\n";
     Printf.printf "       un.ml languages [--json]\n";
     Printf.printf "       un.ml key [--extend]\n\n";
+    Printf.printf "Global options:\n";
+    Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n\n";
     Printf.printf "Service options: --name, --ports, --bootstrap, --bootstrap-file, -e KEY=VALUE, --env-file FILE\n";
     Printf.printf "Service env commands: status, set, export, delete\n";
     Printf.printf "Image options: --list, --info ID, --delete ID, --lock ID, --unlock ID,\n";

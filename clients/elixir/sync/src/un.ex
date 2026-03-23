@@ -51,8 +51,10 @@ defmodule Un do
 
   Credentials are loaded in priority order:
   1. Function arguments (public_key, secret_key)
-  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-  3. Config file (~/.unsandbox/accounts.csv)
+  2. --account N -> accounts.csv row N (bypasses env vars)
+  3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+  4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+  5. ./accounts.csv row 0
   """
 
   @blue "\e[34m"
@@ -1112,24 +1114,49 @@ defmodule Un do
   # CLI Entry Point
   # ============================================================================
 
-  def main([]), do: print_usage()
-  def main(["session" | rest]), do: session_command(rest)
-  def main(["service" | rest]), do: service_command(rest)
-  def main(["snapshot" | rest]), do: snapshot_command(rest)
-  def main(["image" | rest]), do: image_command(rest)
-  def main(["key" | rest]), do: key_command(rest)
-  def main(["languages" | rest]), do: languages_command(rest)
-  def main(args), do: execute_command(args)
+  def main(raw_args) do
+    {account_index, args} = extract_account_arg(raw_args, nil, [])
+    if account_index != nil do
+      Process.put(:account_index, account_index)
+    end
+    dispatch(args)
+  end
+
+  defp dispatch([]), do: print_usage()
+  defp dispatch(["session" | rest]), do: session_command(rest)
+  defp dispatch(["service" | rest]), do: service_command(rest)
+  defp dispatch(["snapshot" | rest]), do: snapshot_command(rest)
+  defp dispatch(["image" | rest]), do: image_command(rest)
+  defp dispatch(["key" | rest]), do: key_command(rest)
+  defp dispatch(["languages" | rest]), do: languages_command(rest)
+  defp dispatch(args), do: execute_command(args)
+
+  defp extract_account_arg([], acc, rest_acc), do: {acc, Enum.reverse(rest_acc)}
+  defp extract_account_arg(["--account", n_str | rest], _acc, rest_acc) do
+    n = case Integer.parse(n_str) do
+      {n, ""} -> n
+      _ ->
+        IO.puts(:stderr, "Error: --account requires an integer argument")
+        System.halt(1)
+    end
+    extract_account_arg(rest, n, rest_acc)
+  end
+  defp extract_account_arg([arg | rest], acc, rest_acc) do
+    extract_account_arg(rest, acc, [arg | rest_acc])
+  end
 
   defp print_usage do
-    IO.puts("Usage: un.ex [options] <source_file>")
-    IO.puts("       un.ex session [options]")
-    IO.puts("       un.ex service [options]")
-    IO.puts("       un.ex service env <action> <service_id>")
-    IO.puts("       un.ex snapshot [options]")
-    IO.puts("       un.ex image [options]")
-    IO.puts("       un.ex key [--extend]")
+    IO.puts("Usage: un.ex [--account N] [options] <source_file>")
+    IO.puts("       un.ex [--account N] session [options]")
+    IO.puts("       un.ex [--account N] service [options]")
+    IO.puts("       un.ex [--account N] service env <action> <service_id>")
+    IO.puts("       un.ex [--account N] snapshot [options]")
+    IO.puts("       un.ex [--account N] image [options]")
+    IO.puts("       un.ex [--account N] key [--extend]")
     IO.puts("       un.ex languages [--json]")
+    IO.puts("")
+    IO.puts("Global options:")
+    IO.puts("  --account N    Use accounts.csv row N (bypasses env vars)")
     IO.puts("")
     IO.puts("Service options: --name, --ports, --bootstrap, -e KEY=VALUE, --env-file FILE")
     IO.puts("                --set-unfreeze-on-demand ID true|false")
@@ -1913,21 +1940,85 @@ defmodule Un do
   end
 
   # Helpers
+
+  defp load_credentials_from_csv(csv_path, account_index) do
+    case File.read(csv_path) do
+      {:ok, content} ->
+        accounts =
+          content
+          |> String.split("\n")
+          |> Enum.map(&String.trim/1)
+          |> Enum.filter(fn line -> line != "" and not String.starts_with?(line, "#") end)
+          |> Enum.flat_map(fn line ->
+            case String.split(line, ",") do
+              [pk, sk | _] ->
+                pk = String.trim(pk)
+                sk = String.trim(sk)
+                if String.length(pk) > 8 and String.length(sk) > 8 do
+                  [{pk, sk}]
+                else
+                  []
+                end
+              _ -> []
+            end
+          end)
+        case Enum.at(accounts, account_index) do
+          nil -> :error
+          creds -> {:ok, creds}
+        end
+      _ -> :error
+    end
+  end
+
   defp get_api_keys do
-    public_key = System.get_env("UNSANDBOX_PUBLIC_KEY")
-    secret_key = System.get_env("UNSANDBOX_SECRET_KEY")
+    home = System.get_env("HOME") || "."
+    home_csv = Path.join([home, ".unsandbox", "accounts.csv"])
 
-    # Fall back to UNSANDBOX_API_KEY for backwards compatibility
-    api_key = System.get_env("UNSANDBOX_API_KEY")
+    # Priority 1: --account N (stored in process dict by main/1)
+    case Process.get(:account_index) do
+      nil ->
+        # Priority 2: environment variables
+        public_key = System.get_env("UNSANDBOX_PUBLIC_KEY")
+        secret_key = System.get_env("UNSANDBOX_SECRET_KEY")
+        api_key = System.get_env("UNSANDBOX_API_KEY")
 
-    cond do
-      public_key && secret_key ->
-        {public_key, secret_key}
-      api_key ->
-        {api_key, nil}
-      true ->
-        IO.puts(:stderr, "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)")
-        System.halt(1)
+        cond do
+          public_key && secret_key ->
+            {public_key, secret_key}
+          api_key ->
+            {api_key, nil}
+          true ->
+            # Priority 3: ~/.unsandbox/accounts.csv (or UNSANDBOX_ACCOUNT index)
+            default_index =
+              case System.get_env("UNSANDBOX_ACCOUNT") do
+                nil -> 0
+                s -> case Integer.parse(s) do {n, ""} -> n; _ -> 0 end
+              end
+            case load_credentials_from_csv(home_csv, default_index) do
+              {:ok, {pk, sk}} -> {pk, sk}
+              :error ->
+                # Priority 4: ./accounts.csv
+                case load_credentials_from_csv("accounts.csv", default_index) do
+                  {:ok, {pk, sk}} -> {pk, sk}
+                  :error ->
+                    IO.puts(:stderr, "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)")
+                    System.halt(1)
+                end
+            end
+        end
+
+      account_index ->
+        # Priority 1: --account N -> accounts.csv
+        case load_credentials_from_csv(home_csv, account_index) do
+          {:ok, {pk, sk}} -> {pk, sk}
+          :error ->
+            case load_credentials_from_csv("accounts.csv", account_index) do
+              {:ok, {pk, sk}} -> {pk, sk}
+              :error ->
+                IO.puts(:stderr, "Error: No credentials found for account index #{account_index} in accounts.csv")
+                System.halt(1)
+            end
+        end
     end
   end
 

@@ -56,8 +56,10 @@
 %%%
 %%% Authentication Priority:
 %%%   1. Function arguments (PublicKey, SecretKey)
-%%%   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-%%%   3. Config file (~/.unsandbox/accounts.csv)
+%%%   2. --account N -> accounts.csv row N (bypasses env vars)
+%%%   3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+%%%   4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+%%%   5. ./accounts.csv row 0
 
 -define(API_BASE, "https://api.unsandbox.com").
 -define(PORTAL_BASE, "https://unsandbox.com").
@@ -719,36 +721,59 @@ not_contains_error(Response) ->
 %% CLI Entry Point
 %% ============================================================================
 
-main([]) ->
-    io:format("Usage: un.erl [options] <source_file>~n"),
-    io:format("       un.erl session [options]~n"),
-    io:format("       un.erl service [options]~n"),
-    io:format("       un.erl snapshot [options]~n"),
-    io:format("       un.erl image [options]~n"),
-    io:format("       un.erl key [options]~n"),
+main(RawArgs) ->
+    %% Strip --account N from args and store index in process dict before dispatch
+    {AccountIndex, Args} = extract_account_arg(RawArgs, undefined, []),
+    case AccountIndex of
+        undefined -> ok;
+        N -> erlang:put(account_index, N)
+    end,
+    dispatch(Args).
+
+dispatch([]) ->
+    io:format("Usage: un.erl [--account N] [options] <source_file>~n"),
+    io:format("       un.erl [--account N] session [options]~n"),
+    io:format("       un.erl [--account N] service [options]~n"),
+    io:format("       un.erl [--account N] snapshot [options]~n"),
+    io:format("       un.erl [--account N] image [options]~n"),
+    io:format("       un.erl [--account N] key [options]~n"),
     io:format("       un.erl languages [--json]~n"),
+    io:format("~nGlobal options:~n"),
+    io:format("  --account N    Use accounts.csv row N (bypasses env vars)~n"),
     halt(1);
 
-main(["session" | Rest]) ->
+dispatch(["session" | Rest]) ->
     session_command(Rest);
 
-main(["service" | Rest]) ->
+dispatch(["service" | Rest]) ->
     service_command(Rest);
 
-main(["snapshot" | Rest]) ->
+dispatch(["snapshot" | Rest]) ->
     snapshot_command(Rest);
 
-main(["image" | Rest]) ->
+dispatch(["image" | Rest]) ->
     image_command(Rest);
 
-main(["key" | Rest]) ->
+dispatch(["key" | Rest]) ->
     key_command(Rest);
 
-main(["languages" | Rest]) ->
+dispatch(["languages" | Rest]) ->
     languages_command(Rest);
 
-main(Args) ->
+dispatch(Args) ->
     execute_command(Args).
+
+%% Strip --account N from argument list, return {Index | undefined, RestArgs}
+extract_account_arg([], Acc, RestAcc) ->
+    {Acc, lists:reverse(RestAcc)};
+extract_account_arg(["--account", NStr | Rest], _Acc, RestAcc) ->
+    N = try list_to_integer(NStr) catch _:_ ->
+        io:format("Error: --account requires an integer argument~n"),
+        halt(1)
+    end,
+    extract_account_arg(Rest, N, RestAcc);
+extract_account_arg([Arg | Rest], Acc, RestAcc) ->
+    extract_account_arg(Rest, Acc, [Arg | RestAcc]).
 
 %% Execute command
 execute_command(Args) ->
@@ -1452,19 +1477,96 @@ open_extend_page(PublicKey) ->
     end.
 
 %% Helpers
-get_api_keys() ->
-    PublicKey = os:getenv("UNSANDBOX_PUBLIC_KEY"),
-    SecretKey = os:getenv("UNSANDBOX_SECRET_KEY"),
-    ApiKey = os:getenv("UNSANDBOX_API_KEY"),
 
-    if
-        PublicKey =/= false andalso SecretKey =/= false ->
-            {PublicKey, SecretKey};
-        ApiKey =/= false ->
-            {ApiKey, false};
-        true ->
-            io:format("Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)~n"),
-            halt(1)
+%% @doc Load credentials from a CSV file at the given path.
+%% Skips blank lines and comment lines (#). Returns {ok, {PK, SK}} or error.
+load_credentials_from_csv(CsvPath, AccountIndex) ->
+    case file:read_file(CsvPath) of
+        {ok, Bin} ->
+            Lines = string:split(binary_to_list(Bin), "\n", all),
+            ValidAccounts = lists:filtermap(fun(Line) ->
+                Trimmed = string:trim(Line),
+                case Trimmed of
+                    "" -> false;
+                    [$# | _] -> false;
+                    _ ->
+                        Parts = string:split(Trimmed, ",", all),
+                        case Parts of
+                            [PK, SK | _] ->
+                                PKt = string:trim(PK),
+                                SKt = string:trim(SK),
+                                if
+                                    length(PKt) > 8 andalso length(SKt) > 8 ->
+                                        {true, {PKt, SKt}};
+                                    true -> false
+                                end;
+                            _ -> false
+                        end
+                end
+            end, Lines),
+            if
+                AccountIndex < length(ValidAccounts) ->
+                    {ok, lists:nth(AccountIndex + 1, ValidAccounts)};
+                true ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+%% @doc Resolve credentials with correct priority:
+%%   1. --account N process-dict override -> accounts.csv row N
+%%   2. UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY env vars
+%%   3. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+%%   4. ./accounts.csv row 0
+get_api_keys() ->
+    Home = case os:getenv("HOME") of false -> "."; H -> H end,
+    HomeCsv = filename:join([Home, ".unsandbox", "accounts.csv"]),
+    %% Priority 1: explicit --account N (stored in process dict by main/1)
+    case erlang:get(account_index) of
+        undefined ->
+            %% Priority 2: environment variables
+            PublicKey = os:getenv("UNSANDBOX_PUBLIC_KEY"),
+            SecretKey = os:getenv("UNSANDBOX_SECRET_KEY"),
+            ApiKey = os:getenv("UNSANDBOX_API_KEY"),
+            if
+                PublicKey =/= false andalso SecretKey =/= false ->
+                    {PublicKey, SecretKey};
+                ApiKey =/= false ->
+                    {ApiKey, false};
+                true ->
+                    %% Priority 3: ~/.unsandbox/accounts.csv (or UNSANDBOX_ACCOUNT index)
+                    DefaultIndex = case os:getenv("UNSANDBOX_ACCOUNT") of
+                        false -> 0;
+                        IdxStr -> try list_to_integer(string:trim(IdxStr)) catch _:_ -> 0 end
+                    end,
+                    case load_credentials_from_csv(HomeCsv, DefaultIndex) of
+                        {ok, {PK, SK}} ->
+                            {PK, SK};
+                        error ->
+                            %% Priority 4: ./accounts.csv
+                            case load_credentials_from_csv("accounts.csv", DefaultIndex) of
+                                {ok, {PK2, SK2}} ->
+                                    {PK2, SK2};
+                                error ->
+                                    io:format("Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)~n"),
+                                    halt(1)
+                            end
+                    end
+            end;
+        AccountIndex ->
+            case load_credentials_from_csv(HomeCsv, AccountIndex) of
+                {ok, {PK, SK}} ->
+                    {PK, SK};
+                error ->
+                    case load_credentials_from_csv("accounts.csv", AccountIndex) of
+                        {ok, {PK2, SK2}} ->
+                            {PK2, SK2};
+                        error ->
+                            io:format("Error: No credentials found for account index ~B in accounts.csv~n", [AccountIndex]),
+                            halt(1)
+                    end
+            end
     end.
 
 get_api_key() ->

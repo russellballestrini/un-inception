@@ -66,6 +66,8 @@ import Data.Char (isDigit, ord)
 import Text.Printf (printf)
 import Control.Monad (when, unless, forM_)
 import Control.Exception (try, catch, IOError)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Base64 as B64
@@ -85,6 +87,11 @@ portalBase = "https://unsandbox.com"
 
 languagesCacheTtl :: Int
 languagesCacheTtl = 3600  -- 1 hour in seconds
+
+-- Global account index set by --account N flag (Nothing = not set)
+{-# NOINLINE cliAccountIndex #-}
+cliAccountIndex :: IORef (Maybe Int)
+cliAccountIndex = unsafePerformIO (newIORef Nothing)
 
 -- ANSI colors
 blue, red, green, yellow, reset :: String
@@ -838,10 +845,26 @@ threadDelay us = do
   _ <- readProcessWithExitCode "sleep" [show (fromIntegral ms / 1000.0 :: Double)] ""
   return ()
 
+-- Strip --account N from argument list, set cliAccountIndex IORef
+stripAccountArg :: [String] -> IO [String]
+stripAccountArg [] = return []
+stripAccountArg ("--account":n_str:rest) = do
+  case reads n_str of
+    [(n, "")] -> do
+      writeIORef cliAccountIndex (Just n)
+      stripAccountArg rest
+    _ -> do
+      hPutStrLn stderr "Error: --account requires an integer argument"
+      exitFailure
+stripAccountArg (arg:rest) = do
+  rest' <- stripAccountArg rest
+  return (arg : rest')
+
 -- Main
 main :: IO ()
 main = do
-  args <- getArgs
+  rawArgs <- getArgs
+  args <- stripAccountArg rawArgs
   cmd <- parseArgs args
   case cmd of
     Execute opts -> executeCommand opts
@@ -864,6 +887,9 @@ printHelp = do
   putStrLn "  un.hs image [options]                  Manage images"
   putStrLn "  un.hs languages [--json]               List available languages"
   putStrLn "  un.hs key [options]                    Validate/extend API key"
+  putStrLn ""
+  putStrLn "Global options:"
+  putStrLn "  --account N     Use accounts.csv row N (bypasses env vars)"
   putStrLn ""
   putStrLn "Execute options:"
   putStrLn "  -e KEY=VALUE    Environment variable"
@@ -1433,18 +1459,77 @@ serviceEnvDelete serviceId = do
   (exitCode, _, _) <- curlDelete apiKey (apiBase ++ "/services/" ++ serviceId ++ "/env")
   return (exitCode == ExitSuccess)
 
--- Get API keys from environment
+-- Load credentials from a CSV file at a given account index
+loadCredentialsFromCsv :: FilePath -> Int -> IO (Maybe (String, String))
+loadCredentialsFromCsv csvPath accountIndex = do
+  result <- (try (readFile csvPath) :: IO (Either IOError String))
+  case result of
+    Left _ -> return Nothing
+    Right content -> do
+      let ls = filter (\l -> not (null l) && head l /= '#') $
+                 map trim $
+                 lines content
+          accounts = [ (pk', sk')
+                     | l <- ls
+                     , let (pk, rest) = break (== ',') l
+                     , not (null rest)
+                     , let pk' = trim pk
+                           sk' = trim (drop 1 rest)
+                     , length pk' > 8 && length sk' > 8
+                     ]
+      if accountIndex < length accounts then
+        return $ Just (accounts !! accountIndex)
+      else
+        return Nothing
+  where
+    trim = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+
+-- Get API keys with correct priority:
+--   1. --account N (cliAccountIndex IORef) -> accounts.csv row N
+--   2. UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY env vars
+--   3. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
+--   4. ./accounts.csv row 0
 getApiKeys :: IO (String, Maybe String)
 getApiKeys = do
-  publicKey <- lookupEnv "UNSANDBOX_PUBLIC_KEY"
-  secretKey <- lookupEnv "UNSANDBOX_SECRET_KEY"
-  apiKey <- lookupEnv "UNSANDBOX_API_KEY"
-  case (publicKey, secretKey, apiKey) of
-    (Just pk, Just sk, _) -> return (pk, Just sk)
-    (_, _, Just ak) -> return (ak, Nothing)
-    _ -> do
-      hPutStrLn stderr "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)"
-      exitFailure
+  home <- maybe "." id <$> lookupEnv "HOME"
+  let homeCsv = home ++ "/.unsandbox/accounts.csv"
+  -- Priority 1: --account N
+  mIdx <- readIORef cliAccountIndex
+  case mIdx of
+    Just idx -> do
+      creds <- loadCredentialsFromCsv homeCsv idx
+      case creds of
+        Just (pk, sk) -> return (pk, Just sk)
+        Nothing -> do
+          creds2 <- loadCredentialsFromCsv "accounts.csv" idx
+          case creds2 of
+            Just (pk, sk) -> return (pk, Just sk)
+            Nothing -> do
+              hPutStrLn stderr $ "Error: No credentials found for account index " ++ show idx ++ " in accounts.csv"
+              exitFailure
+    Nothing -> do
+      -- Priority 2: environment variables
+      publicKey <- lookupEnv "UNSANDBOX_PUBLIC_KEY"
+      secretKey <- lookupEnv "UNSANDBOX_SECRET_KEY"
+      apiKey <- lookupEnv "UNSANDBOX_API_KEY"
+      case (publicKey, secretKey, apiKey) of
+        (Just pk, Just sk, _) -> return (pk, Just sk)
+        (_, _, Just ak) -> return (ak, Nothing)
+        _ -> do
+          -- Priority 3: ~/.unsandbox/accounts.csv (or UNSANDBOX_ACCOUNT index)
+          defaultIndexStr <- lookupEnv "UNSANDBOX_ACCOUNT"
+          let defaultIndex = maybe 0 (\s -> case reads s of [(n,"")] -> n; _ -> 0) defaultIndexStr
+          creds <- loadCredentialsFromCsv homeCsv defaultIndex
+          case creds of
+            Just (pk, sk) -> return (pk, Just sk)
+            Nothing -> do
+              -- Priority 4: ./accounts.csv
+              creds2 <- loadCredentialsFromCsv "accounts.csv" defaultIndex
+              case creds2 of
+                Just (pk, sk) -> return (pk, Just sk)
+                Nothing -> do
+                  hPutStrLn stderr "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)"
+                  exitFailure
 
 getApiKey :: IO String
 getApiKey = do
