@@ -87,7 +87,7 @@ catch (Exception ex)
 
 void CmdExecute(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
     var code = File.ReadAllText(args.SourceFile!);
     var language = DetectLanguage(args.SourceFile!);
 
@@ -148,7 +148,7 @@ void CmdExecute(Args args)
 
 void CmdSession(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
     if (args.SessionList)
     {
@@ -224,7 +224,7 @@ void CmdSession(Args args)
 
 void CmdKey(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
     var result = ApiRequest("/keys/validate", HttpMethod.Post, null, publicKey, secretKey);
 
     if (!result.TryGetValue("valid", out var validObj) || validObj is not JsonElement validEl)
@@ -281,7 +281,7 @@ void OpenBrowser(string url)
 
 void CmdService(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
     if (!string.IsNullOrEmpty(args.EnvAction))
     {
@@ -548,7 +548,7 @@ void CmdServiceEnv(Args args, string publicKey, string secretKey)
 
 void CmdSnapshot(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
     if (args.SnapshotList)
     {
@@ -620,7 +620,7 @@ void CmdSnapshot(Args args)
 
 void CmdImage(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
     if (args.ImageList)
     {
@@ -715,7 +715,7 @@ void CmdImage(Args args)
 
 void CmdLanguages(Args args)
 {
-    var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
     // Check cache first
     var cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".unsandbox");
@@ -896,22 +896,69 @@ bool ServiceEnvSet(string serviceId, string envContent, string publicKey, string
     catch { return false; }
 }
 
-(string, string) GetApiKeys(string? argsKey)
+(string, string) LoadAccountsCSV(string path, int index)
 {
+    if (!File.Exists(path)) return (null!, null!);
+    var row = 0;
+    foreach (var rawLine in File.ReadAllLines(path))
+    {
+        var line = rawLine.Trim();
+        if (line.Length == 0 || line.StartsWith("#")) continue;
+        if (row == index)
+        {
+            var parts = line.Split(',');
+            if (parts.Length >= 2)
+                return (parts[0].Trim(), parts[1].Trim());
+        }
+        row++;
+    }
+    return (null!, null!);
+}
+
+(string, string) GetApiKeys(string? argsKey, int accountIndex = -1)
+{
+    // Tier 2: --account N → accounts.csv row N (bypasses env vars)
+    if (accountIndex >= 0)
+    {
+        var home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+        var homeCsv = Path.Combine(home, ".unsandbox", "accounts.csv");
+        var (pk1, sk1) = LoadAccountsCSV(homeCsv, accountIndex);
+        if (!string.IsNullOrEmpty(pk1) && !string.IsNullOrEmpty(sk1)) return (pk1, sk1);
+        var (pk2, sk2) = LoadAccountsCSV("accounts.csv", accountIndex);
+        if (!string.IsNullOrEmpty(pk2) && !string.IsNullOrEmpty(sk2)) return (pk2, sk2);
+        Console.Error.WriteLine($"{RED}Error: No account at index {accountIndex} in accounts.csv{RESET}");
+        Environment.Exit(1);
+    }
+
+    // Tier 3: environment variables
     var publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY");
     var secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY");
+    if (!string.IsNullOrEmpty(publicKey) && !string.IsNullOrEmpty(secretKey))
+        return (publicKey, secretKey);
 
-    if (string.IsNullOrEmpty(publicKey) || string.IsNullOrEmpty(secretKey))
+    // Tier 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+    var defaultIdx = 0;
+    var acctEnv = Environment.GetEnvironmentVariable("UNSANDBOX_ACCOUNT");
+    if (!string.IsNullOrEmpty(acctEnv) && int.TryParse(acctEnv, out var parsedIdx))
+        defaultIdx = parsedIdx;
+    var home2 = Environment.GetEnvironmentVariable("HOME")
+        ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+    var (pk3, sk3) = LoadAccountsCSV(Path.Combine(home2, ".unsandbox", "accounts.csv"), defaultIdx);
+    if (!string.IsNullOrEmpty(pk3) && !string.IsNullOrEmpty(sk3)) return (pk3, sk3);
+
+    // Tier 5: ./accounts.csv row 0
+    var (pk4, sk4) = LoadAccountsCSV("accounts.csv", defaultIdx);
+    if (!string.IsNullOrEmpty(pk4) && !string.IsNullOrEmpty(sk4)) return (pk4, sk4);
+
+    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+    var legacyKey = argsKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY");
+    if (string.IsNullOrEmpty(legacyKey))
     {
-        var legacyKey = argsKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY");
-        if (string.IsNullOrEmpty(legacyKey))
-        {
-            Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
-            Environment.Exit(1);
-        }
-        return (legacyKey, "");
+        Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
+        Environment.Exit(1);
     }
-    return (publicKey, secretKey);
+    return (legacyKey!, "");
 }
 
 string DetectLanguage(string filename)
@@ -1037,6 +1084,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
         else if (arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--account") result.Account = int.Parse(args[++i]);
         else if (arg == "--delete")
         {
             var val = args[++i];
@@ -2073,6 +2121,7 @@ class Args
     public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
     public bool KeyExtend;
+    public int Account = -1;
     public bool SnapshotList;
     public string? SnapshotInfo, SnapshotDelete, SnapshotLock, SnapshotUnlock, SnapshotClone;
     public string? SnapshotCloneType, SnapshotName;

@@ -153,30 +153,41 @@ func loadCredentialsFromCSV(_ path: URL, accountIndex: Int = 0) -> (String, Stri
 
 /// Resolve credentials from 4-tier priority system
 func resolveCredentials(publicKey: String? = nil, secretKey: String? = nil, accountIndex: Int? = nil) throws -> (String, String) {
-    // Tier 1: Function arguments
+    // Tier 1: Function arguments (-p/-k flags)
     if let pk = publicKey, let sk = secretKey, !pk.isEmpty, !sk.isEmpty {
         return (pk, sk)
     }
 
-    // Tier 2: Environment variables
+    // Tier 2: --account N → accounts.csv row N (bypasses env vars)
+    if let idx = accountIndex {
+        let unsandboxDir = getUnsandboxDir()
+        if let creds = loadCredentialsFromCSV(unsandboxDir.appendingPathComponent("accounts.csv"), accountIndex: idx) {
+            return creds
+        }
+        let localPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("accounts.csv")
+        if let creds = loadCredentialsFromCSV(localPath, accountIndex: idx) {
+            return creds
+        }
+        throw UnsandboxError.credentialsNotFound("No account at index \(idx) in accounts.csv")
+    }
+
+    // Tier 3: Environment variables
     if let envPk = ProcessInfo.processInfo.environment["UNSANDBOX_PUBLIC_KEY"],
        let envSk = ProcessInfo.processInfo.environment["UNSANDBOX_SECRET_KEY"],
        !envPk.isEmpty, !envSk.isEmpty {
         return (envPk, envSk)
     }
 
-    // Determine account index
-    let idx = accountIndex ?? Int(ProcessInfo.processInfo.environment["UNSANDBOX_ACCOUNT"] ?? "0") ?? 0
-
-    // Tier 3: ~/.unsandbox/accounts.csv
+    // Tier 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+    let defaultIdx = Int(ProcessInfo.processInfo.environment["UNSANDBOX_ACCOUNT"] ?? "0") ?? 0
     let unsandboxDir = getUnsandboxDir()
-    if let creds = loadCredentialsFromCSV(unsandboxDir.appendingPathComponent("accounts.csv"), accountIndex: idx) {
+    if let creds = loadCredentialsFromCSV(unsandboxDir.appendingPathComponent("accounts.csv"), accountIndex: defaultIdx) {
         return creds
     }
 
-    // Tier 4: ./accounts.csv
+    // Tier 5: ./accounts.csv row 0
     let localPath = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("accounts.csv")
-    if let creds = loadCredentialsFromCSV(localPath, accountIndex: idx) {
+    if let creds = loadCredentialsFromCSV(localPath, accountIndex: defaultIdx) {
         return creds
     }
 
@@ -184,9 +195,10 @@ func resolveCredentials(publicKey: String? = nil, secretKey: String? = nil, acco
         """
         No credentials found. Please provide via:
           1. Function arguments (publicKey, secretKey)
-          2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-          3. ~/.unsandbox/accounts.csv
-          4. ./accounts.csv
+          2. --account N (accounts.csv row N)
+          3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+          4. ~/.unsandbox/accounts.csv
+          5. ./accounts.csv
         """
     )
 }
@@ -1719,6 +1731,9 @@ class CLIArgs {
     // Languages options
     var jsonOutput: Bool = false
 
+    // Credential selection
+    var accountIndex: Int? = nil
+
     func parse(_ args: [String]) {
         var i = 0
         let args = Array(args.dropFirst()) // Skip program name
@@ -1753,6 +1768,9 @@ class CLIArgs {
             case "-k", "--secret-key":
                 i += 1
                 if i < args.count { secretKey = args[i] }
+            case "--account":
+                i += 1
+                if i < args.count { accountIndex = Int(args[i]) }
             case "-n", "--network":
                 i += 1
                 if i < args.count { networkMode = args[i] }
@@ -2477,7 +2495,7 @@ struct UnCLI {
         let pk: String
         let sk: String
         do {
-            (pk, sk) = try resolveCredentials(publicKey: args.publicKey, secretKey: args.secretKey)
+            (pk, sk) = try resolveCredentials(publicKey: args.publicKey, secretKey: args.secretKey, accountIndex: args.accountIndex)
         } catch {
             fputs("Error: \(error)\n", stderr)
             exit(3)

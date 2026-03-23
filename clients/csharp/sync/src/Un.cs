@@ -115,7 +115,7 @@ class Un
 
     static void CmdExecute(Args args)
     {
-        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
         string code = File.ReadAllText(args.SourceFile);
         string language = DetectLanguage(args.SourceFile);
 
@@ -202,7 +202,7 @@ class Un
 
     static void CmdSession(Args args)
     {
-        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
         if (args.SessionList)
         {
@@ -255,7 +255,7 @@ class Un
 
     static void CmdKey(Args args)
     {
-        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
         var result = ApiRequest("/keys/validate", "POST", null, publicKey, secretKey);
 
@@ -340,7 +340,7 @@ class Un
 
     static void CmdService(Args args)
     {
-        var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
         // Handle env subcommand
         if (!string.IsNullOrEmpty(args.EnvAction))
@@ -606,24 +606,77 @@ class Un
         Environment.Exit(1);
     }
 
-    static (string, string) GetApiKeys(string argsKey)
+    static (string, string) LoadAccountsCSV(string path, int index)
     {
-        string publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY");
-        string secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY");
-
-        // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-        if (string.IsNullOrEmpty(publicKey) || string.IsNullOrEmpty(secretKey))
+        if (!File.Exists(path)) return (null, null);
+        int row = 0;
+        foreach (string rawLine in File.ReadAllLines(path))
         {
-            string legacyKey = argsKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY");
-            if (string.IsNullOrEmpty(legacyKey))
+            string line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith("#")) continue;
+            if (row == index)
             {
-                Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
-                Environment.Exit(1);
+                string[] parts = line.Split(',');
+                if (parts.Length >= 2)
+                    return (parts[0].Trim(), parts[1].Trim());
             }
-            return (legacyKey, null);
+            row++;
+        }
+        return (null, null);
+    }
+
+    static (string, string) GetApiKeys(string argsKey, int accountIndex = -1)
+    {
+        // Tier 1: explicit -p/-k flags (argsKey covers legacy -k/--api-key)
+        // (handled by callers that pass explicit keys directly to ApiRequest)
+
+        // Tier 2: --account N → accounts.csv row N (bypasses env vars)
+        if (accountIndex >= 0)
+        {
+            string home = Environment.GetEnvironmentVariable("HOME")
+                ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+            string homeCsv = Path.Combine(home, ".unsandbox", "accounts.csv");
+            var (pk1, sk1) = LoadAccountsCSV(homeCsv, accountIndex);
+            if (!string.IsNullOrEmpty(pk1) && !string.IsNullOrEmpty(sk1))
+                return (pk1, sk1);
+            var (pk2, sk2) = LoadAccountsCSV("accounts.csv", accountIndex);
+            if (!string.IsNullOrEmpty(pk2) && !string.IsNullOrEmpty(sk2))
+                return (pk2, sk2);
+            Console.Error.WriteLine($"{RED}Error: No account at index {accountIndex} in accounts.csv{RESET}");
+            Environment.Exit(1);
         }
 
-        return (publicKey, secretKey);
+        // Tier 3: environment variables
+        string publicKey = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY");
+        string secretKey = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY");
+        if (!string.IsNullOrEmpty(publicKey) && !string.IsNullOrEmpty(secretKey))
+            return (publicKey, secretKey);
+
+        // Tier 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+        int defaultIdx = 0;
+        string acctEnv = Environment.GetEnvironmentVariable("UNSANDBOX_ACCOUNT");
+        if (!string.IsNullOrEmpty(acctEnv) && int.TryParse(acctEnv, out int parsedIdx))
+            defaultIdx = parsedIdx;
+        string home2 = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+        string homeCsv2 = Path.Combine(home2, ".unsandbox", "accounts.csv");
+        var (pk3, sk3) = LoadAccountsCSV(homeCsv2, defaultIdx);
+        if (!string.IsNullOrEmpty(pk3) && !string.IsNullOrEmpty(sk3))
+            return (pk3, sk3);
+
+        // Tier 5: ./accounts.csv row 0
+        var (pk4, sk4) = LoadAccountsCSV("accounts.csv", defaultIdx);
+        if (!string.IsNullOrEmpty(pk4) && !string.IsNullOrEmpty(sk4))
+            return (pk4, sk4);
+
+        // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+        string legacyKey = argsKey ?? Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY");
+        if (string.IsNullOrEmpty(legacyKey))
+        {
+            Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
+            Environment.Exit(1);
+        }
+        return (legacyKey, null);
     }
 
     static string DetectLanguage(string filename)
@@ -1284,6 +1337,7 @@ class Un
         public string EnvTarget = null;
         public bool KeyExtend = false;
         public bool LanguagesJson = false;
+        public int Account = -1;
     }
 
     static Args ParseArgs(string[] args)
@@ -1345,6 +1399,7 @@ class Un
             else if (arg == "--redeploy") result.ServiceRedeploy = args[++i];
             else if (arg == "--extend") result.KeyExtend = true;
             else if (arg == "--json") result.LanguagesJson = true;
+            else if (arg == "--account") result.Account = int.Parse(args[++i]);
             else if (!arg.StartsWith("-")) result.SourceFile = arg;
         }
         return result;
@@ -1408,7 +1463,7 @@ class Un
 
         if (languages == null)
         {
-            var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+            var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
             var result = ApiRequest("/languages", "GET", null, publicKey, secretKey);
             languages = new List<string>();
             if (result.ContainsKey("languages") && result["languages"] is List<object> langs)
