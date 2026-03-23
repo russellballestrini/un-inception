@@ -28,6 +28,7 @@ Un.API_BASE = "https://api.unsandbox.com"
 Un.PORTAL_BASE = "https://unsandbox.com"
 Un.VERSION = "4.3.4"
 Un.LAST_ERROR = ""
+Un.ACCOUNT_INDEX = -1  -- -1 means not set; set to N to use accounts.csv row N
 
 -- Colors
 local BLUE = "\027[34m"
@@ -116,7 +117,20 @@ function Un.get_credentials(opts)
         return opts.public_key, opts.secret_key
     end
 
-    -- Tier 2: Environment
+    -- Tier 2: --account N flag → bypass env vars, load CSV row N directly
+    local ai = opts.account_index
+    if (ai == nil) and Un.ACCOUNT_INDEX >= 0 then ai = Un.ACCOUNT_INDEX end
+    if ai and ai >= 0 then
+        local row = ai + 1  -- Lua tables are 1-indexed
+        local accounts = Un.load_accounts_csv()
+        if #accounts >= row then return accounts[row][1], accounts[row][2] end
+        accounts = Un.load_accounts_csv("./accounts.csv")
+        if #accounts >= row then return accounts[row][1], accounts[row][2] end
+        Un.set_error("Account index " .. ai .. " not found in accounts.csv")
+        return nil, nil
+    end
+
+    -- Tier 3: Environment
     local pk = os.getenv("UNSANDBOX_PUBLIC_KEY")
     local sk = os.getenv("UNSANDBOX_SECRET_KEY")
     if pk and sk then return pk, sk end
@@ -126,11 +140,11 @@ function Un.get_credentials(opts)
         return os.getenv("UNSANDBOX_API_KEY"), ""
     end
 
-    -- Tier 3: Home directory
+    -- Tier 4: Home directory
     local accounts = Un.load_accounts_csv()
     if #accounts > 0 then return accounts[1][1], accounts[1][2] end
 
-    -- Tier 4: Local directory
+    -- Tier 5: Local directory
     accounts = Un.load_accounts_csv("./accounts.csv")
     if #accounts > 0 then return accounts[1][1], accounts[1][2] end
 
@@ -743,6 +757,21 @@ end
 if arg and arg[0] then
     local args = arg
     local i = 1
+
+    -- Pre-scan for --account N; strip it from args before dispatch
+    local _filtered = {}
+    local _j = 1
+    while _j <= #args do
+        if args[_j] == "--account" then
+            _j = _j + 1
+            Un.ACCOUNT_INDEX = tonumber(args[_j]) or -1
+        else
+            table.insert(_filtered, args[_j])
+        end
+        _j = _j + 1
+    end
+    for k = 1, #_filtered do args[k] = _filtered[k] end
+    for k = #_filtered + 1, #args do args[k] = nil end
 
     if #args == 0 then
         print("Usage: lua un.lua [options] <source_file>")

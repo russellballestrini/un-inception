@@ -21,6 +21,7 @@ VERSION="4.2.50"
 API_BASE="https://api.unsandbox.com"
 PORTAL_BASE="https://unsandbox.com"
 LAST_ERROR=""
+ACCOUNT_INDEX=-1
 
 # Colors
 BLUE='\033[34m'
@@ -104,8 +105,19 @@ hmac_sign() {
 
 load_accounts_csv() {
     local path="${1:-$HOME/.unsandbox/accounts.csv}"
+    local row="${2:-0}"
     [ -f "$path" ] || return 1
-    head -1 "$path" 2>/dev/null | grep -v '^#'
+    local n=0
+    while IFS= read -r line; do
+        [[ "$line" =~ ^# ]] && continue
+        [ -z "$line" ] && continue
+        if [ "$n" -eq "$row" ]; then
+            echo "$line"
+            return 0
+        fi
+        n=$((n + 1))
+    done < "$path"
+    return 1
 }
 
 get_credentials() {
@@ -115,7 +127,20 @@ get_credentials() {
         return
     fi
 
-    # Tier 2: Environment
+    # Tier 2: --account N flag → bypass env vars, load CSV row N directly
+    if [ "$ACCOUNT_INDEX" -ge 0 ] 2>/dev/null; then
+        local creds
+        creds=$(load_accounts_csv "$HOME/.unsandbox/accounts.csv" "$ACCOUNT_INDEX" 2>/dev/null || true)
+        [ -z "$creds" ] && creds=$(load_accounts_csv "./accounts.csv" "$ACCOUNT_INDEX" 2>/dev/null || true)
+        if [ -n "$creds" ]; then
+            echo "$creds"
+            return
+        fi
+        set_error "Account index $ACCOUNT_INDEX not found in accounts.csv"
+        return 1
+    fi
+
+    # Tier 3: Environment
     if [ -n "${UNSANDBOX_PUBLIC_KEY:-}" ] && [ -n "${UNSANDBOX_SECRET_KEY:-}" ]; then
         echo "$UNSANDBOX_PUBLIC_KEY:$UNSANDBOX_SECRET_KEY"
         return
@@ -127,7 +152,7 @@ get_credentials() {
         return
     fi
 
-    # Tier 3: Home directory
+    # Tier 4: Home directory
     local creds
     creds=$(load_accounts_csv "$HOME/.unsandbox/accounts.csv" 2>/dev/null || true)
     if [ -n "$creds" ]; then
@@ -135,7 +160,7 @@ get_credentials() {
         return
     fi
 
-    # Tier 4: Local directory
+    # Tier 5: Local directory
     creds=$(load_accounts_csv "./accounts.csv" 2>/dev/null || true)
     if [ -n "$creds" ]; then
         echo "$creds"
@@ -1229,6 +1254,21 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         show_help
         exit 1
     fi
+
+    # Pre-scan for --account N before dispatching
+    _args=("$@")
+    _new_args=()
+    _i=0
+    while [ $_i -lt ${#_args[@]} ]; do
+        if [ "${_args[$_i]}" = "--account" ]; then
+            _i=$((_i + 1))
+            ACCOUNT_INDEX="${_args[$_i]}"
+        else
+            _new_args+=("${_args[$_i]}")
+        fi
+        _i=$((_i + 1))
+    done
+    set -- "${_new_args[@]+"${_new_args[@]}"}"
 
     case "$1" in
         languages)

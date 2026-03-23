@@ -44,6 +44,7 @@ our $PORTAL_BASE = 'https://unsandbox.com';
 
 # Thread-local error storage
 our $LAST_ERROR = "";
+our $ACCOUNT_INDEX = -1;  # -1 means not set; set to N to use accounts.csv row N
 
 # Colors
 my $BLUE = "\033[34m";
@@ -122,7 +123,18 @@ sub get_credentials {
     # Tier 1: Arguments
     return ($opts{public_key}, $opts{secret_key}) if $opts{public_key} && $opts{secret_key};
 
-    # Tier 2: Environment
+    # Tier 2: --account N flag → bypass env vars, load CSV row N directly
+    my $ai = exists $opts{account_index} ? $opts{account_index} : $Un::ACCOUNT_INDEX;
+    if (defined $ai && $ai >= 0) {
+        my $home_accounts = load_accounts_csv();
+        return @{$home_accounts->[$ai]} if @$home_accounts > $ai;
+        my $local_accounts = load_accounts_csv("./accounts.csv");
+        return @{$local_accounts->[$ai]} if @$local_accounts > $ai;
+        set_error("Account index $ai not found in accounts.csv");
+        return (undef, undef);
+    }
+
+    # Tier 3: Environment
     if ($ENV{UNSANDBOX_PUBLIC_KEY} && $ENV{UNSANDBOX_SECRET_KEY}) {
         return ($ENV{UNSANDBOX_PUBLIC_KEY}, $ENV{UNSANDBOX_SECRET_KEY});
     }
@@ -132,11 +144,11 @@ sub get_credentials {
         return ($ENV{UNSANDBOX_API_KEY}, '');
     }
 
-    # Tier 3: Home directory
+    # Tier 4: Home directory
     my $home_accounts = load_accounts_csv();
     return @{$home_accounts->[0]} if @$home_accounts;
 
-    # Tier 4: Local directory
+    # Tier 5: Local directory
     my $local_accounts = load_accounts_csv("./accounts.csv");
     return @{$local_accounts->[0]} if @$local_accounts;
 
@@ -1541,6 +1553,8 @@ sub main {
         } elsif ($arg eq 'env' && $options{command} && $options{command} eq 'service') {
             $options{env_action} = $ARGV[++$i];
             $options{env_target} = $ARGV[++$i] if defined $ARGV[$i+1] && $ARGV[$i+1] !~ /^-/;
+        } elsif ($arg eq '--account') {
+            $Un::ACCOUNT_INDEX = int($ARGV[++$i]);
         } elsif ($arg eq '--help' || $arg eq '-h') {
             show_help();
         } elsif ($arg =~ /^-/) {

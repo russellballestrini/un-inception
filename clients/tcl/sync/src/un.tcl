@@ -33,6 +33,7 @@ namespace eval Un {
     variable LANGUAGES_CACHE_TTL 3600
     variable LANGUAGES_CACHE_FILE [file join $::env(HOME) ".unsandbox" "languages.json"]
     variable LAST_ERROR ""
+    variable ACCOUNT_INDEX -1
 
     # Colors
     variable BLUE "\033\[34m"
@@ -109,22 +110,43 @@ namespace eval Un {
     # Credential Management
     # ============================================================================
 
-    proc load_accounts_csv {path} {
+    proc load_accounts_csv {path {row 0}} {
         if {![file exists $path]} { return "" }
         if {[catch {open $path r} fp]} { return "" }
-        set line [gets $fp]
+        set n 0
+        set result ""
+        while {[gets $fp line] >= 0} {
+            if {[string index $line 0] eq "#" || [string trim $line] eq ""} { continue }
+            if {$n == $row} { set result $line; break }
+            incr n
+        }
         close $fp
-        if {[string index $line 0] eq "#"} { return "" }
-        return $line
+        return $result
     }
 
-    proc get_credentials {{public_key ""} {secret_key ""}} {
+    proc get_credentials {{public_key ""} {secret_key ""} {account_index -1}} {
+        variable ACCOUNT_INDEX
+
         # Tier 1: Arguments
         if {$public_key ne "" && $secret_key ne ""} {
             return [list $public_key $secret_key]
         }
 
-        # Tier 2: Environment
+        # Tier 2: --account N flag → bypass env vars, load CSV row N directly
+        set ai $account_index
+        if {$ai < 0} { set ai $ACCOUNT_INDEX }
+        if {$ai >= 0} {
+            set creds [load_accounts_csv [file join $::env(HOME) ".unsandbox" "accounts.csv"] $ai]
+            if {$creds eq ""} { set creds [load_accounts_csv "./accounts.csv" $ai] }
+            if {$creds ne ""} {
+                set parts [split $creds ","]
+                return [list [lindex $parts 0] [lindex $parts 1]]
+            }
+            set_error "Account index $ai not found in accounts.csv"
+            error "Account index $ai not found in accounts.csv"
+        }
+
+        # Tier 3: Environment
         if {[info exists ::env(UNSANDBOX_PUBLIC_KEY)] && [info exists ::env(UNSANDBOX_SECRET_KEY)]} {
             return [list $::env(UNSANDBOX_PUBLIC_KEY) $::env(UNSANDBOX_SECRET_KEY)]
         }
@@ -134,14 +156,14 @@ namespace eval Un {
             return [list $::env(UNSANDBOX_API_KEY) ""]
         }
 
-        # Tier 3: Home directory
+        # Tier 4: Home directory
         set creds [load_accounts_csv [file join $::env(HOME) ".unsandbox" "accounts.csv"]]
         if {$creds ne ""} {
             set parts [split $creds ","]
             return [list [lindex $parts 0] [lindex $parts 1]]
         }
 
-        # Tier 4: Local directory
+        # Tier 5: Local directory
         set creds [load_accounts_csv "./accounts.csv"]
         if {$creds ne ""} {
             set parts [split $creds ","]
@@ -1030,7 +1052,20 @@ Environment:
     }
 
     proc main {argv} {
-        variable BLUE RED RESET
+        variable BLUE RED RESET ACCOUNT_INDEX
+
+        # Pre-scan for --account N; strip it from argv before dispatch
+        set filtered {}
+        for {set i 0} {$i < [llength $argv]} {incr i} {
+            set a [lindex $argv $i]
+            if {$a eq "--account"} {
+                incr i
+                set ACCOUNT_INDEX [lindex $argv $i]
+            } else {
+                lappend filtered $a
+            }
+        }
+        set argv $filtered
 
         if {[llength $argv] == 0} {
             show_help
