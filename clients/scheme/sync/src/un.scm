@@ -445,16 +445,72 @@
   (curl-delete api-key (format #f "/services/~a/env" service-id))
   (format #t "~aVault deleted for: ~a~a\n" green service-id reset))
 
+(define *account-index* #f)
+
+(define (load-accounts-csv path index)
+  "Load row INDEX from a CSV file of public_key,secret_key pairs.
+   Skips blank lines and lines starting with #. Returns (list pk sk) or #f."
+  (if (not (access? path R_OK))
+      #f
+      (catch #t
+        (lambda ()
+          (let ((port (open-input-file path))
+                (rows '()))
+            (let loop ()
+              (let ((line (read-line port)))
+                (when (not (eof-object? line))
+                  (let ((trimmed (string-trim-both line)))
+                    (when (and (> (string-length trimmed) 0)
+                               (not (char=? (string-ref trimmed 0) #\#)))
+                      (let ((comma-pos (string-index trimmed #\,)))
+                        (when comma-pos
+                          (set! rows (append rows
+                                             (list (list
+                                                    (string-trim-both (substring trimmed 0 comma-pos))
+                                                    (string-trim-both (substring trimmed (1+ comma-pos)))))))))))
+                  (loop))))
+            (close-input-port port)
+            (if (< index (length rows))
+                (list-ref rows index)
+                #f)))
+        (lambda (key . args) #f))))
+
 (define (get-api-keys)
   (let ((public-key (getenv "UNSANDBOX_PUBLIC_KEY"))
         (secret-key (getenv "UNSANDBOX_SECRET_KEY"))
-        (api-key (getenv "UNSANDBOX_API_KEY")))
+        (api-key (getenv "UNSANDBOX_API_KEY"))
+        (home (getenv "HOME")))
     (cond
+      ;; --account N: load row N from accounts.csv, bypasses env vars
+      ((not (eq? *account-index* #f))
+       (let ((result (or (load-accounts-csv
+                           (string-append home "/.unsandbox/accounts.csv")
+                           *account-index*)
+                         (load-accounts-csv "./accounts.csv" *account-index*))))
+         (or result
+             (begin
+               (format (current-error-port) "Error: account ~a not found in accounts.csv\n" *account-index*)
+               (exit 1)))))
+      ;; env vars
       ((and public-key secret-key) (list public-key secret-key))
       (api-key (list api-key #f))
-      (else (begin
-              (display "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)\n" (current-error-port))
-              (exit 1))))))
+      ;; accounts.csv fallback (row 0 or UNSANDBOX_ACCOUNT env var)
+      (else
+       (let* ((acc-env (getenv "UNSANDBOX_ACCOUNT"))
+              (row-idx (if acc-env
+                           (catch #t
+                             (lambda () (string->number acc-env))
+                             (lambda (key . args) 0))
+                           0))
+              (row-idx (if (number? row-idx) (inexact->exact row-idx) 0))
+              (result (or (load-accounts-csv
+                            (string-append home "/.unsandbox/accounts.csv")
+                            row-idx)
+                          (load-accounts-csv "./accounts.csv" row-idx))))
+         (or result
+             (begin
+               (display "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)\n" (current-error-port))
+               (exit 1)))))))
 
 (define (get-api-key)
   (car (get-api-keys)))
@@ -1286,4 +1342,15 @@
         (else
           (execute-cmd (car args))))))
 
-(main (cdr (command-line)))
+(define (strip-account-flag args)
+  "Remove --account N from args list, setting *account-index* as side-effect."
+  (let loop ((in args) (out '()))
+    (cond
+      ((null? in) (reverse out))
+      ((and (equal? (car in) "--account") (pair? (cdr in)))
+       (let ((n (string->number (cadr in))))
+         (set! *account-index* (if (number? n) (inexact->exact n) #f))
+         (loop (cddr in) out)))
+      (else (loop (cdr in) (cons (car in) out))))))
+
+(main (strip-account-flag (cdr (command-line))))

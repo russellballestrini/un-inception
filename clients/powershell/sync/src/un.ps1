@@ -61,7 +61,43 @@ $EXT_MAP = @{
     ".raku" = "raku"; ".m" = "objc"; ".awk" = "awk"
 }
 
+$script:AccountIndex = $null
+
+function Load-AccountsCSV {
+    param($Path, $Index)
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        $rows = @()
+        Get-Content $Path | Where-Object {
+            $_.Trim() -ne "" -and -not $_.TrimStart().StartsWith("#")
+        } | ForEach-Object {
+            $parts = $_ -split ",", 2
+            if ($parts.Count -ge 2) {
+                $rows += ,@($parts[0].Trim(), $parts[1].Trim())
+            }
+        }
+        if ($Index -lt $rows.Count) {
+            return $rows[$Index]
+        }
+    } catch {}
+    return $null
+}
+
 function Get-ApiKeys {
+    $home = $env:HOME
+    if (-not $home) { $home = $env:USERPROFILE }
+
+    # --account N: load row N from accounts.csv, bypasses env vars
+    if ($null -ne $script:AccountIndex) {
+        $result = Load-AccountsCSV -Path "$home/.unsandbox/accounts.csv" -Index $script:AccountIndex
+        if (-not $result) {
+            $result = Load-AccountsCSV -Path "./accounts.csv" -Index $script:AccountIndex
+        }
+        if ($result) { return $result }
+        Write-Error "Error: account $($script:AccountIndex) not found in accounts.csv"
+        exit 1
+    }
+
     $publicKey = $env:UNSANDBOX_PUBLIC_KEY
     $secretKey = $env:UNSANDBOX_SECRET_KEY
 
@@ -71,11 +107,27 @@ function Get-ApiKeys {
         $secretKey = ""
     }
 
-    if (-not $publicKey) {
-        Write-Error "Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set"
-        exit 1
+    if ($publicKey -and $secretKey) {
+        return @($publicKey, $secretKey)
     }
-    return @($publicKey, $secretKey)
+
+    if ($publicKey) {
+        return @($publicKey, "")
+    }
+
+    # accounts.csv fallback (row 0 or UNSANDBOX_ACCOUNT env var)
+    $rowIdx = 0
+    if ($env:UNSANDBOX_ACCOUNT) {
+        try { $rowIdx = [int]$env:UNSANDBOX_ACCOUNT } catch {}
+    }
+    $result = Load-AccountsCSV -Path "$home/.unsandbox/accounts.csv" -Index $rowIdx
+    if (-not $result) {
+        $result = Load-AccountsCSV -Path "./accounts.csv" -Index $rowIdx
+    }
+    if ($result) { return $result }
+
+    Write-Error "Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set"
+    exit 1
 }
 
 function Invoke-Api {
@@ -1179,38 +1231,49 @@ Key options:
     exit 0
 }
 
-if ($args[0] -eq "session") {
-    Invoke-Session -Args $args[1..($args.Count-1)]
-} elseif ($args[0] -eq "service") {
-    Invoke-Service -Args $args[1..($args.Count-1)]
-} elseif ($args[0] -eq "snapshot") {
-    Invoke-Snapshot -Args $args[1..($args.Count-1)]
-} elseif ($args[0] -eq "image") {
-    Invoke-Image -Args $args[1..($args.Count-1)]
-} elseif ($args[0] -eq "languages") {
-    Invoke-Languages -Args $args[1..($args.Count-1)]
-} elseif ($args[0] -eq "key") {
-    Invoke-Key -Args $args[1..($args.Count-1)]
+# Pre-parse --account N from args, strip from effective arg list
+$effectiveArgs = @()
+for ($i = 0; $i -lt $args.Count; $i++) {
+    if ($args[$i] -eq "--account" -and ($i + 1) -lt $args.Count) {
+        try { $script:AccountIndex = [int]$args[$i + 1] } catch {}
+        $i++
+    } else {
+        $effectiveArgs += $args[$i]
+    }
+}
+
+if ($effectiveArgs[0] -eq "session") {
+    Invoke-Session -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+} elseif ($effectiveArgs[0] -eq "service") {
+    Invoke-Service -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+} elseif ($effectiveArgs[0] -eq "snapshot") {
+    Invoke-Snapshot -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+} elseif ($effectiveArgs[0] -eq "image") {
+    Invoke-Image -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+} elseif ($effectiveArgs[0] -eq "languages") {
+    Invoke-Languages -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+} elseif ($effectiveArgs[0] -eq "key") {
+    Invoke-Key -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
 } else {
     # Parse execute args
     $sourceFile = $null
     $envVars = @{}
     $network = $null
 
-    for ($i = 0; $i -lt $args.Count; $i++) {
-        switch ($args[$i]) {
+    for ($i = 0; $i -lt $effectiveArgs.Count; $i++) {
+        switch ($effectiveArgs[$i]) {
             "-e" {
-                $kv = $args[$i+1] -split "=", 2
+                $kv = $effectiveArgs[$i+1] -split "=", 2
                 $envVars[$kv[0]] = $kv[1]
                 $i++
             }
-            "-n" { $network = $args[$i+1]; $i++ }
+            "-n" { $network = $effectiveArgs[$i+1]; $i++ }
             default {
-                if ($args[$i].StartsWith("-")) {
-                    Write-Error "${RED}Unknown option: $($args[$i])${RESET}"
+                if ($effectiveArgs[$i].StartsWith("-")) {
+                    Write-Error "${RED}Unknown option: $($effectiveArgs[$i])${RESET}"
                     exit 1
                 } else {
-                    $sourceFile = $args[$i]
+                    $sourceFile = $effectiveArgs[$i]
                 }
             }
         }

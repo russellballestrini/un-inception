@@ -118,17 +118,51 @@
     (or (second (re-find pattern-str json-str))
         (second (re-find pattern-num json-str)))))
 
+(def ^:dynamic *account-index* nil)
+
+(defn load-accounts-csv [path index]
+  (when (.exists (io/file path))
+    (try
+      (let [lines (str/split-lines (slurp path))
+            rows (->> lines
+                      (filter #(and (> (count %) 0)
+                                    (not (str/starts-with? % "#"))))
+                      (map #(str/split % #"," 2))
+                      (filter #(>= (count %) 2)))]
+        (when (< index (count rows))
+          (let [row (nth rows index)]
+            [(str/trim (first row)) (str/trim (second row))])))
+      (catch Exception _ nil))))
+
 (defn get-api-keys []
   (let [public-key (System/getenv "UNSANDBOX_PUBLIC_KEY")
         secret-key (System/getenv "UNSANDBOX_SECRET_KEY")
-        api-key (System/getenv "UNSANDBOX_API_KEY")]
+        api-key (System/getenv "UNSANDBOX_API_KEY")
+        home (System/getenv "HOME")
+        account-idx (or *account-index* 0)]
     (cond
+      ;; --account N: load row N from accounts.csv, bypasses env vars
+      (some? *account-index*)
+      (or (load-accounts-csv (str home "/.unsandbox/accounts.csv") account-idx)
+          (load-accounts-csv "./accounts.csv" account-idx)
+          (do
+            (binding [*out* *err*]
+              (println (str "Error: account " account-idx " not found in accounts.csv")))
+            (System/exit 1)))
+      ;; env vars
       (and public-key secret-key) [public-key secret-key]
       api-key [api-key nil]
-      :else (do
+      ;; accounts.csv fallback (row 0 or UNSANDBOX_ACCOUNT)
+      :else
+      (let [row-idx (if-let [acc (System/getenv "UNSANDBOX_ACCOUNT")]
+                      (try (Integer/parseInt acc) (catch Exception _ 0))
+                      0)]
+        (or (load-accounts-csv (str home "/.unsandbox/accounts.csv") row-idx)
+            (load-accounts-csv "./accounts.csv" row-idx)
+            (do
               (binding [*out* *err*]
                 (println "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)"))
-              (System/exit 1)))))
+              (System/exit 1)))))))
 
 (defn get-api-key []
   (first (get-api-keys)))
@@ -1216,4 +1250,14 @@
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))))
 
-(parse-args *command-line-args*)
+(let [raw-args *command-line-args*
+      account-val (second (drop-while #(not= % "--account") raw-args))
+      account-idx (when account-val
+                    (try (Integer/parseInt account-val) (catch Exception _ nil)))
+      filtered-args (loop [in raw-args out []]
+                      (cond
+                        (empty? in) out
+                        (= (first in) "--account") (recur (drop 2 in) out)
+                        :else (recur (rest in) (conj out (first in)))))]
+  (binding [*account-index* account-idx]
+    (parse-args filtered-args)))

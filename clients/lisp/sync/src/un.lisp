@@ -343,16 +343,63 @@
   (curl-delete api-key (format nil "/services/~a/env" service-id))
   (format t "~aVault deleted: ~a~a~%" *green* service-id *reset*))
 
+(defparameter *account-index* nil)
+
+(defun load-accounts-csv (path index)
+  "Load row INDEX from a CSV file of public_key,secret_key pairs.
+   Skips blank lines and lines starting with #. Returns (list pk sk) or nil."
+  (when (probe-file path)
+    (handler-case
+      (with-open-file (stream path)
+        (let ((rows nil))
+          (loop for line = (read-line stream nil nil)
+                while line do
+                (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
+                  (when (and (> (length trimmed) 0)
+                             (not (char= (char trimmed 0) #\#)))
+                    (let ((comma-pos (position #\, trimmed)))
+                      (when comma-pos
+                        (push (list (string-trim '(#\Space #\Tab) (subseq trimmed 0 comma-pos))
+                                    (string-trim '(#\Space #\Tab) (subseq trimmed (1+ comma-pos))))
+                              rows))))))
+          (let ((rows (nreverse rows)))
+            (when (< index (length rows))
+              (nth index rows)))))
+      (error () nil))))
+
 (defun get-api-keys ()
   (let ((public-key (uiop:getenv "UNSANDBOX_PUBLIC_KEY"))
         (secret-key (uiop:getenv "UNSANDBOX_SECRET_KEY"))
-        (api-key (uiop:getenv "UNSANDBOX_API_KEY")))
+        (api-key (uiop:getenv "UNSANDBOX_API_KEY"))
+        (home (uiop:getenv "HOME")))
     (cond
+      ;; --account N: load row N from accounts.csv, bypasses env vars
+      ((not (null *account-index*))
+       (let ((result (or (load-accounts-csv
+                           (format nil "~a/.unsandbox/accounts.csv" home)
+                           *account-index*)
+                         (load-accounts-csv "./accounts.csv" *account-index*))))
+         (or result
+             (progn
+               (format *error-output* "Error: account ~a not found in accounts.csv~%" *account-index*)
+               (uiop:quit 1)))))
+      ;; env vars
       ((and public-key secret-key) (list public-key secret-key))
       (api-key (list api-key nil))
-      (t (progn
-           (format t "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)~%")
-           (uiop:quit 1))))))
+      ;; accounts.csv fallback (row 0 or UNSANDBOX_ACCOUNT env var)
+      (t
+       (let* ((acc-env (uiop:getenv "UNSANDBOX_ACCOUNT"))
+              (row-idx (if acc-env
+                           (handler-case (parse-integer acc-env) (error () 0))
+                           0))
+              (result (or (load-accounts-csv
+                            (format nil "~a/.unsandbox/accounts.csv" home)
+                            row-idx)
+                          (load-accounts-csv "./accounts.csv" row-idx))))
+         (or result
+             (progn
+               (format *error-output* "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)~%")
+               (uiop:quit 1))))))))
 
 (defun get-api-key ()
   (first (get-api-keys)))
@@ -912,8 +959,26 @@
                     do (format t "~a~%" (subseq array-content (1+ start) end))))
             (format t "")))))
 
+(defun strip-account-flag (args)
+  "Remove --account N from args, set *account-index* as side-effect. Returns filtered args."
+  (let ((result nil)
+        (i 0)
+        (vec (coerce args 'vector)))
+    (loop while (< i (length vec)) do
+      (cond
+        ((string= (aref vec i) "--account")
+         (when (< (+ i 1) (length vec))
+           (setf *account-index*
+                 (handler-case (parse-integer (aref vec (+ i 1))) (error () nil))))
+         (incf i 2))
+        (t
+         (push (aref vec i) result)
+         (incf i))))
+    (nreverse result)))
+
 (defun main ()
-  (let ((args (uiop:command-line-arguments)))
+  (let* ((raw-args (uiop:command-line-arguments))
+         (args (strip-account-flag raw-args)))
     (if (null args)
         (progn
           (format t "Usage: un.lisp [options] <source_file>~%")
