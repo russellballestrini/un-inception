@@ -52,6 +52,7 @@ import std.string;
 import std.conv;
 import std.array;
 import std.algorithm;
+import std.typecons;
 
 immutable string API_BASE = "https://api.unsandbox.com";
 immutable string PORTAL_BASE = "https://unsandbox.com";
@@ -1555,13 +1556,82 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     }
 }
 
-int main(string[] args) {
-    string publicKey = environment.get("UNSANDBOX_PUBLIC_KEY", "");
-    string secretKey = environment.get("UNSANDBOX_SECRET_KEY", "");
+// Load a row from an accounts.csv file (format: public_key,secret_key per line).
+// Lines starting with '#' and blank lines are skipped. Returns the Nth data row.
+Tuple!(string, string) loadAccountsCSV(string path, int index) {
+    import std.file : exists, readText;
+    import std.range : empty;
+    if (!exists(path)) return tuple("", "");
+    string content = readText(path);
+    int row = 0;
+    foreach (line; content.splitLines()) {
+        string stripped = line.strip();
+        if (stripped.empty || stripped[0] == '#') continue;
+        if (row == index) {
+            auto parts = stripped.findSplit(",");
+            if (!parts[1].empty) return tuple(parts[0], parts[2]);
+            return tuple("", "");
+        }
+        row++;
+    }
+    return tuple("", "");
+}
 
-    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-    if (publicKey.empty) {
-        publicKey = environment.get("UNSANDBOX_API_KEY", "");
+int main(string[] args) {
+    string publicKey;
+    string secretKey;
+    int accountIndex = -1;  // -1 = not set
+    string explicitPublicKey;
+
+    // First pass: scan for --account N and -p flags
+    for (size_t i = 1; i < args.length; i++) {
+        if (args[i] == "--account" && i+1 < args.length) {
+            accountIndex = to!int(args[++i]);
+        } else if (args[i] == "-p" && i+1 < args.length) {
+            explicitPublicKey = args[++i];
+        }
+    }
+
+    if (accountIndex >= 0) {
+        // --account N: load from ~/.unsandbox/accounts.csv, bypassing env vars
+        string home = environment.get("HOME", ".");
+        string csvPath = home ~ "/.unsandbox/accounts.csv";
+        auto creds = loadAccountsCSV(csvPath, accountIndex);
+        if (creds[0].empty) {
+            creds = loadAccountsCSV("accounts.csv", accountIndex);
+        }
+        if (!creds[0].empty) {
+            publicKey = explicitPublicKey.empty ? creds[0] : explicitPublicKey;
+            secretKey = creds[1];
+        }
+    } else {
+        publicKey = explicitPublicKey.empty
+            ? environment.get("UNSANDBOX_PUBLIC_KEY", "")
+            : explicitPublicKey;
+        secretKey = environment.get("UNSANDBOX_SECRET_KEY", "");
+
+        // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+        if (publicKey.empty) {
+            publicKey = environment.get("UNSANDBOX_API_KEY", "");
+        }
+
+        // Try UNSANDBOX_ACCOUNT env var to pick a row
+        int envAccount = -1;
+        string envAcct = environment.get("UNSANDBOX_ACCOUNT", "");
+        if (!envAcct.empty) envAccount = to!int(envAcct);
+
+        if (publicKey.empty) {
+            string home = environment.get("HOME", ".");
+            string csvPath = home ~ "/.unsandbox/accounts.csv";
+            auto creds = loadAccountsCSV(csvPath, envAccount >= 0 ? envAccount : 0);
+            if (creds[0].empty) {
+                creds = loadAccountsCSV("accounts.csv", envAccount >= 0 ? envAccount : 0);
+            }
+            if (!creds[0].empty) {
+                publicKey = creds[0];
+                secretKey = creds[1];
+            }
+        }
     }
 
     if (args.length < 2) {
@@ -1598,6 +1668,7 @@ int main(string[] args) {
             else if (args[i] == "--screen") screen = true;
             else if (args[i] == "-f" && i+1 < args.length) inputFiles ~= args[++i];
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         }
 
         cmdSession(list, kill, shell, network, vcpu, tmux, screen, inputFiles, publicKey, secretKey);
@@ -1625,6 +1696,7 @@ int main(string[] args) {
                 if (args[i] == "-e" && i+1 < args.length) svcEnvs ~= args[++i];
                 else if (args[i] == "--env-file" && i+1 < args.length) svcEnvFile = args[++i];
                 else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+                else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
             }
             cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, unfreezeOnDemand, unfreezeOnDemandEnabled, createUnfreezeOnDemand, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
             return 0;
@@ -1658,6 +1730,7 @@ int main(string[] args) {
             else if (args[i] == "-e" && i+1 < args.length) svcEnvs ~= args[++i];
             else if (args[i] == "--env-file" && i+1 < args.length) svcEnvFile = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         }
 
         cmdService(name, ports, bootstrap, bootstrapFile, type, list, info, logs, tail, sleep, wake, destroy, resize, resizeVcpu, execute, command, dumpBootstrap, dumpFile, unfreezeOnDemand, unfreezeOnDemandEnabled, createUnfreezeOnDemand, network, vcpu, inputFiles, svcEnvs, svcEnvFile, envAction, envTarget, publicKey, secretKey);
@@ -1670,6 +1743,7 @@ int main(string[] args) {
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--extend") extend = true;
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         }
 
         if (publicKey.empty) {
@@ -1687,6 +1761,7 @@ int main(string[] args) {
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--json") jsonOutput = true;
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         }
 
         if (publicKey.empty) {
@@ -1720,6 +1795,7 @@ int main(string[] args) {
             else if (args[i] == "--name" && i+1 < args.length) name = args[++i];
             else if (args[i] == "--ports" && i+1 < args.length) ports = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         }
 
         if (publicKey.empty) {
@@ -1743,6 +1819,7 @@ int main(string[] args) {
         else if (args[i] == "-n" && i+1 < args.length) network = args[++i];
         else if (args[i] == "-v" && i+1 < args.length) vcpu = to!int(args[++i]);
         else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+        else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         else if (args[i].startsWith("-")) {
             stderr.writefln("%sUnknown option: %s%s", RED, args[i], RESET);
             return 1;

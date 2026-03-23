@@ -687,6 +687,26 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 	exit(1)
 }
 
+// Load a row from an accounts.csv file (format: public_key,secret_key per line).
+// Lines starting with '#' and blank lines are skipped. Returns the Nth data row.
+fn load_accounts_csv(path string, index int) ?(string, string) {
+	content := os.read_file(path) or { return none }
+	lines := content.split('\n')
+	mut row := 0
+	for raw_line in lines {
+		line := raw_line.trim_space()
+		if line == '' || line.starts_with('#') {
+			continue
+		}
+		if row == index {
+			idx := line.index(',') or { return none }
+			return line[..idx], line[idx + 1..]
+		}
+		row++
+	}
+	return none
+}
+
 fn get_public_key() string {
 	pub_key := os.getenv('UNSANDBOX_PUBLIC_KEY')
 	if pub_key != '' {
@@ -1171,8 +1191,82 @@ fn cmd_languages(json_output bool, api_key string) {
 	}
 }
 
+fn resolve_credentials(account_index int, explicit_pub_key string) (string, string) {
+	if account_index >= 0 {
+		// --account N: load from ~/.unsandbox/accounts.csv, bypassing env vars
+		home := os.getenv('HOME')
+		csv_path := (if home != '' { home } else { '.' }) + '/.unsandbox/accounts.csv'
+		if creds := load_accounts_csv(csv_path, account_index) {
+			pk := if explicit_pub_key != '' { explicit_pub_key } else { creds.0 }
+			return pk, creds.1
+		}
+		// fall back to ./accounts.csv
+		if creds := load_accounts_csv('accounts.csv', account_index) {
+			pk := if explicit_pub_key != '' { explicit_pub_key } else { creds.0 }
+			return pk, creds.1
+		}
+		return explicit_pub_key, ''
+	}
+
+	mut pub_key := if explicit_pub_key != '' { explicit_pub_key } else { os.getenv('UNSANDBOX_PUBLIC_KEY') }
+	mut sec_key := os.getenv('UNSANDBOX_SECRET_KEY')
+
+	if pub_key == '' {
+		api_key := os.getenv('UNSANDBOX_API_KEY')
+		if api_key != '' {
+			pub_key = api_key
+		}
+	}
+
+	// Try UNSANDBOX_ACCOUNT env var to pick a row
+	mut env_account := -1
+	env_acct := os.getenv('UNSANDBOX_ACCOUNT')
+	if env_acct != '' {
+		env_account = env_acct.int()
+	}
+
+	if pub_key == '' {
+		home := os.getenv('HOME')
+		csv_path := (if home != '' { home } else { '.' }) + '/.unsandbox/accounts.csv'
+		row := if env_account >= 0 { env_account } else { 0 }
+		if creds := load_accounts_csv(csv_path, row) {
+			pub_key = creds.0
+			sec_key = creds.1
+		}
+		if pub_key == '' {
+			if creds2 := load_accounts_csv('accounts.csv', row) {
+				pub_key = creds2.0
+				sec_key = creds2.1
+			}
+		}
+	}
+
+	if pub_key == '' {
+		eprintln('${red}Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY environment variable not set${reset}')
+		exit(1)
+	}
+	return pub_key, sec_key
+}
+
 fn main() {
-	mut api_key := get_public_key()
+	// First pass: scan for --account N and -p flags
+	mut account_index := -1
+	mut explicit_pub_key := ''
+	for i := 1; i < os.args.len; i++ {
+		if os.args[i] == '--account' && i + 1 < os.args.len {
+			account_index = os.args[i + 1].int()
+			i++
+		} else if os.args[i] == '-p' && i + 1 < os.args.len {
+			explicit_pub_key = os.args[i + 1]
+			i++
+		}
+	}
+
+	pub_key, sec_key := resolve_credentials(account_index, explicit_pub_key)
+	// Inject resolved credentials into env so get_public_key/get_secret_key pick them up
+	os.setenv('UNSANDBOX_PUBLIC_KEY', pub_key, true)
+	os.setenv('UNSANDBOX_SECRET_KEY', sec_key, true)
+	mut api_key := pub_key
 
 	if os.args.len < 2 {
 		eprintln('Usage: ${os.args[0]} [options] <source_file>')
@@ -1237,6 +1331,9 @@ fn main() {
 				'-k' {
 					i++
 					api_key = os.args[i]
+				}
+				'--account' {
+					i++  // already handled in first pass
 				}
 				'-f' {
 					i++
@@ -1392,6 +1489,9 @@ fn main() {
 					i++
 					api_key = os.args[i]
 				}
+				'--account' {
+					i++  // already handled in first pass
+				}
 				'-f' {
 					i++
 					f := os.args[i]
@@ -1429,6 +1529,9 @@ fn main() {
 					i++
 					api_key = os.args[i]
 				}
+				'--account' {
+					i++  // already handled in first pass
+				}
 				else {}
 			}
 			i++
@@ -1448,6 +1551,9 @@ fn main() {
 				'-k' {
 					i++
 					api_key = os.args[i]
+				}
+				'--account' {
+					i++  // already handled in first pass
 				}
 				else {}
 			}
@@ -1559,6 +1665,9 @@ fn main() {
 					i++
 					api_key = os.args[i]
 				}
+				'--account' {
+					i++  // already handled in first pass
+				}
 				else {}
 			}
 			i++
@@ -1600,6 +1709,7 @@ fn main() {
 				'--ports' { i++; ports = os.args[i] }
 				'--hot' { hot = true }
 				'-k' { i++; api_key = os.args[i] }
+				'--account' { i++  /* already handled in first pass */ }
 				else {}
 			}
 			i++
@@ -1625,6 +1735,7 @@ fn main() {
 				'--grep' { i++; grep = os.args[i] }
 				'--follow', '-f' { follow = true }
 				'-k' { i++; api_key = os.args[i] }
+				'--account' { i++  /* already handled in first pass */ }
 				else {}
 			}
 			i++
@@ -1670,6 +1781,9 @@ fn main() {
 			'-k' {
 				i++
 				api_key = os.args[i]
+			}
+			'--account' {
+				i++  // already handled in first pass
 			}
 			else {
 				if os.args[i].starts_with('-') {

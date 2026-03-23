@@ -103,6 +103,27 @@ string read_file(const string& filename) {
     return buf.str();
 }
 
+// Load a row from an accounts.csv file (format: public_key,secret_key per line).
+// Lines starting with '#' and blank lines are skipped. Returns the Nth data row.
+pair<string,string> loadAccountsCSV(const string& path, int index) {
+    ifstream f(path);
+    if (!f) return {"", ""};
+    string line;
+    int row = 0;
+    while (getline(f, line)) {
+        // Trim trailing carriage return
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        if (row == index) {
+            size_t comma = line.find(',');
+            if (comma == string::npos) return {"", ""};
+            return {line.substr(0, comma), line.substr(comma + 1)};
+        }
+        row++;
+    }
+    return {"", ""};
+}
+
 string escape_json(const string& s) {
     ostringstream o;
     for (char c : s) {
@@ -1781,12 +1802,62 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
 }
 
 int main(int argc, char* argv[]) {
-    string public_key = getenv("UNSANDBOX_PUBLIC_KEY") ? getenv("UNSANDBOX_PUBLIC_KEY") : "";
-    string secret_key = getenv("UNSANDBOX_SECRET_KEY") ? getenv("UNSANDBOX_SECRET_KEY") : "";
+    string public_key;
+    string secret_key;
+    int account_index = -1;  // -1 = not set
 
-    // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-    if (public_key.empty()) {
-        public_key = getenv("UNSANDBOX_API_KEY") ? getenv("UNSANDBOX_API_KEY") : "";
+    // First pass: scan for --account N and -p/-k flags before full arg parsing
+    for (int i = 1; i < argc; i++) {
+        string a = argv[i];
+        if (a == "--account" && i+1 < argc) {
+            account_index = atoi(argv[++i]);
+        } else if (a == "-p" && i+1 < argc) {
+            public_key = argv[++i];
+        }
+    }
+
+    if (account_index >= 0) {
+        // --account N: load from ~/.unsandbox/accounts.csv, bypassing env vars
+        const char* home = getenv("HOME");
+        string csv_path = string(home ? home : ".") + "/.unsandbox/accounts.csv";
+        auto creds = loadAccountsCSV(csv_path, account_index);
+        if (creds.first.empty()) {
+            // fall back to ./accounts.csv
+            creds = loadAccountsCSV("accounts.csv", account_index);
+        }
+        if (!creds.first.empty()) {
+            if (public_key.empty()) public_key = creds.first;
+            secret_key = creds.second;
+        }
+    } else {
+        // Priority: env vars, then ~/.unsandbox/accounts.csv row 0, then ./accounts.csv row 0
+        if (public_key.empty()) {
+            public_key = getenv("UNSANDBOX_PUBLIC_KEY") ? getenv("UNSANDBOX_PUBLIC_KEY") : "";
+        }
+        secret_key = getenv("UNSANDBOX_SECRET_KEY") ? getenv("UNSANDBOX_SECRET_KEY") : "";
+
+        // Fall back to UNSANDBOX_API_KEY for backwards compatibility
+        if (public_key.empty()) {
+            public_key = getenv("UNSANDBOX_API_KEY") ? getenv("UNSANDBOX_API_KEY") : "";
+        }
+
+        // Try UNSANDBOX_ACCOUNT env var to pick a row
+        int env_account = -1;
+        const char* env_acct = getenv("UNSANDBOX_ACCOUNT");
+        if (env_acct) env_account = atoi(env_acct);
+
+        if (public_key.empty()) {
+            const char* home = getenv("HOME");
+            string csv_path = string(home ? home : ".") + "/.unsandbox/accounts.csv";
+            auto creds = loadAccountsCSV(csv_path, env_account >= 0 ? env_account : 0);
+            if (creds.first.empty()) {
+                creds = loadAccountsCSV("accounts.csv", env_account >= 0 ? env_account : 0);
+            }
+            if (!creds.first.empty()) {
+                public_key = creds.first;
+                secret_key = creds.second;
+            }
+        }
     }
 
     if (argc < 2) {
@@ -1824,6 +1895,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "--name" && i+1 < argc) name = argv[++i];
             else if (arg == "--ports" && i+1 < argc) ports = argv[++i];
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+            else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         }
 
         cmd_image(list, info, del, lock, unlock, publish, source_type, visibility_id, visibility, spawn, clone, name, ports, public_key, secret_key);
@@ -1848,6 +1920,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "--tmux") tmux = true;
             else if (arg == "--screen") screen = true;
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+            else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         }
 
         cmd_session(list, kill, shell, network, vcpu, tmux, screen, files, public_key, secret_key);
@@ -1910,6 +1983,7 @@ int main(int argc, char* argv[]) {
                 unfreeze_on_demand = (val == "true") ? 1 : 0;
             }
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+            else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         }
 
         cmd_service(name, ports, type, bootstrap, bootstrap_file, files, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, redeploy, network, vcpu, envs, env_file, env_action, env_target, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, unfreeze_on_demand, public_key, secret_key);
@@ -1923,6 +1997,7 @@ int main(int argc, char* argv[]) {
             string arg = argv[i];
             if (arg == "--extend") extend = true;
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+            else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         }
 
         cmd_validate_key(extend, public_key, secret_key);
@@ -1936,6 +2011,7 @@ int main(int argc, char* argv[]) {
             string arg = argv[i];
             if (arg == "--json") json_output = true;
             else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+            else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         }
 
         cmd_languages(json_output, public_key, secret_key);
@@ -1956,6 +2032,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "-n" && i+1 < argc) network = argv[++i];
         else if (arg == "-v" && i+1 < argc) vcpu = stoi(argv[++i]);
         else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+        else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         else if (arg[0] == '-') {
             cerr << RED << "Unknown option: " << arg << RESET << endl;
             return 1;

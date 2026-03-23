@@ -124,7 +124,8 @@ data class Args(
     var imageSpawn: String? = null,
     var imageClone: String? = null,
     var imageName: String? = null,
-    var imagePorts: String? = null
+    var imagePorts: String? = null,
+    var accountIndex: Int = -1
 )
 
 fun main(args: Array<String>) {
@@ -151,7 +152,7 @@ fun main(args: Array<String>) {
 }
 
 fun cmdExecute(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
     val code = File(args.sourceFile!!).readText()
     val language = detectLanguage(args.sourceFile!!)
 
@@ -226,7 +227,7 @@ fun cmdExecute(args: Args) {
 }
 
 fun cmdSession(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
 
     if (args.sessionList) {
         val result = apiRequest("/sessions", "GET", null, publicKey, secretKey)
@@ -287,7 +288,7 @@ fun cmdSession(args: Args) {
 }
 
 fun cmdService(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
 
     // Handle env subcommand
     if (args.envAction != null) {
@@ -541,7 +542,7 @@ fun saveLanguagesCache(languages: List<String>) {
 }
 
 fun cmdLanguages(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
 
     // Try cache first
     var languages = loadLanguagesCache()
@@ -563,7 +564,7 @@ fun cmdLanguages(args: Args) {
 }
 
 fun cmdImage(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
 
     if (args.imageList) {
         val result = apiRequest("/images", "GET", null, publicKey, secretKey)
@@ -654,7 +655,7 @@ fun cmdImage(args: Args) {
 }
 
 fun cmdKey(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
 
     val result = validateKey(publicKey, secretKey)
     val valid = result["valid"] as? Boolean ?: false
@@ -733,11 +734,41 @@ fun validateKey(publicKey: String?, secretKey: String): Map<String, Any> {
     return parseJson(response)
 }
 
-fun getApiKeys(argsKey: String?): Pair<String?, String> {
+// Load a row from an accounts.csv file (format: public_key,secret_key per line).
+// Lines starting with '#' and blank lines are skipped. Returns the Nth data row, or null.
+fun loadAccountsCSV(path: String, index: Int): Pair<String, String>? {
+    val file = java.io.File(path)
+    if (!file.exists()) return null
+    var row = 0
+    for (line in file.readLines()) {
+        val stripped = line.trim()
+        if (stripped.isEmpty() || stripped.startsWith("#")) continue
+        if (row == index) {
+            val comma = stripped.indexOf(',')
+            if (comma < 0) return null
+            return Pair(stripped.substring(0, comma), stripped.substring(comma + 1))
+        }
+        row++
+    }
+    return null
+}
+
+fun getApiKeys(argsKey: String?, accountIndex: Int = -1): Pair<String?, String> {
     var publicKey: String? = null
     var secretKey: String? = null
 
-    if (argsKey != null) {
+    if (accountIndex >= 0) {
+        // --account N: load from ~/.unsandbox/accounts.csv, bypassing env vars
+        val home = System.getenv("HOME") ?: System.getProperty("user.home") ?: "."
+        var creds = loadAccountsCSV("$home/.unsandbox/accounts.csv", accountIndex)
+        if (creds == null) {
+            creds = loadAccountsCSV("accounts.csv", accountIndex)
+        }
+        if (creds != null) {
+            publicKey = if (argsKey != null) argsKey else creds.first
+            secretKey = creds.second
+        }
+    } else if (argsKey != null) {
         secretKey = argsKey
         publicKey = System.getenv("UNSANDBOX_PUBLIC_KEY")
     } else {
@@ -748,6 +779,22 @@ fun getApiKeys(argsKey: String?): Pair<String?, String> {
             val apiKey = System.getenv("UNSANDBOX_API_KEY")
             if (apiKey != null && apiKey.isNotEmpty()) {
                 secretKey = apiKey
+            }
+        }
+
+        // Try UNSANDBOX_ACCOUNT env var to pick a row
+        val envAcct = System.getenv("UNSANDBOX_ACCOUNT")
+        val envAccount = envAcct?.toIntOrNull() ?: -1
+
+        if (publicKey.isNullOrEmpty()) {
+            val home = System.getenv("HOME") ?: System.getProperty("user.home") ?: "."
+            var creds = loadAccountsCSV("$home/.unsandbox/accounts.csv", if (envAccount >= 0) envAccount else 0)
+            if (creds == null) {
+                creds = loadAccountsCSV("accounts.csv", if (envAccount >= 0) envAccount else 0)
+            }
+            if (creds != null) {
+                publicKey = creds.first
+                secretKey = creds.second
             }
         }
     }
@@ -1005,7 +1052,7 @@ fun serviceEnvDelete(serviceId: String, publicKey: String?, secretKey: String): 
 }
 
 fun cmdServiceEnv(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey)
+    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
     val action = args.envAction
     val target = args.envTarget
 
@@ -1260,6 +1307,7 @@ fun parseArgs(args: Array<String>): Args {
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
             "--extend" -> result.keyExtend = true
+            "--account" -> result.accountIndex = args[++i].toInt()
             "--env-file" -> result.envFile = args[++i]
             "--info" -> {
                 when (result.command) {
