@@ -97,8 +97,84 @@
     find-ext ext-lang
 ;
 
+\ Account index for --account N flag (-1 = not set)
+variable account-index
+-1 account-index !
+
+\ Argument shift: 0 normally, 2 when --account N is prepended
+variable arg-shift
+0 arg-shift !
+
+\ Shifted arg accessor - applies arg-shift to all handler arg accesses
+: sarg ( n -- addr len )
+    arg-shift @ + arg
+;
+
+\ Buffer for credentials loaded from CSV
+256 constant MAX-KEY-LEN
+create csv-pk-buf MAX-KEY-LEN allot
+variable csv-pk-len
+create csv-sk-buf MAX-KEY-LEN allot
+variable csv-sk-len
+
+\ Load credentials from accounts.csv at given index (n)
+\ Writes PK/SK to /tmp/unsb_creds.txt; returns true if PK found
+: load-accounts-csv-index ( n -- flag )
+    dup 0< if drop 0 exit then
+    \ Write a shell script with the index embedded
+    s" /tmp/unsb_cred_resolve.sh" w/o create-file throw >r
+    s" #!/bin/bash" r@ write-line throw
+    s" IDX=" r@ write-file throw
+    dup 0 <# #s #> r@ write-file throw
+    s" " r@ write-line throw
+    s" CNT=-1; PK=''; SK=''" r@ write-line throw
+    s" for CSV in \"$HOME/.unsandbox/accounts.csv\" \"./accounts.csv\"; do" r@ write-line throw
+    s"   [ -f \"$CSV\" ] || continue" r@ write-line throw
+    s"   while IFS= read -r line || [ -n \"$line\" ]; do" r@ write-line throw
+    s"     case \"$line\" in '#'*|'') continue ;; esac" r@ write-line throw
+    s"     CNT=$((CNT+1))" r@ write-line throw
+    s"     if [ \"$CNT\" -eq \"$IDX\" ]; then" r@ write-line throw
+    s"       PK=$(echo \"$line\" | cut -d',' -f1 | tr -d ' ')" r@ write-line throw
+    s"       SK=$(echo \"$line\" | cut -d',' -f2 | tr -d ' ')" r@ write-line throw
+    s"       break 2" r@ write-line throw
+    s"     fi" r@ write-line throw
+    s"   done < \"$CSV\"" r@ write-line throw
+    s" done" r@ write-line throw
+    s" printf '%s\\n%s\\n' \"$PK\" \"$SK\" > /tmp/unsb_creds.txt" r@ write-line throw
+    s" [ -n \"$PK\" ]" r@ write-line throw
+    r> close-file throw
+    drop  \ drop index
+    s" bash /tmp/unsb_cred_resolve.sh" system
+    0= if
+        \ Script exited 0: PK was found; read results
+        s" /tmp/unsb_creds.txt" r/o open-file
+        0= if
+            >r
+            csv-pk-buf MAX-KEY-LEN r@ read-line throw
+            drop csv-pk-len !
+            csv-sk-buf MAX-KEY-LEN r@ read-line throw
+            drop csv-sk-len !
+            r> close-file throw
+            -1
+        else
+            drop 0
+        then
+    else
+        0
+    then
+;
+
 \ Get API keys from environment (HMAC or legacy)
 : get-public-key ( -- addr len )
+    account-index @ dup 0>= if
+        load-accounts-csv-index if
+            csv-pk-buf csv-pk-len @ exit
+        then
+        s" Error: Account index not found in accounts.csv" type cr
+        1 (bye)
+    else
+        drop
+    then
     s" UNSANDBOX_PUBLIC_KEY" getenv
     dup 0= if
         2drop s" UNSANDBOX_API_KEY" getenv
@@ -110,6 +186,20 @@
 ;
 
 : get-secret-key ( -- addr len )
+    account-index @ dup 0>= if
+        \ CSV already loaded if pk-buf is non-empty
+        csv-pk-len @ 0> if
+            drop csv-sk-buf csv-sk-len @ exit
+        then
+        \ Load it now
+        load-accounts-csv-index if
+            csv-sk-buf csv-sk-len @ exit
+        then
+        \ Index not found - error was printed by get-public-key; return empty
+        s" " exit
+    else
+        drop
+    then
     s" UNSANDBOX_SECRET_KEY" getenv
     dup 0= if
         2drop s" UNSANDBOX_API_KEY" getenv
@@ -716,7 +806,7 @@
         0 (bye)
     then
 
-    2 arg 2dup s" --extend" compare 0= if
+    2 sarg 2dup s" --extend" compare 0= if
         2drop
         1 validate-key
         0 (bye)
@@ -779,7 +869,7 @@
         1 (bye)
     then
 
-    2 arg 2dup s" --list" compare 0= if
+    2 sarg 2dup s" --list" compare 0= if
         2drop session-list
         0 (bye)
     then
@@ -795,7 +885,7 @@
             s" Error: --kill requires session ID" type cr
             1 (bye)
         then
-        3 arg session-kill
+        3 sarg session-kill
         0 (bye)
     then
 
@@ -835,7 +925,7 @@
         1 (bye)
     then
 
-    2 arg 2dup s" --list" compare 0= if
+    2 sarg 2dup s" --list" compare 0= if
         2drop service-list
         0 (bye)
     then
@@ -856,7 +946,7 @@
             s" Error: --info requires service ID" type cr
             1 (bye)
         then
-        3 arg service-info
+        3 sarg service-info
         0 (bye)
     then
 
@@ -866,7 +956,7 @@
             s" Error: --logs requires service ID" type cr
             1 (bye)
         then
-        3 arg service-logs
+        3 sarg service-logs
         0 (bye)
     then
 
@@ -876,7 +966,7 @@
             s" Error: --freeze requires service ID" type cr
             1 (bye)
         then
-        3 arg service-sleep
+        3 sarg service-sleep
         0 (bye)
     then
 
@@ -886,7 +976,7 @@
             s" Error: --unfreeze requires service ID" type cr
             1 (bye)
         then
-        3 arg service-wake
+        3 sarg service-wake
         0 (bye)
     then
 
@@ -896,7 +986,7 @@
             s" Error: --destroy requires service ID" type cr
             1 (bye)
         then
-        3 arg service-destroy
+        3 sarg service-destroy
         0 (bye)
     then
 
@@ -911,13 +1001,13 @@
             s" Error: --resize requires --vcpu N" type cr
             1 (bye)
         then
-        4 arg 2dup s" --vcpu" compare 0= if
+        4 sarg 2dup s" --vcpu" compare 0= if
             2drop
             argc @ 6 < if
                 s" Error: --vcpu requires a value" type cr
                 1 (bye)
             then
-            3 arg 5 arg service-resize
+            3 sarg 5 sarg service-resize
             0 (bye)
         then
         2dup s" -v" compare 0= if
@@ -926,7 +1016,7 @@
                 s" Error: -v requires a value" type cr
                 1 (bye)
             then
-            3 arg 5 arg service-resize
+            3 sarg 5 sarg service-resize
             0 (bye)
         then
         2drop
@@ -940,16 +1030,16 @@
             s" Error: --dump-bootstrap requires service ID" type cr
             1 (bye)
         then
-        3 arg
+        3 sarg
         \ Check for --dump-file
         argc @ 5 >= if
-            4 arg 2dup s" --dump-file" compare 0= if
+            4 sarg 2dup s" --dump-file" compare 0= if
                 2drop
                 argc @ 6 < if
                     s" Error: --dump-file requires filename" type cr
                     1 (bye)
                 then
-                5 arg
+                5 sarg
             else
                 2drop 0 0
             then
@@ -967,13 +1057,13 @@
             s" Usage: un.forth service env <status|set|export|delete> <service_id> [options]" type cr
             1 (bye)
         then
-        3 arg 2dup s" status" compare 0= if
+        3 sarg 2dup s" status" compare 0= if
             2drop
             argc @ 5 < if
                 s" Error: status requires service ID" type cr
                 1 (bye)
             then
-            4 arg service-env-status
+            4 sarg service-env-status
             0 (bye)
         then
         2dup s" set" compare 0= if
@@ -991,7 +1081,7 @@
                 s" Error: export requires service ID" type cr
                 1 (bye)
             then
-            4 arg service-env-export
+            4 sarg service-env-export
             0 (bye)
         then
         2dup s" delete" compare 0= if
@@ -1000,7 +1090,7 @@
                 s" Error: delete requires service ID" type cr
                 1 (bye)
             then
-            4 arg service-env-delete
+            4 sarg service-env-delete
             0 (bye)
         then
         2drop
@@ -1072,7 +1162,7 @@
         0 (bye)
     then
 
-    2 arg 2dup s" --json" compare 0= if
+    2 sarg 2dup s" --json" compare 0= if
         2drop
         1 languages-list
         0 (bye)
@@ -1670,7 +1760,7 @@
         0 (bye)
     then
 
-    2 arg 2dup s" --list" compare 0= if
+    2 sarg 2dup s" --list" compare 0= if
         2drop snapshot-list
         0 (bye)
     then
@@ -1686,7 +1776,7 @@
             s" Error: --info requires snapshot ID" type cr
             1 (bye)
         then
-        3 arg snapshot-info
+        3 sarg snapshot-info
         0 (bye)
     then
 
@@ -1696,7 +1786,7 @@
             s" Error: --restore requires snapshot ID" type cr
             1 (bye)
         then
-        3 arg snapshot-restore
+        3 sarg snapshot-restore
         0 (bye)
     then
 
@@ -1706,7 +1796,7 @@
             s" Error: --delete requires snapshot ID" type cr
             1 (bye)
         then
-        3 arg snapshot-delete
+        3 sarg snapshot-delete
         0 (bye)
     then
 
@@ -1716,7 +1806,7 @@
             s" Error: --lock requires snapshot ID" type cr
             1 (bye)
         then
-        3 arg snapshot-lock
+        3 sarg snapshot-lock
         0 (bye)
     then
 
@@ -1726,7 +1816,7 @@
             s" Error: --unlock requires snapshot ID" type cr
             1 (bye)
         then
-        3 arg snapshot-unlock
+        3 sarg snapshot-unlock
         0 (bye)
     then
 
@@ -1736,7 +1826,7 @@
             s" Error: --clone requires snapshot ID" type cr
             1 (bye)
         then
-        3 arg snapshot-clone
+        3 sarg snapshot-clone
         0 (bye)
     then
 
@@ -1752,7 +1842,7 @@
         1 (bye)
     then
 
-    2 arg 2dup s" --list" compare 0= if
+    2 sarg 2dup s" --list" compare 0= if
         2drop image-list
         0 (bye)
     then
@@ -1768,7 +1858,7 @@
             s" Error: --info requires image ID" type cr
             1 (bye)
         then
-        3 arg image-info
+        3 sarg image-info
         0 (bye)
     then
 
@@ -1778,7 +1868,7 @@
             s" Error: --delete requires image ID" type cr
             1 (bye)
         then
-        3 arg image-delete
+        3 sarg image-delete
         0 (bye)
     then
 
@@ -1788,7 +1878,7 @@
             s" Error: --lock requires image ID" type cr
             1 (bye)
         then
-        3 arg image-lock
+        3 sarg image-lock
         0 (bye)
     then
 
@@ -1798,7 +1888,7 @@
             s" Error: --unlock requires image ID" type cr
             1 (bye)
         then
-        3 arg image-unlock
+        3 sarg image-unlock
         0 (bye)
     then
 
@@ -1818,7 +1908,7 @@
             s" Error: --visibility requires image ID and mode" type cr
             1 (bye)
         then
-        3 arg 4 arg image-visibility
+        3 sarg 4 sarg image-visibility
         0 (bye)
     then
 
@@ -1828,7 +1918,7 @@
             s" Error: --spawn requires image ID" type cr
             1 (bye)
         then
-        3 arg image-spawn
+        3 sarg image-spawn
         0 (bye)
     then
 
@@ -1838,7 +1928,7 @@
             s" Error: --clone requires image ID" type cr
             1 (bye)
         then
-        3 arg image-clone
+        3 sarg image-clone
         0 (bye)
     then
 
@@ -1860,8 +1950,21 @@
         1 (bye)
     then
 
-    \ Get first argument (skip gforth and script name)
-    1 arg
+    \ Check for --account N as first argument (before arg-shift is applied)
+    1 arg 2dup s" --account" compare 0= if
+        2drop
+        argc @ 3 < if
+            s" Error: --account requires a numeric argument" type cr
+            1 (bye)
+        then
+        2 arg s>number drop account-index !
+        2 arg-shift !
+    else
+        2drop
+    then
+
+    \ Get subcommand (adjusted for arg-shift)
+    1 arg-shift @ + arg
 
     \ Check for subcommands
     2dup s" session" compare 0= if

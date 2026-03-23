@@ -64,6 +64,9 @@ BEGIN {
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
     RESET = "\033[0m"
+
+    # Global credential state
+    GLOBAL_ACCOUNT_INDEX = -1
 }
 
 # ============================================================================
@@ -106,32 +109,84 @@ function health_check(    cmd, result) {
     return (result == "200")
 }
 
-function get_api_keys(    public_key, secret_key, cmd) {
-    # Get public key
-    cmd = "echo -n $UNSANDBOX_PUBLIC_KEY"
-    cmd | getline public_key
-    close(cmd)
-
-    # Get secret key
-    cmd = "echo -n $UNSANDBOX_SECRET_KEY"
-    cmd | getline secret_key
-    close(cmd)
-
-    # Fallback to old UNSANDBOX_API_KEY for backwards compat
-    if (public_key == "") {
-        cmd = "echo -n $UNSANDBOX_API_KEY"
-        cmd | getline public_key
-        close(cmd)
-        secret_key = ""
+function load_accounts_csv(index    , home, path, line, fields, count, pk, sk) {
+    home = ENVIRON["HOME"]
+    count = -1
+    pk = ""
+    sk = ""
+    # Try ~/.unsandbox/accounts.csv first
+    path = home "/.unsandbox/accounts.csv"
+    while ((getline line < path) > 0) {
+        if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) continue
+        count++
+        if (count == index) {
+            split(line, fields, ",")
+            pk = fields[1]; sk = fields[2]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", pk)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", sk)
+            close(path)
+            GLOBAL_PUBLIC_KEY = pk; GLOBAL_SECRET_KEY = sk
+            return 1
+        }
     }
+    close(path)
+    # Try ./accounts.csv as fallback
+    count = -1; path = "accounts.csv"
+    while ((getline line < path) > 0) {
+        if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) continue
+        count++
+        if (count == index) {
+            split(line, fields, ",")
+            pk = fields[1]; sk = fields[2]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", pk)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", sk)
+            close(path)
+            GLOBAL_PUBLIC_KEY = pk; GLOBAL_SECRET_KEY = sk
+            return 1
+        }
+    }
+    close(path)
+    return 0
+}
 
-    if (public_key == "") {
-        print RED "Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set" RESET > "/dev/stderr"
+function get_api_keys(    public_key, secret_key, cmd, default_index) {
+    # Priority 1: already set via -p/-k flags
+    if (GLOBAL_PUBLIC_KEY != "" && GLOBAL_SECRET_KEY != "") { return }
+
+    # Priority 2: --account N bypasses env vars
+    if (GLOBAL_ACCOUNT_INDEX >= 0) {
+        if (load_accounts_csv(GLOBAL_ACCOUNT_INDEX)) {
+            if (GLOBAL_PUBLIC_KEY != "") return
+        }
+        print RED "Error: Account index " GLOBAL_ACCOUNT_INDEX " not found in accounts.csv" RESET > "/dev/stderr"
         exit 1
     }
 
-    GLOBAL_PUBLIC_KEY = public_key
-    GLOBAL_SECRET_KEY = secret_key
+    # Priority 3: env vars UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY
+    cmd = "echo -n $UNSANDBOX_PUBLIC_KEY"; cmd | getline public_key; close(cmd)
+    cmd = "echo -n $UNSANDBOX_SECRET_KEY"; cmd | getline secret_key; close(cmd)
+    if (public_key != "" && secret_key != "") {
+        GLOBAL_PUBLIC_KEY = public_key; GLOBAL_SECRET_KEY = secret_key; return
+    }
+
+    # Fallback to legacy UNSANDBOX_API_KEY for backwards compat
+    if (public_key == "") {
+        cmd = "echo -n $UNSANDBOX_API_KEY"; cmd | getline public_key; close(cmd)
+        secret_key = ""
+    }
+    if (public_key != "") {
+        GLOBAL_PUBLIC_KEY = public_key; GLOBAL_SECRET_KEY = secret_key; return
+    }
+
+    # Priority 4/5: accounts.csv with UNSANDBOX_ACCOUNT env var or row 0
+    cmd = "echo -n $UNSANDBOX_ACCOUNT"; cmd | getline default_index; close(cmd)
+    if (default_index == "") default_index = 0
+    if (load_accounts_csv(default_index + 0)) {
+        if (GLOBAL_PUBLIC_KEY != "") return
+    }
+
+    print RED "Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set" RESET > "/dev/stderr"
+    exit 1
 }
 
 function get_extension(filename) {
@@ -2357,6 +2412,20 @@ END {
     if (ARGV[1] == "--help" || ARGV[1] == "-h") {
         show_help()
         exit 0
+    }
+
+    # Pre-scan ARGV for global flags: --account N, -p KEY, -k KEY
+    for (_gi = 1; _gi < ARGC; _gi++) {
+        if (ARGV[_gi] == "--account" && _gi + 1 < ARGC) {
+            GLOBAL_ACCOUNT_INDEX = ARGV[_gi + 1] + 0
+            _gi++
+        } else if (ARGV[_gi] == "-p" && _gi + 1 < ARGC) {
+            GLOBAL_PUBLIC_KEY = ARGV[_gi + 1]
+            _gi++
+        } else if (ARGV[_gi] == "-k" && _gi + 1 < ARGC) {
+            GLOBAL_SECRET_KEY = ARGV[_gi + 1]
+            _gi++
+        }
     }
 
     if (ARGV[1] == "session") {

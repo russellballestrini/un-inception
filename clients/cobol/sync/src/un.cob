@@ -45,15 +45,21 @@
            SELECT SOURCE-FILE ASSIGN TO WS-FILENAME
                ORGANIZATION IS LINE SEQUENTIAL
                FILE STATUS IS WS-FILE-STATUS.
+           SELECT CRED-FILE ASSIGN TO "/tmp/unsb_creds.txt"
+               ORGANIZATION IS LINE SEQUENTIAL
+               FILE STATUS IS WS-CRED-STATUS.
 
        DATA DIVISION.
        FILE SECTION.
        FD  SOURCE-FILE.
        01  SOURCE-LINE         PIC X(1024).
+       FD  CRED-FILE.
+       01  CRED-LINE           PIC X(512).
 
        WORKING-STORAGE SECTION.
        01  WS-FILENAME         PIC X(256).
        01  WS-FILE-STATUS      PIC XX.
+       01  WS-CRED-STATUS      PIC XX.
        01  WS-API-KEY          PIC X(256).
        01  WS-PUBLIC-KEY       PIC X(256).
        01  WS-SECRET-KEY       PIC X(256).
@@ -97,11 +103,22 @@
        01  WS-UOD-ENABLED      PIC X(8).
        01  WS-TYPE             PIC X(32).
        01  WS-SHELL            PIC X(32).
+       01  WS-ACCOUNT-INDEX    PIC S9(4) VALUE -1.
+       01  WS-ACCOUNT-STR      PIC X(16).
+       01  WS-ACCT-POS         PIC 9(4) VALUE 0.
+       01  WS-ERROR-MSG        PIC X(256).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
-      * Get command line argument (first argument)
+      * Get first command line argument
            ACCEPT WS-ARG1 FROM COMMAND-LINE.
+
+      * Pre-scan: handle --account N global flag before subcommand
+           IF WS-ARG1 = "--account"
+               ACCEPT WS-ACCOUNT-STR FROM ARGUMENT-VALUE
+               MOVE FUNCTION NUMVAL(WS-ACCOUNT-STR) TO WS-ACCOUNT-INDEX
+               ACCEPT WS-ARG1 FROM ARGUMENT-VALUE
+           END-IF.
 
            IF WS-ARG1 = SPACES
                DISPLAY "Usage: un.cob <source_file>" UPON SYSERR
@@ -147,7 +164,94 @@
            PERFORM HANDLE-EXECUTE.
            STOP RUN.
 
+       GET-CREDENTIALS.
+      * If already set, return immediately
+           IF WS-PUBLIC-KEY NOT = SPACES AND WS-SECRET-KEY NOT = SPACES
+               EXIT PARAGRAPH
+           END-IF.
+
+      * Build shell script to resolve credentials with full priority
+           IF WS-ACCOUNT-INDEX >= 0
+               MOVE WS-ACCOUNT-INDEX TO WS-ACCOUNT-STR
+               STRING "IDX=" FUNCTION TRIM(WS-ACCOUNT-STR) "; "
+                   "PK=''; SK=''; CNT=-1; "
+                   "for CSV in \"$HOME/.unsandbox/accounts.csv\" "
+                   "\"./accounts.csv\"; do "
+                   "[ -f \"$CSV\" ] || continue; "
+                   "while IFS= read -r line || [ -n \"$line\" ]; do "
+                   "case \"$line\" in \"#\"*|\"\"|\" \"*) continue ;; esac; "
+                   "CNT=$((CNT+1)); "
+                   "if [ \"$CNT\" -eq \"$IDX\" ]; then "
+                   "PK=$(echo \"$line\" | cut -d',' -f1 | tr -d ' '); "
+                   "SK=$(echo \"$line\" | cut -d',' -f2 | tr -d ' '); "
+                   "break 2; fi; "
+                   "done < \"$CSV\"; done; "
+                   "if [ -z \"$PK\" ]; then "
+                   "echo -e '\\x1b[31mError: Account index "
+                   FUNCTION TRIM(WS-ACCOUNT-STR)
+                   " not found in accounts.csv\\x1b[0m' >&2; exit 1; fi; "
+                   "printf '%s\\n%s\\n' \"$PK\" \"$SK\" "
+                   "> /tmp/unsb_creds.txt"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           ELSE
+               STRING "PK=\"$UNSANDBOX_PUBLIC_KEY\"; "
+                   "SK=\"$UNSANDBOX_SECRET_KEY\"; "
+                   "if [ -z \"$PK\" ]; then PK=\"$UNSANDBOX_API_KEY\"; SK=''; fi; "
+                   "if [ -z \"$PK\" ]; then "
+                   "IDX=\"${UNSANDBOX_ACCOUNT:-0}\"; "
+                   "CNT=-1; "
+                   "for CSV in \"$HOME/.unsandbox/accounts.csv\" "
+                   "\"./accounts.csv\"; do "
+                   "[ -f \"$CSV\" ] || continue; "
+                   "while IFS= read -r line || [ -n \"$line\" ]; do "
+                   "case \"$line\" in \"#\"*|\"\"|\" \"*) continue ;; esac; "
+                   "CNT=$((CNT+1)); "
+                   "if [ \"$CNT\" -eq \"$IDX\" ]; then "
+                   "PK=$(echo \"$line\" | cut -d',' -f1 | tr -d ' '); "
+                   "SK=$(echo \"$line\" | cut -d',' -f2 | tr -d ' '); "
+                   "break 2; fi; "
+                   "done < \"$CSV\"; done; fi; "
+                   "if [ -z \"$PK\" ]; then "
+                   "echo -e '\\x1b[31mError: No credentials found\\x1b[0m' "
+                   ">&2; exit 1; fi; "
+                   "printf '%s\\n%s\\n' \"$PK\" \"$SK\" "
+                   "> /tmp/unsb_creds.txt"
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+           CALL "SYSTEM" USING WS-CURL-CMD
+               RETURNING WS-EXIT-CODE.
+           IF WS-EXIT-CODE NOT = 0
+               MOVE WS-EXIT-CODE TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
+      * Read resolved credentials from temp file
+           MOVE SPACES TO WS-PUBLIC-KEY.
+           MOVE SPACES TO WS-SECRET-KEY.
+           OPEN INPUT CRED-FILE.
+           IF WS-CRED-STATUS = "00"
+               READ CRED-FILE INTO WS-PUBLIC-KEY
+               READ CRED-FILE INTO WS-SECRET-KEY
+               CLOSE CRED-FILE
+           END-IF.
+
+           IF WS-PUBLIC-KEY = SPACES
+               DISPLAY "Error: Could not resolve credentials"
+                   UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+
        HANDLE-EXECUTE.
+      * Get credentials
+           PERFORM GET-CREDENTIALS.
+           IF WS-API-KEY = SPACES
+               MOVE WS-PUBLIC-KEY TO WS-API-KEY
+           END-IF.
+
       * Check if file exists
            OPEN INPUT SOURCE-FILE.
            IF WS-FILE-STATUS NOT = "00"
@@ -168,25 +272,14 @@
                STOP RUN
            END-IF.
 
-      * Get API key from environment
-           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
-
-           IF WS-API-KEY = SPACES
-               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
-               MOVE 1 TO RETURN-CODE
-               STOP RUN
-           END-IF.
-
       * Use curl to make request
            PERFORM MAKE-EXECUTE-REQUEST.
 
        HANDLE-SESSION.
-      * Get API key
-           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
+      * Get credentials
+           PERFORM GET-CREDENTIALS.
            IF WS-API-KEY = SPACES
-               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
-               MOVE 1 TO RETURN-CODE
-               STOP RUN
+               MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
       * Initialize session parameters
@@ -209,27 +302,8 @@
            END-IF.
 
        HANDLE-SERVICE.
-      * Get API keys (try new format first, fall back to old)
-           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
-           IF WS-PUBLIC-KEY NOT = SPACES
-               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
-               IF WS-SECRET-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
-                       UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-           ELSE
-               ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
-               IF WS-API-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
-                       "UNSANDBOX_API_KEY not set" UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-               MOVE WS-API-KEY TO WS-PUBLIC-KEY
-               MOVE WS-API-KEY TO WS-SECRET-KEY
-           END-IF.
+      * Get credentials
+           PERFORM GET-CREDENTIALS.
 
       * Initialize service parameters
            MOVE SPACES TO WS-NAME.
@@ -332,26 +406,7 @@
            END-IF.
 
        MAKE-EXECUTE-REQUEST.
-      * Get public/secret keys with fallback
-           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
-           IF WS-PUBLIC-KEY NOT = SPACES
-               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
-               IF WS-SECRET-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
-                       UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-           ELSE
-               ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
-               IF WS-PUBLIC-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
-                       "UNSANDBOX_API_KEY not set" UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-               MOVE WS-PUBLIC-KEY TO WS-SECRET-KEY
-           END-IF.
+      * Credentials already resolved by caller (GET-CREDENTIALS)
 
       * Build curl command using shell with HMAC signature
            STRING "TS=$(date +%s); "
@@ -943,12 +998,10 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-KEY.
-      * Get API key
-           ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY".
+      * Get credentials
+           PERFORM GET-CREDENTIALS.
            IF WS-API-KEY = SPACES
-               DISPLAY "Error: UNSANDBOX_API_KEY not set" UPON SYSERR
-               MOVE 1 TO RETURN-CODE
-               STOP RUN
+               MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
       * Parse key arguments
@@ -1124,27 +1177,8 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-LANGUAGES.
-      * Get API keys
-           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
-           IF WS-PUBLIC-KEY NOT = SPACES
-               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
-               IF WS-SECRET-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
-                       UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-           ELSE
-               ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
-               IF WS-API-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
-                       "UNSANDBOX_API_KEY not set" UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-               MOVE WS-API-KEY TO WS-PUBLIC-KEY
-               MOVE WS-API-KEY TO WS-SECRET-KEY
-           END-IF.
+      * Get credentials
+           PERFORM GET-CREDENTIALS.
 
       * Parse --json flag
            MOVE SPACES TO WS-JSON-OUTPUT.
@@ -1219,27 +1253,8 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-IMAGE.
-      * Get API keys (try new format first, fall back to old)
-           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT "UNSANDBOX_PUBLIC_KEY".
-           IF WS-PUBLIC-KEY NOT = SPACES
-               ACCEPT WS-SECRET-KEY FROM ENVIRONMENT "UNSANDBOX_SECRET_KEY"
-               IF WS-SECRET-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_SECRET_KEY not set"
-                       UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-           ELSE
-               ACCEPT WS-API-KEY FROM ENVIRONMENT "UNSANDBOX_API_KEY"
-               IF WS-API-KEY = SPACES
-                   DISPLAY "Error: UNSANDBOX_PUBLIC_KEY/SECRET_KEY or "
-                       "UNSANDBOX_API_KEY not set" UPON SYSERR
-                   MOVE 1 TO RETURN-CODE
-                   STOP RUN
-               END-IF
-               MOVE WS-API-KEY TO WS-PUBLIC-KEY
-               MOVE WS-API-KEY TO WS-SECRET-KEY
-           END-IF.
+      * Get credentials
+           PERFORM GET-CREDENTIALS.
 
       * Initialize image parameters
            MOVE SPACES TO WS-ID.
@@ -1676,15 +1691,7 @@
 
        HANDLE-SNAPSHOT.
       * Get credentials
-           ACCEPT WS-PUBLIC-KEY FROM ENVIRONMENT
-               "UNSANDBOX_PUBLIC_KEY".
-           ACCEPT WS-SECRET-KEY FROM ENVIRONMENT
-               "UNSANDBOX_SECRET_KEY".
-           IF WS-PUBLIC-KEY = SPACES OR WS-SECRET-KEY = SPACES
-               DISPLAY "Error: API keys not set" UPON SYSERR
-               MOVE 1 TO RETURN-CODE
-               STOP RUN
-           END-IF.
+           PERFORM GET-CREDENTIALS.
 
       * Get second argument (operation or --list)
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.

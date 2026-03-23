@@ -39,6 +39,9 @@
 
 :- initialization(main, main).
 
+% Initialize global account index to -1 (not set)
+:- nb_setval(account_index, -1).
+
 % Constants
 portal_base('https://unsandbox.com').
 languages_cache_ttl(3600).  % 1 hour cache TTL
@@ -85,26 +88,91 @@ read_file_content(Filename, Content) :-
     read_string(Stream, _, Content),
     close(Stream).
 
-% Get API keys from environment (HMAC or legacy)
+% Load credentials from accounts.csv at 0-indexed row
+% Tries ~/.unsandbox/accounts.csv first, then ./accounts.csv
+load_accounts_csv(Index, PK, SK) :-
+    getenv('HOME', Home),
+    atomic_list_concat([Home, '/.unsandbox/accounts.csv'], Path1),
+    (   exists_file(Path1)
+    ->  load_accounts_csv_file(Path1, Index, PK, SK)
+    ;   exists_file('accounts.csv')
+    ->  load_accounts_csv_file('accounts.csv', Index, PK, SK)
+    ;   fail
+    ).
+
+load_accounts_csv_file(Path, Index, PK, SK) :-
+    setup_call_cleanup(
+        open(Path, read, Stream),
+        load_accounts_csv_stream(Stream, 0, Index, PK, SK),
+        close(Stream)
+    ).
+
+load_accounts_csv_stream(Stream, Count, Index, PK, SK) :-
+    read_line_to_string(Stream, Line),
+    Line \= end_of_file,
+    !,
+    % Skip blank lines and comments
+    (   (Line = "" ; string_code(1, Line, 35))  % 35 = '#'
+    ->  load_accounts_csv_stream(Stream, Count, Index, PK, SK)
+    ;   Count =:= Index
+    ->  split_string(Line, ",", " \t", [PKStr, SKStr|_]),
+        atom_string(PK, PKStr),
+        atom_string(SK, SKStr)
+    ;   Next is Count + 1,
+        load_accounts_csv_stream(Stream, Next, Index, PK, SK)
+    ).
+
+% Get API keys from environment (HMAC or legacy), respecting --account N
 get_public_key(PublicKey) :-
-    (   getenv('UNSANDBOX_PUBLIC_KEY', PublicKey),
-        PublicKey \= ''
-    ->  true
-    ;   getenv('UNSANDBOX_API_KEY', PublicKey),
-        PublicKey \= ''
-    ->  true
-    ;   write(user_error, 'Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY environment variable not set\n'),
-        halt(1)
+    (   nb_getval(account_index, Idx), Idx >= 0
+    ->  (   load_accounts_csv(Idx, PublicKey, _)
+        ->  true
+        ;   format(user_error, 'Error: Account index ~w not found in accounts.csv~n', [Idx]),
+            halt(1)
+        )
+    ;   (   getenv('UNSANDBOX_PUBLIC_KEY', PublicKey),
+            PublicKey \= ''
+        ->  true
+        ;   getenv('UNSANDBOX_API_KEY', PublicKey),
+            PublicKey \= ''
+        ->  true
+        ;   % Try accounts.csv with UNSANDBOX_ACCOUNT or row 0
+            (   getenv('UNSANDBOX_ACCOUNT', IdxStr),
+                atom_number(IdxStr, DefaultIdx)
+            ->  true
+            ;   DefaultIdx = 0
+            ),
+            (   load_accounts_csv(DefaultIdx, PublicKey, _)
+            ->  true
+            ;   write(user_error, 'Error: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY environment variable not set\n'),
+                halt(1)
+            )
+        )
     ).
 
 get_secret_key(SecretKey) :-
-    (   getenv('UNSANDBOX_SECRET_KEY', SecretKey),
-        SecretKey \= ''
-    ->  true
-    ;   getenv('UNSANDBOX_API_KEY', SecretKey),
-        SecretKey \= ''
-    ->  true
-    ;   SecretKey = ''
+    (   nb_getval(account_index, Idx), Idx >= 0
+    ->  (   load_accounts_csv(Idx, _, SecretKey)
+        ->  true
+        ;   SecretKey = ''
+        )
+    ;   (   getenv('UNSANDBOX_SECRET_KEY', SecretKey),
+            SecretKey \= ''
+        ->  true
+        ;   getenv('UNSANDBOX_API_KEY', SecretKey),
+            SecretKey \= ''
+        ->  true
+        ;   % Try accounts.csv with UNSANDBOX_ACCOUNT or row 0
+            (   getenv('UNSANDBOX_ACCOUNT', IdxStr),
+                atom_number(IdxStr, DefaultIdx)
+            ->  true
+            ;   DefaultIdx = 0
+            ),
+            (   load_accounts_csv(DefaultIdx, _, SecretKey)
+            ->  true
+            ;   SecretKey = ''
+            )
+        )
     ).
 
 % Get API key (legacy compatibility)
@@ -742,8 +810,22 @@ service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, In
 
 % Main program
 main(Argv) :-
+    % Initialize account_index global to -1 (not set)
+    nb_setval(account_index, -1),
+
+    % Parse --account N global flag if present
+    (   Argv = ['--account', NStr|Rest]
+    ->  (   atom_number(NStr, N), integer(N)
+        ->  nb_setval(account_index, N),
+            ActualArgv = Rest
+        ;   write(user_error, 'Error: --account requires an integer argument\n'),
+            halt(1)
+        )
+    ;   ActualArgv = Argv
+    ),
+
     % Check arguments
-    (   Argv = []
+    (   ActualArgv = []
     ->  write(user_error, 'Usage: un.pro [options] <source_file>\n'),
         write(user_error, '       un.pro session [options]\n'),
         write(user_error, '       un.pro service [options]\n'),
@@ -782,19 +864,19 @@ main(Argv) :-
     ),
 
     % Parse subcommands
-    (   Argv = ['session'|Rest]
+    (   ActualArgv = ['session'|Rest]
     ->  handle_session(Rest)
-    ;   Argv = ['service'|Rest]
+    ;   ActualArgv = ['service'|Rest]
     ->  handle_service(Rest)
-    ;   Argv = ['snapshot'|Rest]
+    ;   ActualArgv = ['snapshot'|Rest]
     ->  handle_snapshot(Rest)
-    ;   Argv = ['image'|Rest]
+    ;   ActualArgv = ['image'|Rest]
     ->  handle_image(Rest)
-    ;   Argv = ['languages'|Rest]
+    ;   ActualArgv = ['languages'|Rest]
     ->  handle_languages(Rest)
-    ;   Argv = ['key'|Rest]
+    ;   ActualArgv = ['key'|Rest]
     ->  handle_key(Rest)
-    ;   Argv = [Filename|_]
+    ;   ActualArgv = [Filename|_]
     ->  execute_file(Filename)
     ;   write(user_error, 'Error: Invalid arguments\n'),
         halt(1)
