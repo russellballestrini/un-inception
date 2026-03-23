@@ -138,6 +138,7 @@ class Unsandbox {
     private ?string $defaultPublicKey = null;
     private ?string $defaultSecretKey = null;
     private int $accountIndex = 0;
+    private bool $accountIndexExplicit = false;
 
     /**
      * Create a new Unsandbox client.
@@ -1693,17 +1694,18 @@ class Unsandbox {
      * Resolve credentials from 4-tier priority system.
      *
      * Priority:
-     *     1. Method arguments
-     *     2. Environment variables
-     *     3. ~/.unsandbox/accounts.csv
-     *     4. ./accounts.csv
+     *     1. Method arguments / constructor defaults
+     *     2. $accountIndex >= 0 → load from accounts.csv row N
+     *     3. Environment variables (UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY)
+     *     4. Default CSV lookup (account 0)
      *
      * @param string|null $publicKey Public key from method argument
      * @param string|null $secretKey Secret key from method argument
+     * @param int|null $accountIndex Explicit account index (overrides env and default)
      * @return array [publicKey, secretKey]
      * @throws CredentialsException If no credentials found
      */
-    private function resolveCredentials(?string $publicKey, ?string $secretKey): array {
+    private function resolveCredentials(?string $publicKey, ?string $secretKey, ?int $accountIndex = null): array {
         // Tier 1: Method arguments
         if (!empty($publicKey) && !empty($secretKey)) {
             return [$publicKey, $secretKey];
@@ -1714,29 +1716,50 @@ class Unsandbox {
             return [$this->defaultPublicKey, $this->defaultSecretKey];
         }
 
-        // Tier 2: Environment variables
+        // Tier 2: Explicit account index (--account N flag or constructor accountIndex != 0)
+        // Resolve the effective account index: explicit arg > UNSANDBOX_ACCOUNT env > $this->accountIndex
+        $effectiveIndex = null;
+        if ($accountIndex !== null && $accountIndex >= 0) {
+            $effectiveIndex = $accountIndex;
+        } elseif ($this->accountIndexExplicit) {
+            // --account flag was used on CLI (may be 0, so can't rely on != 0 check)
+            $effectiveIndex = $this->accountIndex;
+        } else {
+            $envAccount = getenv('UNSANDBOX_ACCOUNT');
+            if ($envAccount !== false && $envAccount !== '') {
+                $effectiveIndex = (int)$envAccount;
+            } elseif ($this->accountIndex !== 0) {
+                $effectiveIndex = $this->accountIndex;
+            }
+        }
+
+        if ($effectiveIndex !== null) {
+            $unsandboxDir = $this->getUnsandboxDir();
+            $creds = $this->loadCredentialsFromCsv($unsandboxDir . '/accounts.csv', $effectiveIndex);
+            if ($creds !== null) {
+                return $creds;
+            }
+            $creds = $this->loadCredentialsFromCsv('./accounts.csv', $effectiveIndex);
+            if ($creds !== null) {
+                return $creds;
+            }
+        }
+
+        // Tier 3: Environment variables
         $envPk = getenv('UNSANDBOX_PUBLIC_KEY');
         $envSk = getenv('UNSANDBOX_SECRET_KEY');
         if (!empty($envPk) && !empty($envSk)) {
             return [$envPk, $envSk];
         }
 
-        // Determine account index
-        $accountIndex = $this->accountIndex;
-        $envAccount = getenv('UNSANDBOX_ACCOUNT');
-        if ($envAccount !== false && $envAccount !== '') {
-            $accountIndex = (int)$envAccount;
-        }
-
-        // Tier 3: ~/.unsandbox/accounts.csv
+        // Tier 4: Default CSV lookup (account 0)
         $unsandboxDir = $this->getUnsandboxDir();
-        $creds = $this->loadCredentialsFromCsv($unsandboxDir . '/accounts.csv', $accountIndex);
+        $creds = $this->loadCredentialsFromCsv($unsandboxDir . '/accounts.csv', 0);
         if ($creds !== null) {
             return $creds;
         }
 
-        // Tier 4: ./accounts.csv
-        $creds = $this->loadCredentialsFromCsv('./accounts.csv', $accountIndex);
+        $creds = $this->loadCredentialsFromCsv('./accounts.csv', 0);
         if ($creds !== null) {
             return $creds;
         }
@@ -1744,9 +1767,9 @@ class Unsandbox {
         throw new CredentialsException(
             "No credentials found. Please provide via:\n" .
             "  1. Method arguments (publicKey, secretKey)\n" .
-            "  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n" .
-            "  3. ~/.unsandbox/accounts.csv\n" .
-            "  4. ./accounts.csv"
+            "  2. --account N flag or UNSANDBOX_ACCOUNT env var (CSV row N)\n" .
+            "  3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n" .
+            "  4. ~/.unsandbox/accounts.csv or ./accounts.csv (row 0)"
         );
     }
 
@@ -2138,6 +2161,10 @@ class Unsandbox {
         if (!empty($opts['secret_key'])) {
             $this->defaultSecretKey = $opts['secret_key'];
         }
+        if ($opts['account'] !== null) {
+            $this->accountIndex = $opts['account'];
+            $this->accountIndexExplicit = true;
+        }
 
         // Determine the command
         if (empty($args)) {
@@ -2209,6 +2236,7 @@ class Unsandbox {
             'vcpu' => 1,
             'yes' => false,
             'help' => false,
+            'account' => null,
         ];
         $args = [];
 
@@ -2255,6 +2283,11 @@ class Unsandbox {
                 $opts['yes'] = true;
             } elseif ($arg === '-h' || $arg === '--help') {
                 $opts['help'] = true;
+            } elseif ($arg === '--account') {
+                $i++;
+                if (isset($argv[$i])) {
+                    $opts['account'] = (int)$argv[$i];
+                }
             } elseif (strpos($arg, '-') !== 0) {
                 $args[] = $arg;
             }

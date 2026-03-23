@@ -173,7 +173,7 @@ func TestResolveCredentialsFromEnv(t *testing.T) {
 	os.Setenv("UNSANDBOX_SECRET_KEY", testSK)
 
 	// Test
-	creds, err := ResolveCredentials("", "")
+	creds, err := ResolveCredentials("", "", -1)
 	if err != nil {
 		t.Fatalf("ResolveCredentials failed: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestResolveCredentialsFromArgs(t *testing.T) {
 	testPK := "unsb-pk-arg1-arg2-arg3-arg4"
 	testSK := "unsb-sk-arg11-arg22-arg33-arg44"
 
-	creds, err := ResolveCredentials(testPK, testSK)
+	creds, err := ResolveCredentials(testPK, testSK, -1)
 	if err != nil {
 		t.Fatalf("ResolveCredentials failed: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestResolveCredentialsFromArgs(t *testing.T) {
 // ============================================================================
 
 func getTestCredentials(t *testing.T) *Credentials {
-	creds, err := ResolveCredentials("", "")
+	creds, err := ResolveCredentials("", "", -1)
 	if err != nil {
 		t.Skip("No credentials available for functional tests")
 	}

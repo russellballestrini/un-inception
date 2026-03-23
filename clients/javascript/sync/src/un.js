@@ -331,10 +331,11 @@ function loadCredentialsFromStorage() {
  *
  * Priority:
  *   1. Function arguments
- *   2. Environment variables (Node.js)
- *   3. localStorage (Browser)
- *   4. ~/.unsandbox/accounts.csv (Node.js)
- *   5. ./accounts.csv (Node.js)
+ *   2. accountIndex >= 0 → load from accounts.csv row N
+ *   3. Environment variables (Node.js)
+ *   4. localStorage (Browser)
+ *   5. ~/.unsandbox/accounts.csv (default row, Node.js)
+ *   6. ./accounts.csv (default row, Node.js)
  */
 function resolveCredentials(publicKey, secretKey, accountIndex) {
   // Tier 1: Function arguments
@@ -342,7 +343,26 @@ function resolveCredentials(publicKey, secretKey, accountIndex) {
     return [publicKey, secretKey];
   }
 
-  // Tier 2: Environment variables (Node.js only)
+  // Tier 2: Explicit accountIndex → load from accounts.csv row N (Node.js only)
+  if (IS_NODE && fs && path && accountIndex !== undefined && accountIndex >= 0) {
+    // ~/.unsandbox/accounts.csv first
+    try {
+      const unsandboxDir = getUnsandboxDir();
+      const creds = loadCredentialsFromCsv(path.join(unsandboxDir, 'accounts.csv'), accountIndex);
+      if (creds) {
+        return creds;
+      }
+    } catch (e) {
+      // Continue to next location
+    }
+    // ./accounts.csv fallback
+    const creds = loadCredentialsFromCsv('accounts.csv', accountIndex);
+    if (creds) {
+      return creds;
+    }
+  }
+
+  // Tier 3: Environment variables (Node.js only)
   if (IS_NODE) {
     const envPk = process.env.UNSANDBOX_PUBLIC_KEY;
     const envSk = process.env.UNSANDBOX_SECRET_KEY;
@@ -351,7 +371,7 @@ function resolveCredentials(publicKey, secretKey, accountIndex) {
     }
   }
 
-  // Tier 3: localStorage (Browser only)
+  // Tier 4: localStorage (Browser only)
   if (IS_BROWSER) {
     const storageCreds = loadCredentialsFromStorage();
     if (storageCreds) {
@@ -359,17 +379,14 @@ function resolveCredentials(publicKey, secretKey, accountIndex) {
     }
   }
 
-  // Tier 4 & 5: File-based credentials (Node.js only)
+  // Tier 5 & 6: File-based credentials with default index (Node.js only)
   if (IS_NODE && fs && path) {
-    // Determine account index
-    if (accountIndex === undefined) {
-      accountIndex = parseInt(process.env.UNSANDBOX_ACCOUNT || '0', 10);
-    }
+    const defaultIndex = parseInt(process.env.UNSANDBOX_ACCOUNT || '0', 10);
 
-    // Tier 4: ~/.unsandbox/accounts.csv
+    // Tier 5: ~/.unsandbox/accounts.csv
     try {
       const unsandboxDir = getUnsandboxDir();
-      const creds = loadCredentialsFromCsv(path.join(unsandboxDir, 'accounts.csv'), accountIndex);
+      const creds = loadCredentialsFromCsv(path.join(unsandboxDir, 'accounts.csv'), defaultIndex);
       if (creds) {
         return creds;
       }
@@ -377,8 +394,8 @@ function resolveCredentials(publicKey, secretKey, accountIndex) {
       // Continue to next tier
     }
 
-    // Tier 5: ./accounts.csv
-    const creds = loadCredentialsFromCsv('accounts.csv', accountIndex);
+    // Tier 6: ./accounts.csv
+    const creds = loadCredentialsFromCsv('accounts.csv', defaultIndex);
     if (creds) {
       return creds;
     }
@@ -2193,6 +2210,7 @@ function parseArgs(args) {
     output: null,
     publicKey: null,
     secretKey: null,
+    accountIndex: undefined,
     network: 'zerotrust',
     vcpu: 1,
     yes: false,
@@ -2321,6 +2339,9 @@ function parseArgs(args) {
       i++;
     } else if (arg === '-k' || arg === '--secret-key') {
       result.secretKey = args[++i];
+      i++;
+    } else if (arg === '--account') {
+      result.accountIndex = parseInt(args[++i], 10);
       i++;
     } else if (arg === '-n' || arg === '--network') {
       result.network = args[++i];
@@ -2509,8 +2530,7 @@ function formatTable(items, columns) {
  * Handle session commands.
  */
 async function handleSession(opts) {
-  const pk = opts.publicKey;
-  const sk = opts.secretKey;
+  let [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
 
   // List sessions
   if (opts.list) {
@@ -2593,8 +2613,7 @@ async function handleSession(opts) {
  * Handle service commands.
  */
 async function handleService(opts) {
-  const pk = opts.publicKey;
-  const sk = opts.secretKey;
+  let [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
 
   // Handle env subcommand
   if (opts.subcommand === 'env') {
@@ -2829,8 +2848,7 @@ async function handleService(opts) {
  * Handle snapshot commands.
  */
 async function handleSnapshot(opts) {
-  const pk = opts.publicKey;
-  const sk = opts.secretKey;
+  let [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
 
   // List snapshots
   if (opts.list) {
@@ -2898,8 +2916,7 @@ async function handleSnapshot(opts) {
  * Handle image command.
  */
 async function handleImage(opts) {
-  const pk = opts.publicKey;
-  const sk = opts.secretKey;
+  let [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
 
   // List images
   if (opts.list) {
@@ -3002,13 +3019,13 @@ async function handleImage(opts) {
  * Handle key command.
  */
 async function handleKey(opts) {
+  const [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
   try {
-    const result = await validateKeys(opts.publicKey, opts.secretKey);
+    const result = await validateKeys(pk, sk);
     console.log('API Key Status:');
     console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     // If validate endpoint doesn't exist, just show that credentials were resolved
-    const [pk] = resolveCredentials(opts.publicKey, opts.secretKey);
     console.log(`Public Key: ${pk}`);
     console.log('Key validation endpoint returned error - key may still be valid.');
   }
@@ -3018,7 +3035,8 @@ async function handleKey(opts) {
  * Handle languages command.
  */
 async function handleLanguages(opts) {
-  const languages = await getLanguages(opts.publicKey, opts.secretKey);
+  const [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
+  const languages = await getLanguages(pk, sk);
 
   if (opts.json) {
     // Output as JSON array
@@ -3035,8 +3053,7 @@ async function handleLanguages(opts) {
  * Handle execute command (default).
  */
 async function handleExecute(opts) {
-  const pk = opts.publicKey;
-  const sk = opts.secretKey;
+  let [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
 
   let code;
   let language;

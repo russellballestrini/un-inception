@@ -396,7 +396,14 @@ static UnsandboxCredentials* get_credentials(const char *cli_pk, const char *cli
         return creds;
     }
 
-    // Priority 2: Environment variables (keys)
+    // Priority 2: --account N flag → explicit CSV lookup
+    // When the user explicitly selects an account, go straight to accounts.csv.
+    // Env vars are intentionally bypassed — an explicit flag must win over ambient env.
+    if (account_index >= 0) {
+        return load_credentials_from_csv(account_index);
+    }
+
+    // Priority 3: Environment variables (keys)
     const char *env_pk = getenv("UNSANDBOX_PUBLIC_KEY");
     const char *env_sk = getenv("UNSANDBOX_SECRET_KEY");
 
@@ -416,16 +423,12 @@ static UnsandboxCredentials* get_credentials(const char *cli_pk, const char *cli
         return creds;
     }
 
-    // Priority 3: Config file (~/.unsandbox/accounts.csv)
-    // Use account_index from --account flag, or UNSANDBOX_ACCOUNT env var, or default to 0
-    int csv_index = account_index;
-    if (csv_index < 0) {
-        const char *env_account = getenv("UNSANDBOX_ACCOUNT");
-        if (env_account && strlen(env_account) > 0) {
-            csv_index = atoi(env_account);
-        } else {
-            csv_index = 0;
-        }
+    // Priority 4: Config file (~/.unsandbox/accounts.csv)
+    // Use UNSANDBOX_ACCOUNT env var, or default to account 0
+    int csv_index = 0;
+    const char *env_account = getenv("UNSANDBOX_ACCOUNT");
+    if (env_account && strlen(env_account) > 0) {
+        csv_index = atoi(env_account);
     }
     return load_credentials_from_csv(csv_index);
 }

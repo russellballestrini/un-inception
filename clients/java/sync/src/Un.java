@@ -25,11 +25,12 @@
  *     // Snapshot operations
  *     String snapshotId = Un.sessionSnapshot(sessionId, publicKey, secretKey, "my-snapshot", false);
  *
- * Authentication Priority (4-tier):
+ * Authentication Priority (5-tier):
  *     1. Method arguments (publicKey, secretKey)
- *     2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
- *     3. Config file (~/.unsandbox/accounts.csv, line 0 by default)
- *     4. Local directory (./accounts.csv, line 0 by default)
+ *     2. --account N flag / accountIndex >= 0 (load row N from accounts.csv)
+ *     3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+ *     4. Config file (~/.unsandbox/accounts.csv, line 0 by default)
+ *     5. Local directory (./accounts.csv, line 0 by default)
  *
  * Request Authentication (HMAC-SHA256):
  *     Authorization: Bearer <public_key>
@@ -175,38 +176,58 @@ public class Un {
     }
 
     private static String[] resolveCredentials(String publicKey, String secretKey) {
+        return resolveCredentials(publicKey, secretKey, -1);
+    }
+
+    private static String[] resolveCredentials(String publicKey, String secretKey, int accountIndex) {
         // Tier 1: Method arguments
         if (publicKey != null && !publicKey.isEmpty() && secretKey != null && !secretKey.isEmpty()) {
             return new String[]{publicKey, secretKey};
         }
 
-        // Tier 2: Environment variables
+        // Tier 2: Explicit account index (e.g. --account N from CLI)
+        if (accountIndex >= 0) {
+            Path unsandboxDir = getUnsandboxDir();
+            String[] creds = loadCredentialsFromCsv(unsandboxDir.resolve("accounts.csv"), accountIndex);
+            if (creds != null) {
+                return creds;
+            }
+            creds = loadCredentialsFromCsv(Paths.get("accounts.csv"), accountIndex);
+            if (creds != null) {
+                return creds;
+            }
+            throw new CredentialsException(
+                "No credentials found at account index " + accountIndex + " in accounts.csv"
+            );
+        }
+
+        // Tier 3: Environment variables
         String envPk = System.getenv("UNSANDBOX_PUBLIC_KEY");
         String envSk = System.getenv("UNSANDBOX_SECRET_KEY");
         if (envPk != null && !envPk.isEmpty() && envSk != null && !envSk.isEmpty()) {
             return new String[]{envPk, envSk};
         }
 
-        // Determine account index
-        int accountIndex = 0;
+        // Determine account index from env (default 0)
+        int csvIndex = 0;
         String accountEnv = System.getenv("UNSANDBOX_ACCOUNT");
         if (accountEnv != null && !accountEnv.isEmpty()) {
             try {
-                accountIndex = Integer.parseInt(accountEnv);
+                csvIndex = Integer.parseInt(accountEnv);
             } catch (NumberFormatException e) {
                 // Use default
             }
         }
 
-        // Tier 3: ~/.unsandbox/accounts.csv
+        // Tier 4: ~/.unsandbox/accounts.csv
         Path unsandboxDir = getUnsandboxDir();
-        String[] creds = loadCredentialsFromCsv(unsandboxDir.resolve("accounts.csv"), accountIndex);
+        String[] creds = loadCredentialsFromCsv(unsandboxDir.resolve("accounts.csv"), csvIndex);
         if (creds != null) {
             return creds;
         }
 
-        // Tier 4: ./accounts.csv
-        creds = loadCredentialsFromCsv(Paths.get("accounts.csv"), accountIndex);
+        // Tier 5: ./accounts.csv
+        creds = loadCredentialsFromCsv(Paths.get("accounts.csv"), csvIndex);
         if (creds != null) {
             return creds;
         }
@@ -214,9 +235,10 @@ public class Un {
         throw new CredentialsException(
             "No credentials found. Please provide via:\n" +
             "  1. Method arguments (publicKey, secretKey)\n" +
-            "  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n" +
-            "  3. ~/.unsandbox/accounts.csv\n" +
-            "  4. ./accounts.csv"
+            "  2. --account N flag (load row N from accounts.csv)\n" +
+            "  3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n" +
+            "  4. ~/.unsandbox/accounts.csv\n" +
+            "  5. ./accounts.csv"
         );
     }
 
@@ -2860,6 +2882,7 @@ public class Un {
         String language = null;
         String networkMode = "zerotrust";
         int vcpu = 1;
+        int accountIndex = -1;
         List<String> envVars = new ArrayList<>();
         List<String> files = new ArrayList<>();
         List<String> positionalArgs = new ArrayList<>();
@@ -2870,6 +2893,18 @@ public class Un {
             String arg = args[i];
             if (arg.equals("-h") || arg.equals("--help")) {
                 showHelp = true;
+                i++;
+            } else if (arg.equals("--account")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: --account requires an argument");
+                    System.exit(2);
+                }
+                try {
+                    accountIndex = Integer.parseInt(args[++i]);
+                } catch (NumberFormatException e) {
+                    System.err.println("Error: --account requires an integer argument");
+                    System.exit(2);
+                }
                 i++;
             } else if (arg.equals("-s") || arg.equals("--shell")) {
                 if (i + 1 >= args.length) {
@@ -2936,6 +2971,14 @@ public class Un {
 
         String command = positionalArgs.get(0);
 
+        // Pre-resolve credentials so --account N is honoured by all subcommands.
+        // Only resolve if explicit keys were not supplied via -p/-k flags.
+        if (publicKey == null || publicKey.isEmpty() || secretKey == null || secretKey.isEmpty()) {
+            String[] creds = resolveCredentials(publicKey, secretKey, accountIndex);
+            publicKey = creds[0];
+            secretKey = creds[1];
+        }
+
         // Route to subcommand handlers
         switch (command) {
             case "session":
@@ -2982,6 +3025,7 @@ public class Un {
         System.out.println("  -f, --file FILE       Add input file to /tmp/");
         System.out.println("  -p, --public-key KEY  API public key");
         System.out.println("  -k, --secret-key KEY  API secret key");
+        System.out.println("  --account N           Use row N from accounts.csv (overrides env vars)");
         System.out.println("  -n, --network MODE    Network: zerotrust or semitrusted");
         System.out.println("  -v, --vcpu N          vCPU count (1-8)");
         System.out.println("  -h, --help            Show help");

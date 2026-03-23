@@ -6,7 +6,7 @@
 //     use un::{Credentials, execute_code, resolve_credentials};
 //
 //     // Resolve credentials (4-tier priority)
-//     let creds = resolve_credentials(None, None)?;
+//     let creds = resolve_credentials(None, None, None)?;
 //
 //     // Execute code synchronously
 //     let result = execute_code("python", r#"print("hello")"#, &creds)?;
@@ -702,13 +702,15 @@ fn load_credentials_from_csv(path: &PathBuf, account_index: usize) -> Option<Cre
 ///
 /// # Priority
 /// 1. Function arguments (if both provided)
-/// 2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-/// 3. ~/.unsandbox/accounts.csv
-/// 4. ./accounts.csv
+/// 2. account_index Some(n) → load from accounts.csv row n (before env vars)
+/// 3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+/// 4. ~/.unsandbox/accounts.csv (default row via UNSANDBOX_ACCOUNT or 0)
+/// 5. ./accounts.csv (default row via UNSANDBOX_ACCOUNT or 0)
 ///
 /// # Arguments
 /// * `public_key` - Optional public key from function argument
 /// * `secret_key` - Optional secret key from function argument
+/// * `account_index` - Optional explicit account row (0-based) to select from CSV
 ///
 /// # Returns
 /// Credentials if found, UnsandboxError::NoCredentials otherwise
@@ -716,17 +718,22 @@ fn load_credentials_from_csv(path: &PathBuf, account_index: usize) -> Option<Cre
 /// # Examples
 /// ```ignore
 /// // Use environment variables or config file
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // Use explicit credentials
 /// let creds = resolve_credentials(
 ///     Some("unsb-pk-xxxx"),
-///     Some("unsb-sk-xxxx")
+///     Some("unsb-sk-xxxx"),
+///     None,
 /// )?;
+///
+/// // Select account row 1 from CSV (overrides env vars)
+/// let creds = resolve_credentials(None, None, Some(1))?;
 /// ```
 pub fn resolve_credentials(
     public_key: Option<&str>,
     secret_key: Option<&str>,
+    account_index: Option<usize>,
 ) -> Result<Credentials> {
     // Tier 1: Function arguments
     if let (Some(pk), Some(sk)) = (public_key, secret_key) {
@@ -735,7 +742,21 @@ pub fn resolve_credentials(
         }
     }
 
-    // Tier 2: Environment variables
+    // Tier 2: Explicit account index → load from CSV before consulting env vars
+    if let Some(idx) = account_index {
+        if let Some(dir) = get_unsandbox_dir() {
+            let csv_path = dir.join("accounts.csv");
+            if let Some(creds) = load_credentials_from_csv(&csv_path, idx) {
+                return Ok(creds);
+            }
+        }
+        let local_csv = PathBuf::from("accounts.csv");
+        if let Some(creds) = load_credentials_from_csv(&local_csv, idx) {
+            return Ok(creds);
+        }
+    }
+
+    // Tier 3: Environment variables
     let env_pk = env::var("UNSANDBOX_PUBLIC_KEY").ok();
     let env_sk = env::var("UNSANDBOX_SECRET_KEY").ok();
     if let (Some(pk), Some(sk)) = (env_pk, env_sk) {
@@ -744,23 +765,23 @@ pub fn resolve_credentials(
         }
     }
 
-    // Determine account index
-    let account_index: usize = env::var("UNSANDBOX_ACCOUNT")
+    // Determine default account index from env
+    let default_index: usize = env::var("UNSANDBOX_ACCOUNT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    // Tier 3: ~/.unsandbox/accounts.csv
+    // Tier 4: ~/.unsandbox/accounts.csv
     if let Some(dir) = get_unsandbox_dir() {
         let csv_path = dir.join("accounts.csv");
-        if let Some(creds) = load_credentials_from_csv(&csv_path, account_index) {
+        if let Some(creds) = load_credentials_from_csv(&csv_path, default_index) {
             return Ok(creds);
         }
     }
 
-    // Tier 4: ./accounts.csv
+    // Tier 5: ./accounts.csv
     let local_csv = PathBuf::from("accounts.csv");
-    if let Some(creds) = load_credentials_from_csv(&local_csv, account_index) {
+    if let Some(creds) = load_credentials_from_csv(&local_csv, default_index) {
         return Ok(creds);
     }
 
@@ -1065,7 +1086,7 @@ fn save_languages_cache(languages: &[String]) {
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let result = execute_code("python", r#"print("Hello, World!")"#, &creds)?;
 /// println!("Output: {}", result.output);
 /// println!("Exit code: {}", result.exit_code);
@@ -1422,7 +1443,7 @@ pub fn clone_snapshot(snapshot_id: &str, name: &str, creds: &Credentials) -> Res
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let image = image_publish("service", "svc-abc123", "my-app-image", Some("Production app v1.0"), &creds)?;
 /// println!("Published image: {}", image.image_id);
 /// ```
@@ -1461,7 +1482,7 @@ pub fn image_publish(
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // List owned images (default)
 /// let my_images = list_images(None, &creds)?;
@@ -1550,7 +1571,7 @@ pub fn unlock_image(image_id: &str, creds: &Credentials) -> Result<LxdImage> {
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // Make image public
 /// set_image_visibility("img-abc123", "public", &creds)?;
@@ -1665,7 +1686,7 @@ pub fn transfer_image(image_id: &str, to_api_key: &str, creds: &Credentials) -> 
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // Spawn with default options
 /// let result = spawn_from_image("img-abc123", "my-service", None, None, None, &creds)?;
@@ -1745,7 +1766,7 @@ pub fn clone_image(
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let sessions = list_sessions(&creds)?;
 /// for session in sessions {
 ///     println!("{}: {} ({})", session.session_id, session.container_name, session.status);
@@ -1781,7 +1802,7 @@ pub fn get_session(session_id: &str, creds: &Credentials) -> Result<Session> {
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // Create a basic bash session
 /// let session = create_session("bash", &creds, None)?;
@@ -1907,7 +1928,7 @@ pub fn unboost_session(session_id: &str, creds: &Credentials) -> Result<Session>
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let result = shell_session("session-123", "ls -la", &creds)?;
 /// println!("Output: {}", result.output);
 /// println!("Exit code: {}", result.exit_code);
@@ -1934,7 +1955,7 @@ pub fn shell_session(session_id: &str, command: &str, creds: &Credentials) -> Re
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let services = list_services(&creds)?;
 /// for service in services {
 ///     println!("{}: {} ({}) - {}", service.service_id, service.name, service.status, service.url);
@@ -1959,7 +1980,7 @@ pub fn list_services(creds: &Credentials) -> Result<Vec<Service>> {
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // Create a simple web service
 /// let service = create_service(
@@ -2317,7 +2338,7 @@ pub fn redeploy_service(
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let service = resize_service("service-123", 4, &creds)?;
 /// println!("Service now has {} vCPUs", service.vcpu);
 /// ```
@@ -2341,7 +2362,7 @@ pub fn resize_service(service_id: &str, vcpu: u32, creds: &Credentials) -> Resul
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let result = execute_in_service("service-123", "ls -la /app", &creds)?;
 /// println!("Output: {}", result.output);
 /// ```
@@ -2372,7 +2393,7 @@ pub fn execute_in_service(
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let result = validate_keys(&creds)?;
 /// if result.valid {
 ///     println!("Keys valid for account: {}", result.account_id);
@@ -2432,7 +2453,7 @@ pub fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 /// let result = image("A sunset over mountains", &creds, None)?;
 /// for img in result.images {
 ///     println!("Image: {}", img);
@@ -2502,7 +2523,7 @@ pub struct LogsEntry {
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// // Fetch last 100 lines from all sources
 /// let opts = LogsFetchOptions {
@@ -2568,7 +2589,7 @@ pub type LogCallback = fn(source: &str, line: &str);
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None)?;
+/// let creds = resolve_credentials(None, None, None)?;
 ///
 /// fn handle_log(source: &str, line: &str) {
 ///     println!("[{}] {}", source, line);
@@ -2766,6 +2787,7 @@ struct CliOptions {
     output_dir: Option<String>,    // -o, --output
     public_key: Option<String>,    // -p, --public-key
     secret_key: Option<String>,    // -k, --secret-key
+    account_index: Option<usize>,  // --account N
     network: Option<String>,       // -n, --network
     vcpu: Option<u32>,             // -v, --vcpu
     yes: bool,                     // -y, --yes
@@ -2867,6 +2889,7 @@ GLOBAL OPTIONS:
     -o, --output DIR       Output directory for artifacts
     -p, --public-key KEY   API public key
     -k, --secret-key KEY   API secret key
+    --account N            Select account row N from accounts.csv (overrides env vars)
     -n, --network MODE     Network mode: zerotrust or semitrusted
     -v, --vcpu N           vCPU count (1-8)
     -y, --yes              Skip confirmation prompts
@@ -3009,6 +3032,14 @@ fn parse_args(args: &[String]) -> CliOptions {
             "-k" | "--secret-key" => {
                 if i + 1 < args.len() {
                     opts.secret_key = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--account" => {
+                if i + 1 < args.len() {
+                    opts.account_index = args[i + 1].parse().ok();
                     i += 2;
                 } else {
                     i += 1;
@@ -3358,6 +3389,7 @@ fn get_credentials(opts: &CliOptions) -> Result<Credentials> {
     resolve_credentials(
         opts.public_key.as_deref(),
         opts.secret_key.as_deref(),
+        opts.account_index,
     )
 }
 

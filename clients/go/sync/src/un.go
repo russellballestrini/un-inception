@@ -161,10 +161,12 @@ func loadCredentialsFromCsv(csvPath string, accountIndex int) *Credentials {
 //
 // Priority:
 //   1. Function arguments (publicKey, secretKey non-empty)
-//   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-//   3. ~/.unsandbox/accounts.csv
-//   4. ./accounts.csv
-func ResolveCredentials(publicKey, secretKey string) (*Credentials, error) {
+//   2. accountIndex >= 0 → load from accounts.csv row N (before env vars)
+//   3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+//   4. Default CSV lookup (account 0 or UNSANDBOX_ACCOUNT env)
+//
+// Pass accountIndex = -1 to mean "not specified".
+func ResolveCredentials(publicKey, secretKey string, accountIndex int) (*Credentials, error) {
 	// Tier 1: Function arguments
 	if publicKey != "" && secretKey != "" {
 		return &Credentials{
@@ -173,7 +175,23 @@ func ResolveCredentials(publicKey, secretKey string) (*Credentials, error) {
 		}, nil
 	}
 
-	// Tier 2: Environment variables
+	// Tier 2: Explicit account index → load from CSV before checking env vars
+	if accountIndex >= 0 {
+		unsandboxDir, err := getUnsandboxDir()
+		if err == nil {
+			if creds := loadCredentialsFromCsv(filepath.Join(unsandboxDir, "accounts.csv"), accountIndex); creds != nil {
+				return creds, nil
+			}
+		}
+		if creds := loadCredentialsFromCsv("accounts.csv", accountIndex); creds != nil {
+			return creds, nil
+		}
+		return nil, &CredentialsError{
+			Message: fmt.Sprintf("No credentials found at account index %d in accounts.csv", accountIndex),
+		}
+	}
+
+	// Tier 3: Environment variables
 	envPk := os.Getenv("UNSANDBOX_PUBLIC_KEY")
 	envSk := os.Getenv("UNSANDBOX_SECRET_KEY")
 	if envPk != "" && envSk != "" {
@@ -183,35 +201,36 @@ func ResolveCredentials(publicKey, secretKey string) (*Credentials, error) {
 		}, nil
 	}
 
-	// Determine account index
-	accountIndex := 0
+	// Determine default account index from env
+	defaultIndex := 0
 	if envAccount := os.Getenv("UNSANDBOX_ACCOUNT"); envAccount != "" {
 		var err error
-		accountIndex, err = strconv.Atoi(envAccount)
+		defaultIndex, err = strconv.Atoi(envAccount)
 		if err != nil {
-			accountIndex = 0
+			defaultIndex = 0
 		}
 	}
 
-	// Tier 3: ~/.unsandbox/accounts.csv
+	// Tier 4: ~/.unsandbox/accounts.csv
 	unsandboxDir, err := getUnsandboxDir()
 	if err == nil {
-		if creds := loadCredentialsFromCsv(filepath.Join(unsandboxDir, "accounts.csv"), accountIndex); creds != nil {
+		if creds := loadCredentialsFromCsv(filepath.Join(unsandboxDir, "accounts.csv"), defaultIndex); creds != nil {
 			return creds, nil
 		}
 	}
 
-	// Tier 4: ./accounts.csv
-	if creds := loadCredentialsFromCsv("accounts.csv", accountIndex); creds != nil {
+	// Tier 5: ./accounts.csv
+	if creds := loadCredentialsFromCsv("accounts.csv", defaultIndex); creds != nil {
 		return creds, nil
 	}
 
 	return nil, &CredentialsError{
 		Message: "No credentials found. Please provide via:\n" +
 			"  1. Function arguments (publicKey, secretKey)\n" +
-			"  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n" +
-			"  3. ~/.unsandbox/accounts.csv\n" +
-			"  4. ./accounts.csv",
+			"  2. --account N flag (CSV row N)\n" +
+			"  3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n" +
+			"  4. ~/.unsandbox/accounts.csv\n" +
+			"  5. ./accounts.csv",
 	}
 }
 
@@ -1647,18 +1666,19 @@ const (
 // CLIOptions holds parsed CLI arguments
 type CLIOptions struct {
 	// Global options
-	Shell      string
-	Env        []string
-	Files      []string
-	FilePaths  []string
-	Artifacts  bool
-	OutputDir  string
-	PublicKey  string
-	SecretKey  string
-	Network    string
-	VCPU       int
-	Yes        bool
-	Help       bool
+	Shell        string
+	Env          []string
+	Files        []string
+	FilePaths    []string
+	Artifacts    bool
+	OutputDir    string
+	PublicKey    string
+	SecretKey    string
+	Network      string
+	VCPU         int
+	Yes          bool
+	Help         bool
+	AccountIndex int // -1 means not specified
 
 	// Command
 	Command    string
@@ -3153,7 +3173,7 @@ func runLanguages(creds *Credentials, args []string) int {
 
 // parseGlobalFlags parses global CLI options
 func parseGlobalFlags(args []string) (*CLIOptions, []string) {
-	opts := &CLIOptions{}
+	opts := &CLIOptions{AccountIndex: -1}
 	remaining := []string{}
 
 	for i := 0; i < len(args); i++ {
@@ -3194,6 +3214,13 @@ func parseGlobalFlags(args []string) (*CLIOptions, []string) {
 		case arg == "-k" || arg == "--secret-key":
 			if i+1 < len(args) {
 				opts.SecretKey = args[i+1]
+				i++
+			}
+		case arg == "--account":
+			if i+1 < len(args) {
+				if v, err := strconv.Atoi(args[i+1]); err == nil {
+					opts.AccountIndex = v
+				}
 				i++
 			}
 		case arg == "-n" || arg == "--network":
@@ -3249,7 +3276,7 @@ func CliMain() {
 	}
 
 	// Resolve credentials
-	creds, err := ResolveCredentials(opts.PublicKey, opts.SecretKey)
+	creds, err := ResolveCredentials(opts.PublicKey, opts.SecretKey, opts.AccountIndex)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(ExitAuthError)

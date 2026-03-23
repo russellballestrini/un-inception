@@ -95,42 +95,52 @@ def _resolve_credentials(
     Resolve credentials from 4-tier priority system.
 
     Priority:
-        1. Function arguments
-        2. Environment variables
-        3. ~/.unsandbox/accounts.csv
-        4. ./accounts.csv
+        1. Function arguments (public_key, secret_key)
+        2. Explicit account_index (>= 0) -> load from accounts.csv
+        3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+        4. Default CSV lookup (account 0 or UNSANDBOX_ACCOUNT env)
     """
     # Tier 1: Function arguments
     if public_key and secret_key:
         return (public_key, secret_key)
 
-    # Tier 2: Environment variables
+    # Tier 2: Explicit account_index overrides env vars
+    if account_index is not None and account_index >= 0:
+        unsandbox_dir = _get_unsandbox_dir()
+        creds = _load_credentials_from_csv(unsandbox_dir / "accounts.csv", account_index)
+        if creds:
+            return creds
+        creds = _load_credentials_from_csv(Path("accounts.csv"), account_index)
+        if creds:
+            return creds
+        raise CredentialsError(
+            f"No credentials found for account index {account_index} in accounts.csv"
+        )
+
+    # Tier 3: Environment variables
     env_pk = os.environ.get("UNSANDBOX_PUBLIC_KEY")
     env_sk = os.environ.get("UNSANDBOX_SECRET_KEY")
     if env_pk and env_sk:
         return (env_pk, env_sk)
 
-    # Determine account index
-    if account_index is None:
-        account_index = int(os.environ.get("UNSANDBOX_ACCOUNT", "0"))
-
-    # Tier 3: ~/.unsandbox/accounts.csv
+    # Tier 4: Default CSV lookup (UNSANDBOX_ACCOUNT env or index 0)
+    default_index = int(os.environ.get("UNSANDBOX_ACCOUNT", "0"))
     unsandbox_dir = _get_unsandbox_dir()
-    creds = _load_credentials_from_csv(unsandbox_dir / "accounts.csv", account_index)
+    creds = _load_credentials_from_csv(unsandbox_dir / "accounts.csv", default_index)
     if creds:
         return creds
 
-    # Tier 4: ./accounts.csv
-    creds = _load_credentials_from_csv(Path("accounts.csv"), account_index)
+    creds = _load_credentials_from_csv(Path("accounts.csv"), default_index)
     if creds:
         return creds
 
     raise CredentialsError(
         "No credentials found. Please provide via:\n"
         "  1. Function arguments (public_key, secret_key)\n"
-        "  2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n"
-        "  3. ~/.unsandbox/accounts.csv\n"
-        "  4. ./accounts.csv"
+        "  2. --account N (select row from accounts.csv)\n"
+        "  3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)\n"
+        "  4. ~/.unsandbox/accounts.csv\n"
+        "  5. ./accounts.csv"
     )
 
 
@@ -2584,6 +2594,8 @@ Examples:
                         metavar="N", help="vCPU count (1-8, default: 1)")
     parser.add_argument("-y", "--yes", action="store_true",
                         help="Skip confirmation prompts")
+    parser.add_argument("--account", type=int, metavar="N",
+                        help="Select account row N from accounts.csv (overrides env vars)")
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -2765,7 +2777,7 @@ def cli_main():
     # Resolve credentials
     try:
         public_key, secret_key = _resolve_credentials(
-            args.public_key, args.secret_key
+            args.public_key, args.secret_key, args.account
         )
     except CredentialsError as e:
         print(f"Error: {e}", file=sys.stderr)

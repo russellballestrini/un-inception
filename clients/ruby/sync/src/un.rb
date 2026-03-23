@@ -36,9 +36,10 @@
 #
 # Authentication Priority (4-tier):
 #     1. Method arguments (public_key:, secret_key:)
-#     2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-#     3. Config file (~/.unsandbox/accounts.csv, line 0 by default)
-#     4. Local directory (./accounts.csv, line 0 by default)
+#     2. --account N flag (accounts.csv row N, overrides env vars)
+#     3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+#     4. Config file (~/.unsandbox/accounts.csv, line 0 by default)
+#     5. Local directory (./accounts.csv, line 0 by default)
 #
 # Request Authentication (HMAC-SHA256):
 #     Authorization: Bearer <public_key>
@@ -1415,7 +1416,11 @@ module Un
 
     class << self
       attr_accessor :last_error_value
+      # CLI-set account index (-1 means not specified). When >= 0, takes
+      # priority over env vars in resolve_credentials.
+      attr_accessor :cli_account_index
     end
+    @cli_account_index = -1
 
     # Get the SDK version string
     #
@@ -1562,41 +1567,53 @@ module Un
     #
     # Priority:
     #   1. Method arguments
-    #   2. Environment variables
-    #   3. ~/.unsandbox/accounts.csv
-    #   4. ./accounts.csv
+    #   2. account_index >= 0 (explicit --account N flag) → CSV row N
+    #   3. Environment variables
+    #   4. Default CSV lookup (account 0 or UNSANDBOX_ACCOUNT env)
     #
     # @param public_key [String, nil] Explicit public key
     # @param secret_key [String, nil] Explicit secret key
-    # @param account_index [Integer, nil] Account index for CSV files
+    # @param account_index [Integer, nil] Account index for CSV files (-1 means not specified)
     # @return [Array<String>] [public_key, secret_key]
     # @raise [CredentialsError] If no credentials found
     def resolve_credentials(public_key = nil, secret_key = nil, account_index = nil)
       # Tier 1: Method arguments
       return [public_key, secret_key] if public_key && secret_key
 
-      # Tier 2: Environment variables
+      # Resolve effective account_index: parameter takes precedence, then CLI-set value
+      effective_index = account_index
+      effective_index = Un.cli_account_index if effective_index.nil?
+
+      # Tier 2: Explicit account_index (--account N) → load from CSV row N before env vars
+      if effective_index && effective_index >= 0
+        creds = load_credentials_from_csv(File.join(unsandbox_dir, 'accounts.csv'), effective_index)
+        return creds if creds
+
+        creds = load_credentials_from_csv('accounts.csv', effective_index)
+        return creds if creds
+      end
+
+      # Tier 3: Environment variables
       env_pk = ENV['UNSANDBOX_PUBLIC_KEY']
       env_sk = ENV['UNSANDBOX_SECRET_KEY']
       return [env_pk, env_sk] if env_pk && env_sk
 
-      # Determine account index
-      account_index ||= ENV.fetch('UNSANDBOX_ACCOUNT', '0').to_i
+      # Tier 4: Default CSV lookup (UNSANDBOX_ACCOUNT env or row 0)
+      default_index = ENV.fetch('UNSANDBOX_ACCOUNT', '0').to_i
 
-      # Tier 3: ~/.unsandbox/accounts.csv
-      creds = load_credentials_from_csv(File.join(unsandbox_dir, 'accounts.csv'), account_index)
+      creds = load_credentials_from_csv(File.join(unsandbox_dir, 'accounts.csv'), default_index)
       return creds if creds
 
-      # Tier 4: ./accounts.csv
-      creds = load_credentials_from_csv('accounts.csv', account_index)
+      creds = load_credentials_from_csv('accounts.csv', default_index)
       return creds if creds
 
       raise CredentialsError, <<~MSG
         No credentials found. Please provide via:
           1. Method arguments (public_key:, secret_key:)
-          2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-          3. ~/.unsandbox/accounts.csv
-          4. ./accounts.csv
+          2. --account N flag (CSV row N)
+          3. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+          4. ~/.unsandbox/accounts.csv
+          5. ./accounts.csv
       MSG
     end
 
@@ -1913,12 +1930,26 @@ module Un
         file_paths: [],
         public_key: nil,
         secret_key: nil,
+        account_index: -1,
         network: 'zerotrust',
         vcpu: 1,
         yes: false,
         artifacts: false,
         output: nil
       }
+
+      # Pre-scan for --account N before subcommand dispatch so it works in any position.
+      # The flag will also be consumed by parse_global_options inside each sub-handler.
+      ARGV.each_with_index do |arg, i|
+        if arg == '--account' && ARGV[i + 1] =~ /\A-?\d+\z/
+          options[:account_index] = ARGV[i + 1].to_i
+          break
+        elsif arg =~ /\A--account=(-?\d+)\z/
+          options[:account_index] = Regexp.last_match(1).to_i
+          break
+        end
+      end
+      Un.cli_account_index = options[:account_index]
 
       # Check for subcommands first
       if ARGV.empty?
@@ -1990,6 +2021,7 @@ module Un
           -o, --output DIR       Output directory for artifacts
           -p, --public-key KEY   API public key
           -k, --secret-key KEY   API secret key
+              --account N        Use accounts.csv row N (overrides env vars)
           -n, --network MODE     Network mode: zerotrust or semitrusted
           -v, --vcpu N           vCPU count (1-8)
           -y, --yes              Skip confirmation prompts
@@ -2030,6 +2062,9 @@ module Un
         end
         opts.on('-k', '--secret-key KEY', 'API secret key') do |v|
           options[:secret_key] = v
+        end
+        opts.on('--account N', Integer, 'Use credentials from accounts.csv row N') do |v|
+          options[:account_index] = v
         end
         opts.on('-n', '--network MODE', 'Network mode') do |v|
           options[:network] = v

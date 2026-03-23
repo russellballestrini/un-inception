@@ -20,7 +20,7 @@ func NewClient(publicKey, secretKey string) *Client {
 
 // NewClientFromEnv resolves credentials from the 4-tier priority system.
 func NewClientFromEnv() (*Client, error) {
-	creds, err := ResolveCredentials("", "")
+	creds, err := ResolveCredentials("", "", -1)
 	if err != nil {
 		return nil, err
 	}

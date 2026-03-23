@@ -108,6 +108,14 @@ test: build $(TEST_DIR)/test_library
 
 test-library: test
 
+test-integration: build
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "INTEGRATION: Testing --account flag priority"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo ""
+	@bash $(TEST_DIR)/test_account_flag.sh
+
 test-functional: build $(TEST_DIR)/test_functional
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
