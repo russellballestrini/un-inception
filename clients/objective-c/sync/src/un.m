@@ -50,8 +50,10 @@
 //
 // Authentication (in priority order):
 //   1. UNClient initWithPublicKey:secretKey: constructor arguments
-//   2. Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY
-//   3. Config file: ~/.unsandbox/accounts.csv (public_key,secret_key per line)
+//   2. --account N flag -> accounts.csv row N (bypasses env vars)
+//   3. Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY
+//   4. Config file: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT)
+//   5. ./accounts.csv row 0
 
 #!/usr/bin/env -S clang -x objective-c -framework Foundation -o /tmp/un_objc && /tmp/un_objc
 
@@ -207,9 +209,54 @@ NSString* UNComputeSignature(NSString* secretKey, long timestamp, NSString* meth
 // Credentials Loading
 // ============================================================================
 
+// Global account index: -1 means not set (use env vars / default CSV row).
+// Set by main() when --account N is parsed.
+static NSInteger g_accountIndex = -1;
+
+/**
+ * Load public_key,secret_key from a CSV file at the given row index (0-based,
+ * skipping blank lines and comment lines starting with '#').
+ *
+ * @param csvPath  Path to the CSV file
+ * @param rowIndex Zero-based data row to read
+ * @param outPk    Output: public key string (nil if not found)
+ * @param outSk    Output: secret key string (nil if not found)
+ */
+void UNLoadCredentialsFromCSV(NSString* csvPath, NSInteger rowIndex, NSString** outPk, NSString** outSk) {
+    *outPk = nil;
+    *outSk = nil;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:csvPath]) return;
+
+    NSString* content = [NSString stringWithContentsOfFile:csvPath encoding:NSUTF8StringEncoding error:nil];
+    if (!content) return;
+
+    NSArray* lines = [content componentsSeparatedByString:@"\n"];
+    NSInteger dataIndex = 0;
+    for (NSString* line in lines) {
+        NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trimmed length] == 0 || [trimmed hasPrefix:@"#"]) continue;
+        if (dataIndex == rowIndex) {
+            NSArray* parts = [trimmed componentsSeparatedByString:@","];
+            if ([parts count] >= 2) {
+                *outPk = [parts[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                *outSk = [parts[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            }
+            return;
+        }
+        dataIndex++;
+    }
+}
+
 /**
  * Get API credentials from environment or config file.
- * Priority: 1. Arguments, 2. Environment vars, 3. ~/.unsandbox/accounts.csv
+ *
+ * Priority order:
+ *   1. Function arguments (argPublicKey / argSecretKey)
+ *   2. g_accountIndex >= 0 -> accounts.csv row N (bypasses env vars)
+ *   3. Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY
+ *   4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+ *   5. ./accounts.csv row 0
  *
  * @param publicKey Output public key
  * @param secretKey Output secret key
@@ -226,7 +273,22 @@ BOOL UNGetCredentials(NSString** publicKey, NSString** secretKey, NSString* argP
         return YES;
     }
 
-    // Priority 2: Environment variables
+    // Priority 2: --account N -> accounts.csv row N (bypasses env vars)
+    if (g_accountIndex >= 0) {
+        NSString* home = NSHomeDirectory();
+        NSString* homeCsv = [home stringByAppendingPathComponent:@".unsandbox/accounts.csv"];
+        UNLoadCredentialsFromCSV(homeCsv, g_accountIndex, publicKey, secretKey);
+        if (*publicKey && [*publicKey length] > 0) return YES;
+        UNLoadCredentialsFromCSV(@"accounts.csv", g_accountIndex, publicKey, secretKey);
+        if (*publicKey && [*publicKey length] > 0) return YES;
+        if (error) {
+            *error = [UNAuthenticationError errorWithMessage:
+                [NSString stringWithFormat:@"No credentials found for account index %ld in accounts.csv", (long)g_accountIndex]];
+        }
+        return NO;
+    }
+
+    // Priority 3: Environment variables
     *publicKey = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_PUBLIC_KEY"];
     *secretKey = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_SECRET_KEY"];
 
@@ -242,32 +304,17 @@ BOOL UNGetCredentials(NSString** publicKey, NSString** secretKey, NSString* argP
         return YES;
     }
 
-    // Priority 3: Config file ~/.unsandbox/accounts.csv
+    // Priority 4: Config file ~/.unsandbox/accounts.csv (default row)
     NSString* home = NSHomeDirectory();
-    NSString* accountsPath = [home stringByAppendingPathComponent:@".unsandbox/accounts.csv"];
-    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* accountIndexStr = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_ACCOUNT"];
+    NSInteger defaultIndex = accountIndexStr ? [accountIndexStr integerValue] : 0;
+    NSString* homeCsv = [home stringByAppendingPathComponent:@".unsandbox/accounts.csv"];
+    UNLoadCredentialsFromCSV(homeCsv, defaultIndex, publicKey, secretKey);
+    if (*publicKey && [*publicKey length] > 0) return YES;
 
-    if ([fm fileExistsAtPath:accountsPath]) {
-        NSString* content = [NSString stringWithContentsOfFile:accountsPath encoding:NSUTF8StringEncoding error:nil];
-        if (content) {
-            NSArray* lines = [content componentsSeparatedByString:@"\n"];
-            for (NSString* line in lines) {
-                NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if ([trimmed length] == 0 || [trimmed hasPrefix:@"#"]) continue;
-
-                NSArray* parts = [trimmed componentsSeparatedByString:@","];
-                if ([parts count] >= 2) {
-                    NSString* pk = [parts[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    NSString* sk = [parts[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-                    if ([pk hasPrefix:@"unsb-pk-"] && [sk hasPrefix:@"unsb-sk-"]) {
-                        *publicKey = pk;
-                        *secretKey = sk;
-                        return YES;
-                    }
-                }
-            }
-        }
-    }
+    // Priority 5: ./accounts.csv
+    UNLoadCredentialsFromCSV(@"accounts.csv", defaultIndex, publicKey, secretKey);
+    if (*publicKey && [*publicKey length] > 0) return YES;
 
     if (error) {
         *error = [UNAuthenticationError errorWithMessage:
@@ -2376,6 +2423,14 @@ int main(int argc, const char* argv[]) {
         NSMutableArray* args = [NSMutableArray array];
         for (int i = 1; i < argc; i++) {
             [args addObject:[NSString stringWithUTF8String:argv[i]]];
+        }
+
+        // Pre-scan for --account N before subcommand dispatch
+        for (NSUInteger i = 0; i < [args count]; i++) {
+            if ([args[i] isEqualToString:@"--account"] && i + 1 < [args count]) {
+                g_accountIndex = [args[i + 1] integerValue];
+                break;
+            }
         }
 
         NSString* firstArg = args[0];

@@ -64,9 +64,11 @@
 !   ./un key [--extend]
 !
 ! Authentication (in priority order):
-!   1. Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY
-!   2. Config file: ~/.unsandbox/accounts.csv (public_key,secret_key per line)
-!   3. Legacy: UNSANDBOX_API_KEY (deprecated)
+!   1. --account N flag -> accounts.csv row N (bypasses env vars)
+!   2. Environment variables: UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY
+!   3. Config file: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT)
+!   4. ./accounts.csv row 0
+!   5. Legacy: UNSANDBOX_API_KEY (deprecated)
 !
 ! Compile:
 !   gfortran -o un un.f90
@@ -191,31 +193,96 @@ module unsandbox_sdk
 contains
 
     !--------------------------------------------------------------------------
+    ! Subroutine: load_csv_row
+    ! Description: Load public_key,secret_key from a CSV file at row_index
+    !              (0-based, skipping blank lines and '#' comments).
+    !
+    ! Arguments:
+    !   csv_path   - Path to CSV file
+    !   row_index  - Zero-based data row to read
+    !   public_key - Output: public key (empty if not found)
+    !   secret_key - Output: secret key (empty if not found)
+    !--------------------------------------------------------------------------
+    subroutine load_csv_row(csv_path, row_index, public_key, secret_key)
+        character(len=*), intent(in)  :: csv_path
+        integer,          intent(in)  :: row_index
+        character(len=*), intent(out) :: public_key, secret_key
+        character(len=1024) :: line
+        integer :: unit_num, ios, data_index
+        logical :: file_exists
+
+        public_key = ''
+        secret_key = ''
+        data_index = 0
+
+        inquire(file=trim(csv_path), exist=file_exists)
+        if (.not. file_exists) return
+
+        open(newunit=unit_num, file=trim(csv_path), status='old', action='read', iostat=ios)
+        if (ios /= 0) return
+
+        do
+            read(unit_num, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            line = adjustl(line)
+            if (len_trim(line) == 0) cycle
+            if (line(1:1) == '#') cycle
+            if (data_index == row_index) then
+                call parse_csv_line(line, public_key, secret_key)
+                close(unit_num)
+                return
+            end if
+            data_index = data_index + 1
+        end do
+        close(unit_num)
+    end subroutine load_csv_row
+
+    !--------------------------------------------------------------------------
     ! Subroutine: get_credentials
     ! Description: Get API credentials from environment or config file
     !
     ! Priority order:
-    !   1. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
-    !   2. Config file (~/.unsandbox/accounts.csv)
-    !   3. Legacy UNSANDBOX_API_KEY (deprecated)
+    !   1. account_index >= 0 -> accounts.csv row N (bypasses env vars)
+    !   2. Environment variables (UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY)
+    !   3. Config file (~/.unsandbox/accounts.csv row 0 or UNSANDBOX_ACCOUNT)
+    !   4. ./accounts.csv row 0
+    !   5. Legacy UNSANDBOX_API_KEY (deprecated)
     !
     ! Arguments:
-    !   public_key  - Output: API public key
-    !   secret_key  - Output: API secret key
-    !   status      - Output: 0 on success, non-zero on error
+    !   public_key    - Output: API public key
+    !   secret_key    - Output: API secret key
+    !   status        - Output: 0 on success, non-zero on error
+    !   account_index - Optional input: if >= 0, load that CSV row directly
     !--------------------------------------------------------------------------
-    subroutine get_credentials(public_key, secret_key, status)
+    subroutine get_credentials(public_key, secret_key, status, account_index)
         character(len=*), intent(out) :: public_key, secret_key
         integer, intent(out) :: status
-        character(len=1024) :: home_dir, accounts_path, line, api_key
-        integer :: unit_num, ios
-        logical :: file_exists
+        integer, intent(in), optional :: account_index
+        character(len=1024) :: home_dir, accounts_path, api_key, acct_env
+        integer :: ios, acct_idx, default_index
 
         status = 0
         public_key = ''
         secret_key = ''
 
-        ! Priority 1: Environment variables
+        ! Priority 1: account_index >= 0 -> load that CSV row (bypasses env vars)
+        if (present(account_index)) then
+            if (account_index >= 0) then
+                acct_idx = account_index
+                call get_environment_variable('HOME', home_dir, status=ios)
+                if (ios == 0) then
+                    accounts_path = trim(home_dir) // '/.unsandbox/accounts.csv'
+                    call load_csv_row(accounts_path, acct_idx, public_key, secret_key)
+                    if (len_trim(public_key) > 0) return
+                end if
+                call load_csv_row('accounts.csv', acct_idx, public_key, secret_key)
+                if (len_trim(public_key) > 0) return
+                status = 1
+                return
+            end if
+        end if
+
+        ! Priority 2: Environment variables
         call get_environment_variable('UNSANDBOX_PUBLIC_KEY', public_key, status=ios)
         if (ios == 0 .and. len_trim(public_key) > 0) then
             call get_environment_variable('UNSANDBOX_SECRET_KEY', secret_key, status=ios)
@@ -224,37 +291,27 @@ contains
             end if
         end if
 
-        ! Priority 2: Config file
+        ! Priority 3: ~/.unsandbox/accounts.csv (default row)
+        call get_environment_variable('UNSANDBOX_ACCOUNT', acct_env, status=ios)
+        if (ios == 0 .and. len_trim(acct_env) > 0) then
+            read(acct_env, *, iostat=ios) default_index
+            if (ios /= 0) default_index = 0
+        else
+            default_index = 0
+        end if
+
         call get_environment_variable('HOME', home_dir, status=ios)
         if (ios == 0) then
             accounts_path = trim(home_dir) // '/.unsandbox/accounts.csv'
-            inquire(file=trim(accounts_path), exist=file_exists)
-            if (file_exists) then
-                open(newunit=unit_num, file=trim(accounts_path), status='old', &
-                     action='read', iostat=ios)
-                if (ios == 0) then
-                    do
-                        read(unit_num, '(A)', iostat=ios) line
-                        if (ios /= 0) exit
-                        line = adjustl(line)
-                        if (len_trim(line) == 0) cycle
-                        if (line(1:1) == '#') cycle
-                        ! Parse CSV: public_key,secret_key
-                        call parse_csv_line(line, public_key, secret_key)
-                        if (len_trim(public_key) > 0 .and. len_trim(secret_key) > 0) then
-                            if (public_key(1:8) == 'unsb-pk-' .and. &
-                                secret_key(1:8) == 'unsb-sk-') then
-                                close(unit_num)
-                                return
-                            end if
-                        end if
-                    end do
-                    close(unit_num)
-                end if
-            end if
+            call load_csv_row(accounts_path, default_index, public_key, secret_key)
+            if (len_trim(public_key) > 0) return
         end if
 
-        ! Priority 3: Legacy API key
+        ! Priority 4: ./accounts.csv
+        call load_csv_row('accounts.csv', default_index, public_key, secret_key)
+        if (len_trim(public_key) > 0) return
+
+        ! Priority 5: Legacy API key
         call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=ios)
         if (ios == 0 .and. len_trim(api_key) > 0) then
             public_key = api_key
@@ -850,6 +907,7 @@ program unsandbox_cli
     character(len=1024) :: filename, language, api_key, ext, arg, subcommand
     character(len=256) :: session_id, service_id
     integer :: stat, i, nargs, dot_pos
+    integer :: account_index   ! -1 = not set; >= 0 means use that CSV row
     logical :: list_flag, is_session, is_service, is_key
 
     ! Initialize
@@ -860,6 +918,7 @@ program unsandbox_cli
     is_key = .false.
     session_id = ''
     service_id = ''
+    account_index = -1
 
     ! Get command line arguments count
     nargs = command_argument_count()
@@ -867,6 +926,17 @@ program unsandbox_cli
         call print_help()
         stop 1
     end if
+
+    ! Pre-scan all arguments for --account N
+    do i = 1, nargs - 1
+        call get_command_argument(i, arg)
+        if (trim(arg) == '--account') then
+            call get_command_argument(i + 1, arg)
+            read(arg, *, iostat=stat) account_index
+            if (stat /= 0) account_index = -1
+            exit
+        end if
+    end do
 
     ! Check for subcommands
     call get_command_argument(1, arg, status=stat)
@@ -974,6 +1044,9 @@ contains
         write(*, '(A)') 'Languages options:'
         write(*, '(A)') '  --json          Output as JSON array'
         write(*, '(A)') ''
+        write(*, '(A)') 'Credential options (global):'
+        write(*, '(A)') '  --account N     Use row N from accounts.csv (bypasses env vars)'
+        write(*, '(A)') ''
         write(*, '(A)') 'Library Usage:'
         write(*, '(A)') '  use unsandbox_sdk'
         write(*, '(A)') '  type(unsandbox_client) :: client'
@@ -1003,7 +1076,7 @@ contains
         end if
 
         ! Get API keys
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY'
             stop 1
@@ -1074,6 +1147,8 @@ contains
                         input_files = trim(arg)
                     end if
                 end if
+            else if (trim(arg) == '--account') then
+                ! already processed in main pre-scan; skip this token and its value
             else
                 if (len_trim(arg) > 0) then
                     if (arg(1:1) == '-') then
@@ -1086,7 +1161,7 @@ contains
         end do
 
         ! Get API keys
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1
@@ -1289,7 +1364,7 @@ contains
         end do
 
         ! Get API keys
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1
@@ -1617,7 +1692,7 @@ contains
         end do
 
         ! Get credentials
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1
@@ -1771,7 +1846,7 @@ contains
         list_mode = .false.
 
         ! Get credentials
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1
@@ -2046,7 +2121,7 @@ contains
         end do
 
         ! Get API key
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1
@@ -2143,7 +2218,7 @@ contains
         end do
 
         ! Get API keys
-        call get_credentials(public_key, secret_key, stat)
+        call get_credentials(public_key, secret_key, stat, account_index)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1

@@ -43,7 +43,7 @@
 #   un.nim session --list
 #   un.nim service --name web --ports 8080
 
-import os, strutils, osproc, strformat, times, sequtils
+import os, strutils, osproc, strformat, times
 
 const
   API_BASE = "https://api.unsandbox.com"
@@ -1252,15 +1252,15 @@ proc resolveCredentials(argPk: string, argSk: string, accountIndex: int): tuple[
   if argPk != "" and argSk != "":
     return (argPk, argSk)
   # Tier 2: --account N bypasses env vars
+  let homeDir = getHomeDir()
   if accountIndex >= 0:
-    let homeDir = getHomeDir()
-    let homeCsv = homeDir / ".unsandbox" / "accounts.csv"
-    var creds = loadCredentialsFromCsv(homeCsv, accountIndex)
-    if creds.pk != "":
-      return creds
-    creds = loadCredentialsFromCsv("accounts.csv", accountIndex)
-    if creds.pk != "":
-      return creds
+    let homeCsv2 = homeDir / ".unsandbox" / "accounts.csv"
+    var creds2 = loadCredentialsFromCsv(homeCsv2, accountIndex)
+    if creds2.pk != "":
+      return creds2
+    creds2 = loadCredentialsFromCsv("accounts.csv", accountIndex)
+    if creds2.pk != "":
+      return creds2
     stderr.writeLine(RED & fmt"Error: No credentials found for account index {accountIndex} in accounts.csv" & RESET)
     quit(1)
   # Tier 3: env vars
@@ -1270,7 +1270,6 @@ proc resolveCredentials(argPk: string, argSk: string, accountIndex: int): tuple[
     return (envPk, envSk)
   # Tier 4: ~/.unsandbox/accounts.csv (default row or UNSANDBOX_ACCOUNT)
   let defaultIndex = parseInt(getEnv("UNSANDBOX_ACCOUNT", "0"))
-  let homeDir = getHomeDir()
   let homeCsv = homeDir / ".unsandbox" / "accounts.csv"
   var creds = loadCredentialsFromCsv(homeCsv, defaultIndex)
   if creds.pk != "":
@@ -1296,7 +1295,10 @@ proc main() =
   var i = 0
   while i < rawArgs.len:
     if rawArgs[i] == "--account" and i + 1 < rawArgs.len:
-      accountIndex = parseInt(rawArgs[i + 1])
+      try:
+        accountIndex = parseInt(rawArgs[i + 1])
+      except ValueError:
+        discard
       i.inc
     elif rawArgs[i] == "-p" and i + 1 < rawArgs.len:
       argPublicKey = rawArgs[i + 1]

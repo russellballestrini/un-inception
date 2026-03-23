@@ -806,6 +806,116 @@ fn buildInputFilesJson(allocator: std.mem.Allocator, files: std.ArrayList([]cons
     return list.toOwnedSlice();
 }
 
+/// Load credentials from a CSV file at the given 0-based row index,
+/// skipping blank lines and lines starting with '#'.
+/// Returns allocated pk and sk slices, or null if not found.
+fn loadCsvRow(allocator: std.mem.Allocator, csv_path: []const u8, row_index: usize) !?struct { pk: []const u8, sk: []const u8 } {
+    const file = fs.cwd().openFile(csv_path, .{}) catch return null;
+    defer file.close();
+
+    var buf_reader = std.io.bufferedReader(file.reader());
+    var reader = buf_reader.reader();
+    var line_buf: [4096]u8 = undefined;
+    var data_index: usize = 0;
+
+    while (true) {
+        const line = reader.readUntilDelimiterOrEof(&line_buf, '\n') catch break orelse break;
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+        if (data_index == row_index) {
+            if (std.mem.indexOfScalar(u8, trimmed, ',')) |comma_pos| {
+                const pk = std.mem.trim(u8, trimmed[0..comma_pos], " \t");
+                const sk = std.mem.trim(u8, trimmed[comma_pos + 1 ..], " \t");
+                if (pk.len > 0 and sk.len > 0) {
+                    return .{ .pk = try allocator.dupe(u8, pk), .sk = try allocator.dupe(u8, sk) };
+                }
+            }
+            return null;
+        }
+        data_index += 1;
+    }
+    return null;
+}
+
+/// Resolve credentials using 5-tier priority:
+///   1. arg_pk / arg_sk (explicit -p/-k flags) if both non-empty
+///   2. account_index >= 0 -> accounts.csv row N (bypasses env vars)
+///   3. UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY env vars
+///   4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env var)
+///   5. ./accounts.csv row 0
+/// Returns allocated pk and sk slices.
+fn resolveCredentials(allocator: std.mem.Allocator, arg_pk: []const u8, arg_sk: []const u8, account_index: i64) !struct { pk: []u8, sk: []u8 } {
+    // Tier 1: explicit key flags
+    if (arg_pk.len > 0 and arg_sk.len > 0) {
+        return .{ .pk = try allocator.dupe(u8, arg_pk), .sk = try allocator.dupe(u8, arg_sk) };
+    }
+
+    // Tier 2: --account N bypasses env vars
+    if (account_index >= 0) {
+        const acct_idx: usize = @intCast(account_index);
+        // try ~/.unsandbox/accounts.csv
+        const home_opt = process.getEnvVarOwned(allocator, "HOME") catch null;
+        if (home_opt) |home| {
+            defer allocator.free(home);
+            const home_csv = try std.fmt.allocPrint(allocator, "{s}/.unsandbox/accounts.csv", .{home});
+            defer allocator.free(home_csv);
+            if (try loadCsvRow(allocator, home_csv, acct_idx)) |creds| {
+                return .{ .pk = @constCast(creds.pk), .sk = @constCast(creds.sk) };
+            }
+        }
+        // try ./accounts.csv
+        if (try loadCsvRow(allocator, "accounts.csv", acct_idx)) |creds| {
+            return .{ .pk = @constCast(creds.pk), .sk = @constCast(creds.sk) };
+        }
+        const stderr = std.io.getStdErr().writer();
+        try stderr.print("{s}Error: No credentials found for account index {d} in accounts.csv{s}\n", .{ RED, account_index, RESET });
+        std.process.exit(1);
+    }
+
+    // Tier 3: env vars
+    const env_pk = process.getEnvVarOwned(allocator, "UNSANDBOX_PUBLIC_KEY") catch blk: {
+        break :blk process.getEnvVarOwned(allocator, "UNSANDBOX_API_KEY") catch try allocator.dupe(u8, "");
+    };
+    const env_sk = process.getEnvVarOwned(allocator, "UNSANDBOX_SECRET_KEY") catch try allocator.dupe(u8, "");
+    if (env_pk.len > 0 and env_sk.len > 0) {
+        return .{ .pk = env_pk, .sk = env_sk };
+    }
+
+    // Tier 4: ~/.unsandbox/accounts.csv (default row)
+    const default_index_str = process.getEnvVarOwned(allocator, "UNSANDBOX_ACCOUNT") catch try allocator.dupe(u8, "0");
+    defer allocator.free(default_index_str);
+    const default_index = std.fmt.parseInt(usize, std.mem.trim(u8, default_index_str, " \t"), 10) catch 0;
+
+    const home_opt = process.getEnvVarOwned(allocator, "HOME") catch null;
+    if (home_opt) |home| {
+        defer allocator.free(home);
+        const home_csv = try std.fmt.allocPrint(allocator, "{s}/.unsandbox/accounts.csv", .{home});
+        defer allocator.free(home_csv);
+        if (try loadCsvRow(allocator, home_csv, default_index)) |creds| {
+            allocator.free(env_pk);
+            allocator.free(env_sk);
+            return .{ .pk = @constCast(creds.pk), .sk = @constCast(creds.sk) };
+        }
+    }
+
+    // Tier 5: ./accounts.csv
+    if (try loadCsvRow(allocator, "accounts.csv", default_index)) |creds| {
+        allocator.free(env_pk);
+        allocator.free(env_sk);
+        return .{ .pk = @constCast(creds.pk), .sk = @constCast(creds.sk) };
+    }
+
+    if (env_pk.len > 0) {
+        return .{ .pk = env_pk, .sk = env_sk };
+    }
+
+    allocator.free(env_pk);
+    allocator.free(env_sk);
+    const stderr = std.io.getStdErr().writer();
+    try stderr.print("{s}Error: No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY{s}\n", .{ RED, RESET });
+    std.process.exit(1);
+}
+
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -837,18 +947,37 @@ pub fn main() !u8 {
         std.debug.print("  image --visibility ID MODE  Set visibility (private/unlisted/public)\n", .{});
         std.debug.print("  image --spawn ID --name NAME  Spawn service from image\n", .{});
         std.debug.print("  image --clone ID --name NAME  Clone an image\n", .{});
+        std.debug.print("\nCredential options (global):\n", .{});
+        std.debug.print("  -p PUBLIC_KEY       Explicit public key\n", .{});
+        std.debug.print("  -k SECRET_KEY       Explicit secret key\n", .{});
+        std.debug.print("  --account N         Use row N from accounts.csv (bypasses env vars)\n", .{});
         return 1;
     }
 
-    var public_key = std.process.getEnvVarOwned(allocator, "UNSANDBOX_PUBLIC_KEY") catch blk: {
-        // Fall back to UNSANDBOX_API_KEY for backwards compatibility
-        break :blk std.process.getEnvVarOwned(allocator, "UNSANDBOX_API_KEY") catch try allocator.dupe(u8, "");
-    };
-    defer allocator.free(public_key);
+    // Pre-scan for --account N, -p, and -k before subcommand dispatch
+    var account_index: i64 = -1;
+    var arg_pk: []const u8 = "";
+    var arg_sk: []const u8 = "";
+    {
+        var scan_i: usize = 1;
+        while (scan_i < args.len) : (scan_i += 1) {
+            if (mem.eql(u8, args[scan_i], "--account") and scan_i + 1 < args.len) {
+                scan_i += 1;
+                account_index = std.fmt.parseInt(i64, args[scan_i], 10) catch -1;
+            } else if (mem.eql(u8, args[scan_i], "-p") and scan_i + 1 < args.len) {
+                scan_i += 1;
+                arg_pk = args[scan_i];
+            } else if (mem.eql(u8, args[scan_i], "-k") and scan_i + 1 < args.len) {
+                scan_i += 1;
+                arg_sk = args[scan_i];
+            }
+        }
+    }
 
-    const secret_key = std.process.getEnvVarOwned(allocator, "UNSANDBOX_SECRET_KEY") catch blk: {
-        break :blk try allocator.dupe(u8, "");
-    };
+    const creds = try resolveCredentials(allocator, arg_pk, arg_sk, account_index);
+    var public_key = creds.pk;
+    defer allocator.free(public_key);
+    const secret_key = creds.sk;
     defer allocator.free(secret_key);
 
     // Handle session command
@@ -1727,16 +1856,27 @@ pub fn main() !u8 {
         return 0;
     }
 
-    // Execute mode - find source file
+    // Execute mode - find source file (skip known flags and their values)
     var source_file: ?[]const u8 = null;
-    for (args[1..]) |arg| {
-        if (mem.startsWith(u8, arg, "-")) {
-            const stderr = std.io.getStdErr().writer();
-            stderr.print("{s}Unknown option: {s}{s}\n", .{ RED, arg, RESET }) catch {};
-            std.os.exit(1);
-        } else {
-            source_file = arg;
-            break;
+    {
+        var exec_i: usize = 1;
+        while (exec_i < args.len) : (exec_i += 1) {
+            const arg = args[exec_i];
+            if (mem.eql(u8, arg, "--account") or mem.eql(u8, arg, "-p") or
+                mem.eql(u8, arg, "-k") or mem.eql(u8, arg, "-e") or
+                mem.eql(u8, arg, "-n") or mem.eql(u8, arg, "-v"))
+            {
+                exec_i += 1; // skip value
+            } else if (mem.eql(u8, arg, "-a")) {
+                // no value
+            } else if (mem.startsWith(u8, arg, "-")) {
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("{s}Unknown option: {s}{s}\n", .{ RED, arg, RESET }) catch {};
+                std.os.exit(1);
+            } else {
+                source_file = arg;
+                break;
+            }
         }
     }
 
