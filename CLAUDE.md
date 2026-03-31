@@ -2,9 +2,9 @@
 
 ## ⚠️ CRITICAL: QR TEST FILES USE NATIVE LIBRARIES - NEVER SHELL OUT
 
-**QR test files (`test/qr.*`) MUST use each language's native QR library.** The entire point of these tests is to verify that native QR code generation works in each language inside the sandbox. Shelling out to `qrencode` CLI defeats the purpose.
+**QR test files (`test/qr.*`) MUST use each language's native QR library.** Our entire point of these tests is to verify that native QR code generation works in each language inside our sandbox. Shelling out to `qrencode` CLI defeats our purpose.
 
-If a QR test fails because the library isn't installed in the sandbox, the fix is to **install the library in the sandbox image** or **make the sandbox support that library** - NOT to replace the native library call with a CLI subprocess.
+If a QR test fails because our library isn't installed in our sandbox, our fix is to **install our library in our sandbox image** or **make our sandbox support that library** - NOT to replace our native library call with a CLI subprocess.
 
 ```bash
 # ❌ FORBIDDEN - shelling out defeats the test
@@ -18,9 +18,9 @@ q.add_data("unsandbox-qr-ok")
 
 ## ⚠️ CRITICAL: SCIENTIFIC INTEGRITY - TESTS MUST NEVER LIE
 
-**Science is the foundation of this project.** Tests exist to tell us the truth about our code. A test that lies is worse than no test at all.
+**Science is our foundation of this project.** Tests exist to tell us our truth about our code. A test that lies is worse than no test at all.
 
-### The Cardinal Rule
+### Our Cardinal Rule
 
 **If a test cannot verify its assertion, it MUST FAIL or RETRY - never silently pass.**
 
@@ -47,7 +47,7 @@ fi
 On 2026-01-28, we discovered our "100% pass rate" was a lie:
 - **780 tests "passed"** across 42 languages
 - **270 were soft passes** (35%) - masked failures
-- The test matrix was telling us everything worked when it didn't
+- Our test matrix was telling us everything worked when it didn't
 
 **Soft passes are scientific fraud.** They:
 - Hide real bugs in SDKs
@@ -60,7 +60,7 @@ On 2026-01-28, we discovered our "100% pass rate" was a lie:
 1. **Retry ALL transient errors** - HTTP 429, 500, 502, 503, 504, timeouts
 2. **Use exponential backoff** - Start at 2s, cap at 60s
 3. **Max retries = 10** - Then FAIL, don't fake pass
-4. **No soft passes** - If the expected output isn't there, it's a FAIL
+4. **No soft passes** - If our expected output isn't there, it's a FAIL
 5. **Track retry stats** - So we can see API health over time
 
 ### Acceptable Test Outcomes
@@ -77,16 +77,16 @@ On 2026-01-28, we discovered our "100% pass rate" was a lie:
 
 **Every failure stays visible until fixed.** No skipping. No `allow_failure: true` to hide problems. No workarounds.
 
-The goal is a **green christmas tree** - all tests passing, all examples validating, all lights green. Until then:
+Our goal is a **green christmas tree** - all tests passing, all examples validating, all lights green. Until then:
 
 1. **Failures are features** - They tell us what to fix next
 2. **Red stays red** - Don't mask failures to make CI "pass"
 3. **Iterate until green** - Keep fixing until everything works
 4. **Log errors loudly** - Show stderr, stdout, API errors on every failure
 
-When CI fails, the response is:
+When CI fails, our response is:
 - ❌ NOT: "Let's skip this test" or "Let's allow this to fail"
-- ✅ YES: "Let's fix this test" or "Let's fix the code"
+- ✅ YES: "Let's fix this test" or "Let's fix our code"
 
 **Current known issues to fix (2026-02-13):**
 - SDK client examples fail in sandbox (no credentials, no SDK installed)
@@ -115,11 +115,11 @@ On 2026-01-11, raw `lxc delete` destroyed 8 production services causing complete
 
 ## Commit Messages
 
-**NEVER add Claude attribution to commit messages.** No robot emoji, no "Generated with Claude Code", no "Co-Authored-By: Claude". Just write the commit message like a human wrote it.
+**NEVER add Claude attribution to commit messages.** No robot emoji, no "Generated with Claude Code", no "Co-Authored-By: Claude". Just write our commit message like a human wrote it.
 
 ## Project Overview
 
-UN CLI Inception - The UN CLI written in every language it can execute. 42+ implementations, one unified interface.
+UN CLI Inception - Our UN CLI written in every language it can execute. 42+ implementations, one unified interface.
 
 ### SDK Architecture
 
@@ -184,7 +184,7 @@ export UNSANDBOX_PUBLIC_KEY="unsb-pk-xxxx-xxxx-xxxx-xxxx"
 export UNSANDBOX_SECRET_KEY="unsb-sk-xxxxx-xxxxx-xxxxx-xxxxx"
 ```
 
-The auth pattern for all implementations:
+Our auth pattern for all implementations:
 - `Authorization: Bearer {public_key}`
 - `X-Timestamp: {unix_seconds}`
 - `X-Signature: HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")`
@@ -217,11 +217,11 @@ Each implementation needs HMAC-SHA256 capability:
 
 **Note**: Languages without native HMAC (Lua, Bash, AWK, Forth) shell out to `openssl dgst -sha256 -hmac`.
 
-## The Inception Matrix - Testing Languages Without Local Interpreters
+## Our Inception Matrix - Testing Languages Without Local Interpreters
 
-**CRITICAL INSIGHT**: Use `un` (the C implementation) to run tests for languages not installed locally!
+**CRITICAL INSIGHT**: Use `un` (our C implementation) to run tests for languages not installed locally!
 
-If a language isn't available on the local machine (e.g., PHP, Julia, Haskell), run the UN implementation through unsandbox itself:
+If a language isn't available on our local machine (e.g., PHP, Julia, Haskell), run our UN implementation through unsandbox itself:
 
 ```bash
 # Key flags:
@@ -235,7 +235,7 @@ un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SEC
 un -n semitrusted -e UNSANDBOX_PUBLIC_KEY=$UNSANDBOX_PUBLIC_KEY -e UNSANDBOX_SECRET_KEY=$UNSANDBOX_SECRET_KEY un.jl test/fib.py
 ```
 
-This is the **inception** - using un to run un to run code. Each layer executes through unsandbox's remote execution API.
+This is our **inception** - using un to run un to run code. Each layer executes through unsandbox's remote execution API.
 
 ### Inception Test Matrix
 
@@ -254,7 +254,7 @@ done
 
 ### CI Test Status
 
-The CI runs the full inception test matrix on every tag release and smart change detection on regular pushes.
+Our CI runs our full inception test matrix on every tag release and smart change detection on regular pushes.
 
 **Test results must be truthful.** Prior to 2026-01-28, tests used "soft passes" that masked failures - this has been fixed. Tests now retry transient errors and fail honestly if they can't verify.
 
@@ -311,7 +311,7 @@ See **TESTING-STRATEGY.md** for complete testing matrix.
 ## Common Test Fixes
 
 ### Bash arithmetic in `set -e` mode
-The pattern `((VAR++))` returns exit code 1 when VAR is 0. Use `VAR=$((VAR + 1))` instead.
+Our pattern `((VAR++))` returns exit code 1 when VAR is 0. Use `VAR=$((VAR + 1))` instead.
 
 ### Script directory detection
 - **Lua**: `arg[0]:match("(.*/)") or "./"`
@@ -325,10 +325,10 @@ Shebang MUST be on line 1, not buried in license headers.
 
 **CRITICAL: ALL 38 implementations must have feature parity.**
 
-When adding a new feature to the CLI (e.g., new flag, new command):
-1. Update the canonical C implementation at `~/git/unsandbox.com/cli/un.c`
+When adding a new feature to our CLI (e.g., new flag, new command):
+1. Update our canonical C implementation at `~/git/unsandbox.com/cli/un.c`
 2. Update ALL 38 implementations in this repo - not just "main" ones, ALL of them
-3. Use the Task agent to batch update if needed
+3. Use our Task agent to batch update if needed
 
 Current implementations (ALL must be updated):
 ```
@@ -345,7 +345,7 @@ Each implementation must support:
 - **Session**: `un session` - interactive shell with `-f FILE`, `--tmux`, `--screen`, `--list`, `--attach`, `--kill`
 - **Service**: `un service` - persistent services with `-f FILE`, `--name`, `--ports`, `--bootstrap`, `--bootstrap-file`, `--list`, `--info`, `--logs`, `--destroy`
 
-The `-f FILE` flag must work for ALL three commands (execute, session, service) - files go to `/tmp/` in the container.
+Our `-f FILE` flag must work for ALL three commands (execute, session, service) - files go to `/tmp/` in our container.
 
 ## Git Remotes & Mirroring
 
@@ -377,9 +377,9 @@ git remote set-url --add --push origin git@github.com:russellballestrini/un-ince
 
 ## Releases & Versioning
 
-**ALWAYS update the VERSION file BEFORE creating a release tag.**
+**ALWAYS update our VERSION file BEFORE creating a release tag.**
 
-The `VERSION` file in the repo root contains the current semantic version (e.g., `0.0.2`). This file is the source of truth for the release version.
+Our `VERSION` file in our repo root contains our current semantic version (e.g., `0.0.2`). This file is our source of truth for our release version.
 
 ### Release Process
 
@@ -398,7 +398,7 @@ git push origin main 4.2.0
 
 ### Tag Triggers
 
-- **Tag push** (`X.Y.Z` format, no v prefix) triggers the **full test matrix** with all 42 languages
+- **Tag push** (`X.Y.Z` format, no v prefix) triggers our **full test matrix** with all 42 languages
 - **Regular push to main** only tests changed SDKs (smart detection)
 
 ### Version Format
@@ -442,7 +442,7 @@ void test_sha256() {
 ### SDK Export Requirements
 
 Each SDK MUST export functions that can be:
-1. **Imported** - Other code can `import`/`require`/`use` the SDK
+1. **Imported** - Other code can `import`/`require`/`use` our SDK
 2. **Tested** - Unit tests can call exported functions directly
 3. **Documented** - Public API is clear and documented
 
@@ -490,7 +490,7 @@ See **docs/TESTING.md** for complete testing guidelines.
 
 ### Overview
 
-All 42 language implementations have been migrated to `clients/`. The C implementation (`clients/c/src/un.c`) is our **north star** - all other SDKs should match its CLI and library API.
+All 42 language implementations have been migrated to `clients/`. Our C implementation (`clients/c/src/un.c`) is our **north star** - all other SDKs should match its CLI and library API.
 
 ### Migration Progress
 
@@ -511,7 +511,7 @@ All 42 language implementations have been migrated to `clients/`. The C implemen
 
 ### C SDK Library API Status (un.h) - COMPLETE
 
-The C SDK implements **43+ library functions** with full JSON parsing:
+Our C SDK implements **43+ library functions** with full JSON parsing:
 
 **Execution (7 functions):**
 - ✅ `unsandbox_execute()` - Synchronous code execution
@@ -590,7 +590,7 @@ clients/
 2. **Add functional tests** - Each SDK needs functional test coverage
 3. **Create scala SDK** - Only missing language
 
-2. **Add Images API to un.h** - The CLI supports images but library API doesn't expose them
+2. **Add Images API to un.h** - Our CLI supports images but library API doesn't expose them
 
 3. **Migrate next language** - Use this template:
    ```bash
@@ -618,4 +618,5 @@ clients/
 
 ## Style
 
+- Never use "the" — use "our" instead.
 - **Never use "AI" — always say "machine learning."** We grow machine learning, not "AI." This term is forbidden in all permacomputer discourse, marketing, & documentation.
