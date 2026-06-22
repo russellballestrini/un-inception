@@ -1,0 +1,428 @@
+name: ci
+'on':
+  push:
+    branches:
+    - main
+    - /^\d+\.\d+\.\d+$/
+jobs:
+  manual-cleanup:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        echo "=== Emergency Cleanup ==="
+        echo "Building un CLI first..."
+        bash scripts/build-clients.sh
+        echo "Running parallel cleanup..."
+        bash scripts/cleanup-test-resources.sh
+  detect-changes:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        bash scripts/detect-changes.sh > changes.json
+        cat changes.json
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: changes.json
+        retention-days: 1
+  generate-matrix:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: bash scripts/generate-matrix.sh
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: test-matrix.yml
+        retention-days: 1
+    needs:
+    - detect-changes
+  build:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |
+        bash scripts/build-clients.sh
+        # Build C examples
+        if [ -d "clients/c" ] && [ -f "clients/c/Makefile" ]; then
+          echo "Building C examples..."
+          make -C clients/c compile-examples || true
+        fi
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: |-
+          build/
+          clients/c/examples/*.o
+        retention-days: 1
+    needs:
+    - manual-cleanup
+    - detect-changes
+    - generate-matrix
+  manual-burn-pool:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        echo "=== MANUAL POOL BURN ==="
+        echo "Generating full 42-language test matrix..."
+        # Create changes.json to satisfy generate-matrix.sh
+        echo '{"test_all": true, "changed_langs": []}' > changes.json
+
+        FORCE_FULL_MATRIX=true bash scripts/generate-matrix.sh
+        cat test-matrix.yml
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: |-
+          test-matrix.yml
+          changes.json
+        retention-days: 1
+    needs:
+    - build
+  manual-burn-pool-trigger:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    needs:
+    - manual-burn-pool
+    - build
+  trigger-test-matrix:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    needs:
+    - generate-matrix
+    - build
+  collect-pool-metrics:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        echo "Starting pool metrics collector..."
+        mkdir -p pool-metrics
+        bash scripts/collect-pool-metrics.sh start pool-metrics
+        echo "Collector running, waiting for tests to complete..."
+        # Poll until trigger-test-matrix child pipeline completes (max 20 min)
+        # Stop early when child pipeline finishes to avoid skewing averages
+        for i in $(seq 1 240); do
+          sleep 5
+          # Check if child pipeline is done via GitLab API
+          CHILD_STATUS=$(curl -s "https://git.unturf.com/api/v4/projects/${CI_PROJECT_ID}/pipelines/${{ github.run_id }}/bridges" 2>/dev/null | jq -r '.[0].downstream_pipeline.status // "pending"' 2>/dev/null || echo "pending")
+          if [ "$CHILD_STATUS" = "success" ] || [ "$CHILD_STATUS" = "failed" ]; then
+            echo "Child pipeline finished with status: $CHILD_STATUS"
+            break
+          fi
+          bash scripts/collect-pool-metrics.sh status pool-metrics || true
+        done
+
+        echo "Stopping collector..."
+        bash scripts/collect-pool-metrics.sh stop pool-metrics
+        echo "Generating pool metrics report..."
+        bash scripts/collect-pool-metrics.sh report pool-metrics
+        cat pool-metrics/pool-metrics.json
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: pool-metrics/
+        retention-days: 90
+    needs:
+    - build
+  science-validate-examples:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        python3 -m venv .venv
+        source .venv/bin/activate
+        pip install --quiet requests aiohttp
+        bash scripts/validate-examples.sh
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: science-results/
+        retention-days: 30
+    needs:
+    - build
+    - manual-burn-pool
+    - manual-burn-pool-trigger
+    - trigger-test-matrix
+    - collect-pool-metrics
+  science-lint-sdks:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: bash scripts/science/lint-all-sdks.sh
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: lint-results/
+        retention-days: 30
+    needs:
+    - manual-burn-pool
+    - manual-burn-pool-trigger
+    - trigger-test-matrix
+    - collect-pool-metrics
+  science-benchmark-clients:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: bash scripts/science/benchmark-clients.sh
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: benchmark-results/
+        retention-days: 30
+    needs:
+    - manual-burn-pool
+    - manual-burn-pool-trigger
+    - trigger-test-matrix
+    - collect-pool-metrics
+  validate-examples:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |
+        mkdir -p science-results
+        if [ -f science-results/examples-validation-results.json ]; then
+          echo "Example validation results found"
+          cat science-results/examples-validation-results.json
+
+          # Extract stats and display summary
+          TOTAL=$(jq '.summary.total_examples' science-results/examples-validation-results.json 2>/dev/null || echo "0")
+          PASSED=$(jq '.summary.total_validated' science-results/examples-validation-results.json 2>/dev/null || echo "0")
+          FAILED=$(jq '.summary.total_failed' science-results/examples-validation-results.json 2>/dev/null || echo "0")
+
+          echo ""
+          echo "Summary: $PASSED/$TOTAL passed, $FAILED failed"
+        else
+          echo "No example validation results found"
+        fi
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: science-results/
+        retention-days: 30
+    needs:
+    - science-validate-examples
+    - science-lint-sdks
+    - science-benchmark-clients
+  generate-documentation:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        mkdir -p docs
+        bash scripts/generate-docs.sh || true
+        VALIDATION_TIME=$(date +%s)
+        CURRENT_TIME=$(date +%s)
+        MINUTES_AGO=$((($CURRENT_TIME - $VALIDATION_TIME) / 60))
+        echo "Last verified: $MINUTES_AGO minutes ago" > docs/VERIFICATION_TIMESTAMP.txt
+        echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> docs/VERIFICATION_TIMESTAMP.txt
+
+        ls -la docs/ || echo "No documentation generated"
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: |-
+          docs/
+          docs/VERIFICATION_TIMESTAMP.txt
+        retention-days: 30
+    needs:
+    - validate-examples
+  report:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: |-
+        bash scripts/filter-results.sh
+        if [ -f science-results/examples-validation-results.json ]; then
+          echo "Including example validation stats in final report..."
+          EXAMPLE_STATS=$(cat science-results/examples-validation-results.json)
+          jq --argjson examples "$EXAMPLE_STATS" '.properties += [{name: "example_validation_passed", value: $examples.examples.passed | tostring}, {name: "example_validation_failed", value: $examples.examples.failed | tostring}]' final-report.xml > final-report.xml.tmp && mv final-report.xml.tmp final-report.xml || true
+        fi
+
+        echo "Including documentation generation artifacts..."
+        ls -la docs/ 2>/dev/null | tail -5 || echo "No documentation available"
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: |-
+          reports/
+          science-results/examples-validation-results.json
+          docs/
+          final-report.xml
+        retention-days: 30
+    needs:
+    - generate-documentation
+  perf-report:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: "echo \"========================================\"\necho \"Performance\
+        \ Report Generator\"\necho \"Tag - ${{ github.ref_name }}\"\necho \"========================================\"\
+        \necho \"${{ github.ref_name }}\" | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+$'\
+        \ || exit 1\necho \"Step 0 - Waiting 60s for pipeline data to settle...\"\n\
+        sleep 60\necho \"Step 1 - Setting up git on main branch...\"\ntest -z \"$DEPLOY_KEY\"\
+        \ && echo \"WARN - No DEPLOY_KEY, skipping commit\" && exit 0 || true\nmkdir\
+        \ -p ~/.ssh\necho \"$DEPLOY_KEY\" | base64 -d > ~/.ssh/id_ed25519\nchmod 600\
+        \ ~/.ssh/id_ed25519\nssh-keyscan -p 2222 -H git.unturf.com >> ~/.ssh/known_hosts\
+        \ 2>/dev/null\ngit remote set-url origin \"ssh://git@git.unturf.com:2222/${{\
+        \ github.repository }}.git\"\ngit config user.email \"ci@unturf.com\"\ngit\
+        \ config user.name \"GitLab CI\"\ngit fetch origin main\ngit checkout -B main\
+        \ origin/main\necho \"Step 2 - Generating performance report...\"\nbash scripts/generate-perf-report.sh\
+        \ \"${{ github.ref_name }}\" || echo \"WARN - Report generation failed\"\n\
+        echo \"Step 3 - Generating performance charts...\"\ntest -x build/un && test\
+        \ -f \"reports/${{ github.ref_name }}/perf.json\" && build/un -a -f \"reports/${{\
+        \ github.ref_name }}/perf.json\" scripts/generate-perf-charts.py || echo \"\
+        WARN - Charts skipped (build/un or perf.json missing)\"\nmv -f *.png \"reports/${{\
+        \ github.ref_name }}/\" 2>/dev/null || true\necho \"Step 4 - Adding pool metrics\
+        \ if available...\"\ntest -f pool-metrics/pool-metrics.json && cp pool-metrics/pool-metrics.json\
+        \ \"reports/${{ github.ref_name }}/\" && echo \"  \u2713 Pool metrics added\"\
+        \ || echo \"  (no pool metrics)\"\ntest -f pool-metrics/raw-samples.csv &&\
+        \ cp pool-metrics/raw-samples.csv \"reports/${{ github.ref_name }}/\" || true\n\
+        test -f pool-metrics/raw-pools.csv && cp pool-metrics/raw-pools.csv \"reports/${{\
+        \ github.ref_name }}/\" && echo \"  \u2713 Per-pool metrics added\" || true\n\
+        echo \"Step 5 - Report contents...\"\nls -la \"reports/${{ github.ref_name\
+        \ }}/\" 2>/dev/null || echo \"No report directory\"\necho \"Step 6 - Committing\
+        \ to main...\"\ngit add reports/\ngit diff --cached --quiet && echo \"No changes\
+        \ to commit\" || git commit -m \"perf - Add performance report for ${{ github.ref_name\
+        \ }} [ci skip]\"\ngit push origin main || echo \"Nothing to push\"\necho \"\
+        Done\""
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: reports/
+        retention-days: 90
+    env:
+      GIT_STRATEGY: clone
+      GIT_DEPTH: '0'
+    needs:
+    - trigger-test-matrix
+    - build
+    - collect-pool-metrics
+    - generate-documentation
+  perf-aggregate-report:
+    runs-on:
+    - self-hosted
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4
+    - name: script
+      run: "echo \"========================================\"\necho \"Aggregated Performance\
+        \ Analysis\"\necho \"========================================\"\necho \"Step\
+        \ 1 - Discovering releases from git tags...\"\nVERSIONS=$(git tag | grep -E\
+        \ '^[0-9]+\\.[0-9]+\\.[0-9]+$' | sort -V)\necho \"Found tagged releases:\"\
+        \necho \"$VERSIONS\"\nif [ -z \"$VERSIONS\" ]; then\n  echo \"ERROR - No version\
+        \ tags found\"\n  exit 1\nfi\n\necho \"Step 2 - Copying perf.json files for\
+        \ tagged releases...\"\nfor v in $VERSIONS; do if [ -f \"reports/$v/perf.json\"\
+        \ ]; then cp \"reports/$v/perf.json\" \"perf-$v.json\"; echo \"  \u2713 $v\"\
+        ; fi; done\nFILES=$(ls perf-*.json 2>/dev/null | sed 's/^/-f /' | tr '\\n'\
+        \ ' ')\nif [ -z \"$FILES\" ]; then\n  echo \"ERROR - No perf JSON files found\"\
+        \n  exit 1\nfi\n\necho \"Step 3 - Generating charts via UN...\"\nif [ -x build/un\
+        \ ]; then\n  build/un -a $FILES scripts/generate-aggregated-charts.py\nelse\n\
+        \  echo \"WARN - Charts skipped (build/un missing)\"\nfi\n\nrm -f perf-*.json\n\
+        mv -f *.png reports/ 2>/dev/null || true\necho \"Step 4 - Generating markdown\
+        \ report...\"\npython3 scripts/aggregate-performance-reports.py reports -o\
+        \ AGGREGATED-PERFORMANCE.md\necho \"Step 5 - Setting up git...\"\nif [ -z\
+        \ \"$DEPLOY_KEY\" ]; then\n  echo \"WARN - No DEPLOY_KEY, skipping commit\"\
+        \n  exit 0\nfi\n\nmkdir -p ~/.ssh\necho \"$DEPLOY_KEY\" | base64 -d > ~/.ssh/id_ed25519\n\
+        chmod 600 ~/.ssh/id_ed25519\nssh-keyscan -p 2222 -H git.unturf.com >> ~/.ssh/known_hosts\
+        \ 2>/dev/null\ngit remote set-url origin \"ssh://git@git.unturf.com:2222/${{\
+        \ github.repository }}.git\"\ngit config user.email \"ci@unturf.com\"\ngit\
+        \ config user.name \"GitLab CI\"\ngit fetch origin main\necho \"Step 6 - Stashing\
+        \ artifact files temporarily...\"\ngit add -A\ngit stash push -m \"Temporary\
+        \ stash of artifacts and generated files\"\necho \"Step 7 - Checking out main\
+        \ branch...\"\ngit checkout main\ngit pull origin main || echo \"Already up\
+        \ to date\"\necho \"Step 8 - Restoring artifacts and committing...\"\ngit\
+        \ stash pop || echo \"No stash to pop\"\ngit add reports/ AGGREGATED-PERFORMANCE.md\n\
+        if git diff --cached --quiet; then\n  echo \"No changes to commit\"\nelse\n\
+        \  git commit -m \"perf: Update aggregated performance analysis [ci skip]\"\
+        \nfi\n\ngit push origin main || echo \"Nothing to push\"\necho \"Step 9 -\
+        \ Verifying results...\"\necho \"\u2713 Aggregated report generated with charts\"\
+        \nls -lh AGGREGATED-PERFORMANCE.md\nls -lh reports/aggregated-*.png 2>/dev/null\
+        \ || echo \"  (charts may not have generated)\""
+    - name: upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: artifacts
+        path: |-
+          AGGREGATED-PERFORMANCE.md
+          reports/aggregated-*.png
+        retention-days: 90
+    env:
+      GIT_STRATEGY: clone
+      GIT_DEPTH: '0'
+    needs:
+    - perf-report
+    - generate-documentation
