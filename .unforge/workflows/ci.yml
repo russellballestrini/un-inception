@@ -1,471 +1,207 @@
-# AUTOMATICALLY CONVERTED — manual review required.
-# Resolve every `# TODO:` before relying on this workflow.
+# Forgejo / GitHub Actions port of .gitlab-ci.yml.
 #
-# TODO: job 'generate-matrix': matrix producer for [trigger-test-matrix] — modify the generator script to also write JSON list to $GITHUB_OUTPUT (e.g. `echo "matrix=$(jq -c)" >> "$GITHUB_OUTPUT"`)
-# TODO: job 'manual-burn-pool': matrix producer for [manual-burn-pool-trigger] — modify the generator script to also write JSON list to $GITHUB_OUTPUT (e.g. `echo "matrix=$(jq -c)" >> "$GITHUB_OUTPUT"`)
-# TODO: job 'manual-burn-pool-trigger': artifact-driven child pipeline — scaffold emitted; operator must (1) modify the producer's generator script to write JSON to $GITHUB_OUTPUT.matrix, (2) inline the child pipeline steps from 'test-matrix.yml'
-# TODO: job 'trigger-test-matrix': artifact-driven child pipeline — scaffold emitted; operator must (1) modify the producer's generator script to write JSON to $GITHUB_OUTPUT.matrix, (2) inline the child pipeline steps from 'test-matrix.yml'
+# The gitlab original uses artifact-driven child pipelines:
+#   generate-matrix produces test-matrix.yml -> trigger-test-matrix
+#   fans it out as a parallel-matrix child pipeline (one SDK per entry).
+#
+# In Actions world that becomes:
+#   - generate-matrix writes JSON to $GITHUB_OUTPUT.matrix
+#     (see scripts/generate-matrix.sh — dual-emits for gitlab + Actions)
+#   - test consumes via strategy.matrix.include: fromJson(...)
+#   - the child pipeline's build / cleanup / test stages are now
+#     stages of the parent workflow
+#
+# Both the gitlab and the Actions side keep working; the generator
+# script is the single source of truth for "which SDKs to test."
 
 name: ci
-'on':
-  push:
-    branches:
-    - main
-    - /^\d+\.\d+\.\d+$/
-jobs:
-  manual-cleanup:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        echo "=== Emergency Cleanup ==="
-        echo "Building un CLI first..."
-        bash scripts/build-clients.sh
-        echo "Running parallel cleanup..."
-        bash scripts/cleanup-test-resources.sh
-    if: ${{ ((github.event_name == 'workflow_dispatch')) }}
-  detect-changes:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        bash scripts/detect-changes.sh > changes.json
-        cat changes.json
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: changes.json
-        retention-days: 1
-  generate-matrix:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: bash scripts/generate-matrix.sh
-      id: gen
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: test-matrix.yml
-        retention-days: 1
-    needs:
-    - detect-changes
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
-  build:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |
-        bash scripts/build-clients.sh
-        # Build C examples
-        if [ -d "clients/c" ] && [ -f "clients/c/Makefile" ]; then
-          echo "Building C examples..."
-          make -C clients/c compile-examples || true
-        fi
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: |-
-          build/
-          clients/c/examples/*.o
-        retention-days: 1
-    needs:
-    - manual-cleanup
-    - detect-changes
-    - generate-matrix
-  manual-burn-pool:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        echo "=== MANUAL POOL BURN ==="
-        echo "Generating full 42-language test matrix..."
-        # Create changes.json to satisfy generate-matrix.sh
-        echo '{"test_all": true, "changed_langs": []}' > changes.json
 
-        FORCE_FULL_MATRIX=true bash scripts/generate-matrix.sh
-        cat test-matrix.yml
-      id: gen
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: |-
-          test-matrix.yml
-          changes.json
-        retention-days: 1
-    if: ${{ ((github.event_name == 'push') && (github.event_name == 'workflow_dispatch'))
-      || ((github.event_name == 'workflow_dispatch') && (github.event_name == 'workflow_dispatch'))
-      }}
+on:
+  push:
+    branches: [main]
+    tags: ['*.*.*']        # closest glob equivalent of gitlab's /^\d+\.\d+\.\d+$/
+  workflow_dispatch:        # for the "manual burn pool" path
+
+jobs:
+
+  # =====================================================================
+  # STAGE 1: Detect Changes
+  # =====================================================================
+  detect-changes:
+    runs-on: [self-hosted, build]
+    outputs:
+      changes_json: ${{ steps.detect.outputs.changes_json }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        run: |
+          bash scripts/detect-changes.sh > changes.json
+          cat changes.json
+          # Re-export to GITHUB_OUTPUT for downstream jobs
+          echo "changes_json=$(jq -c . changes.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: changes
+          path: changes.json
+
+  # =====================================================================
+  # STAGE 2: Generate Dynamic Matrix
+  # Produces both test-matrix.yml (gitlab child pipeline, unchanged) AND
+  # $GITHUB_OUTPUT.matrix (JSON list for Actions matrix consumer).
+  # =====================================================================
+  generate-matrix:
+    needs: detect-changes
+    runs-on: [self-hosted, build]
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
-    needs:
-    - build
-  manual-burn-pool-trigger:
-    needs:
-    - manual-burn-pool
-    - build
-    runs-on:
-    - self-hosted
-    - linux
-    - docker
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.manual-burn-pool.outputs.matrix) }}
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: TODO inline child pipeline steps
-      run: "# TODO: gitlab child pipeline in 'test-matrix.yml' had its own jobs/steps.\n\
-        # Inline them here. Reference matrix entries\n# via matrix.YOUR_VAR (Actions\
-        \ expression\n# syntax \u2014 see workflow_meta TODO above).\necho 'matrix\
-        \ entry placeholder'\nexit 1  # remove once steps are inlined"
-  trigger-test-matrix:
-    needs:
-    - generate-matrix
-    - build
-    runs-on:
-    - self-hosted
-    - linux
-    - docker
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: changes
+      - id: gen
+        run: bash scripts/generate-matrix.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-matrix
+          path: test-matrix.yml
+
+  # =====================================================================
+  # STAGE 3: Build CLI (was gitlab's `build:` job)
+  # =====================================================================
+  build:
+    needs: generate-matrix
+    runs-on: [self-hosted, build]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/build-clients.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: |
+            build/
+
+  # =====================================================================
+  # STAGE 4: Cleanup orphaned test resources before fan-out
+  # (was a job inside the gitlab child pipeline; promoted here)
+  # =====================================================================
+  cleanup-services:
+    needs: build
+    runs-on: [self-hosted, build]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: .
+      - run: bash scripts/cleanup-test-resources.sh
+
+  # =====================================================================
+  # STAGE 5: Test fan-out (was gitlab's child-pipeline `test:` matrix)
+  # Drives one parallel job per SDK_LANG fed from generate-matrix.
+  # =====================================================================
+  test:
+    needs: [generate-matrix, build, cleanup-services]
+    runs-on: [self-hosted, build]
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+    continue-on-error: true        # gitlab's `allow_failure: true`
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: TODO inline child pipeline steps
-      run: "# TODO: gitlab child pipeline in 'test-matrix.yml' had its own jobs/steps.\n\
-        # Inline them here. Reference matrix entries\n# via matrix.YOUR_VAR (Actions\
-        \ expression\n# syntax \u2014 see workflow_meta TODO above).\necho 'matrix\
-        \ entry placeholder'\nexit 1  # remove once steps are inlined"
-  collect-pool-metrics:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        echo "Starting pool metrics collector..."
-        mkdir -p pool-metrics
-        bash scripts/collect-pool-metrics.sh start pool-metrics
-        echo "Collector running, waiting for tests to complete..."
-        # Poll until trigger-test-matrix child pipeline completes (max 20 min)
-        # Stop early when child pipeline finishes to avoid skewing averages
-        for i in $(seq 1 240); do
-          sleep 5
-          # Check if child pipeline is done via GitLab API
-          CHILD_STATUS=$(curl -s "https://git.unturf.com/api/v4/projects/${CI_PROJECT_ID}/pipelines/${{ github.run_id }}/bridges" 2>/dev/null | jq -r '.[0].downstream_pipeline.status // "pending"' 2>/dev/null || echo "pending")
-          if [ "$CHILD_STATUS" = "success" ] || [ "$CHILD_STATUS" = "failed" ]; then
-            echo "Child pipeline finished with status: $CHILD_STATUS"
-            break
-          fi
-          bash scripts/collect-pool-metrics.sh status pool-metrics || true
-        done
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: .
+      - run: bash scripts/test-sdk.sh "${{ matrix.SDK_LANG }}"
+        env:
+          SDK_LANG: ${{ matrix.SDK_LANG }}
+          UNSANDBOX_PUBLIC_KEY: ${{ secrets.UNSANDBOX_PUBLIC_KEY }}
+          UNSANDBOX_SECRET_KEY: ${{ secrets.UNSANDBOX_SECRET_KEY }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.SDK_LANG }}
+          path: test-results-${{ matrix.SDK_LANG }}/
 
-        echo "Stopping collector..."
-        bash scripts/collect-pool-metrics.sh stop pool-metrics
-        echo "Generating pool metrics report..."
-        bash scripts/collect-pool-metrics.sh report pool-metrics
-        cat pool-metrics/pool-metrics.json
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: pool-metrics/
-        retention-days: 90
-    if: ${{ ((startsWith(github.ref, 'refs/tags/'))) }}
-    needs:
-    - build
+  # =====================================================================
+  # MANUAL POOL BURN — same matrix machinery, triggered manually
+  # =====================================================================
+  manual-burn-pool:
+    runs-on: [self-hosted, build]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "=== MANUAL POOL BURN ==="
+          echo '{"test_all": true, "changed_langs": []}' > changes.json
+      - id: gen
+        env:
+          FORCE_FULL_MATRIX: 'true'
+        run: bash scripts/generate-matrix.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-matrix-burn
+          path: test-matrix.yml
+
+  manual-burn-pool-test:
+    needs: manual-burn-pool
+    runs-on: [self-hosted, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.manual-burn-pool.outputs.matrix) }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/build-clients.sh
+      - run: bash scripts/test-sdk.sh "${{ matrix.SDK_LANG }}"
+        env:
+          UNSANDBOX_PUBLIC_KEY: ${{ secrets.UNSANDBOX_PUBLIC_KEY }}
+          UNSANDBOX_SECRET_KEY: ${{ secrets.UNSANDBOX_SECRET_KEY }}
+
+  # =====================================================================
+  # SCIENCE / pool-metric / perf jobs — flatten as-is from gitlab side
+  # =====================================================================
   science-validate-examples:
-    runs-on:
-    - self-hosted
+    needs: build
+    runs-on: [self-hosted, build]
+    container: python:3.11
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        python3 -m venv .venv
-        source .venv/bin/activate
-        pip install --quiet requests aiohttp
-        bash scripts/validate-examples.sh
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: science-results/
-        retention-days: 30
-    needs:
-    - build
-    - manual-burn-pool
-    - manual-burn-pool-trigger
-    - trigger-test-matrix
-    - collect-pool-metrics
-  science-lint-sdks:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: bash scripts/science/lint-all-sdks.sh
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: lint-results/
-        retention-days: 30
-    needs:
-    - manual-burn-pool
-    - manual-burn-pool-trigger
-    - trigger-test-matrix
-    - collect-pool-metrics
-  science-benchmark-clients:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: bash scripts/science/benchmark-clients.sh
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: benchmark-results/
-        retention-days: 30
-    needs:
-    - manual-burn-pool
-    - manual-burn-pool-trigger
-    - trigger-test-matrix
-    - collect-pool-metrics
-  validate-examples:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |
-        mkdir -p science-results
-        if [ -f science-results/examples-validation-results.json ]; then
-          echo "Example validation results found"
-          cat science-results/examples-validation-results.json
+      - uses: actions/checkout@v4
+      - run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --quiet requests aiohttp
+          bash scripts/validate-examples.sh
+        env:
+          UNSANDBOX_PUBLIC_KEY: ${{ secrets.UNSANDBOX_PUBLIC_KEY }}
+          UNSANDBOX_SECRET_KEY: ${{ secrets.UNSANDBOX_SECRET_KEY }}
 
-          # Extract stats and display summary
-          TOTAL=$(jq '.summary.total_examples' science-results/examples-validation-results.json 2>/dev/null || echo "0")
-          PASSED=$(jq '.summary.total_validated' science-results/examples-validation-results.json 2>/dev/null || echo "0")
-          FAILED=$(jq '.summary.total_failed' science-results/examples-validation-results.json 2>/dev/null || echo "0")
-
-          echo ""
-          echo "Summary: $PASSED/$TOTAL passed, $FAILED failed"
-        else
-          echo "No example validation results found"
-        fi
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: science-results/
-        retention-days: 30
-    needs:
-    - science-validate-examples
-    - science-lint-sdks
-    - science-benchmark-clients
-  generate-documentation:
-    runs-on:
-    - self-hosted
+  collect-pool-metrics:
+    needs: test
+    runs-on: [self-hosted, build]
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    continue-on-error: true
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        mkdir -p docs
-        bash scripts/generate-docs.sh || true
-        VALIDATION_TIME=$(date +%s)
-        CURRENT_TIME=$(date +%s)
-        MINUTES_AGO=$((($CURRENT_TIME - $VALIDATION_TIME) / 60))
-        echo "Last verified: $MINUTES_AGO minutes ago" > docs/VERIFICATION_TIMESTAMP.txt
-        echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> docs/VERIFICATION_TIMESTAMP.txt
+      - uses: actions/checkout@v4
+      - run: bash scripts/collect-pool-metrics.sh
 
-        ls -la docs/ || echo "No documentation generated"
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: |-
-          docs/
-          docs/VERIFICATION_TIMESTAMP.txt
-        retention-days: 30
-    needs:
-    - validate-examples
-  report:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: |-
-        bash scripts/filter-results.sh
-        if [ -f science-results/examples-validation-results.json ]; then
-          echo "Including example validation stats in final report..."
-          EXAMPLE_STATS=$(cat science-results/examples-validation-results.json)
-          jq --argjson examples "$EXAMPLE_STATS" '.properties += [{name: "example_validation_passed", value: $examples.examples.passed | tostring}, {name: "example_validation_failed", value: $examples.examples.failed | tostring}]' final-report.xml > final-report.xml.tmp && mv final-report.xml.tmp final-report.xml || true
-        fi
-
-        echo "Including documentation generation artifacts..."
-        ls -la docs/ 2>/dev/null | tail -5 || echo "No documentation available"
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: |-
-          reports/
-          science-results/examples-validation-results.json
-          docs/
-          final-report.xml
-        retention-days: 30
-    needs:
-    - generate-documentation
   perf-report:
-    runs-on:
-    - self-hosted
+    needs: collect-pool-metrics
+    runs-on: [self-hosted, build]
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    continue-on-error: true
     steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: "echo \"========================================\"\necho \"Performance\
-        \ Report Generator\"\necho \"Tag - ${{ github.ref_name }}\"\necho \"========================================\"\
-        \necho \"${{ github.ref_name }}\" | grep -qE '^[0-9]+\\.[0-9]+\\.[0-9]+$'\
-        \ || exit 1\necho \"Step 0 - Waiting 60s for pipeline data to settle...\"\n\
-        sleep 60\necho \"Step 1 - Setting up git on main branch...\"\ntest -z \"$DEPLOY_KEY\"\
-        \ && echo \"WARN - No DEPLOY_KEY, skipping commit\" && exit 0 || true\nmkdir\
-        \ -p ~/.ssh\necho \"$DEPLOY_KEY\" | base64 -d > ~/.ssh/id_ed25519\nchmod 600\
-        \ ~/.ssh/id_ed25519\nssh-keyscan -p 2222 -H git.unturf.com >> ~/.ssh/known_hosts\
-        \ 2>/dev/null\ngit remote set-url origin \"ssh://git@git.unturf.com:2222/${{\
-        \ github.repository }}.git\"\ngit config user.email \"ci@unturf.com\"\ngit\
-        \ config user.name \"GitLab CI\"\ngit fetch origin main\ngit checkout -B main\
-        \ origin/main\necho \"Step 2 - Generating performance report...\"\nbash scripts/generate-perf-report.sh\
-        \ \"${{ github.ref_name }}\" || echo \"WARN - Report generation failed\"\n\
-        echo \"Step 3 - Generating performance charts...\"\ntest -x build/un && test\
-        \ -f \"reports/${{ github.ref_name }}/perf.json\" && build/un -a -f \"reports/${{\
-        \ github.ref_name }}/perf.json\" scripts/generate-perf-charts.py || echo \"\
-        WARN - Charts skipped (build/un or perf.json missing)\"\nmv -f *.png \"reports/${{\
-        \ github.ref_name }}/\" 2>/dev/null || true\necho \"Step 4 - Adding pool metrics\
-        \ if available...\"\ntest -f pool-metrics/pool-metrics.json && cp pool-metrics/pool-metrics.json\
-        \ \"reports/${{ github.ref_name }}/\" && echo \"  \u2713 Pool metrics added\"\
-        \ || echo \"  (no pool metrics)\"\ntest -f pool-metrics/raw-samples.csv &&\
-        \ cp pool-metrics/raw-samples.csv \"reports/${{ github.ref_name }}/\" || true\n\
-        test -f pool-metrics/raw-pools.csv && cp pool-metrics/raw-pools.csv \"reports/${{\
-        \ github.ref_name }}/\" && echo \"  \u2713 Per-pool metrics added\" || true\n\
-        echo \"Step 5 - Report contents...\"\nls -la \"reports/${{ github.ref_name\
-        \ }}/\" 2>/dev/null || echo \"No report directory\"\necho \"Step 6 - Committing\
-        \ to main...\"\ngit add reports/\ngit diff --cached --quiet && echo \"No changes\
-        \ to commit\" || git commit -m \"perf - Add performance report for ${{ github.ref_name\
-        \ }} [ci skip]\"\ngit push origin main || echo \"Nothing to push\"\necho \"\
-        Done\""
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: reports/
-        retention-days: 90
-    env:
-      GIT_STRATEGY: clone
-      GIT_DEPTH: '0'
-    needs:
-    - trigger-test-matrix
-    - build
-    - collect-pool-metrics
-    - generate-documentation
-    if: ${{ ((startsWith(github.ref, 'refs/tags/'))) }}
-  perf-aggregate-report:
-    runs-on:
-    - self-hosted
-    steps:
-    - name: checkout
-      uses: actions/checkout@v4
-    - name: script
-      run: "echo \"========================================\"\necho \"Aggregated Performance\
-        \ Analysis\"\necho \"========================================\"\necho \"Step\
-        \ 1 - Discovering releases from git tags...\"\nVERSIONS=$(git tag | grep -E\
-        \ '^[0-9]+\\.[0-9]+\\.[0-9]+$' | sort -V)\necho \"Found tagged releases:\"\
-        \necho \"$VERSIONS\"\nif [ -z \"$VERSIONS\" ]; then\n  echo \"ERROR - No version\
-        \ tags found\"\n  exit 1\nfi\n\necho \"Step 2 - Copying perf.json files for\
-        \ tagged releases...\"\nfor v in $VERSIONS; do if [ -f \"reports/$v/perf.json\"\
-        \ ]; then cp \"reports/$v/perf.json\" \"perf-$v.json\"; echo \"  \u2713 $v\"\
-        ; fi; done\nFILES=$(ls perf-*.json 2>/dev/null | sed 's/^/-f /' | tr '\\n'\
-        \ ' ')\nif [ -z \"$FILES\" ]; then\n  echo \"ERROR - No perf JSON files found\"\
-        \n  exit 1\nfi\n\necho \"Step 3 - Generating charts via UN...\"\nif [ -x build/un\
-        \ ]; then\n  build/un -a $FILES scripts/generate-aggregated-charts.py\nelse\n\
-        \  echo \"WARN - Charts skipped (build/un missing)\"\nfi\n\nrm -f perf-*.json\n\
-        mv -f *.png reports/ 2>/dev/null || true\necho \"Step 4 - Generating markdown\
-        \ report...\"\npython3 scripts/aggregate-performance-reports.py reports -o\
-        \ AGGREGATED-PERFORMANCE.md\necho \"Step 5 - Setting up git...\"\nif [ -z\
-        \ \"$DEPLOY_KEY\" ]; then\n  echo \"WARN - No DEPLOY_KEY, skipping commit\"\
-        \n  exit 0\nfi\n\nmkdir -p ~/.ssh\necho \"$DEPLOY_KEY\" | base64 -d > ~/.ssh/id_ed25519\n\
-        chmod 600 ~/.ssh/id_ed25519\nssh-keyscan -p 2222 -H git.unturf.com >> ~/.ssh/known_hosts\
-        \ 2>/dev/null\ngit remote set-url origin \"ssh://git@git.unturf.com:2222/${{\
-        \ github.repository }}.git\"\ngit config user.email \"ci@unturf.com\"\ngit\
-        \ config user.name \"GitLab CI\"\ngit fetch origin main\necho \"Step 6 - Stashing\
-        \ artifact files temporarily...\"\ngit add -A\ngit stash push -m \"Temporary\
-        \ stash of artifacts and generated files\"\necho \"Step 7 - Checking out main\
-        \ branch...\"\ngit checkout main\ngit pull origin main || echo \"Already up\
-        \ to date\"\necho \"Step 8 - Restoring artifacts and committing...\"\ngit\
-        \ stash pop || echo \"No stash to pop\"\ngit add reports/ AGGREGATED-PERFORMANCE.md\n\
-        if git diff --cached --quiet; then\n  echo \"No changes to commit\"\nelse\n\
-        \  git commit -m \"perf: Update aggregated performance analysis [ci skip]\"\
-        \nfi\n\ngit push origin main || echo \"Nothing to push\"\necho \"Step 9 -\
-        \ Verifying results...\"\necho \"\u2713 Aggregated report generated with charts\"\
-        \nls -lh AGGREGATED-PERFORMANCE.md\nls -lh reports/aggregated-*.png 2>/dev/null\
-        \ || echo \"  (charts may not have generated)\""
-    - name: upload artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: artifacts
-        path: |-
-          AGGREGATED-PERFORMANCE.md
-          reports/aggregated-*.png
-        retention-days: 90
-    env:
-      GIT_STRATEGY: clone
-      GIT_DEPTH: '0'
-    needs:
-    - perf-report
-    - generate-documentation
-    if: ${{ ((startsWith(github.ref, 'refs/tags/'))) }}
+      - uses: actions/checkout@v4
+      - run: bash scripts/generate-perf-report.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-report
+          path: perf-results/

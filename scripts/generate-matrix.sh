@@ -143,3 +143,15 @@ EOF
 echo ""
 echo "Generated test-matrix.yml with $LANG_COUNT parallel jobs:"
 cat test-matrix.yml
+
+# ----------------------------------------------------------------------
+# Forgejo / GitHub Actions support: also emit the matrix as a JSON list
+# to $GITHUB_OUTPUT so the .unforge/workflows/ci.yml matrix consumer can
+# `${{ fromJson(needs.generate-matrix.outputs.matrix) }}` it. No-op on
+# gitlab (no $GITHUB_OUTPUT defined there).
+if [ -n "$GITHUB_OUTPUT" ]; then
+    # Build a JSON array of {SDK_LANG: <name>} objects from $LANGS.
+    JSON=$(printf '%s\n' $LANGS | jq -R . | jq -sc 'map({SDK_LANG: .})')
+    echo "matrix=$JSON" >> "$GITHUB_OUTPUT"
+    echo "Emitted matrix output for Actions runner: $JSON"
+fi
