@@ -1,3 +1,16 @@
+# AUTOMATICALLY CONVERTED — manual review required.
+# Resolve every `# TODO:` before relying on this workflow.
+#
+# TODO: job 'manual-burn-pool-trigger' uses `trigger:` — manual translation needed
+# TODO: job 'trigger-test-matrix' uses `trigger:` — manual translation needed
+# TODO: job 'manual-cleanup': rule[0] `when: manual` — switch event to `workflow_dispatch:` for parity
+# TODO: job 'manual-burn-pool': rule[0] `when: manual` — switch event to `workflow_dispatch:` for parity
+# TODO: job 'manual-burn-pool': rule[1] `when: manual` — switch event to `workflow_dispatch:` for parity
+# TODO: job 'collect-pool-metrics': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (can't translate value token Tok(kind='re', value='/^\\d+\\.\\d+\\.\\d+$/'))
+# TODO: job 'perf-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (can't translate value token Tok(kind='re', value='/^\\d+\\.\\d+\\.\\d+$/'))
+# TODO: job 'perf-aggregate-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (can't translate value token Tok(kind='re', value='/^\\d+\\.\\d+\\.\\d+$/'))
+# TODO: original used `include:` / `extends:` — inline template content
+
 name: ci
 'on':
   push:
@@ -103,6 +116,8 @@ jobs:
           test-matrix.yml
           changes.json
         retention-days: 1
+    if: ${{ ((github.event_name == 'push')) || ((github.event_name == 'workflow_dispatch'))
+      }}
     needs:
     - build
   manual-burn-pool-trigger:
@@ -160,6 +175,7 @@ jobs:
         name: artifacts
         path: pool-metrics/
         retention-days: 90
+    if: ${{ ((false)) }}
     needs:
     - build
   science-validate-examples:
@@ -371,6 +387,7 @@ jobs:
     - build
     - collect-pool-metrics
     - generate-documentation
+    if: ${{ ((false)) }}
   perf-aggregate-report:
     runs-on:
     - self-hosted
@@ -426,3 +443,4 @@ jobs:
     needs:
     - perf-report
     - generate-documentation
+    if: ${{ ((false)) }}
