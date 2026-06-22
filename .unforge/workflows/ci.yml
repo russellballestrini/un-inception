@@ -1,15 +1,11 @@
 # AUTOMATICALLY CONVERTED — manual review required.
 # Resolve every `# TODO:` before relying on this workflow.
 #
-# TODO: job 'manual-burn-pool-trigger' uses `trigger:` — manual translation needed
-# TODO: job 'trigger-test-matrix' uses `trigger:` — manual translation needed
-# TODO: job 'manual-cleanup': rule[0] `when: manual` — switch event to `workflow_dispatch:` for parity
-# TODO: job 'manual-burn-pool': rule[0] `when: manual` — switch event to `workflow_dispatch:` for parity
-# TODO: job 'manual-burn-pool': rule[1] `when: manual` — switch event to `workflow_dispatch:` for parity
-# TODO: job 'collect-pool-metrics': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (can't translate value token Tok(kind='re', value='/^\\d+\\.\\d+\\.\\d+$/'))
-# TODO: job 'perf-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (can't translate value token Tok(kind='re', value='/^\\d+\\.\\d+\\.\\d+$/'))
-# TODO: job 'perf-aggregate-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (can't translate value token Tok(kind='re', value='/^\\d+\\.\\d+\\.\\d+$/'))
-# TODO: original used `include:` / `extends:` — inline template content
+# TODO: job 'manual-burn-pool-trigger' uses `trigger:` (child pipeline) — no Actions equivalent; rewrite as a reusable workflow
+# TODO: job 'trigger-test-matrix' uses `trigger:` (child pipeline) — no Actions equivalent; rewrite as a reusable workflow
+# TODO: job 'collect-pool-metrics': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (regex '^\\d+\\.\\d+\\.\\d+$': metachars in literal body — needs engine)
+# TODO: job 'perf-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (regex '^\\d+\\.\\d+\\.\\d+$': metachars in literal body — needs engine)
+# TODO: job 'perf-aggregate-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (regex '^\\d+\\.\\d+\\.\\d+$': metachars in literal body — needs engine)
 
 name: ci
 'on':
@@ -31,6 +27,7 @@ jobs:
         bash scripts/build-clients.sh
         echo "Running parallel cleanup..."
         bash scripts/cleanup-test-resources.sh
+    if: ${{ ((github.event_name == 'workflow_dispatch')) }}
   detect-changes:
     runs-on:
     - self-hosted
@@ -116,7 +113,8 @@ jobs:
           test-matrix.yml
           changes.json
         retention-days: 1
-    if: ${{ ((github.event_name == 'push')) || ((github.event_name == 'workflow_dispatch'))
+    if: ${{ ((github.event_name == 'push') && (github.event_name == 'workflow_dispatch'))
+      || ((github.event_name == 'workflow_dispatch') && (github.event_name == 'workflow_dispatch'))
       }}
     needs:
     - build
