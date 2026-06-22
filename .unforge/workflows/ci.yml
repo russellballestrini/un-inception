@@ -1,11 +1,8 @@
 # AUTOMATICALLY CONVERTED — manual review required.
 # Resolve every `# TODO:` before relying on this workflow.
 #
-# TODO: job 'manual-burn-pool-trigger' uses `trigger:` (child pipeline) — no Actions equivalent; rewrite as a reusable workflow
-# TODO: job 'trigger-test-matrix' uses `trigger:` (child pipeline) — no Actions equivalent; rewrite as a reusable workflow
-# TODO: job 'collect-pool-metrics': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (regex '^\\d+\\.\\d+\\.\\d+$': metachars in literal body — needs engine)
-# TODO: job 'perf-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (regex '^\\d+\\.\\d+\\.\\d+$': metachars in literal body — needs engine)
-# TODO: job 'perf-aggregate-report': rule[0] `if:` not translatable: '$CI_COMMIT_TAG =~ /^\\d+\\.\\d+\\.\\d+$/' (regex '^\\d+\\.\\d+\\.\\d+$': metachars in literal body — needs engine)
+# TODO: job 'manual-burn-pool-trigger' uses `trigger: include: artifact:` (dynamic child pipeline) — no Actions equivalent
+# TODO: job 'trigger-test-matrix' uses `trigger: include: artifact:` (dynamic child pipeline) — no Actions equivalent
 
 name: ci
 'on':
@@ -173,7 +170,7 @@ jobs:
         name: artifacts
         path: pool-metrics/
         retention-days: 90
-    if: ${{ ((false)) }}
+    if: ${{ ((startsWith(github.ref, 'refs/tags/'))) }}
     needs:
     - build
   science-validate-examples:
@@ -385,7 +382,7 @@ jobs:
     - build
     - collect-pool-metrics
     - generate-documentation
-    if: ${{ ((false)) }}
+    if: ${{ ((startsWith(github.ref, 'refs/tags/'))) }}
   perf-aggregate-report:
     runs-on:
     - self-hosted
@@ -441,4 +438,4 @@ jobs:
     needs:
     - perf-report
     - generate-documentation
-    if: ${{ ((false)) }}
+    if: ${{ ((startsWith(github.ref, 'refs/tags/'))) }}
