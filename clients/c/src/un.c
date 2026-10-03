@@ -2162,7 +2162,7 @@ static struct SessionInfo create_session(const UnsandboxCredentials *creds, cons
     // Calculate required payload size
     size_t payload_size = 512;  // Base size for JSON structure
     for (int i = 0; i < input_file_count; i++) {
-        payload_size += strlen(input_files[i].content_base64) + 256;
+        payload_size += strlen(input_files[i].content_base64) + strlen(input_files[i].filename) * 6 + 256;
     }
 
     // Build payload with optional shell and multiplexer
@@ -3157,7 +3157,7 @@ static char* create_service(const UnsandboxCredentials *creds, const char *name,
     }
     // Add space for input files
     for (int i = 0; i < input_file_count; i++) {
-        payload_size += strlen(input_files[i].content_base64) + 256;
+        payload_size += strlen(input_files[i].content_base64) + strlen(input_files[i].filename) * 6 + 256;
     }
 
     // Build payload
@@ -4696,7 +4696,7 @@ static int redeploy_service(const UnsandboxCredentials *creds, const char *servi
         payload_size += strlen(bootstrap_url) * 2 + 100;
     }
     for (int i = 0; i < input_file_count; i++) {
-        payload_size += strlen(input_files[i].content_base64) + 256;
+        payload_size += strlen(input_files[i].content_base64) + strlen(input_files[i].filename) * 6 + 256;
     }
 
     // Build JSON payload manually (matching create_service pattern)
@@ -4817,10 +4817,11 @@ static int execute_service(const UnsandboxCredentials *creds, const char *servic
         return 1;
     }
 
-    // Calculate payload size (base + files)
-    size_t payload_size = 8192;
+    // Calculate payload size (escaped command + files); a fixed base here
+    // overflowed on commands past ~8KB (ticket #78)
+    size_t payload_size = strlen(esc_command) + 256;
     for (int i = 0; i < input_file_count; i++) {
-        payload_size += strlen(input_files[i].content_base64) + 256;
+        payload_size += strlen(input_files[i].content_base64) + strlen(input_files[i].filename) * 6 + 256;
     }
 
     char *payload = malloc(payload_size);
@@ -4952,8 +4953,15 @@ static char* execute_service_capture(const UnsandboxCredentials *creds, const ch
         return NULL;
     }
 
-    char payload[8192];
-    snprintf(payload, sizeof(payload), "{\"command\":\"%s\",\"timeout\":%d}", esc_command, timeout_ms);
+    size_t payload_size = strlen(esc_command) + 64;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        free(esc_command);
+        curl_easy_cleanup(curl);
+        free(response.data);
+        return NULL;
+    }
+    snprintf(payload, payload_size, "{\"command\":\"%s\",\"timeout\":%d}", esc_command, timeout_ms);
     free(esc_command);
 
     struct curl_slist *headers = NULL;
@@ -4967,6 +4975,7 @@ static char* execute_service_capture(const UnsandboxCredentials *creds, const ch
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
     CURLcode res = curl_easy_perform(curl);
+    free(payload);
 
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
@@ -5714,7 +5723,13 @@ static int clone_snapshot(const UnsandboxCredentials *creds, const char *snapsho
     snprintf(path, sizeof(path), "/snapshots/%s/clone", snapshot_id);
 
     // Build payload
-    char payload[2048];
+    size_t payload_size = (clone_type ? strlen(clone_type) : 0) + (name ? strlen(name) * 6 : 0) + (shell ? strlen(shell) * 6 : 0) + (ports ? strlen(ports) * 2 : 0) + 256;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        curl_easy_cleanup(curl);
+        free(response.data);
+        return 1;
+    }
     char *p = payload;
     p += sprintf(p, "{\"type\":\"%s\"", clone_type);
 
@@ -5762,6 +5777,7 @@ static int clone_snapshot(const UnsandboxCredentials *creds, const char *snapsho
     fflush(stderr);
 
     CURLcode res = curl_easy_perform(curl);
+    free(payload);
 
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
@@ -8141,7 +8157,13 @@ unsandbox_session_t *unsandbox_session_create(
     }
 
     // Build payload
-    char payload[512];
+    size_t payload_size = (network_mode ? strlen(network_mode) : 0) + (shell ? strlen(shell) : 0) + 64;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        set_last_error("Out of memory");
+        free_credentials(creds);
+        return NULL;
+    }
     char *p = payload;
     p += sprintf(p, "{");
     int has_field = 0;
@@ -8162,6 +8184,7 @@ unsandbox_session_t *unsandbox_session_create(
     if (!curl) {
         set_last_error("Failed to initialize curl");
         free_credentials(creds);
+        free(payload);
         return NULL;
     }
 
@@ -8181,6 +8204,7 @@ unsandbox_session_t *unsandbox_session_create(
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
 
     CURLcode res = curl_easy_perform(curl);
+    free(payload);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
@@ -8872,7 +8896,13 @@ char *unsandbox_snapshot_session(
     }
 
     // Build payload
-    char payload[512];
+    size_t payload_size = strlen(session_id) + (name ? strlen(name) * 6 : 0) + 128;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        set_last_error("Out of memory");
+        free_credentials(creds);
+        return NULL;
+    }
     char *p = payload;
     p += sprintf(p, "{\"source_type\":\"session\",\"source_id\":\"%s\"", session_id);
     if (name && strlen(name) > 0) {
@@ -8892,6 +8922,7 @@ char *unsandbox_snapshot_session(
     if (!curl) {
         set_last_error("Failed to initialize curl");
         free_credentials(creds);
+        free(payload);
         return NULL;
     }
 
@@ -8911,6 +8942,7 @@ char *unsandbox_snapshot_session(
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
 
     CURLcode res = curl_easy_perform(curl);
+    free(payload);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
@@ -8945,7 +8977,13 @@ char *unsandbox_snapshot_service(
     }
 
     // Build payload
-    char payload[512];
+    size_t payload_size = strlen(service_id) + (name ? strlen(name) * 6 : 0) + 128;
+    char *payload = malloc(payload_size);
+    if (!payload) {
+        set_last_error("Out of memory");
+        free_credentials(creds);
+        return NULL;
+    }
     char *p = payload;
     p += sprintf(p, "{\"source_type\":\"service\",\"source_id\":\"%s\"", service_id);
     if (name && strlen(name) > 0) {
@@ -8965,6 +9003,7 @@ char *unsandbox_snapshot_service(
     if (!curl) {
         set_last_error("Failed to initialize curl");
         free_credentials(creds);
+        free(payload);
         return NULL;
     }
 
@@ -8984,6 +9023,7 @@ char *unsandbox_snapshot_service(
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "un-cli/2.0");
 
     CURLcode res = curl_easy_perform(curl);
+    free(payload);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
@@ -11417,7 +11457,7 @@ jobs_cleanup:
     // Build JSON payload
     size_t payload_size = strlen(escaped_code) + 4096;
     for (int i = 0; i < input_file_count; i++) {
-        payload_size += strlen(input_files[i].content_base64) + 256;
+        payload_size += strlen(input_files[i].content_base64) + strlen(input_files[i].filename) * 6 + 256;
     }
     for (int i = 0; i < env_var_count; i++) {
         payload_size += strlen(env_vars[i].key) + strlen(env_vars[i].value) + 32;
