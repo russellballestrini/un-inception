@@ -10316,12 +10316,17 @@ int main(int argc, char *argv[]) {
                 do_redeploy = 1;
                 i++;
                 service_id = argv[i];
-            } else if (strcmp(argv[i], "--execute") == 0 && i + 2 < argc) {
+            } else if (strcmp(argv[i], "--execute") == 0 && i + 1 < argc) {
                 do_execute = 1;
                 i++;
                 service_id = argv[i];
-                i++;
-                execute_command = argv[i];
+                // Command follows the ID unless options come first
+                // (--execute ID -f file 'cmd'); then the first later
+                // positional is the command (ticket #79)
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    i++;
+                    execute_command = argv[i];
+                }
             } else if ((strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--timeout") == 0) && i + 1 < argc) {
                 i++;
                 execute_timeout = atoi(argv[i]) * 1000;  // Convert seconds to ms
@@ -10389,7 +10394,14 @@ int main(int argc, char *argv[]) {
                 service_env_file = argv[i];
             } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
                 show_help = 1;
+            } else if (do_execute && !execute_command && argv[i][0] != '-') {
+                execute_command = argv[i];
             }
+        }
+
+        if (do_execute && !execute_command) {
+            fprintf(stderr, "Error: --execute requires a command: %s service --execute ID 'cmd'\n", argv[0]);
+            return 1;
         }
 
         // Show help if requested or no action specified
