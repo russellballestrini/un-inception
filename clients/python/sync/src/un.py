@@ -1138,7 +1138,7 @@ def create_service(
         vcpu: Number of vCPUs (1-8, default 1)
         service_type: Optional service type for SRV records (e.g., "minecraft")
         unfreeze_on_demand: If True, automatically unfreeze service on incoming requests
-        golden_image: Optional LXD image alias (e.g., "golden-alpine-3.21")
+        golden_image: Optional LXD image alias (e.g., "golden-alpine-3.24")
         input_files: Optional list of dicts with "filename" and "content" (base64)
 
     Returns:
@@ -2686,7 +2686,7 @@ Examples:
     service_parser.add_argument("--hot", action="store_true",
                                 help="Live snapshot (no freeze)")
     service_parser.add_argument("--golden-image", metavar="IMAGE",
-                                help="LXD image alias (e.g., golden-alpine-3.21)")
+                                help="LXD image alias (e.g., golden-alpine-3.24)")
     service_parser.add_argument("-f", "--file", action="append", dest="files",
                                 metavar="FILE",
                                 help="Input file to upload (written to /tmp/ in container)")
