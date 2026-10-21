@@ -2401,6 +2401,26 @@ static int reconnect_session(const UnsandboxCredentials *creds, const char *sess
 // multiplexer: NULL for no multiplexer (default), "screen", or "tmux"
 // input_files: array of files to include in session (written to /tmp/ in container)
 // input_file_count: number of input files
+// Signed shell WebSocket path. The API requires the service owner's HMAC for
+// service shells (2026-10-21); the handshake carries it as query parameters,
+// signed over "GET" + /sessions/<id>/shell with an empty body (as the console does).
+static void shell_ws_path(char *out, size_t out_len, const UnsandboxCredentials *creds, const char *session_id) {
+    char base[256];
+    snprintf(base, sizeof(base), "/sessions/%s/shell", session_id);
+    if (!creds || !creds->public_key || !creds->secret_key) {
+        snprintf(out, out_len, "%s", base);
+        return;
+    }
+    long timestamp = (long)time(NULL);
+    char *signature = sign_request(creds->secret_key, timestamp, "GET", base, NULL);
+    if (!signature) {
+        snprintf(out, out_len, "%s", base);
+        return;
+    }
+    snprintf(out, out_len, "%s?auth=%s&timestamp=%ld&signature=%s", base, creds->public_key, timestamp, signature);
+    free(signature);
+}
+
 static int shell_command(const UnsandboxCredentials *creds, const char *network_mode, int save_artifacts, const char *artifact_dir, int audit_history, const char *shell, const char *multiplexer, int vcpu, struct InputFile *input_files, int input_file_count) {
     // Disable stdout buffering for real-time output
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -2449,8 +2469,8 @@ static int shell_command(const UnsandboxCredentials *creds, const char *network_
     ccinfo.address = "api.unsandbox.com";
     ccinfo.port = 443;
 
-    char path[256];
-    snprintf(path, sizeof(path), "/sessions/%s/shell", session_id);
+    char path[512];
+    shell_ws_path(path, sizeof(path), creds, session_id);
     ccinfo.path = path;
 
     ccinfo.host = ccinfo.address;
@@ -2589,8 +2609,8 @@ static int reconnect_session(const UnsandboxCredentials *creds, const char *sess
     ccinfo.address = "api.unsandbox.com";
     ccinfo.port = 443;
 
-    char path[256];
-    snprintf(path, sizeof(path), "/sessions/%s/shell", session_id);
+    char path[512];
+    shell_ws_path(path, sizeof(path), creds, session_id);
     ccinfo.path = path;
 
     ccinfo.host = ccinfo.address;
