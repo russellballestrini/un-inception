@@ -45,7 +45,9 @@
 
 BEGIN {
     VERSION = "4.2.50"
-    API_BASE = "https://api.unsandbox.com"
+    API_BASE = ENVIRON["UNSANDBOX_API_URL"]
+    if (API_BASE == "") API_BASE = "https://api.unsandbox.com"
+    sub(/\/+$/, "", API_BASE)
     PORTAL_BASE = "https://unsandbox.com"
     LANGUAGES_CACHE_TTL = 3600  # 1 hour cache TTL
     LANGUAGES_CACHE_FILE = ENVIRON["HOME"] "/.unsandbox/languages.json"
@@ -67,6 +69,10 @@ BEGIN {
 
     # Global credential state
     GLOBAL_ACCOUNT_INDEX = -1
+
+    # Our CLI lives in END and reads ARGV itself; exit here so awk never tries
+    # to open "key", "session", ... as input files. END still runs.
+    exit
 }
 
 # ============================================================================
@@ -94,12 +100,48 @@ function detect_language(filename    , ext) {
     return ""
 }
 
-function hmac_sign(secret, message    , cmd, sig) {
+function hmac_sign(secret, message) {
     if (secret == "" || message == "") return ""
-    cmd = "echo -n '" message "' | openssl dgst -sha256 -hmac '" secret "' | sed 's/^.* //'"
-    cmd | getline sig
+    return hmac_sign_stdin(secret, message)
+}
+
+# Quote s for /bin/sh.
+function shq(s) {
+    gsub(/'/, "'\\''", s)
+    return "'" s "'"
+}
+
+# SHA-256 hex of (printf escapes in prefix_esc) followed by data's raw bytes.
+# Bytes travel through a coprocess's stdin only; nothing reaches an argv.
+function sh_sha256(prefix_esc, data    , cmd, out) {
+    cmd = "sh -c 'IFS= read -r p; printf \"$p\"; cat' | openssl dgst -sha256 | sed 's/^.* //'"
+    printf "%s\n%s", prefix_esc, data |& cmd
+    close(cmd, "to")
+    out = ""
+    cmd |& getline out
     close(cmd)
-    return sig
+    return out
+}
+
+# HMAC-SHA256 (RFC 2104) built from plain SHA-256, so our secret never appears
+# on any command line (openssl -hmac would put it in argv).
+function hmac_sign_stdin(secret, message    , i, b, kh, klen, ip, op, inner, inner_esc) {
+    if (!("a" in ORD)) for (i = 1; i < 128; i++) ORD[sprintf("%c", i)] = i
+    klen = length(secret)
+    kh = ""
+    if (klen > 64) { kh = sh_sha256("", secret); klen = 32 }
+    ip = ""; op = ""
+    for (i = 1; i <= 64; i++) {
+        if (i > klen) b = 0
+        else if (kh != "") b = strtonum("0x" substr(kh, 2 * i - 1, 2))
+        else b = ORD[substr(secret, i, 1)]
+        ip = ip sprintf("\\%03o", xor(b, 54))
+        op = op sprintf("\\%03o", xor(b, 92))
+    }
+    inner = sh_sha256(ip, message)
+    inner_esc = ""
+    for (i = 1; i <= 32; i++) inner_esc = inner_esc sprintf("\\%03o", strtonum("0x" substr(inner, 2 * i - 1, 2)))
+    return sh_sha256(op inner_esc, "")
 }
 
 function health_check(    cmd, result) {
@@ -109,7 +151,7 @@ function health_check(    cmd, result) {
     return (result == "200")
 }
 
-function load_accounts_csv(index    , home, path, line, fields, count, pk, sk) {
+function load_accounts_csv(row    , home, path, line, fields, count, pk, sk) {
     home = ENVIRON["HOME"]
     count = -1
     pk = ""
@@ -119,7 +161,7 @@ function load_accounts_csv(index    , home, path, line, fields, count, pk, sk) {
     while ((getline line < path) > 0) {
         if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) continue
         count++
-        if (count == index) {
+        if (count == row) {
             split(line, fields, ",")
             pk = fields[1]; sk = fields[2]
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", pk)
@@ -135,7 +177,7 @@ function load_accounts_csv(index    , home, path, line, fields, count, pk, sk) {
     while ((getline line < path) > 0) {
         if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) continue
         count++
-        if (count == index) {
+        if (count == row) {
             split(line, fields, ",")
             pk = fields[1]; sk = fields[2]
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", pk)
@@ -1157,6 +1199,170 @@ function validate_keys() {
 
 function cmd_key(do_extend) {
     validate_key(do_extend)
+}
+
+# Does accounts.csv at path hold a credential row number row?
+function csv_has_row(path, row    , line, count, found) {
+    count = -1; found = 0
+    while ((getline line < path) > 0) {
+        if (line ~ /^[[:space:]]*$/ || line ~ /^[[:space:]]*#/) continue
+        if (++count == row) { found = 1; break }
+    }
+    close(path)
+    return found
+}
+
+# The accounts.csv our credentials came from, or "" (-p/-k flags / env vars).
+# Mirrors get_api_keys' tiers.
+function credentials_csv_path(    row, p) {
+    if (FLAG_CREDS) return ""
+    row = GLOBAL_ACCOUNT_INDEX
+    if (row < 0) {
+        if ((ENVIRON["UNSANDBOX_PUBLIC_KEY"] != "" && ENVIRON["UNSANDBOX_SECRET_KEY"] != "") || ENVIRON["UNSANDBOX_API_KEY"] != "") return ""
+        row = ENVIRON["UNSANDBOX_ACCOUNT"] + 0
+    }
+    p = ENVIRON["HOME"] "/.unsandbox/accounts.csv"
+    if (csv_has_row(p, row)) return p
+    if (csv_has_row("accounts.csv", row)) return "accounts.csv"
+    return ""
+}
+
+# Replace our secret (2nd field) on the line whose 1st field equals pk. Every
+# other line, field, comment and our order stay as they are. Temp file 0600 in
+# the same directory, then rename. Our new secret goes through awk's own file
+# writes, never an argv.
+function rewrite_accounts_csv(path, pk, new_secret    , n, lines, line, i, pos, pos2, first, rest, changed, dir, base, tmp) {
+    n = 0
+    while ((getline line < path) > 0) lines[++n] = line
+    close(path)
+    changed = 0
+    for (i = 1; i <= n && !changed; i++) {
+        line = lines[i]
+        if (line ~ /^[[:space:]]*#/) continue
+        pos = index(line, ",")
+        if (pos == 0) continue
+        first = substr(line, 1, pos - 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", first)
+        if (first != pk) continue
+        rest = substr(line, pos + 1)
+        pos2 = index(rest, ",")
+        if (pos2 > 0) lines[i] = substr(line, 1, pos) new_secret substr(rest, pos2)
+        else lines[i] = substr(line, 1, pos) new_secret (rest ~ /\r$/ ? "\r" : "")
+        changed = 1
+    }
+    if (!changed) return 0
+    dir = "."; base = path
+    if (index(path, "/")) { dir = path; sub(/\/[^\/]*$/, "", dir); base = path; sub(/^.*\//, "", base) }
+    tmp = dir "/." base "." PROCINFO["pid"] ".tmp"
+    if (system("umask 077 && : > " shq(tmp)) != 0) return 0
+    for (i = 1; i <= n; i++) print lines[i] > tmp
+    close(tmp)
+    system("chmod 600 " shq(tmp))
+    if (system("mv -f " shq(tmp) " " shq(path)) != 0) { system("rm -f " shq(tmp)); return 0 }
+    return 1
+}
+
+function json_string_field(s, key    , a) {
+    if (match(s, "\"" key "\"[[:space:]]*:[[:space:]]*\"([^\"]*)\"", a)) return a[1]
+    return ""
+}
+
+# POST /keys/self/rotate-secret, body {}, signed. Sets ROT_STATUS / ROT_BODY.
+function rotate_secret_request(otp, challenge    , endpoint, ts, sig, cmd, line, n, out, i) {
+    endpoint = "/keys/self/rotate-secret"
+    ts = systime()
+    sig = hmac_sign_stdin(GLOBAL_SECRET_KEY, ts ":POST:" endpoint ":{}")
+    cmd = "curl -s -w '\\n%{http_code}' -X POST " shq(API_BASE endpoint) \
+          " -H 'Content-Type: application/json'" \
+          " -H " shq("Authorization: Bearer " GLOBAL_PUBLIC_KEY) \
+          " -H 'X-Timestamp: " ts "' -H 'X-Signature: " sig "'"
+    if (otp != "") cmd = cmd " -H " shq("X-Sudo-OTP: " otp) " -H " shq("X-Sudo-Challenge: " challenge)
+    cmd = cmd " -d '{}'"
+    n = 0
+    while ((cmd | getline line) > 0) out[++n] = line
+    close(cmd)
+    ROT_STATUS = (n > 0) ? out[n] + 0 : 0
+    ROT_BODY = ""
+    for (i = 1; i < n; i++) ROT_BODY = ROT_BODY out[i] "\n"
+}
+
+# un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+function cmd_key_rotate(otp_given, otp    , dir, cf, chal, code, msg, new_secret, csv) {
+    get_api_keys()
+    if (GLOBAL_PUBLIC_KEY == "" || GLOBAL_SECRET_KEY == "") {
+        print RED "Error: no credentials found" RESET > "/dev/stderr"
+        exit 3
+    }
+    dir = ENVIRON["HOME"] "/.unsandbox"
+    cf = dir "/rotate-" substr(sh_sha256("", GLOBAL_PUBLIC_KEY), 1, 16) ".challenge"
+
+    if (otp_given) {
+        chal = ""
+        if ((getline chal < cf) <= 0) {
+            print RED "Error: no rotation in progress; run: un key --rotate" RESET > "/dev/stderr"
+            exit 2
+        }
+        close(cf)
+        gsub(/[[:space:]]/, "", chal)
+        gsub(/[[:space:]]/, "", otp)
+        rotate_secret_request(otp, chal)
+        system("rm -f " shq(cf))
+    } else {
+        rotate_secret_request("", "")
+        if (ROT_STATUS == 428) {
+            chal = json_string_field(ROT_BODY, "challenge_id")
+            if (system("test -t 0") == 0) {
+                print "One-time code emailed to the key owner." > "/dev/stderr"
+                printf "Code: " > "/dev/stderr"
+                fflush("/dev/stderr")
+                code = ""
+                getline code < "/dev/stdin"
+                gsub(/[[:space:]]/, "", code)
+                if (code == "") {
+                    print RED "Error: cancelled" RESET > "/dev/stderr"
+                    exit 1
+                }
+                rotate_secret_request(code, chal)
+            } else {
+                system("umask 077 && mkdir -p " shq(dir) " && chmod 700 " shq(dir))
+                system("umask 077 && : > " shq(cf))
+                printf "%s", chal > cf
+                close(cf)
+                system("chmod 600 " shq(cf))
+                print "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+                exit 0
+            }
+        }
+    }
+
+    if (ROT_STATUS != 200) {
+        if (ROT_STATUS == 403 && json_string_field(ROT_BODY, "error") == "email_required") {
+            print RED "Error: this key has no email; add one or use POST /keys/recover" RESET > "/dev/stderr"
+            exit 3
+        }
+        if (ROT_STATUS == 401) {
+            print RED "Error: authentication failed" RESET > "/dev/stderr"
+            exit 3
+        }
+        msg = json_string_field(ROT_BODY, "message")
+        if (msg == "") msg = json_string_field(ROT_BODY, "error")
+        if (msg == "") msg = "HTTP " ROT_STATUS
+        print RED "Error: " msg RESET > "/dev/stderr"
+        exit 4
+    }
+    new_secret = json_string_field(ROT_BODY, "secret")
+    if (new_secret == "") {
+        print RED "Error: API returned no secret" RESET > "/dev/stderr"
+        exit 4
+    }
+
+    csv = credentials_csv_path()
+    if (csv != "" && rewrite_accounts_csv(csv, GLOBAL_PUBLIC_KEY, new_secret)) {
+        print "Secret rotated. Updated " csv " (public key " GLOBAL_PUBLIC_KEY ")."
+    } else {
+        print "New secret (shown once, store it now): " new_secret
+        print "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
+    }
 }
 
 function read_languages_cache(    cmd, line, cache_content, cache_timestamp, current_time) {
@@ -2316,6 +2522,7 @@ function show_help() {
     print "       awk -f un.awk session --snapshot SESSION_ID [--snapshot-name NAME] [--hot]"
     print "       awk -f un.awk session --restore SNAPSHOT_ID"
     print "       awk -f un.awk key [--extend]"
+    print "       awk -f un.awk key --rotate [--otp CODE]"
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-e KEY=VAL] [--env-file FILE] [-f FILE]..."
     print "       awk -f un.awk service --destroy ID"
@@ -2427,6 +2634,7 @@ END {
             _gi++
         }
     }
+    FLAG_CREDS = (GLOBAL_PUBLIC_KEY != "" && GLOBAL_SECRET_KEY != "")
 
     if (ARGV[1] == "session") {
         if (ARGC >= 3 && ARGV[2] == "--list") {
@@ -2491,11 +2699,14 @@ END {
     }
 
     if (ARGV[1] == "key") {
-        do_extend = 0
-        if (ARGC >= 3 && ARGV[2] == "--extend") {
-            do_extend = 1
+        do_extend = 0; do_rotate = 0; otp_given = 0; otp = ""
+        for (i = 2; i < ARGC; i++) {
+            if (ARGV[i] == "--extend") do_extend = 1
+            else if (ARGV[i] == "--rotate") do_rotate = 1
+            else if (ARGV[i] == "--otp" && i + 1 < ARGC) { otp_given = 1; otp = ARGV[++i] }
         }
-        cmd_key(do_extend)
+        if (do_rotate) cmd_key_rotate(otp_given, otp)
+        else cmd_key(do_extend)
         exit 0
     }
 

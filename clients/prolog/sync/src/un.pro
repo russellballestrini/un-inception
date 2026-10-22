@@ -179,6 +179,104 @@ get_secret_key(SecretKey) :-
 get_api_key(ApiKey) :-
     get_public_key(ApiKey).
 
+% API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash.
+% main/1 exports it as UN_API, which every request command references.
+api_base(Base) :-
+    (   getenv('UNSANDBOX_API_URL', Url), Url \== ''
+    ->  true
+    ;   Url = 'https://api.unsandbox.com'
+    ),
+    strip_trailing_slashes(Url, Base).
+
+strip_trailing_slashes(Url, Base) :-
+    (   atom_concat(Prefix, '/', Url)
+    ->  strip_trailing_slashes(Prefix, Base)
+    ;   Base = Url
+    ).
+
+% accounts.csv the credentials came from ('' for flags / env vars).
+% Mirrors get_public_key/get_secret_key and load_accounts_csv tiers.
+credentials_csv_path(Path) :-
+    (   nb_getval(account_index, Idx), Idx >= 0
+    ->  accounts_csv_file(Path)
+    ;   getenv('UNSANDBOX_PUBLIC_KEY', PK), PK \= ''
+    ->  Path = ''
+    ;   getenv('UNSANDBOX_API_KEY', K), K \= ''
+    ->  Path = ''
+    ;   accounts_csv_file(Path)
+    ).
+
+accounts_csv_file(Path) :-
+    getenv('HOME', Home),
+    atomic_list_concat([Home, '/.unsandbox/accounts.csv'], Path1),
+    (   exists_file(Path1)
+    ->  Path = Path1
+    ;   exists_file('accounts.csv')
+    ->  Path = 'accounts.csv'
+    ;   Path = ''
+    ).
+
+% un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+% Credentials reach the static bash flow through the environment, never argv.
+rotate_key(Args) :-
+    get_public_key(PublicKey),
+    get_secret_key(SecretKey),
+    (   append(_, ['--otp', Otp|_], Args) -> true ; Otp = '' ),
+    credentials_csv_path(CsvPath),
+    setenv('UN_PK', PublicKey),
+    setenv('UN_SK', SecretKey),
+    setenv('UN_CSV', CsvPath),
+    setenv('UN_OTP', Otp),
+    rotate_script(Script),
+    process_create(path(bash), ['-c', Script],
+                   [stdin(std), stdout(std), stderr(std), process(Pid)]),
+    process_wait(Pid, Status),
+    (   Status = exit(Code) -> halt(Code) ; halt(1) ).
+
+rotate_script(Script) :-
+    atomic_list_concat([
+    'A=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ "${A%/}" != "$A" ]; do A=${A%/}; done',
+    'P=/keys/self/rotate-secret; D="$HOME/.unsandbox"',
+    'if command -v sha256sum >/dev/null 2>&1; then S=sha256sum; else S="shasum -a 256"; fi',
+    'CF="$D/rotate-$(printf %s "$UN_PK" | $S | cut -c1-16).challenge"',
+    'RB=$(mktemp) || exit 1; trap \'rm -f "$RB"\' EXIT',
+    'hmac() { local k=$1 i c ip= op= ih= x',
+    '  for ((i=0;i<64;i++)); do if ((i<${#k})); then printf -v c %d "\'${k:i:1}"; else c=0; fi',
+    '    printf -v ip \'%s\\\\x%02x\' "$ip" $((c^54)); printf -v op \'%s\\\\x%02x\' "$op" $((c^92)); done',
+    '  ih=$( { printf "$ip"; printf %s "$2"; } | $S | cut -c1-64)',
+    '  for ((i=0;i<64;i+=2)); do x="$x\\\\x${ih:i:2}"; done',
+    '  { printf "$op"; printf "$x"; } | $S | cut -c1-64; }',
+    'post() { local ts sig; ts=$(date +%s); sig=$(hmac "$UN_SK" "$ts:POST:$P:{}")',
+    '  { printf \'url = "%s"\\nrequest = "POST"\\n\' "$A$P"',
+    '    printf \'header = "Content-Type: application/json"\\nheader = "Authorization: Bearer %s"\\n\' "$UN_PK"',
+    '    printf \'header = "X-Timestamp: %s"\\nheader = "X-Signature: %s"\\n\' "$ts" "$sig"',
+    '    if [ -n "$1" ]; then printf \'header = "X-Sudo-OTP: %s"\\nheader = "X-Sudo-Challenge: %s"\\n\' "$1" "$2"; fi',
+    '    printf \'data = "{}"\\n\'; } | curl -s -K - -o "$RB" -w \'%{http_code}\'; }',
+    'if [ -n "${UN_OTP:-}" ]; then',
+    '  CH=$(cat "$CF" 2>/dev/null) || { echo "Error: no rotation in progress; run: un key --rotate" >&2; exit 2; }',
+    '  CODE=$(post "$UN_OTP" "$CH"); rm -f "$CF"',
+    'else',
+    '  CODE=$(post)',
+    '  if [ "$CODE" = 428 ]; then CH=$(jq -r \'.challenge_id // empty\' "$RB")',
+    '    if [ -t 0 ]; then echo "One-time code emailed to the key owner." >&2; printf \'Code: \' >&2; read -r OTP',
+    '      [ -n "$OTP" ] || { echo "Error: cancelled" >&2; exit 1; }; CODE=$(post "$OTP" "$CH")',
+    '    else (umask 077; mkdir -p "$D" && printf %s "$CH" > "$CF") && chmod 600 "$CF" || exit 1',
+    '      echo "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"; exit 0; fi; fi',
+    'fi',
+    'if [ "$CODE" != 200 ]; then',
+    '  if [ "$CODE" = 403 ] && [ "$(jq -r \'.error // empty\' "$RB" 2>/dev/null)" = email_required ]; then',
+    '    echo "Error: this key has no email; add one or use POST /keys/recover" >&2; exit 3; fi',
+    '  [ "$CODE" = 401 ] && { echo "Error: authentication failed" >&2; exit 3; }',
+    '  M=$(jq -r \'.message // .error // empty\' "$RB" 2>/dev/null); echo "Error: ${M:-HTTP $CODE}" >&2; exit 4; fi',
+    'NS=$(jq -r \'.secret // empty\' "$RB"); [ -n "$NS" ] || { echo "Error: API returned no secret" >&2; exit 4; }',
+    'if [ -n "${UN_CSV:-}" ] && [ -f "$UN_CSV" ] && T=$(mktemp "$(dirname "$UN_CSV")/.accounts.csv.XXXXXX"); then',
+    '  chmod 600 "$T"; NS="$NS" awk -F, -v OFS=, -v pk="$UN_PK" \'BEGIN{d=0} { t=$1; gsub(/^[ \\t]+|[ \\t\\r]+$/,"",t)',
+    '    if (!d && $0 !~ /^[ \\t]*(#|$)/ && NF>=2 && t==pk) { $2=ENVIRON["NS"]; d=1 } print } END{exit d?0:1}\' "$UN_CSV" > "$T" \\',
+    '    && mv -f "$T" "$UN_CSV" && { echo "Secret rotated. Updated $UN_CSV (public key $UN_PK)."; exit 0; }; rm -f "$T"; fi',
+    'echo "New secret (shown once, store it now): $NS"',
+    'echo "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."'
+    ], '\n', Script).
+
 % Execute command using curl
 execute_file(Filename) :-
     % Check file exists
@@ -202,7 +300,7 @@ execute_file(Filename) :-
 
     % Build and execute curl command with HMAC
     format(atom(Cmd),
-        'BODY=$(jq -Rs \'\'\''{language: "~w", code: .}\'\'\'\' < "~w"); TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); curl -s -X POST https://api.unsandbox.com/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_resp.json; RESP=$(cat /tmp/unsandbox_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_resp.json; exit 1; fi; jq -r ".stdout // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[34m/" | sed "s/$/\\x1b[0m/"; jq -r ".stderr // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[31m/" | sed "s/$/\\x1b[0m/" >&2; rm -f /tmp/unsandbox_resp.json',
+        'BODY=$(jq -Rs \'\'\''{language: "~w", code: .}\'\'\'\' < "~w"); TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); curl -s -X POST $UN_API/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_resp.json; RESP=$(cat /tmp/unsandbox_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_resp.json; exit 1; fi; jq -r ".stdout // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[34m/" | sed "s/$/\\x1b[0m/"; jq -r ".stderr // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[31m/" | sed "s/$/\\x1b[0m/" >&2; rm -f /tmp/unsandbox_resp.json',
         [Language, Filename, SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -211,7 +309,7 @@ session_list :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/sessions:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET https://api.unsandbox.com/sessions -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.sessions[] | "\\(.id) \\(.shell) \\(.status) \\(.created_at)"\' 2>/dev/null || echo "No active sessions"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/sessions:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/sessions -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.sessions[] | "\\(.id) \\(.shell) \\(.status) \\(.created_at)"\' 2>/dev/null || echo "No active sessions"',
         [SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -220,7 +318,7 @@ session_kill(SessionId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/sessions/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE https://api.unsandbox.com/sessions/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mSession terminated: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/sessions/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE $UN_API/sessions/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mSession terminated: ~w\\x1b[0m"',
         [SessionId, SecretKey, SessionId, PublicKey, SessionId]),
     shell(Cmd, 0).
 
@@ -235,7 +333,7 @@ session_create(Shell, InputFiles) :-
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
+        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
         [ShellVal, FileArgs, SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -255,7 +353,7 @@ service_list :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET https://api.unsandbox.com/services -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.services[] | "\\(.id) \\(.name) \\(.status)"\' 2>/dev/null || echo "No services"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/services -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.services[] | "\\(.id) \\(.name) \\(.status)"\' 2>/dev/null || echo "No services"',
         [SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -264,7 +362,7 @@ service_info(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
         [ServiceId, SecretKey, ServiceId, PublicKey]),
     shell(Cmd, 0).
 
@@ -273,7 +371,7 @@ service_logs(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/logs:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/services/~w/logs -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".logs"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/logs:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/services/~w/logs -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".logs"',
         [ServiceId, SecretKey, ServiceId, PublicKey]),
     shell(Cmd, 0).
 
@@ -282,7 +380,7 @@ service_sleep(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/freeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services/~w/freeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService frozen: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/freeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/services/~w/freeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService frozen: ~w\\x1b[0m"',
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 
@@ -291,7 +389,7 @@ service_wake(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/unfreeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services/~w/unfreeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService unfreezing: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/unfreeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/services/~w/unfreeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService unfreezing: ~w\\x1b[0m"',
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 
@@ -300,7 +398,7 @@ service_destroy(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE https://api.unsandbox.com/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/services/~w:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE https://api.unsandbox.com/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/services/~w:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId, SecretKey, ServiceId, PublicKey, ServiceId, ServiceId]),
     shell(Cmd, 0).
 
@@ -310,7 +408,7 @@ service_resize(ServiceId, Vcpu) :-
     get_secret_key(SecretKey),
     Ram is Vcpu * 2,
     format(atom(Cmd),
-        'BODY=\'\'{\"vcpu\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH https://api.unsandbox.com/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mService resized to ~w vCPU, ~w GB RAM\\x1b[0m"',
+        'BODY=\'\'{\"vcpu\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH $UN_API/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mService resized to ~w vCPU, ~w GB RAM\\x1b[0m"',
         [Vcpu, ServiceId, SecretKey, ServiceId, PublicKey, Vcpu, Ram]),
     shell(Cmd, 0).
 
@@ -323,7 +421,7 @@ service_set_unfreeze_on_demand(ServiceId, Enabled) :-
     ;   EnabledStr = 'false', Msg = 'disabled'
     ),
     format(atom(Cmd),
-        'BODY=\'\'{\"unfreeze_on_demand\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH https://api.unsandbox.com/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mUnfreeze-on-demand ~w for service: ~w\\x1b[0m"',
+        'BODY=\'\'{\"unfreeze_on_demand\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH $UN_API/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mUnfreeze-on-demand ~w for service: ~w\\x1b[0m"',
         [EnabledStr, ServiceId, SecretKey, ServiceId, PublicKey, Msg, ServiceId]),
     shell(Cmd, 0).
 
@@ -332,7 +430,7 @@ service_env_status(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET "https://api.unsandbox.com/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
         [ServiceId, SecretKey, ServiceId, PublicKey]),
     shell(Cmd, 0).
 
@@ -341,7 +439,7 @@ service_env_set(ServiceId, Envs, EnvFile) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -z "$ENV_CONTENT" ]; then echo -e "\\x1b[31mError: No environment variables to set\\x1b[0m" >&2; exit 1; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PUT:/services/~w/env:$ENV_CONTENT"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "https://api.unsandbox.com/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" | jq .',
+        'ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -z "$ENV_CONTENT" ]; then echo -e "\\x1b[31mError: No environment variables to set\\x1b[0m" >&2; exit 1; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PUT:/services/~w/env:$ENV_CONTENT"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" | jq .',
         [Envs, EnvFile, ServiceId, SecretKey, ServiceId, PublicKey]),
     shell(Cmd, 0).
 
@@ -350,7 +448,7 @@ service_env_export(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/env/export:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST "https://api.unsandbox.com/services/~w/env/export" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".content // empty"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/env/export:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST "$UN_API/services/~w/env/export" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".content // empty"',
         [ServiceId, SecretKey, ServiceId, PublicKey]),
     shell(Cmd, 0).
 
@@ -359,7 +457,7 @@ service_env_delete(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE "https://api.unsandbox.com/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mVault deleted for: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mVault deleted for: ~w\\x1b[0m"',
         [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
     shell(Cmd, 0).
 
@@ -370,11 +468,11 @@ service_dump_bootstrap(ServiceId, DumpFile) :-
     (   DumpFile = ''
     ->  % No file specified, print to stdout
         format(atom(Cmd),
-            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); RESP=$(curl -s -X POST https://api.unsandbox.com/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
+            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); RESP=$(curl -s -X POST $UN_API/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
             [ServiceId, ServiceId, SecretKey, ServiceId, PublicKey])
     ;   % File specified, save to file
         format(atom(Cmd),
-            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); RESP=$(curl -s -X POST https://api.unsandbox.com/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT" > "~w" && chmod 755 "~w" && echo "Bootstrap saved to ~w"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
+            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); RESP=$(curl -s -X POST $UN_API/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT" > "~w" && chmod 755 "~w" && echo "Bootstrap saved to ~w"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
             [ServiceId, ServiceId, SecretKey, ServiceId, PublicKey, DumpFile, DumpFile, DumpFile])
     ),
     shell(Cmd, 0).
@@ -408,7 +506,7 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
         [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -477,11 +575,11 @@ languages_command(JsonOutput) :-
         (   JsonOutput = true
         ->  % Output as JSON array and cache
             format(atom(Cmd),
-                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$LANGS"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
+                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$LANGS"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
                 [SecretKey, PublicKey])
         ;   % Output one language per line and cache
             format(atom(Cmd),
-                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET https://api.unsandbox.com/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$RESP" | jq -r ".languages[]"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
+                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$RESP" | jq -r ".languages[]"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
                 [SecretKey, PublicKey])
         ),
         shell(Cmd, 0)
@@ -492,6 +590,7 @@ handle_languages(['--json'|_]) :- languages_command(true).
 handle_languages(_) :- languages_command(false).
 
 % Handle key subcommand
+handle_key(Args) :- memberchk('--rotate', Args), !, rotate_key(Args).
 handle_key(['--extend'|_]) :- validate_key(true).
 handle_key(_) :- validate_key(false).
 
@@ -500,7 +599,7 @@ image_list :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/images -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/images -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
         [SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -509,7 +608,7 @@ image_info(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET https://api.unsandbox.com/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
         [ImageId, SecretKey, ImageId, PublicKey]),
     shell(Cmd, 0).
 
@@ -518,7 +617,7 @@ image_delete(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE https://api.unsandbox.com/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/images/~w:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE https://api.unsandbox.com/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/images/~w:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
         [ImageId, SecretKey, ImageId, PublicKey, ImageId, SecretKey, ImageId, PublicKey, ImageId, ImageId]),
     shell(Cmd, 0).
 
@@ -527,7 +626,7 @@ image_lock(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/lock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/lock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage locked: ~w\\x1b[0m"',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/lock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/lock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage locked: ~w\\x1b[0m"',
         [ImageId, SecretKey, ImageId, PublicKey, ImageId]),
     shell(Cmd, 0).
 
@@ -536,7 +635,7 @@ image_unlock(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/unlock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X POST https://api.unsandbox.com/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:POST:/images/~w/unlock:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X POST https://api.unsandbox.com/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/unlock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X POST $UN_API/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:POST:/images/~w/unlock:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X POST $UN_API/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
         [ImageId, SecretKey, ImageId, PublicKey, ImageId, SecretKey, ImageId, PublicKey, ImageId, ImageId]),
     shell(Cmd, 0).
 
@@ -549,7 +648,7 @@ image_publish(SourceId, SourceType, Name) :-
     ;   NameJson = ''
     ),
     format(atom(Cmd),
-        'BODY="{\\\"source_type\\\":\\\"~w\\\",\\\"source_id\\\":\\\"~w\\\"~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/publish:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/publish -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage published\\x1b[0m"',
+        'BODY="{\\\"source_type\\\":\\\"~w\\\",\\\"source_id\\\":\\\"~w\\\"~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/publish:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/publish -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage published\\x1b[0m"',
         [SourceType, SourceId, NameJson, SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -558,7 +657,7 @@ image_visibility(ImageId, Mode) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'BODY="{\\\"visibility\\\":\\\"~w\\\"}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/visibility:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/visibility -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mImage visibility set to ~w: ~w\\x1b[0m"',
+        'BODY="{\\\"visibility\\\":\\\"~w\\\"}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/visibility:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/visibility -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mImage visibility set to ~w: ~w\\x1b[0m"',
         [Mode, ImageId, SecretKey, ImageId, PublicKey, Mode, ImageId]),
     shell(Cmd, 0).
 
@@ -578,7 +677,7 @@ image_spawn(ImageId, Name, Ports) :-
     ;   PortsJson = ''
     ),
     format(atom(Cmd),
-        'BODY="{~w~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/spawn:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/spawn -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService spawned from image\\x1b[0m"',
+        'BODY="{~w~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/spawn:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/spawn -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService spawned from image\\x1b[0m"',
         [NameJson, PortsJson, ImageId, SecretKey, ImageId, PublicKey]),
     shell(Cmd, 0).
 
@@ -591,7 +690,7 @@ image_clone(ImageId, Name) :-
     ;   NameJson = ''
     ),
     format(atom(Cmd),
-        'BODY="{~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/clone:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST https://api.unsandbox.com/images/~w/clone -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage cloned\\x1b[0m"',
+        'BODY="{~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/clone:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/clone -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage cloned\\x1b[0m"',
         [NameJson, ImageId, SecretKey, ImageId, PublicKey]),
     shell(Cmd, 0).
 
@@ -804,7 +903,7 @@ service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, In
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X POST https://api.unsandbox.com/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "https://api.unsandbox.com/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "$UN_API/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
         [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, SecretKey, PublicKey, Envs, EnvFile, SecretKey, PublicKey]),
     shell(Cmd, 0).
 
@@ -812,6 +911,8 @@ service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, In
 main(Argv) :-
     % Initialize account_index global to -1 (not set)
     nb_setval(account_index, -1),
+    api_base(ApiBase),
+    setenv('UN_API', ApiBase),
 
     % Parse --account N global flag if present
     (   Argv = ['--account', NStr|Rest]
@@ -833,6 +934,7 @@ main(Argv) :-
         write(user_error, '       un.pro image [options]\n'),
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
+        write(user_error, '       un.pro key --rotate [--otp CODE]\n'),
         write(user_error, '\n'),
         write(user_error, 'Snapshot options:\n'),
         write(user_error, '  --list, -l          List all snapshots\n'),
@@ -895,7 +997,7 @@ handle_snapshot_cmd(['--list'|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'SIG=$(echo -n "$TS:GET:/snapshots:" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X GET "https://api.unsandbox.com/snapshots" ',
+        'curl -s -X GET "$UN_API/snapshots" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG" | jq .'
@@ -909,7 +1011,7 @@ handle_snapshot_cmd(['--info', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'SIG=$(echo -n "$TS:GET:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X GET "https://api.unsandbox.com/snapshots/', Id, '" ',
+        'curl -s -X GET "$UN_API/snapshots/', Id, '" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG" | jq .'
@@ -920,7 +1022,7 @@ handle_snapshot_cmd(['--delete', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'SIG=$(echo -n "$TS:DELETE:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'RESP=$(curl -s -w "\\n%{http_code}" -X DELETE "https://api.unsandbox.com/snapshots/', Id, '" ',
+        'RESP=$(curl -s -w "\\n%{http_code}" -X DELETE "$UN_API/snapshots/', Id, '" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG"); ',
@@ -931,7 +1033,7 @@ handle_snapshot_cmd(['--delete', Id|_], PublicKey, SecretKey) :- !,
         'if [ -n "$OTP" ]; then ',
         'TS2=$(date +%s); ',
         'SIG2=$(echo -n "$TS2:DELETE:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X DELETE "https://api.unsandbox.com/snapshots/', Id, '" ',
+        'curl -s -X DELETE "$UN_API/snapshots/', Id, '" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS2" ',
         '-H "X-Signature: $SIG2" ',
@@ -945,7 +1047,7 @@ handle_snapshot_cmd(['--lock', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/lock:" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/lock" ',
+        'curl -s -X POST "$UN_API/snapshots/', Id, '/lock" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG" | jq . && ',
@@ -958,7 +1060,7 @@ handle_snapshot_cmd(['--unlock', Id|_], PublicKey, SecretKey) :- !,
         'TS=$(date +%s); ',
         'BODY="{}"; ',
         'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/unlock:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'RESP=$(curl -s -w "\\n%{http_code}" -X POST "https://api.unsandbox.com/snapshots/', Id, '/unlock" ',
+        'RESP=$(curl -s -w "\\n%{http_code}" -X POST "$UN_API/snapshots/', Id, '/unlock" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
@@ -971,7 +1073,7 @@ handle_snapshot_cmd(['--unlock', Id|_], PublicKey, SecretKey) :- !,
         'if [ -n "$OTP" ]; then ',
         'TS2=$(date +%s); ',
         'SIG2=$(echo -n "$TS2:POST:/snapshots/', Id, '/unlock:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/unlock" ',
+        'curl -s -X POST "$UN_API/snapshots/', Id, '/unlock" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS2" ',
@@ -988,7 +1090,7 @@ handle_snapshot_cmd(['--restore', Id|_], PublicKey, SecretKey) :- !,
         'TS=$(date +%s); ',
         'BODY="{}"; ',
         'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/restore:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/restore" ',
+        'curl -s -X POST "$UN_API/snapshots/', Id, '/restore" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
@@ -1010,7 +1112,7 @@ handle_snapshot_cmd(['--clone', Id|Rest], PublicKey, SecretKey) :- !,
         'TS=$(date +%s); ',
         'BODY=''', Body, '''; ',
         'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/clone:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
-        'curl -s -X POST "https://api.unsandbox.com/snapshots/', Id, '/clone" ',
+        'curl -s -X POST "$UN_API/snapshots/', Id, '/clone" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',

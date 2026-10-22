@@ -18,7 +18,8 @@
 set -euo pipefail
 
 VERSION="4.2.50"
-API_BASE="https://api.unsandbox.com"
+API_BASE="${UNSANDBOX_API_URL:-https://api.unsandbox.com}"
+while [ "${API_BASE%/}" != "$API_BASE" ]; do API_BASE="${API_BASE%/}"; done
 PORTAL_BASE="https://unsandbox.com"
 LAST_ERROR=""
 ACCOUNT_INDEX=-1
@@ -93,10 +94,27 @@ detect_language() {
     esac
 }
 
+# HMAC-SHA256 (RFC 2104) built from plain SHA-256. Our secret never appears in
+# any process's argv: key bytes go through printf (a builtin) and pipes only.
 hmac_sign() {
     local secret="$1"
     local message="$2"
-    echo -n "$message" | openssl dgst -sha256 -hmac "$secret" -hex 2>/dev/null | sed 's/^.* //'
+    local LC_ALL=C
+    local keyhex ipad="" opad="" inner i b
+    if [ "${#secret}" -gt 64 ]; then
+        keyhex=$(printf '%s' "$secret" | openssl dgst -sha256 2>/dev/null | sed 's/^.* //')
+    else
+        keyhex=$(printf '%s' "$secret" | od -An -tx1 -v | tr -d ' \n')
+    fi
+    for ((i = 0; i < 64; i++)); do
+        b=0
+        [ -n "${keyhex:$((i * 2)):2}" ] && b=$((16#${keyhex:$((i * 2)):2}))
+        printf -v ipad '%s\\x%02x' "$ipad" $((b ^ 0x36))
+        printf -v opad '%s\\x%02x' "$opad" $((b ^ 0x5c))
+    done
+    inner=$({ printf "$ipad"; printf '%s' "$message"; } | openssl dgst -sha256 2>/dev/null | sed 's/^.* //')
+    { printf "$opad"; printf "$(printf '%s' "$inner" | sed 's/../\\x&/g')"; } \
+        | openssl dgst -sha256 2>/dev/null | sed 's/^.* //'
 }
 
 # ============================================================================
@@ -112,7 +130,10 @@ load_accounts_csv() {
         [[ "$line" =~ ^# ]] && continue
         [ -z "$line" ] && continue
         if [ "$n" -eq "$row" ]; then
-            echo "$line"
+            # Emit "pk:sk" from our first two fields; any label after stays put.
+            line="${line%$'\r'}"
+            local pk="${line%%,*}" rest="${line#*,}"
+            echo "${pk}:${rest%%,*}"
             return 0
         fi
         n=$((n + 1))
@@ -152,16 +173,16 @@ get_credentials() {
         return
     fi
 
-    # Tier 4: Home directory
+    # Tier 4: Home directory (row UNSANDBOX_ACCOUNT, default 0)
     local creds
-    creds=$(load_accounts_csv "$HOME/.unsandbox/accounts.csv" 2>/dev/null || true)
+    creds=$(load_accounts_csv "$HOME/.unsandbox/accounts.csv" "${UNSANDBOX_ACCOUNT:-0}" 2>/dev/null || true)
     if [ -n "$creds" ]; then
         echo "$creds"
         return
     fi
 
     # Tier 5: Local directory
-    creds=$(load_accounts_csv "./accounts.csv" 2>/dev/null || true)
+    creds=$(load_accounts_csv "./accounts.csv" "${UNSANDBOX_ACCOUNT:-0}" 2>/dev/null || true)
     if [ -n "$creds" ]; then
         echo "$creds"
         return
@@ -838,14 +859,179 @@ cmd_languages() {
     fi
 }
 
-cmd_key() {
-    local extend=0
-
-    for arg in "$@"; do
-        if [ "$arg" = "--extend" ]; then
-            extend=1
+# The accounts.csv our credentials came from, or nothing (globals / env vars).
+# Mirrors get_credentials' tiers.
+credentials_csv_path() {
+    [ -n "${PUBLIC_KEY:-}" ] && [ -n "${SECRET_KEY:-}" ] && return 1
+    local row="$ACCOUNT_INDEX"
+    if ! [ "$row" -ge 0 ] 2>/dev/null; then
+        if { [ -n "${UNSANDBOX_PUBLIC_KEY:-}" ] && [ -n "${UNSANDBOX_SECRET_KEY:-}" ]; } || [ -n "${UNSANDBOX_API_KEY:-}" ]; then
+            return 1
+        fi
+        row="${UNSANDBOX_ACCOUNT:-0}"
+    fi
+    local path
+    for path in "$HOME/.unsandbox/accounts.csv" "./accounts.csv"; do
+        if load_accounts_csv "$path" "$row" >/dev/null 2>&1; then
+            echo "$path"
+            return 0
         fi
     done
+    return 1
+}
+
+# Replace our secret (2nd field) on the line whose 1st field equals our public
+# key. Every other line, field, comment and our order stay as they are.
+# Temp file 0600 in the same directory, then rename. Builtins only: our new
+# secret never lands in any argv.
+rewrite_accounts_csv() {
+    local path="$1" pk="$2" new_secret="$3"
+    local tmp changed=0 line nl first rest
+    tmp="$(dirname "$path")/.$(basename "$path").$$.tmp"
+    (umask 077 && : > "$tmp") || return 1
+    chmod 600 "$tmp"
+    while true; do
+        nl=$'\n'
+        IFS= read -r line || { nl=""; [ -n "$line" ] || break; }
+        if [ "$changed" -eq 0 ] && [[ "$line" == *,* ]] && ! [[ "$line" =~ ^[[:space:]]*# ]]; then
+            first="${line%%,*}"
+            rest="${line#*,}"
+            first="${first#"${first%%[![:space:]]*}"}"
+            first="${first%"${first##*[![:space:]]}"}"
+            if [ "$first" = "$pk" ]; then
+                if [[ "$rest" == *,* ]]; then
+                    line="${line%%,*},${new_secret},${rest#*,}"
+                else
+                    [[ "$rest" == *$'\r' ]] && new_secret="${new_secret}"$'\r'
+                    line="${line%%,*},${new_secret}"
+                fi
+                changed=1
+            fi
+        fi
+        printf '%s%s' "$line" "$nl" >> "$tmp"
+        [ -n "$nl" ] || break
+    done < "$path"
+    if [ "$changed" -eq 1 ] && mv -f "$tmp" "$path"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+rotate_secret_request() {
+    local pk="$1" sk="$2" otp="${3:-}" challenge="${4:-}"
+    local endpoint="/keys/self/rotate-secret" body='{}'
+    local timestamp signature
+    timestamp=$(date +%s)
+    signature=$(hmac_sign "$sk" "$timestamp:POST:$endpoint:$body")
+    local curl_args=(-s -w '\n%{http_code}' -X POST "$API_BASE$endpoint"
+        -H "Authorization: Bearer $pk"
+        -H "Content-Type: application/json"
+        -H "X-Timestamp: $timestamp" -H "X-Signature: $signature")
+    if [ -n "$otp" ]; then
+        curl_args+=(-H "X-Sudo-OTP: $otp" -H "X-Sudo-Challenge: $challenge")
+    fi
+    curl "${curl_args[@]}" -d "$body" || true
+}
+
+cmd_key_rotate() {
+    local otp="$1"
+    local creds
+    if ! creds=$(get_credentials) || [ -z "${creds#*:}" ]; then
+        echo -e "${RED}Error: no credentials found${RESET}" >&2
+        exit 3
+    fi
+    local pk="${creds%%:*}"
+    local sk="${creds#*:}"
+    local dir="$HOME/.unsandbox"
+    local challenge_file
+    challenge_file="$dir/rotate-$(printf '%s' "$pk" | openssl dgst -sha256 2>/dev/null | sed 's/^.* //' | cut -c1-16).challenge"
+    local result http_code response_body challenge
+
+    if [ -n "$otp" ]; then
+        if [ ! -f "$challenge_file" ]; then
+            echo -e "${RED}Error: no rotation in progress; run: un key --rotate${RESET}" >&2
+            exit 2
+        fi
+        challenge=$(tr -d ' \t\r\n' < "$challenge_file")
+        result=$(rotate_secret_request "$pk" "$sk" "$otp" "$challenge")
+        rm -f "$challenge_file"
+    else
+        result=$(rotate_secret_request "$pk" "$sk")
+        http_code=$(echo "$result" | tail -1)
+        if [ "$http_code" = "428" ]; then
+            challenge=$(echo "$result" | sed '$d' | jq -r '.challenge_id // empty' 2>/dev/null || true)
+            if [ -t 0 ]; then
+                echo "One-time code emailed to the key owner." >&2
+                echo -n "Code: " >&2
+                otp=""
+                read -r otp || true
+                otp="${otp//[[:space:]]/}"
+                if [ -z "$otp" ]; then
+                    echo -e "${RED}Error: cancelled${RESET}" >&2
+                    exit 1
+                fi
+                result=$(rotate_secret_request "$pk" "$sk" "$otp" "$challenge")
+            else
+                (umask 077 && mkdir -p "$dir")
+                chmod 700 "$dir"
+                (umask 077 && printf '%s' "$challenge" > "$challenge_file")
+                chmod 600 "$challenge_file"
+                echo "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+                return 0
+            fi
+        fi
+    fi
+
+    http_code=$(echo "$result" | tail -1)
+    response_body=$(echo "$result" | sed '$d')
+    if [ "$http_code" != "200" ]; then
+        if [ "$http_code" = "403" ] && [ "$(echo "$response_body" | jq -r '.error // empty' 2>/dev/null)" = "email_required" ]; then
+            echo -e "${RED}Error: this key has no email; add one or use POST /keys/recover${RESET}" >&2
+            exit 3
+        fi
+        if [ "$http_code" = "401" ]; then
+            echo -e "${RED}Error: authentication failed${RESET}" >&2
+            exit 3
+        fi
+        local msg
+        msg=$(echo "$response_body" | jq -r '.message // .error // empty' 2>/dev/null || true)
+        echo -e "${RED}Error: ${msg:-HTTP $http_code}${RESET}" >&2
+        exit 4
+    fi
+    local new_secret
+    new_secret=$(echo "$response_body" | jq -r '.secret // empty' 2>/dev/null || true)
+    if [ -z "$new_secret" ]; then
+        echo -e "${RED}Error: API returned no secret${RESET}" >&2
+        exit 4
+    fi
+
+    local csv_path
+    if csv_path=$(credentials_csv_path) && rewrite_accounts_csv "$csv_path" "$pk" "$new_secret"; then
+        echo "Secret rotated. Updated $csv_path (public key $pk)."
+    else
+        echo "New secret (shown once, store it now): $new_secret"
+        echo "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
+    fi
+}
+
+cmd_key() {
+    local extend=0 rotate=0 otp=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --extend) extend=1 ;;
+            --rotate) rotate=1 ;;
+            --otp) otp="${2:-}"; shift ;;
+        esac
+        shift
+    done
+
+    if [ "$rotate" -eq 1 ]; then
+        cmd_key_rotate "$otp"
+        return
+    fi
 
     local result
     result=$(validate_keys)
@@ -1186,6 +1372,7 @@ Usage:
   bash un.sh image [options]
   bash un.sh languages [--json]
   bash un.sh key [--extend]
+  bash un.sh key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Commands:
   languages     List available programming languages

@@ -63,7 +63,6 @@ defmodule Un do
   @yellow "\e[33m"
   @reset "\e[0m"
 
-  @api_base "https://api.unsandbox.com"
   @portal_base "https://unsandbox.com"
   @languages_cache_ttl 3600
   @version "4.2.0"
@@ -175,7 +174,7 @@ defmodule Un do
   @spec health_check() :: boolean()
   def health_check do
     try do
-      {output, 0} = System.cmd("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "#{@api_base}/health"])
+      {output, 0} = System.cmd("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "#{api_base()}/health"])
       String.trim(output) == "200"
     rescue
       _ -> false
@@ -987,7 +986,7 @@ defmodule Un do
   defp api_get(endpoint, opts) do
     {public_key, secret_key} = get_api_keys_from_opts(opts)
     headers = build_auth_headers(public_key, secret_key, "GET", endpoint, "")
-    args = ["-s", "#{@api_base}#{endpoint}"] ++ headers
+    args = ["-s", "#{api_base()}#{endpoint}"] ++ headers
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
     check_clock_drift(output)
     output
@@ -1000,7 +999,7 @@ defmodule Un do
     {public_key, secret_key} = get_api_keys_from_opts(opts)
     headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
 
-    args = ["-s", "-X", "POST", "#{@api_base}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    args = ["-s", "-X", "POST", "#{api_base()}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
@@ -1011,7 +1010,7 @@ defmodule Un do
   defp api_delete(endpoint, opts) do
     {public_key, secret_key} = get_api_keys_from_opts(opts)
     headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
-    args = ["-s", "-X", "DELETE", "#{@api_base}#{endpoint}"] ++ headers
+    args = ["-s", "-X", "DELETE", "#{api_base()}#{endpoint}"] ++ headers
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
     check_clock_drift(output)
     output
@@ -1024,7 +1023,7 @@ defmodule Un do
     {public_key, secret_key} = get_api_keys_from_opts(opts)
     headers = build_auth_headers(public_key, secret_key, "PATCH", endpoint, json)
 
-    args = ["-s", "-X", "PATCH", "#{@api_base}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    args = ["-s", "-X", "PATCH", "#{api_base()}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
@@ -1039,7 +1038,7 @@ defmodule Un do
     {public_key, secret_key} = get_api_keys_from_opts(opts)
     headers = build_auth_headers(public_key, secret_key, "PUT", endpoint, body)
 
-    args = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PUT", "#{@api_base}#{endpoint}", "-H", "Content-Type: text/plain"] ++ headers ++ ["-d", "@#{tmp_file}"]
+    args = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PUT", "#{api_base()}#{endpoint}", "-H", "Content-Type: text/plain"] ++ headers ++ ["-d", "@#{tmp_file}"]
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
     File.rm(tmp_file)
@@ -1431,7 +1430,7 @@ defmodule Un do
       System.halt(1)
     end
     env_content = build_env_content(envs, env_file)
-    if service_env_set(service_id, env_content) do
+    if cli_service_env_set(service_id, env_content) do
       IO.puts("#{@green}Vault updated for service #{service_id}#{@reset}")
     else
       IO.puts(:stderr, "#{@red}Error: Failed to update vault#{@reset}")
@@ -1440,13 +1439,13 @@ defmodule Un do
   end
 
   defp service_command(["env", "export", service_id | _]) do
-    response = service_env_export(service_id)
+    response = cli_service_env_export(service_id)
     content = extract_json_value(response, "content")
     if content, do: IO.write(content)
   end
 
   defp service_command(["env", "delete", service_id | _]) do
-    if service_env_delete(service_id) do
+    if cli_service_env_delete(service_id) do
       IO.puts("#{@green}Vault deleted for service #{service_id}#{@reset}")
     else
       IO.puts(:stderr, "#{@red}Error: Failed to delete vault#{@reset}")
@@ -1505,7 +1504,7 @@ defmodule Un do
     if service_id and (not Enum.empty?(envs) or env_file) do
       env_content = build_env_content(envs, env_file)
       if String.length(env_content) > 0 do
-        if service_env_set(service_id, env_content) do
+        if cli_service_env_set(service_id, env_content) do
           IO.puts("#{@green}Vault configured with environment variables#{@reset}")
         else
           IO.puts("#{@yellow}Warning: Failed to set vault#{@reset}")
@@ -1795,6 +1794,14 @@ defmodule Un do
 
   # Key command
   defp key_command(args) do
+    if "--rotate" in args do
+      key_rotate(args)
+    else
+      key_command_validate(args)
+    end
+  end
+
+  defp key_command_validate(args) do
     api_key = get_api_key()
 
     if "--extend" in args do
@@ -2027,6 +2034,209 @@ defmodule Un do
     public_key
   end
 
+  # API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
+  defp api_base do
+    case System.get_env("UNSANDBOX_API_URL") do
+      nil -> "https://api.unsandbox.com"
+      "" -> "https://api.unsandbox.com"
+      url -> String.trim_trailing(url, "/")
+    end
+  end
+
+  # The accounts.csv the credentials came from, or nil (environment variables).
+  # Mirrors get_api_keys/0 tiers.
+  defp credentials_csv_path do
+    home = System.get_env("HOME") || "."
+    home_csv = Path.join([home, ".unsandbox", "accounts.csv"])
+
+    index =
+      case Process.get(:account_index) do
+        nil ->
+          if (System.get_env("UNSANDBOX_PUBLIC_KEY") && System.get_env("UNSANDBOX_SECRET_KEY")) ||
+               System.get_env("UNSANDBOX_API_KEY") do
+            nil
+          else
+            case System.get_env("UNSANDBOX_ACCOUNT") do
+              nil -> 0
+              s -> case Integer.parse(s) do {n, ""} -> n; _ -> 0 end
+            end
+          end
+
+        n ->
+          n
+      end
+
+    if index == nil do
+      nil
+    else
+      Enum.find([home_csv, "accounts.csv"], fn path ->
+        load_credentials_from_csv(path, index) != :error
+      end)
+    end
+  end
+
+  # Replace the secret on the line whose first field equals public_key. Every other
+  # line, field, comment and the order stay as they are. Temp file (0600) + rename.
+  defp rewrite_accounts_csv(path, public_key, new_secret) do
+    lines = path |> File.read!() |> String.split("\n")
+
+    idx =
+      Enum.find_index(lines, fn line ->
+        t = String.trim(line)
+        fields = String.split(line, ",")
+        t != "" and not String.starts_with?(t, "#") and length(fields) >= 2 and
+          String.trim(hd(fields)) == public_key
+      end)
+
+    if idx == nil do
+      false
+    else
+      [first, _old | rest] = String.split(Enum.at(lines, idx), ",")
+      lines = List.replace_at(lines, idx, Enum.join([first, new_secret | rest], ","))
+      tmp = Path.join(Path.dirname(path), ".#{Path.basename(path)}.#{System.pid()}.tmp")
+      File.write!(tmp, "", [:write])
+      File.chmod!(tmp, 0o600)
+      File.write!(tmp, Enum.join(lines, "\n"))
+      File.rename!(tmp, path)
+      true
+    end
+  end
+
+  defp stdin_is_tty? do
+    case File.read_link("/proc/self/fd/0") do
+      {:ok, target} -> String.starts_with?(target, "/dev/pts/") or String.starts_with?(target, "/dev/tty")
+      _ -> false
+    end
+  end
+
+  # POST /keys/self/rotate-secret, body {}; headers go through a 0600 file, never argv.
+  defp rotate_post(public_key, secret_key, otp, challenge) do
+    path = "/keys/self/rotate-secret"
+    body = "{}"
+    timestamp = System.system_time(:second) |> Integer.to_string()
+    signature = make_signature(secret_key, timestamp, "POST", path, body)
+
+    header_lines =
+      [
+        "Authorization: Bearer #{public_key}",
+        "X-Timestamp: #{timestamp}",
+        "X-Signature: #{signature}",
+        "Content-Type: application/json"
+      ] ++ if(otp, do: ["X-Sudo-OTP: #{otp}", "X-Sudo-Challenge: #{challenge || ""}"], else: [])
+
+    hdr_file = Path.join(System.tmp_dir!(), "un_ex_rot_#{System.pid()}_#{:rand.uniform(999_999_999)}.hdr")
+    File.write!(hdr_file, "", [:write, :exclusive])
+    File.chmod!(hdr_file, 0o600)
+    File.write!(hdr_file, Enum.join(header_lines, "\n") <> "\n")
+
+    args = ["-s", "-X", "POST", "-w", "\n%{http_code}", "-H", "@#{hdr_file}",
+            "--data-raw", body, "#{api_base()}#{path}"]
+    {output, _exit} = System.cmd("curl", args)
+    File.rm(hdr_file)
+
+    {body_lines, [status]} = Enum.split(String.split(output, "\n"), -1)
+    code = case Integer.parse(String.trim(status)) do {n, _} -> n; :error -> 0 end
+    {code, Enum.join(body_lines, "\n")}
+  end
+
+  defp rotate_fail(code, resp) do
+    cond do
+      code == 403 and extract_json_value(resp, "error") == "email_required" ->
+        IO.puts(:stderr, "Error: this key has no email; add one or use POST /keys/recover")
+        System.halt(3)
+
+      code == 401 ->
+        IO.puts(:stderr, "Error: authentication failed")
+        System.halt(3)
+
+      true ->
+        msg = extract_json_value(resp, "message") || extract_json_value(resp, "error") || "HTTP #{code}"
+        IO.puts(:stderr, "Error: #{msg}")
+        System.halt(4)
+    end
+  end
+
+  # un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+  defp key_rotate(args) do
+    {public_key, secret_key} = get_api_keys()
+
+    if secret_key == nil do
+      IO.puts(:stderr, "Error: authentication failed")
+      System.halt(3)
+    end
+
+    unsandbox_dir = Path.join([System.get_env("HOME") || ".", ".unsandbox"])
+    hash = :crypto.hash(:sha256, public_key) |> Base.encode16(case: :lower) |> binary_part(0, 16)
+    challenge_file = Path.join(unsandbox_dir, "rotate-#{hash}.challenge")
+
+    otp_arg =
+      case Enum.drop_while(args, &(&1 != "--otp")) do
+        ["--otp", code | _] -> String.trim(code)
+        _ -> nil
+      end
+
+    {code, resp} =
+      if otp_arg do
+        case File.read(challenge_file) do
+          {:ok, challenge} ->
+            result = rotate_post(public_key, secret_key, otp_arg, String.trim(challenge))
+            File.rm(challenge_file)
+            result
+
+          _ ->
+            IO.puts(:stderr, "Error: no rotation in progress; run: un key --rotate")
+            System.halt(2)
+        end
+      else
+        {code, resp} = rotate_post(public_key, secret_key, nil, nil)
+
+        if code == 428 do
+          challenge = extract_json_value(resp, "challenge_id") || ""
+
+          if stdin_is_tty?() do
+            IO.puts(:stderr, "One-time code emailed to the key owner.")
+            IO.write(:stderr, "Code: ")
+            otp = case IO.gets("") do s when is_binary(s) -> String.trim(s); _ -> "" end
+
+            if otp == "" do
+              IO.puts(:stderr, "Error: cancelled")
+              System.halt(1)
+            end
+
+            rotate_post(public_key, secret_key, otp, challenge)
+          else
+            File.mkdir_p!(unsandbox_dir)
+            File.chmod!(unsandbox_dir, 0o700)
+            File.write!(challenge_file, "", [:write])
+            File.chmod!(challenge_file, 0o600)
+            File.write!(challenge_file, challenge)
+            IO.puts("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+            System.halt(0)
+          end
+        else
+          {code, resp}
+        end
+      end
+
+    if code != 200, do: rotate_fail(code, resp)
+
+    new_secret = extract_json_value(resp, "secret")
+
+    if new_secret in [nil, ""] do
+      IO.puts(:stderr, "Error: API returned no secret")
+      System.halt(4)
+    end
+
+    csv_path = credentials_csv_path()
+
+    if csv_path && rewrite_accounts_csv(csv_path, public_key, new_secret) do
+      IO.puts("Secret rotated. Updated #{csv_path} (public key #{public_key}).")
+    else
+      IO.puts("New secret (shown once, store it now): #{new_secret}")
+      IO.puts("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
+    end
+  end
+
   defp hmac_sha256(secret, message) do
     :crypto.mac(:hmac, :sha256, secret, message)
     |> Base.encode16(case: :lower)
@@ -2078,7 +2288,7 @@ defmodule Un do
 
     args = [
       "-s", "-X", "POST",
-      "https://api.unsandbox.com#{endpoint}",
+      "#{api_base()}#{endpoint}",
       "-H", "Content-Type: application/json"
     ] ++ headers ++ ["-d", "@#{tmp_file}"]
 
@@ -2130,7 +2340,7 @@ defmodule Un do
 
     args = [
       "-s",
-      "https://api.unsandbox.com#{endpoint}"
+      "#{api_base()}#{endpoint}"
     ] ++ headers
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
@@ -2145,7 +2355,7 @@ defmodule Un do
 
     args = [
       "-s", "-X", "DELETE",
-      "https://api.unsandbox.com#{endpoint}"
+      "#{api_base()}#{endpoint}"
     ] ++ headers
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
@@ -2163,7 +2373,7 @@ defmodule Un do
 
     args = [
       "-s", "-X", "PATCH",
-      "https://api.unsandbox.com#{endpoint}",
+      "#{api_base()}#{endpoint}",
       "-H", "Content-Type: application/json"
     ] ++ headers ++ ["-d", "@#{tmp_file}"]
 
@@ -2184,7 +2394,7 @@ defmodule Un do
     args = [
       "-s", "-o", "/dev/null", "-w", "%{http_code}",
       "-X", "PUT",
-      "https://api.unsandbox.com#{endpoint}",
+      "#{api_base()}#{endpoint}",
       "-H", "Content-Type: text/plain"
     ] ++ headers ++ ["-d", "@#{tmp_file}"]
 
@@ -2226,7 +2436,7 @@ defmodule Un do
     curl_get(api_key, "/services/#{service_id}/env")
   end
 
-  defp service_env_set(service_id, env_content) do
+  defp cli_service_env_set(service_id, env_content) do
     if String.length(env_content) > @max_env_content_size do
       IO.puts(:stderr, "#{@red}Error: Env content exceeds maximum size of 64KB#{@reset}")
       false
@@ -2235,12 +2445,12 @@ defmodule Un do
     end
   end
 
-  defp service_env_export(service_id) do
+  defp cli_service_env_export(service_id) do
     api_key = get_api_key()
     curl_post(api_key, "/services/#{service_id}/env/export", "{}")
   end
 
-  defp service_env_delete(service_id) do
+  defp cli_service_env_delete(service_id) do
     api_key = get_api_key()
     curl_delete(api_key, "/services/#{service_id}/env")
     true
@@ -2333,15 +2543,15 @@ defmodule Un do
 
       args = case method do
         "DELETE" ->
-          ["-s", "-X", "DELETE", "https://api.unsandbox.com#{endpoint}"] ++ headers ++ sudo_headers
+          ["-s", "-X", "DELETE", "#{api_base()}#{endpoint}"] ++ headers ++ sudo_headers
         "POST" ->
           tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
           File.write!(tmp_file, body_str)
-          result = ["-s", "-X", "POST", "https://api.unsandbox.com#{endpoint}",
+          result = ["-s", "-X", "POST", "#{api_base()}#{endpoint}",
                    "-H", "Content-Type: application/json"] ++ headers ++ sudo_headers ++ ["-d", "@#{tmp_file}"]
           result
         _ ->
-          ["-s", "https://api.unsandbox.com#{endpoint}"] ++ headers ++ sudo_headers
+          ["-s", "#{api_base()}#{endpoint}"] ++ headers ++ sudo_headers
       end
 
       {output, exit_code} = System.cmd("curl", args, stderr_to_stdout: true)
@@ -2366,7 +2576,7 @@ defmodule Un do
     headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
 
     args = ["-s", "-X", "DELETE", "-w", "\n%{http_code}",
-            "https://api.unsandbox.com#{endpoint}"] ++ headers
+            "#{api_base()}#{endpoint}"] ++ headers
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
 
@@ -2393,7 +2603,7 @@ defmodule Un do
     headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
 
     args = ["-s", "-X", "POST", "-w", "\n%{http_code}",
-            "https://api.unsandbox.com#{endpoint}",
+            "#{api_base()}#{endpoint}",
             "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
 
     {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)

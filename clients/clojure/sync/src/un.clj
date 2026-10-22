@@ -65,6 +65,10 @@
 
 (def portal-base "https://unsandbox.com")
 
+;; API base URL: UNSANDBOX_API_URL overrides (staging / local), no trailing slash
+(def api-base
+  (str/replace (or (System/getenv "UNSANDBOX_API_URL") "https://api.unsandbox.com") #"/+$" ""))
+
 (def languages-cache-ttl 3600) ;; 1 hour in seconds
 
 (def ext-map
@@ -113,8 +117,8 @@
       (str ",\"input_files\":[" (str/join "," file-jsons) "]"))))
 
 (defn extract-field [field json-str]
-  (let [pattern-str (re-pattern (str "\"" field "\":\"([^\"]*)\""))
-        pattern-num (re-pattern (str "\"" field "\":(\\d+)"))]
+  (let [pattern-str (re-pattern (str "\"" field "\"\\s*:\\s*\"([^\"]*)\""))
+        pattern-num (re-pattern (str "\"" field "\"\\s*:\\s*(\\d+)"))]
     (or (second (re-find pattern-str json-str))
         (second (re-find pattern-num json-str)))))
 
@@ -127,7 +131,8 @@
             rows (->> lines
                       (filter #(and (> (count %) 0)
                                     (not (str/starts-with? % "#"))))
-                      (map #(str/split % #"," 2))
+                      ;; public_key,secret_key[,label...] -- extra fields are labels
+                      (map #(str/split % #"," -1))
                       (filter #(>= (count %) 2)))]
         (when (< index (count rows))
           (let [row (nth rows index)]
@@ -209,7 +214,7 @@
         auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data)]
     (spit tmp-file json-data)
     (let [args (concat ["curl" "-s" "-X" "POST"
-                        (str "https://api.unsandbox.com" endpoint)
+                        (str api-base endpoint)
                         "-H" "Content-Type: application/json"]
                        auth-headers
                        ["-d" (str "@" tmp-file)])
@@ -222,7 +227,7 @@
   (let [[public-key secret-key] (get-api-keys)
         auth-headers (build-auth-headers public-key secret-key "GET" endpoint "")
         args (concat ["curl" "-s"
-                      (str "https://api.unsandbox.com" endpoint)]
+                      (str api-base endpoint)]
                      auth-headers)
         result (:out (apply sh args))]
     (check-clock-drift-error result)
@@ -232,7 +237,7 @@
   (let [[public-key secret-key] (get-api-keys)
         auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint "")
         args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "DELETE"
-                      (str "https://api.unsandbox.com" endpoint)]
+                      (str api-base endpoint)]
                      auth-headers)
         result (:out (apply sh args))]
     (check-clock-drift-error result)
@@ -276,7 +281,7 @@
                           :else ["-X" method])
             args (concat ["curl" "-s"]
                          method-args
-                         [(str "https://api.unsandbox.com" endpoint)]
+                         [(str api-base endpoint)]
                          auth-headers
                          sudo-headers
                          content-type-headers
@@ -296,7 +301,7 @@
   (let [[public-key secret-key] (get-api-keys)
         auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint "")
         args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "DELETE"
-                      (str "https://api.unsandbox.com" endpoint)]
+                      (str api-base endpoint)]
                      auth-headers)
         result (:out (apply sh args))
         http-code (extract-http-code result)
@@ -313,7 +318,7 @@
         auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data)]
     (spit tmp-file json-data)
     (let [args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "POST"
-                        (str "https://api.unsandbox.com" endpoint)
+                        (str api-base endpoint)
                         "-H" "Content-Type: application/json"]
                        auth-headers
                        ["-d" (str "@" tmp-file)])
@@ -332,7 +337,7 @@
         auth-headers (build-auth-headers public-key secret-key "PUT" endpoint body)]
     (spit tmp-file body)
     (let [args (concat ["curl" "-s" "-o" "/dev/null" "-w" "%{http_code}" "-X" "PUT"
-                        (str "https://api.unsandbox.com" endpoint)
+                        (str api-base endpoint)
                         "-H" "Content-Type: text/plain"]
                        auth-headers
                        ["-d" (str "@" tmp-file)])
@@ -347,7 +352,7 @@
         auth-headers (build-auth-headers public-key secret-key "PATCH" endpoint json-data)]
     (spit tmp-file json-data)
     (let [args (concat ["curl" "-s" "-X" "PATCH"
-                        (str "https://api.unsandbox.com" endpoint)
+                        (str api-base endpoint)
                         "-H" "Content-Type: application/json"]
                        auth-headers
                        ["-d" (str "@" tmp-file)])
@@ -604,7 +609,7 @@
                       (when (> (count env-content) 0)
                         (if (service-env-set service-id env-content)
                           (println (str green "Vault configured with environment variables" reset))
-                          (println (str yellow "Warning: Failed to set vault" reset))))))))))))
+                          (println (str yellow "Warning: Failed to set vault" reset)))))))))))
 
 (defn validate-key [api-key extend?]
   (let [response (curl-portal-post api-key "/keys/validate" "{}")
@@ -654,6 +659,169 @@
 (defn key-command [extend?]
   (let [api-key (get-api-key)]
     (validate-key api-key extend?)))
+
+;; ---------------------------------------------------------------------------
+;; un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+;; ---------------------------------------------------------------------------
+
+(def ^:private owner-only-file
+  (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))
+
+(defn- sha256-hex [s]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
+    (apply str (map #(format "%02x" %) (.digest md (.getBytes s "UTF-8"))))))
+
+(defn- stdin-tty? []
+  (when-let [console (System/console)]
+    ;; Java 22+ returns a Console even when redirected; ask isTerminal() there
+    (try
+      (boolean (clojure.lang.Reflector/invokeInstanceMethod console "isTerminal" (object-array 0)))
+      (catch Exception _ true))))
+
+(defn- write-owner-only [^java.nio.file.Path path ^String content]
+  "Create (or truncate) path with mode 0600, then write content."
+  (when-not (java.nio.file.Files/exists path (make-array java.nio.file.LinkOption 0))
+    (java.nio.file.Files/createFile path
+      (into-array java.nio.file.attribute.FileAttribute
+                  [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute owner-only-file)])))
+  (java.nio.file.Files/setPosixFilePermissions path owner-only-file)
+  (spit (.toFile path) content))
+
+(defn- credentials-csv-path []
+  "The accounts.csv the credentials came from, or nil (env vars). Mirrors get-api-keys."
+  (let [env-creds? (or (and (System/getenv "UNSANDBOX_PUBLIC_KEY") (System/getenv "UNSANDBOX_SECRET_KEY"))
+                       (System/getenv "UNSANDBOX_API_KEY"))
+        idx (cond
+              (some? *account-index*) *account-index*
+              env-creds? nil
+              :else (if-let [acc (System/getenv "UNSANDBOX_ACCOUNT")]
+                      (try (Integer/parseInt acc) (catch Exception _ 0))
+                      0))]
+    (when (some? idx)
+      (first (filter #(load-accounts-csv % idx)
+                     [(str (System/getenv "HOME") "/.unsandbox/accounts.csv") "./accounts.csv"])))))
+
+(defn- rewrite-accounts-csv [csv-path public-key new-secret]
+  "Replace the secret on the line whose first field equals public-key. Every other
+  line, field, comment and the order stay as they are. Temp file (0600) + rename."
+  (let [path (.toAbsolutePath (java.nio.file.Paths/get csv-path (make-array String 0)))
+        lines (str/split (slurp (.toFile path)) #"\n" -1)
+        idx (first (keep-indexed
+                     (fn [i line]
+                       (let [t (str/trim line)
+                             fields (str/split line #"," -1)]
+                         (when (and (seq t) (not (str/starts-with? t "#"))
+                                    (>= (count fields) 2)
+                                    (= (str/trim (first fields)) public-key))
+                           i)))
+                     lines))]
+    (when idx
+      (let [fields (str/split (nth lines idx) #"," -1)
+            updated (assoc (vec lines) idx (str/join "," (assoc (vec fields) 1 new-secret)))
+            tmp (java.nio.file.Files/createTempFile (.getParent path) ".accounts.csv." ".tmp"
+                  (into-array java.nio.file.attribute.FileAttribute
+                              [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute owner-only-file)]))]
+        (try
+          (spit (.toFile tmp) (str/join "\n" updated))
+          (java.nio.file.Files/setPosixFilePermissions tmp owner-only-file)
+          (java.nio.file.Files/move tmp path
+            (into-array java.nio.file.CopyOption
+                        [java.nio.file.StandardCopyOption/ATOMIC_MOVE
+                         java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
+          true
+          (finally
+            (java.nio.file.Files/deleteIfExists tmp)))))))
+
+(defn- rotate-post [public-key secret-key otp challenge]
+  "POST /keys/self/rotate-secret; returns [http-code body]. Sudo headers travel
+  through a 0600 header file, never the command line."
+  (let [endpoint "/keys/self/rotate-secret"
+        body "{}"
+        auth-headers (build-auth-headers public-key secret-key "POST" endpoint body)
+        hdr-file (when otp
+                   (let [f (java.nio.file.Files/createTempFile "un_clj_sudo" ".hdr"
+                             (into-array java.nio.file.attribute.FileAttribute
+                                         [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute owner-only-file)]))]
+                     (spit (.toFile f) (str "X-Sudo-OTP: " otp "\nX-Sudo-Challenge: " (or challenge "") "\n"))
+                     f))]
+    (try
+      (let [args (concat ["curl" "-s" "-w" "\n%{http_code}" "-X" "POST"
+                          (str api-base endpoint)
+                          "-H" "Content-Type: application/json"]
+                         auth-headers
+                         (if hdr-file ["-H" (str "@" hdr-file)] [])
+                         ["--data-binary" body])
+            {:keys [out]} (apply sh args)]
+        [(extract-http-code out) (extract-body out)])
+      (finally
+        (when hdr-file (java.nio.file.Files/deleteIfExists hdr-file))))))
+
+(defn- rotate-fail [http-code body]
+  (binding [*out* *err*]
+    (cond
+      (and (= http-code 403) (= (extract-field "error" body) "email_required"))
+      (do (println "Error: this key has no email; add one or use POST /keys/recover")
+          (System/exit 3))
+      (= http-code 401)
+      (do (println "Error: authentication failed")
+          (System/exit 3))
+      :else
+      (do (println (str "Error: " (or (extract-field "message" body)
+                                      (extract-field "error" body)
+                                      (str "HTTP " http-code))))
+          (System/exit 4)))))
+
+(defn key-rotate-command [otp]
+  (let [[public-key secret-key] (get-api-keys)
+        unsandbox-dir (java.nio.file.Paths/get (str (System/getenv "HOME") "/.unsandbox") (make-array String 0))
+        challenge-file (.resolve unsandbox-dir
+                                 (str "rotate-" (subs (sha256-hex public-key) 0 16) ".challenge"))
+        [http-code body]
+        (if otp
+          (let [challenge (try (str/trim (slurp (.toFile challenge-file)))
+                               (catch Exception _
+                                 (binding [*out* *err*]
+                                   (println "Error: no rotation in progress; run: un key --rotate"))
+                                 (System/exit 2)))
+                result (rotate-post public-key secret-key (str/trim otp) challenge)]
+            (java.nio.file.Files/deleteIfExists challenge-file)
+            result)
+          (let [[code resp :as result] (rotate-post public-key secret-key nil nil)]
+            (if (not= code 428)
+              result
+              (let [challenge (or (extract-field "challenge_id" resp) "")]
+                (if (stdin-tty?)
+                  (do
+                    (binding [*out* *err*]
+                      (println "One-time code emailed to the key owner.")
+                      (print "Code: ")
+                      (flush))
+                    (let [code-in (str/trim (or (read-line) ""))]
+                      (when (empty? code-in)
+                        (binding [*out* *err*] (println "Error: cancelled"))
+                        (System/exit 1))
+                      (rotate-post public-key secret-key code-in challenge)))
+                  (do
+                    (when-not (java.nio.file.Files/isDirectory unsandbox-dir (make-array java.nio.file.LinkOption 0))
+                      (java.nio.file.Files/createDirectories unsandbox-dir
+                        (into-array java.nio.file.attribute.FileAttribute
+                                    [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+                                       (java.nio.file.attribute.PosixFilePermissions/fromString "rwx------"))])))
+                    (write-owner-only challenge-file challenge)
+                    (println "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+                    (System/exit 0)))))))]
+    (when (not= http-code 200)
+      (rotate-fail http-code body))
+    (let [new-secret (extract-field "secret" body)]
+      (when-not new-secret
+        (binding [*out* *err*] (println "Error: API returned no secret"))
+        (System/exit 4))
+      (let [csv-path (credentials-csv-path)]
+        (if (and csv-path (rewrite-accounts-csv csv-path public-key new-secret))
+          (println (str "Secret rotated. Updated " csv-path " (public key " public-key ")."))
+          (do
+            (println (str "New secret (shown once, store it now): " new-secret))
+            (println "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")))))))
 
 (defn get-languages-cache-path []
   (let [home (System/getenv "HOME")]
@@ -930,7 +1098,7 @@
 ;; Utility functions
 (defn health-check []
   (try
-    (let [result (:out (sh "curl" "-s" "https://api.unsandbox.com/health"))]
+    (let [result (:out (sh "curl" "-s" (str api-base "/health")))]
       (println result)
       (str/includes? result "ok"))
     (catch Exception _ false)))
@@ -1260,4 +1428,8 @@
                         (= (first in) "--account") (recur (drop 2 in) out)
                         :else (recur (rest in) (conj out (first in)))))]
   (binding [*account-index* account-idx]
-    (parse-args filtered-args)))
+    (if (and (= (first filtered-args) "key") (some #{"--rotate"} filtered-args))
+      (do
+        (key-rotate-command (second (drop-while #(not= % "--otp") filtered-args)))
+        (shutdown-agents))
+      (parse-args filtered-args))))

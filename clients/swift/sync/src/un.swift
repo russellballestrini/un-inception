@@ -73,13 +73,22 @@ Languages Cache:
 */
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 #if canImport(CommonCrypto)
 import CommonCrypto
 #endif
 
 // MARK: - Constants
 
-let API_BASE = "https://api.unsandbox.com"
+/// API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
+let API_BASE: String = {
+    var base = ProcessInfo.processInfo.environment["UNSANDBOX_API_URL"] ?? ""
+    if base.isEmpty { base = "https://api.unsandbox.com" }
+    while base.hasSuffix("/") { base.removeLast() }
+    return base
+}()
 let PORTAL_BASE = "https://unsandbox.com"
 let POLL_DELAYS_MS: [Int] = [300, 450, 700, 900, 650, 1600, 2000]
 let LANGUAGES_CACHE_TTL: TimeInterval = 3600  // 1 hour
@@ -112,7 +121,9 @@ enum UnsandboxError: Error, CustomStringConvertible {
 
 /// Get ~/.unsandbox directory path, creating if necessary
 func getUnsandboxDir() -> URL {
-    let home = FileManager.default.homeDirectoryForCurrentUser
+    // $HOME first (POSIX), so ~ means the same thing here as in every other CLI
+    let envHome = ProcessInfo.processInfo.environment["HOME"] ?? ""
+    let home = envHome.isEmpty ? FileManager.default.homeDirectoryForCurrentUser : URL(fileURLWithPath: envHome)
     let unsandboxDir = home.appendingPathComponent(".unsandbox")
 
     if !FileManager.default.fileExists(atPath: unsandboxDir.path) {
@@ -203,6 +214,67 @@ func resolveCredentials(publicKey: String? = nil, secretKey: String? = nil, acco
     )
 }
 
+// MARK: - SHA-256 (in-process, portable)
+
+/// SHA-256 (FIPS 180-4) in pure Swift: used where CommonCrypto is unavailable
+/// (Linux) and for the rotation challenge file name. Never shell out for this.
+func sha256Digest(_ input: [UInt8]) -> [UInt8] {
+    let k: [UInt32] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ]
+    var h: [UInt32] = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+    var msg = input
+    let bitLen = UInt64(input.count) * 8
+    msg.append(0x80)
+    while msg.count % 64 != 56 { msg.append(0) }
+    for i in (0..<8).reversed() { msg.append(UInt8((bitLen >> (UInt64(i) * 8)) & 0xff)) }
+
+    func rotr(_ x: UInt32, _ n: UInt32) -> UInt32 { return (x >> n) | (x << (32 - n)) }
+    var w = [UInt32](repeating: 0, count: 64)
+    for chunk in stride(from: 0, to: msg.count, by: 64) {
+        for t in 0..<16 {
+            let j = chunk + t * 4
+            w[t] = UInt32(msg[j]) << 24 | UInt32(msg[j + 1]) << 16 | UInt32(msg[j + 2]) << 8 | UInt32(msg[j + 3])
+        }
+        for t in 16..<64 {
+            let s0 = rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >> 3)
+            let s1 = rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >> 10)
+            w[t] = w[t - 16] &+ s0 &+ w[t - 7] &+ s1
+        }
+        var a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7]
+        for t in 0..<64 {
+            let S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+            let ch = (e & f) ^ (~e & g)
+            let t1 = hh &+ S1 &+ ch &+ k[t] &+ w[t]
+            let S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+            let maj = (a & b) ^ (a & c) ^ (b & c)
+            let t2 = S0 &+ maj
+            hh = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
+        }
+        h[0] = h[0] &+ a; h[1] = h[1] &+ b; h[2] = h[2] &+ c; h[3] = h[3] &+ d
+        h[4] = h[4] &+ e; h[5] = h[5] &+ f; h[6] = h[6] &+ g; h[7] = h[7] &+ hh
+    }
+    var out: [UInt8] = []
+    for v in h { for s in [24, 16, 8, 0] { out.append(UInt8((v >> UInt32(s)) & 0xff)) } }
+    return out
+}
+
+/// HMAC-SHA256 (RFC 2104) in pure Swift.
+func hmacSHA256(key: [UInt8], message: [UInt8]) -> [UInt8] {
+    var k = key.count > 64 ? sha256Digest(key) : key
+    k += [UInt8](repeating: 0, count: 64 - k.count)
+    let ipad = k.map { $0 ^ 0x36 }
+    let opad = k.map { $0 ^ 0x5c }
+    return sha256Digest(opad + sha256Digest(ipad + message))
+}
+
 // MARK: - HMAC-SHA256 Signing
 
 /// Sign a request using HMAC-SHA256
@@ -215,6 +287,7 @@ func signRequest(secretKey: String, timestamp: Int, method: String, path: String
         return ""
     }
 
+    #if canImport(CommonCrypto)
     var hmac = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
     keyData.withUnsafeBytes { keyPtr in
         messageData.withUnsafeBytes { msgPtr in
@@ -224,6 +297,9 @@ func signRequest(secretKey: String, timestamp: Int, method: String, path: String
                    &hmac)
         }
     }
+    #else
+    let hmac = hmacSHA256(key: [UInt8](keyData), message: [UInt8](messageData))
+    #endif
 
     return hmac.map { String(format: "%02x", $0) }.joined()
 }
@@ -1148,30 +1224,6 @@ func setImageVisibility(_ imageId: String, visibility: String, publicKey: String
     return try makeRequest(method: "POST", path: "/images/\(imageId)/visibility", publicKey: pk, secretKey: sk, data: ["visibility": visibility])
 }
 
-/// Grant access to an image for another API key
-func grantImageAccess(_ imageId: String, trustedApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
-    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "POST", path: "/images/\(imageId)/grant", publicKey: pk, secretKey: sk, data: ["trusted_api_key": trustedApiKey])
-}
-
-/// Revoke access to an image from another API key
-func revokeImageAccess(_ imageId: String, trustedApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
-    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "POST", path: "/images/\(imageId)/revoke", publicKey: pk, secretKey: sk, data: ["trusted_api_key": trustedApiKey])
-}
-
-/// List all API keys that have access to an image
-func listImageTrusted(_ imageId: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
-    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "GET", path: "/images/\(imageId)/trusted", publicKey: pk, secretKey: sk)
-}
-
-/// Transfer image ownership to another API key
-func transferImage(_ imageId: String, toApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
-    let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequest(method: "POST", path: "/images/\(imageId)/transfer", publicKey: pk, secretKey: sk, data: ["to_api_key": toApiKey])
-}
-
 /// Create a new service from an image
 func spawnFromImage(
     _ imageId: String,
@@ -1230,7 +1282,19 @@ func listImageTrusted(_ imageId: String, publicKey: String? = nil, secretKey: St
 /// Transfer image ownership
 func transferImage(_ imageId: String, toApiKey: String, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    return try makeRequestWithSudo(method: "POST", path: "/images/\(imageId)/transfer", publicKey: pk, secretKey: sk, data: ["to_api_key": toApiKey])
+    let path = "/images/\(imageId)/transfer"
+    let data: [String: Any] = ["to_api_key": toApiKey]
+    let (statusCode, response) = try makeRequestWithSudo(method: "POST", path: path, publicKey: pk, secretKey: sk, data: data)
+
+    if statusCode == 428 {
+        let body = String(data: try JSONSerialization.data(withJSONObject: data), encoding: .utf8)
+        return try handleSudoChallenge(responseData: response, publicKey: pk, secretKey: sk, method: "POST", path: path, body: body)
+    } else if statusCode >= 400 {
+        let errorMsg = response["error"] as? String ?? "Unknown error"
+        throw UnsandboxError.apiError(statusCode, errorMsg)
+    }
+
+    return response
 }
 
 // MARK: - PaaS Logs
@@ -1646,6 +1710,8 @@ func printHelp() {
         un service --list                      List all services
         un snapshot --list                     List all snapshots
         un key                                 Check API key
+        un key --rotate                        Rotate key secret (sudo OTP), update accounts.csv
+        un key --rotate --otp CODE             Finish a rotation started without a terminal
     """
     print(help)
 }
@@ -1734,6 +1800,10 @@ class CLIArgs {
     // Credential selection
     var accountIndex: Int? = nil
 
+    // Key rotation
+    var rotate: Bool = false
+    var otp: String?
+
     func parse(_ args: [String]) {
         var i = 0
         let args = Array(args.dropFirst()) // Skip program name
@@ -1771,6 +1841,11 @@ class CLIArgs {
             case "--account":
                 i += 1
                 if i < args.count { accountIndex = Int(args[i]) }
+            case "--rotate":
+                rotate = true
+            case "--otp":
+                i += 1
+                if i < args.count { otp = args[i] }
             case "-n", "--network":
                 i += 1
                 if i < args.count { networkMode = args[i] }
@@ -2051,7 +2126,7 @@ func handleSessionCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
         let sessionId = session["id"] as? String ?? session["session_id"] as? String ?? ""
         print("Session ID: \(sessionId)")
         print("Status: \(session["status"] as? String ?? "unknown")")
-        print("WebSocket URL: wss://api.unsandbox.com/sessions/\(attachId)/shell")
+        print("WebSocket URL: \(API_BASE.replacingOccurrences(of: "https://", with: "wss://").replacingOccurrences(of: "http://", with: "ws://"))/sessions/\(attachId)/shell")
         print("\nUse a WebSocket client to connect interactively.")
     } else if let killId = args.kill {
         _ = try deleteSession(killId, publicKey: pk, secretKey: sk)
@@ -2078,8 +2153,8 @@ func handleSessionCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
         else if args.screen { multiplexer = "screen" }
 
         let result = try createSession(
-            shell: args.shell,
             networkMode: args.networkMode,
+            shell: args.shell,
             multiplexer: multiplexer,
             publicKey: pk,
             secretKey: sk
@@ -2087,7 +2162,7 @@ func handleSessionCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
 
         let sessionId = result["session_id"] as? String ?? result["id"] as? String ?? ""
         print("Session created: \(sessionId)")
-        print("WebSocket URL: wss://api.unsandbox.com/sessions/\(sessionId)/shell")
+        print("WebSocket URL: \(API_BASE.replacingOccurrences(of: "https://", with: "wss://").replacingOccurrences(of: "http://", with: "ws://"))/sessions/\(sessionId)/shell")
     }
 }
 
@@ -2449,6 +2524,172 @@ func formatImageListOutput(_ images: [[String: Any]]) -> String {
     return lines.joined(separator: "\n")
 }
 
+// MARK: - Key Secret Rotation (un key --rotate) - see CLI_SPEC.md
+
+/// The accounts.csv the credentials came from, or nil (flags / env vars).
+/// Mirrors resolveCredentials' tiers.
+func credentialsCSVPath(_ args: CLIArgs) -> URL? {
+    if let pk = args.publicKey, let sk = args.secretKey, !pk.isEmpty, !sk.isEmpty { return nil }
+    let env = ProcessInfo.processInfo.environment
+    if args.accountIndex == nil,
+       let envPk = env["UNSANDBOX_PUBLIC_KEY"], let envSk = env["UNSANDBOX_SECRET_KEY"],
+       !envPk.isEmpty, !envSk.isEmpty {
+        return nil
+    }
+    let idx = args.accountIndex ?? (Int(env["UNSANDBOX_ACCOUNT"] ?? "0") ?? 0)
+    let homeCSV = getUnsandboxDir().appendingPathComponent("accounts.csv")
+    if loadCredentialsFromCSV(homeCSV, accountIndex: idx) != nil { return homeCSV }
+    let localCSV = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("accounts.csv")
+    if loadCredentialsFromCSV(localCSV, accountIndex: idx) != nil { return localCSV }
+    return nil
+}
+
+/// Write data to path created with mode 0600.
+func writePrivateFile(_ path: String, _ text: String) -> Bool {
+    let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+    if fd < 0 { return false }
+    let bytes = Array(text.utf8)
+    let written = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
+    fchmod(fd, 0o600)
+    let closed = close(fd)
+    return written == bytes.count && closed == 0
+}
+
+/// Replace the secret (2nd field) on the line whose 1st field equals publicKey.
+/// Every other line, field, comment and the order stay as they are.
+/// Temp file (0600) in the same directory, then rename.
+func rewriteAccountsCSV(_ path: URL, publicKey: String, newSecret: String) -> Bool {
+    guard let content = try? String(contentsOf: path, encoding: .utf8) else { return false }
+    var lines = content.components(separatedBy: "\n")
+    var changed = false
+    for i in lines.indices {
+        let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+        var fields = lines[i].components(separatedBy: ",")
+        if fields.count >= 2 && fields[0].trimmingCharacters(in: .whitespaces) == publicKey {
+            fields[1] = newSecret
+            lines[i] = fields.joined(separator: ",")
+            changed = true
+            break
+        }
+    }
+    if !changed { return false }
+    let tmp = path.deletingLastPathComponent()
+        .appendingPathComponent(".\(path.lastPathComponent).\(getpid()).tmp").path
+    if !writePrivateFile(tmp, lines.joined(separator: "\n")) || rename(tmp, path.path) != 0 {
+        unlink(tmp)
+        return false
+    }
+    return true
+}
+
+/// POST /keys/self/rotate-secret, body {}, fresh signature each call.
+func rotateSecretPost(_ pk: String, _ sk: String, otp: String? = nil, challenge: String? = nil) throws -> (Int, [String: Any]) {
+    let path = "/keys/self/rotate-secret"
+    let body = "{}"
+    var request = URLRequest(url: URL(string: "\(API_BASE)\(path)")!)
+    request.httpMethod = "POST"
+    request.timeoutInterval = 120
+    let timestamp = Int(Date().timeIntervalSince1970)
+    request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+    request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
+    request.setValue(signRequest(secretKey: sk, timestamp: timestamp, method: "POST", path: path, body: body),
+                     forHTTPHeaderField: "X-Signature")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    if let otp = otp {
+        request.setValue(otp, forHTTPHeaderField: "X-Sudo-OTP")
+        request.setValue(challenge ?? "", forHTTPHeaderField: "X-Sudo-Challenge")
+    }
+    request.httpBody = body.data(using: .utf8)
+
+    var status = 0
+    var json: [String: Any] = [:]
+    var requestError: Error?
+    let semaphore = DispatchSemaphore(value: 0)
+    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        defer { semaphore.signal() }
+        if let error = error {
+            requestError = UnsandboxError.networkError(error.localizedDescription)
+            return
+        }
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if let data = data, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            json = obj
+        }
+    }
+    task.resume()
+    semaphore.wait()
+    if let error = requestError { throw error }
+    return (status, json)
+}
+
+/// un key --rotate [--otp CODE]
+func handleKeyRotate(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
+    let dir = getUnsandboxDir()
+    let prefix = sha256Digest(Array(pk.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    let challengeFile = dir.appendingPathComponent("rotate-\(prefix).challenge").path
+
+    var (status, json): (Int, [String: Any])
+    if let otpArg = args.otp {
+        guard let saved = try? String(contentsOfFile: challengeFile, encoding: .utf8) else {
+            fputs("Error: no rotation in progress; run: un key --rotate\n", stderr)
+            exit(2)
+        }
+        let challenge = saved.trimmingCharacters(in: .whitespacesAndNewlines)
+        (status, json) = try rotateSecretPost(pk, sk, otp: otpArg.trimmingCharacters(in: .whitespacesAndNewlines), challenge: challenge)
+        unlink(challengeFile)
+    } else {
+        (status, json) = try rotateSecretPost(pk, sk)
+        if status == 428 {
+            let challenge = json["challenge_id"] as? String ?? ""
+            if isatty(STDIN_FILENO) != 0 {
+                fputs("One-time code emailed to the key owner.\n", stderr)
+                fputs("Code: ", stderr)
+                fflush(stderr)
+                let otp = (readLine() ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if otp.isEmpty {
+                    fputs("Error: cancelled\n", stderr)
+                    exit(1)
+                }
+                (status, json) = try rotateSecretPost(pk, sk, otp: otp, challenge: challenge)
+            } else {
+                if !writePrivateFile(challengeFile, challenge) {
+                    fputs("Error: cannot save challenge to \(challengeFile)\n", stderr)
+                    exit(1)
+                }
+                print("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+                return
+            }
+        }
+    }
+
+    if status != 200 {
+        let error = json["error"] as? String
+        if status == 403 && error == "email_required" {
+            fputs("Error: this key has no email; add one or use POST /keys/recover\n", stderr)
+            exit(3)
+        }
+        if status == 401 {
+            fputs("Error: authentication failed\n", stderr)
+            exit(3)
+        }
+        let message = (json["message"] as? String) ?? error ?? "HTTP \(status)"
+        fputs("Error: \(message)\n", stderr)
+        exit(4)
+    }
+    guard let newSecret = json["secret"] as? String, !newSecret.isEmpty else {
+        fputs("Error: API returned no secret\n", stderr)
+        exit(4)
+    }
+
+    if let csv = credentialsCSVPath(args), rewriteAccountsCSV(csv, publicKey: pk, newSecret: newSecret) {
+        print("Secret rotated. Updated \(csv.path) (public key \(pk)).")
+    } else {
+        print("New secret (shown once, store it now): \(newSecret)")
+        print("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
+    }
+}
+
 /// Handle key command
 func handleKeyCommand(_ pk: String, _ sk: String) throws {
     let result = try validateKeys(publicKey: pk, secretKey: sk)
@@ -2515,7 +2756,11 @@ struct UnCLI {
             case "image":
                 try handleImageCommand(args, pk, sk)
             case "key":
-                try handleKeyCommand(pk, sk)
+                if args.rotate {
+                    try handleKeyRotate(args, pk, sk)
+                } else {
+                    try handleKeyCommand(pk, sk)
+                }
             case "languages":
                 try handleLanguagesCommand(args, pk, sk)
             case "logs":

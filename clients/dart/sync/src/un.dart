@@ -44,7 +44,11 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
-const String apiBase = 'https://api.unsandbox.com';
+// API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
+final String apiBase = (() {
+  final url = Platform.environment['UNSANDBOX_API_URL'] ?? '';
+  return url.isEmpty ? 'https://api.unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
+})();
 const String portalBase = 'https://unsandbox.com';
 const String blue = '\x1B[34m';
 const String red = '\x1B[31m';
@@ -109,6 +113,8 @@ class Args {
   String? serviceShowFreezePage;
   bool serviceShowFreezePageEnabled = true;
   bool keyExtend = false;
+  bool keyRotate = false;
+  String? keyOtp;
   String? envFile;
   String? envAction;
   String? envTarget;
@@ -1360,7 +1366,7 @@ Future<void> logsFetch(String source, int lines, String? since, String? grepPatt
 // Utility functions
 Future<bool> healthCheck() async {
   try {
-    final result = await Process.run('curl', ['-s', 'https://api.unsandbox.com/health']);
+    final result = await Process.run('curl', ['-s', '$apiBase/health']);
     print(result.stdout);
     return result.stdout.toString().contains('ok');
   } catch (e) {
@@ -1372,7 +1378,177 @@ String sdkVersion() {
   return '4.2.0';
 }
 
+/// The accounts.csv the credentials came from, or null (flags / environment
+/// variables). Mirrors getApiKeys tiers.
+String? credentialsCsvPath(Args args) {
+  if (args.publicKey != null && args.publicKey!.isNotEmpty && args.apiKey != null && args.apiKey!.isNotEmpty) {
+    return null;
+  }
+  var index = args.account;
+  if (index == null) {
+    final envPk = Platform.environment['UNSANDBOX_PUBLIC_KEY'] ?? '';
+    final envSk = Platform.environment['UNSANDBOX_SECRET_KEY'] ?? '';
+    if (envPk.isNotEmpty && envSk.isNotEmpty) return null;
+    index = int.tryParse(Platform.environment['UNSANDBOX_ACCOUNT'] ?? '0') ?? 0;
+  }
+  final home = Platform.environment['HOME'] ?? '';
+  final paths = [if (home.isNotEmpty) '$home/.unsandbox/accounts.csv', './accounts.csv'];
+  for (final path in paths) {
+    if (loadAccountsCSV(path, index) != null) return path;
+  }
+  return null;
+}
+
+/// Replace the secret on the line whose first field equals [publicKey]. Every other
+/// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+Future<bool> rewriteAccountsCsv(String path, String publicKey, String newSecret) async {
+  final file = File(path);
+  final lines = (await file.readAsString()).split('\n');
+  final idx = lines.indexWhere((line) {
+    final t = line.trim();
+    final fields = line.split(',');
+    return t.isNotEmpty && !t.startsWith('#') && fields.length >= 2 && fields[0].trim() == publicKey;
+  });
+  if (idx < 0) return false;
+  final fields = lines[idx].split(',');
+  fields[1] = newSecret;
+  lines[idx] = fields.join(',');
+  final tmp = File('${file.absolute.parent.path}/.${file.uri.pathSegments.last}.$pid.tmp');
+  await tmp.writeAsString('');
+  await Process.run('chmod', ['600', tmp.path]);
+  await tmp.writeAsString(lines.join('\n'));
+  await tmp.rename(path);
+  return true;
+}
+
+/// POST /keys/self/rotate-secret with body {}, HMAC computed in-process.
+Future<List<dynamic>> rotatePost(String publicKey, String secretKey, String? otp, String? challenge) async {
+  const path = '/keys/self/rotate-secret';
+  const body = '{}';
+  final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+  final signature = Hmac(sha256, utf8.encode(secretKey)).convert(utf8.encode('$timestamp:POST:$path:$body')).toString();
+  final client = HttpClient();
+  try {
+    final req = await client.postUrl(Uri.parse('$apiBase$path'));
+    req.headers.set('Authorization', 'Bearer $publicKey');
+    req.headers.set('X-Timestamp', timestamp);
+    req.headers.set('X-Signature', signature);
+    req.headers.contentType = ContentType('application', 'json');
+    if (otp != null) {
+      req.headers.set('X-Sudo-OTP', otp);
+      req.headers.set('X-Sudo-Challenge', challenge ?? '');
+    }
+    final bodyBytes = utf8.encode(body);
+    req.contentLength = bodyBytes.length;
+    req.add(bodyBytes);
+    final resp = await req.close();
+    final text = await resp.transform(utf8.decoder).join();
+    Map<String, dynamic> data = {};
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map<String, dynamic>) data = decoded;
+    } catch (_) {}
+    return [resp.statusCode, data];
+  } finally {
+    client.close();
+  }
+}
+
+/// stdin.hasTerminal reports any character device (such as /dev/null) as a
+/// terminal; reading the echo mode needs a real tty and throws otherwise.
+bool stdinIsTerminal() {
+  try {
+    stdin.echoMode;
+    return stdin.hasTerminal;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+Future<void> cmdKeyRotate(Args args) async {
+  final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
+  if (secretKey == null || secretKey.isEmpty) {
+    stderr.writeln('Error: authentication failed');
+    exit(3);
+  }
+  final home = Platform.environment['HOME'] ?? '.';
+  final dir = Directory('$home/.unsandbox');
+  final hash = sha256.convert(utf8.encode(publicKey)).toString().substring(0, 16);
+  final challengeFile = File('${dir.path}/rotate-$hash.challenge');
+
+  List<dynamic> result;
+  if (args.keyOtp != null) {
+    if (!challengeFile.existsSync()) {
+      stderr.writeln('Error: no rotation in progress; run: un key --rotate');
+      exit(2);
+    }
+    final challenge = (await challengeFile.readAsString()).trim();
+    result = await rotatePost(publicKey, secretKey, args.keyOtp!.trim(), challenge);
+    if (challengeFile.existsSync()) await challengeFile.delete();
+  } else {
+    result = await rotatePost(publicKey, secretKey, null, null);
+    if (result[0] == 428) {
+      final challenge = ((result[1] as Map<String, dynamic>)['challenge_id'] ?? '').toString();
+      if (stdinIsTerminal()) {
+        stderr.writeln('One-time code emailed to the key owner.');
+        stderr.write('Code: ');
+        await stderr.flush();
+        final otp = (stdin.readLineSync() ?? '').trim();
+        if (otp.isEmpty) {
+          stderr.writeln('Error: cancelled');
+          exit(1);
+        }
+        result = await rotatePost(publicKey, secretKey, otp, challenge);
+      } else {
+        await dir.create(recursive: true);
+        await Process.run('chmod', ['700', dir.path]);
+        await challengeFile.writeAsString('');
+        await Process.run('chmod', ['600', challengeFile.path]);
+        await challengeFile.writeAsString(challenge);
+        print('One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE');
+        await stdout.flush();
+        exit(0);
+      }
+    }
+  }
+
+  final code = result[0] as int;
+  final data = result[1] as Map<String, dynamic>;
+  if (code != 200) {
+    if (code == 403 && data['error'] == 'email_required') {
+      stderr.writeln('Error: this key has no email; add one or use POST /keys/recover');
+      exit(3);
+    }
+    if (code == 401) {
+      stderr.writeln('Error: authentication failed');
+      exit(3);
+    }
+    stderr.writeln('Error: ${data['message'] ?? data['error'] ?? 'HTTP $code'}');
+    exit(4);
+  }
+  final newSecret = (data['secret'] ?? '').toString();
+  if (newSecret.isEmpty) {
+    stderr.writeln('Error: API returned no secret');
+    exit(4);
+  }
+
+  final csvPath = credentialsCsvPath(args);
+  if (csvPath != null && await rewriteAccountsCsv(csvPath, publicKey, newSecret)) {
+    print('Secret rotated. Updated $csvPath (public key $publicKey).');
+  } else {
+    print('New secret (shown once, store it now): $newSecret');
+    print('Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.');
+  }
+}
+
 Future<void> cmdKey(Args args) async {
+  if (args.keyRotate) {
+    await cmdKeyRotate(args);
+    return;
+  }
   final keys = getApiKeys(args.apiKey, argsPublicKey: args.publicKey, account: args.account);
   final publicKey = keys[0]!;
   final secretKey = keys[1];
@@ -1594,6 +1770,12 @@ Args parseArgs(List<String> argv) {
         break;
       case '--extend':
         args.keyExtend = true;
+        break;
+      case '--rotate':
+        args.keyRotate = true;
+        break;
+      case '--otp':
+        args.keyOtp = argv[++i];
         break;
       case '--env-file':
         args.envFile = argv[++i];

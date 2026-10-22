@@ -31,7 +31,7 @@ if (IS_NODE) {
   path = await import('path').then(m => m.default || m);
 }
 
-const API_BASE = 'https://api.unsandbox.com';
+const API_BASE = ((IS_NODE && process.env.UNSANDBOX_API_URL) || 'https://api.unsandbox.com').replace(/\/+$/, '');
 const POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000];
 const LANGUAGES_CACHE_TTL = 3600; // 1 hour
 
@@ -2124,6 +2124,8 @@ USAGE:
   node un.js service [options]           Service management
   node un.js snapshot [options]          Snapshot management
   node un.js key                         Check API key validity
+  node un.js key --rotate                Rotate this key's secret (sudo OTP); updates accounts.csv
+  node un.js key --rotate --otp CODE     Finish a rotation started without a terminal
   node un.js languages [--json]          List available languages
 
 GLOBAL OPTIONS:
@@ -2464,6 +2466,12 @@ function parseArgs(args) {
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         result.visibilityMode = args[++i];
       }
+      i++;
+    } else if (arg === '--rotate') {
+      result.rotate = true;
+      i++;
+    } else if (arg === '--otp') {
+      result.otp = args[++i];
       i++;
     } else if (arg === '--spawn') {
       result.spawn = args[++i];
@@ -3032,6 +3040,145 @@ async function handleKey(opts) {
 }
 
 /**
+ * The accounts.csv the CLI's credentials came from, or null (flags / env vars).
+ * Mirrors resolveCredentials' tiers.
+ */
+function credentialsCsvPath(opts) {
+  if (opts.publicKey && opts.secretKey) return null;
+  const hasAccount = opts.accountIndex !== undefined && opts.accountIndex >= 0;
+  if (!hasAccount && process.env.UNSANDBOX_PUBLIC_KEY && process.env.UNSANDBOX_SECRET_KEY) return null;
+  const index = hasAccount ? opts.accountIndex : parseInt(process.env.UNSANDBOX_ACCOUNT || '0', 10);
+  for (const p of [path.join(getUnsandboxDir(), 'accounts.csv'), 'accounts.csv']) {
+    if (loadCredentialsFromCsv(p, index)) return p;
+  }
+  return null;
+}
+
+/**
+ * Replace the secret on the line whose first field is publicKey. Every other
+ * line, field, comment and the order stay as they are. Temp file (0600) + rename.
+ */
+function rewriteAccountsCsv(csvPath, publicKey, newSecret) {
+  const lines = fs.readFileSync(csvPath, 'utf-8').split('\n');
+  let changed = false;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const fields = lines[i].split(',');
+    if (fields.length >= 2 && fields[0].trim() === publicKey) {
+      fields[1] = newSecret;
+      lines[i] = fields.join(',');
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) return false;
+  const tmp = path.join(path.dirname(csvPath), `.${path.basename(csvPath)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, lines.join('\n'), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, csvPath);
+  return true;
+}
+
+/**
+ * Handle key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+ */
+async function handleKeyRotate(opts) {
+  const [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
+  const urlPath = '/keys/self/rotate-secret';
+  const body = '{}';
+  const unsandboxDir = getUnsandboxDir();
+  const challengeFile = path.join(unsandboxDir,
+    'rotate-' + crypto.createHash('sha256').update(pk).digest('hex').slice(0, 16) + '.challenge');
+
+  const post = async (otp, challenge) => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const headers = {
+      'Authorization': `Bearer ${pk}`,
+      'X-Timestamp': timestamp.toString(),
+      'X-Signature': await signRequest(sk, timestamp, 'POST', urlPath, body),
+      'Content-Type': 'application/json',
+      'User-Agent': 'un-js/2.0',
+    };
+    if (otp) {
+      headers['X-Sudo-OTP'] = otp;
+      headers['X-Sudo-Challenge'] = challenge || '';
+    }
+    const response = await fetch(`${API_BASE}${urlPath}`, {
+      method: 'POST', headers, body, signal: AbortSignal.timeout(120000),
+    });
+    let data = {};
+    try { data = JSON.parse(await response.text()) || {}; } catch (e) { data = {}; }
+    return { status: response.status, data };
+  };
+
+  const fail = (resp) => {
+    if (resp.status === 403 && resp.data.error === 'email_required') {
+      console.error('Error: this key has no email; add one or use POST /keys/recover');
+      process.exit(3);
+    }
+    if (resp.status === 401) {
+      console.error('Error: authentication failed');
+      process.exit(3);
+    }
+    console.error(`Error: ${resp.data.message || resp.data.error || 'HTTP ' + resp.status}`);
+    process.exit(4);
+  };
+
+  let resp;
+  if (opts.otp) {
+    let challenge;
+    try {
+      challenge = fs.readFileSync(challengeFile, 'utf-8').trim();
+    } catch (e) {
+      console.error('Error: no rotation in progress; run: un key --rotate');
+      process.exit(2);
+    }
+    resp = await post(opts.otp.trim(), challenge);
+    try { fs.unlinkSync(challengeFile); } catch (e) { /* already gone */ }
+  } else {
+    resp = await post();
+    if (resp.status === 428) {
+      const challenge = resp.data.challenge_id || '';
+      if (process.stdin.isTTY) {
+        console.error('One-time code emailed to the key owner.');
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        const otp = await new Promise((resolve) => {
+          rl.question('Code: ', (answer) => { rl.close(); resolve(answer.trim()); });
+        });
+        if (!otp) {
+          console.error('Error: cancelled');
+          process.exit(1);
+        }
+        resp = await post(otp, challenge);
+      } else {
+        fs.mkdirSync(unsandboxDir, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(challengeFile, challenge, { mode: 0o600 });
+        fs.chmodSync(challengeFile, 0o600);
+        console.log('One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE');
+        return;
+      }
+    }
+  }
+
+  if (resp.status !== 200) fail(resp);
+  const newSecret = resp.data.secret;
+  if (!newSecret) {
+    console.error('Error: API returned no secret');
+    process.exit(4);
+  }
+
+  const csvPath = credentialsCsvPath(opts);
+  if (csvPath && rewriteAccountsCsv(csvPath, pk, newSecret)) {
+    console.log(`Secret rotated. Updated ${csvPath} (public key ${pk}).`);
+  } else {
+    console.log(`New secret (shown once, store it now): ${newSecret}`);
+    console.log('Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.');
+  }
+}
+
+/**
  * Handle languages command.
  */
 async function handleLanguages(opts) {
@@ -3169,7 +3316,11 @@ async function cliMain() {
         await handleImage(opts);
         break;
       case 'key':
-        await handleKey(opts);
+        if (opts.rotate) {
+          await handleKeyRotate(opts);
+        } else {
+          await handleKey(opts);
+        }
         break;
       case 'languages':
         await handleLanguages(opts);

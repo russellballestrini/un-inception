@@ -41,6 +41,7 @@ require "http/client"
 require "json"
 require "base64"
 require "option_parser"
+require "openssl"
 require "openssl/hmac"
 
 # Extension to language mapping
@@ -67,7 +68,8 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RESET = "\033[0m"
 
-API_BASE = "https://api.unsandbox.com"
+# API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
+API_BASE = (ENV["UNSANDBOX_API_URL"]?.presence || "https://api.unsandbox.com").rstrip('/')
 PORTAL_BASE = "https://unsandbox.com"
 MAX_ENV_CONTENT_SIZE = 65536
 LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
@@ -744,6 +746,172 @@ def cmd_languages(args)
   end
 end
 
+# ---------------------------------------------------------------------------
+# un key --rotate [--otp CODE] — rotate this key's secret (see CLI_SPEC.md)
+# ---------------------------------------------------------------------------
+
+# The accounts.csv the credentials came from, or nil (flags / env vars).
+# Mirrors get_api_keys' tiers.
+def credentials_csv_path(args_key : String?, args_public_key : String?, account : Int32?) : String?
+  return nil if args_public_key && !args_public_key.empty? && args_key && !args_key.empty?
+  if account.nil?
+    env_pk = ENV["UNSANDBOX_PUBLIC_KEY"]?
+    env_sk = ENV["UNSANDBOX_SECRET_KEY"]?
+    return nil if env_pk && !env_pk.empty? && env_sk && !env_sk.empty?
+  end
+  idx = account || (ENV["UNSANDBOX_ACCOUNT"]?.try(&.to_i?) || 0).to_i32
+  home = ENV["HOME"]?
+  if home && !home.empty?
+    path = File.join(home, ".unsandbox", "accounts.csv")
+    return path if load_accounts_csv(path, idx)
+  end
+  return "accounts.csv" if load_accounts_csv("accounts.csv", idx)
+  nil
+end
+
+# Replace the secret (2nd field) on the line whose 1st field equals public_key.
+# Every other line, field, comment and the order stay as they are.
+# Temp file (0600) in the same directory, then rename.
+def rewrite_accounts_csv(path : String, public_key : String, new_secret : String) : Bool
+  lines = File.read(path).split('\n')
+  changed = false
+  lines.each_with_index do |line, i|
+    t = line.strip
+    next if t.empty? || t.starts_with?('#')
+    fields = line.split(',')
+    if fields.size >= 2 && fields[0].strip == public_key
+      fields[1] = new_secret
+      lines[i] = fields.join(',')
+      changed = true
+      break
+    end
+  end
+  return false unless changed
+  tmp = File.join(File.dirname(path), ".#{File.basename(path)}.#{Process.pid}.tmp")
+  begin
+    File.open(tmp, "w", perm: 0o600) { |f| f.print(lines.join('\n')) }
+    File.chmod(tmp, 0o600)
+    File.rename(tmp, path)
+  rescue
+    File.delete(tmp) if File.exists?(tmp)
+    return false
+  end
+  true
+end
+
+def rotate_secret_post(public_key : String, secret_key : String, otp : String? = nil, challenge : String? = nil) : HTTP::Client::Response
+  path = "/keys/self/rotate-secret"
+  body = "{}"
+  timestamp = Time.utc.to_unix.to_s
+  signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, "#{timestamp}:POST:#{path}:#{body}")
+  headers = HTTP::Headers{
+    "Authorization" => "Bearer #{public_key}",
+    "X-Timestamp"   => timestamp,
+    "X-Signature"   => signature,
+    "Content-Type"  => "application/json",
+  }
+  if otp
+    headers["X-Sudo-OTP"] = otp
+    headers["X-Sudo-Challenge"] = challenge || ""
+  end
+  HTTP::Client.post(URI.parse(API_BASE + path), headers: headers, body: body)
+end
+
+def rotate_json_field(body : String, field : String) : String?
+  JSON.parse(body)[field]?.try(&.as_s?)
+rescue
+  nil
+end
+
+def rotate_fail(response : HTTP::Client::Response)
+  error = rotate_json_field(response.body, "error")
+  message = rotate_json_field(response.body, "message")
+  if response.status_code == 403 && error == "email_required"
+    STDERR.puts "Error: this key has no email; add one or use POST /keys/recover"
+    exit 3
+  end
+  if response.status_code == 401
+    STDERR.puts "Error: authentication failed"
+    exit 3
+  end
+  STDERR.puts "Error: #{message || error || "HTTP #{response.status_code}"}"
+  exit 4
+end
+
+def cmd_key_rotate(args)
+  api_key = args[:api_key]?.as?(String)
+  args_pk = args[:public_key]?.as?(String)
+  account = args[:account]?.as?(Int32)
+  public_key, secret_key = get_api_keys(api_key, args_public_key: args_pk, account: account)
+  if secret_key.nil? || secret_key.empty?
+    STDERR.puts "Error: API credentials required"
+    exit 3
+  end
+  sk = secret_key.not_nil!
+
+  dir = File.join(ENV["HOME"]? || ".", ".unsandbox")
+  digest = OpenSSL::Digest.new("SHA256")
+  digest.update(public_key)
+  challenge_file = File.join(dir, "rotate-#{digest.final.hexstring[0, 16]}.challenge")
+
+  otp_arg = args[:otp]?.as?(String)
+  begin
+    if otp_arg
+      unless File.exists?(challenge_file)
+        STDERR.puts "Error: no rotation in progress; run: un key --rotate"
+        exit 2
+      end
+      challenge = File.read(challenge_file).strip
+      response = rotate_secret_post(public_key, sk, otp_arg.strip, challenge)
+      File.delete(challenge_file) if File.exists?(challenge_file)
+    else
+      response = rotate_secret_post(public_key, sk)
+      if response.status_code == 428
+        challenge = rotate_json_field(response.body, "challenge_id") || ""
+        if STDIN.tty?
+          STDERR.puts "One-time code emailed to the key owner."
+          STDERR.print "Code: "
+          STDERR.flush
+          otp = (STDIN.gets || "").strip
+          if otp.empty?
+            STDERR.puts "Error: cancelled"
+            exit 1
+          end
+          response = rotate_secret_post(public_key, sk, otp, challenge)
+        else
+          unless Dir.exists?(dir)
+            Dir.mkdir_p(dir)
+            File.chmod(dir, 0o700)
+          end
+          File.open(challenge_file, "w", perm: 0o600) { |f| f.print(challenge) }
+          File.chmod(challenge_file, 0o600)
+          puts "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+          return
+        end
+      end
+    end
+  rescue ex : Socket::Error | IO::Error
+    STDERR.puts "Error: #{ex.message}"
+    exit 4
+  end
+
+  response = response.not_nil!
+  rotate_fail(response) unless response.status_code == 200
+  new_secret = rotate_json_field(response.body, "secret")
+  if new_secret.nil? || new_secret.empty?
+    STDERR.puts "Error: API returned no secret"
+    exit 4
+  end
+
+  csv_path = credentials_csv_path(api_key, args_pk, account)
+  if csv_path && rewrite_accounts_csv(csv_path, public_key, new_secret)
+    puts "Secret rotated. Updated #{csv_path} (public key #{public_key})."
+  else
+    puts "New secret (shown once, store it now): #{new_secret}"
+    puts "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
+  end
+end
+
 def cmd_key(args)
   public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
@@ -868,14 +1036,14 @@ def cmd_image(args)
   end
 
   if lock_id = args[:image_lock]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     api_request("/images/#{lock_id}/lock", public_key, secret_key, method: "POST", data: payload)
     puts "#{GREEN}Image locked: #{lock_id}#{RESET}"
     return
   end
 
   if unlock_id = args[:image_unlock]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     body = "{}"
     status_code, response = api_request_with_sudo("/images/#{unlock_id}/unlock", public_key, secret_key, method: "POST", data: payload)
     if status_code == 428
@@ -919,7 +1087,7 @@ def cmd_image(args)
   end
 
   if spawn_id = args[:image_spawn]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     if name = args[:image_name]?.as?(String)
       payload.as_h["name"] = JSON::Any.new(name)
     end
@@ -934,7 +1102,7 @@ def cmd_image(args)
   end
 
   if clone_id = args[:image_clone]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     if name = args[:image_name]?.as?(String)
       payload.as_h["name"] = JSON::Any.new(name)
     end
@@ -1029,7 +1197,7 @@ def cmd_snapshot(args)
   end
 
   if session_id = args[:snapshot_session]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     if name = args[:snapshot_name]?.as?(String)
       payload.as_h["name"] = JSON::Any.new(name)
     end
@@ -1043,7 +1211,7 @@ def cmd_snapshot(args)
   end
 
   if service_id = args[:snapshot_service]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     if name = args[:snapshot_name]?.as?(String)
       payload.as_h["name"] = JSON::Any.new(name)
     end
@@ -1057,7 +1225,7 @@ def cmd_snapshot(args)
   end
 
   if restore_id = args[:snapshot_restore]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     result = api_request("/snapshots/#{restore_id}/restore", public_key, secret_key, method: "POST", data: payload)
     puts "#{GREEN}Snapshot restored#{RESET}"
     puts result.to_pretty_json
@@ -1079,14 +1247,14 @@ def cmd_snapshot(args)
   end
 
   if lock_id = args[:snapshot_lock]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     api_request("/snapshots/#{lock_id}/lock", public_key, secret_key, method: "POST", data: payload)
     puts "#{GREEN}Snapshot locked: #{lock_id}#{RESET}"
     return
   end
 
   if unlock_id = args[:snapshot_unlock]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     body = "{}"
     status_code, response = api_request_with_sudo("/snapshots/#{unlock_id}/unlock", public_key, secret_key, method: "POST", data: payload)
     if status_code == 428
@@ -1248,8 +1416,8 @@ def cmd_service(args)
     else
       printf "%-20s %-15s %-10s %-15s %s\n", "ID", "Name", "Status", "Ports", "Domains"
       services.each do |s|
-        ports = s["ports"]?.try(&.as_a?.map(&.as_i).join(',')) || ""
-        domains = s["domains"]?.try(&.as_a?.map(&.as_s).join(',')) || ""
+        ports = s["ports"]?.try(&.as_a?).try(&.map(&.as_i).join(',')) || ""
+        domains = s["domains"]?.try(&.as_a?).try(&.map(&.as_s).join(',')) || ""
         printf "%-20s %-15s %-10s %-15s %s\n",
           s["id"]?.try(&.as_s?) || "N/A",
           s["name"]?.try(&.as_s?) || "N/A",
@@ -1354,14 +1522,14 @@ def cmd_service(args)
   end
 
   if lock_id = args[:service_lock]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     api_request("/services/#{lock_id}/lock", public_key, secret_key, method: "POST", data: payload)
     puts "#{GREEN}Service locked: #{lock_id}#{RESET}"
     return
   end
 
   if unlock_id = args[:service_unlock]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     body = "{}"
     status_code, response = api_request_with_sudo("/services/#{unlock_id}/unlock", public_key, secret_key, method: "POST", data: payload)
     if status_code == 428
@@ -1377,7 +1545,7 @@ def cmd_service(args)
   end
 
   if redeploy_id = args[:redeploy]?.as?(String)
-    payload = JSON.parse({}.to_json)
+    payload = JSON.parse("{}")
     if bootstrap = args[:bootstrap]?.as?(String)
       payload.as_h["bootstrap"] = JSON::Any.new(bootstrap)
     end
@@ -1490,93 +1658,93 @@ end
 
 def main
   args = {
-    source_file: nil,
-    api_key: nil,
-    public_key: nil,
-    account: nil,
-    network: nil,
-    env: [] of String,
-    files: [] of String,
-    artifacts: false,
-    output_dir: nil,
-    command: nil,
-    list: false,
-    kill: nil,
-    info: nil,
-    logs: nil,
-    sleep: nil,
-    wake: nil,
-    destroy: nil,
-    execute: nil,
-    dump_bootstrap: nil,
-    dump_file: nil,
-    resize: nil,
-    vcpu: nil,
-    unfreeze_on_demand: nil,
-    unfreeze_on_demand_enabled: true,
-    create_unfreeze_on_demand: false,
-    name: nil,
-    ports: nil,
-    domains: nil,
-    service_type: nil,
-    bootstrap: nil,
-    bootstrap_file: nil,
-    extend: false,
-    svc_envs: [] of String,
-    svc_env_file: nil,
-    env_action: nil,
-    env_target: nil,
-    json: false,
-    shell: nil,
+    :source_file => nil,
+    :api_key => nil,
+    :public_key => nil,
+    :account => nil,
+    :network => nil,
+    :env => [] of String,
+    :files => [] of String,
+    :artifacts => false,
+    :output_dir => nil,
+    :command => nil,
+    :list => false,
+    :kill => nil,
+    :info => nil,
+    :logs => nil,
+    :sleep => nil,
+    :wake => nil,
+    :destroy => nil,
+    :execute => nil,
+    :dump_bootstrap => nil,
+    :dump_file => nil,
+    :resize => nil,
+    :vcpu => nil,
+    :unfreeze_on_demand => nil,
+    :unfreeze_on_demand_enabled => true,
+    :create_unfreeze_on_demand => false,
+    :name => nil,
+    :ports => nil,
+    :domains => nil,
+    :service_type => nil,
+    :bootstrap => nil,
+    :bootstrap_file => nil,
+    :extend => false,
+    :svc_envs => [] of String,
+    :svc_env_file => nil,
+    :env_action => nil,
+    :env_target => nil,
+    :json => false,
+    :shell => nil,
     # Session options
-    session_info: nil,
-    session_freeze: nil,
-    session_unfreeze: nil,
-    session_boost: nil,
-    session_unboost: nil,
-    session_execute: nil,
+    :session_info => nil,
+    :session_freeze => nil,
+    :session_unfreeze => nil,
+    :session_boost => nil,
+    :session_unboost => nil,
+    :session_execute => nil,
     # Service options
-    service_lock: nil,
-    service_unlock: nil,
-    redeploy: nil,
+    :service_lock => nil,
+    :service_unlock => nil,
+    :redeploy => nil,
     # Image options
-    image_info: nil,
-    image_delete: nil,
-    image_lock: nil,
-    image_unlock: nil,
-    image_publish: nil,
-    image_source_type: nil,
-    image_visibility_id: nil,
-    image_visibility: nil,
-    image_spawn: nil,
-    image_clone: nil,
-    image_name: nil,
-    image_ports: nil,
-    image_grant: nil,
-    image_revoke: nil,
-    image_trusted: nil,
-    image_trusted_key: nil,
-    image_transfer: nil,
-    image_to_key: nil,
+    :image_info => nil,
+    :image_delete => nil,
+    :image_lock => nil,
+    :image_unlock => nil,
+    :image_publish => nil,
+    :image_source_type => nil,
+    :image_visibility_id => nil,
+    :image_visibility => nil,
+    :image_spawn => nil,
+    :image_clone => nil,
+    :image_name => nil,
+    :image_ports => nil,
+    :image_grant => nil,
+    :image_revoke => nil,
+    :image_trusted => nil,
+    :image_trusted_key => nil,
+    :image_transfer => nil,
+    :image_to_key => nil,
     # Snapshot options
-    snapshot_info: nil,
-    snapshot_session: nil,
-    snapshot_service: nil,
-    snapshot_restore: nil,
-    snapshot_delete: nil,
-    snapshot_lock: nil,
-    snapshot_unlock: nil,
-    snapshot_clone: nil,
-    snapshot_clone_type: nil,
-    snapshot_name: nil,
-    snapshot_hot: false,
-    snapshot_ports: nil,
+    :snapshot_info => nil,
+    :snapshot_session => nil,
+    :snapshot_service => nil,
+    :snapshot_restore => nil,
+    :snapshot_delete => nil,
+    :snapshot_lock => nil,
+    :snapshot_unlock => nil,
+    :snapshot_clone => nil,
+    :snapshot_clone_type => nil,
+    :snapshot_name => nil,
+    :snapshot_hot => false,
+    :snapshot_ports => nil,
     # Logs options
-    logs_source: nil,
-    logs_lines: nil,
-    logs_since: nil,
-    logs_grep: nil,
-    logs_follow: false
+    :logs_source => nil,
+    :logs_lines => nil,
+    :logs_since => nil,
+    :logs_grep => nil,
+    :logs_follow => false
   } of Symbol => (String | Array(String) | Bool | Int32 | Nil)
 
   parser = OptionParser.new do |opts|
@@ -1585,6 +1753,8 @@ def main
     opts.on("-k API_KEY", "--api-key=API_KEY", "Secret/API key") { |k| args[:api_key] = k }
     opts.on("-p PUBLIC_KEY", "--public-key=PUBLIC_KEY", "Public key (use with -k for secret key)") { |k| args[:public_key] = k }
     opts.on("--account=N", "Use row N from accounts.csv (0-based)") { |n| args[:account] = n.to_i32 }
+    opts.on("--rotate", "key: rotate this key's secret (sudo OTP), update accounts.csv") { args[:rotate] = true }
+    opts.on("--otp=CODE", "key --rotate: finish a rotation started without a terminal") { |c| args[:otp] = c }
     opts.on("-n NETWORK", "--network=NETWORK", "Network mode") { |n| args[:network] = n }
     opts.on("-e ENV", "--env=ENV", "Environment variable (KEY=VALUE)") { |e|
       args[:env].as(Array(String)) << e
@@ -2056,7 +2226,11 @@ def main
   elsif args[:command] == "service"
     cmd_service(args)
   elsif args[:command] == "key"
-    cmd_key(args)
+    if args[:rotate]?.as?(Bool)
+      cmd_key_rotate(args)
+    else
+      cmd_key(args)
+    end
   elsif args[:command] == "languages"
     cmd_languages(args)
   elsif args[:command] == "image"

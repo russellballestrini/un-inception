@@ -36,7 +36,6 @@
 // https://www.unturf.com/software
 
 
-#!/usr/bin/env groovy
 /**
  * unsandbox SDK for Groovy - Execute code in secure sandboxes
  * https://unsandbox.com | https://api.unsandbox.com/openapi
@@ -86,32 +85,32 @@ import groovy.json.JsonOutput
 // ============================================================================
 
 /** API base URL for unsandbox */
-def API_BASE = 'https://api.unsandbox.com'
+@groovy.transform.Field def API_BASE = (System.getenv('UNSANDBOX_API_URL') ?: 'https://api.unsandbox.com').replaceAll('/+$', '')
 
 /** Portal base URL for unsandbox */
-def PORTAL_BASE = 'https://unsandbox.com'
+@groovy.transform.Field def PORTAL_BASE = 'https://unsandbox.com'
 
 /** Default execution timeout in seconds */
-def DEFAULT_TIMEOUT = 300
+@groovy.transform.Field def DEFAULT_TIMEOUT = 300
 
 /** Default TTL for code execution */
-def DEFAULT_TTL = 60
+@groovy.transform.Field def DEFAULT_TTL = 60
 
 /** Maximum vault content size (64KB) */
-def MAX_ENV_CONTENT_SIZE = 65536
+@groovy.transform.Field def MAX_ENV_CONTENT_SIZE = 65536
 
 /** Polling delays (ms) - exponential backoff */
-def POLL_DELAYS = [300, 450, 700, 900, 650, 1600, 2000]
+@groovy.transform.Field def POLL_DELAYS = [300, 450, 700, 900, 650, 1600, 2000]
 
 // ANSI colors
-def BLUE = '\033[34m'
-def RED = '\033[31m'
-def GREEN = '\033[32m'
-def YELLOW = '\033[33m'
-def RESET = '\033[0m'
+@groovy.transform.Field def BLUE = '\033[34m'
+@groovy.transform.Field def RED = '\033[31m'
+@groovy.transform.Field def GREEN = '\033[32m'
+@groovy.transform.Field def YELLOW = '\033[33m'
+@groovy.transform.Field def RESET = '\033[0m'
 
 /** Extension to language mapping */
-def EXT_MAP = [
+@groovy.transform.Field def EXT_MAP = [
     '.java': 'java', '.kt': 'kotlin', '.cs': 'csharp', '.fs': 'fsharp',
     '.groovy': 'groovy', '.dart': 'dart', '.scala': 'scala',
     '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
@@ -231,7 +230,7 @@ def loadAccountsFromCsv(File path) {
             def trimmed = line.trim()
             if (!trimmed || trimmed.startsWith('#')) return
             if (trimmed.contains(',')) {
-                def parts = trimmed.split(',', 2)
+                def parts = trimmed.split(',')
                 def pk = parts[0].trim()
                 def sk = parts[1].trim()
                 if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
@@ -254,7 +253,7 @@ def getCredentials(String publicKey = null, String secretKey = null, int account
     // Priority 2: --account N => accounts.csv row N (bypasses env vars)
     if (accountIndex >= 0) {
         def searchPaths = [
-            new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+            new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/accounts.csv'),
             new File('accounts.csv')
         ]
         for (path in searchPaths) {
@@ -276,7 +275,7 @@ def getCredentials(String publicKey = null, String secretKey = null, int account
     // Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
     def defaultIdx = (System.getenv('UNSANDBOX_ACCOUNT') ?: '0').toInteger()
     def searchPaths = [
-        new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+        new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/accounts.csv'),
         new File('accounts.csv')
     ]
     for (path in searchPaths) {
@@ -895,7 +894,7 @@ def image(String prompt, Map options = [:]) {
 // ============================================================================
 
 /** Cache max age for languages (1 hour in milliseconds) */
-def LANGUAGES_CACHE_MAX_AGE = 3600000
+@groovy.transform.Field def LANGUAGES_CACHE_MAX_AGE = 3600000
 
 /**
  * Get list of supported programming languages.
@@ -911,7 +910,7 @@ def LANGUAGES_CACHE_MAX_AGE = 3600000
  * @return Map with keys: languages (list), count, aliases (map)
  */
 def languages(Map options = [:]) {
-    def cachePath = new File(System.getProperty('user.home'), '.unsandbox/languages.json')
+    def cachePath = new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/languages.json')
 
     // Check cache unless force refresh
     if (!options.forceRefresh && cachePath.exists()) {
@@ -1511,7 +1510,7 @@ def validateKeys(Map options = [:]) {
     def message = "${timestamp}:POST:/keys/validate:{}"
     def signature = signRequest(secretKey, timestamp, 'POST', '/keys/validate', '{}')
 
-    def url = new URL("${PORTAL_BASE}/keys/validate")
+    def url = new URL("${API_BASE}/keys/validate")
     def connection = url.openConnection() as java.net.HttpURLConnection
 
     connection.requestMethod = 'POST'
@@ -1524,7 +1523,7 @@ def validateKeys(Map options = [:]) {
     connection.doOutput = true
     connection.outputStream.withWriter { it.write('{}') }
 
-    if (connection.responseCode !in 200..299) {
+    if (!(connection.responseCode in 200..299)) {
         throw new APIError("HTTP ${connection.responseCode}")
     }
 
@@ -1621,7 +1620,7 @@ class Client {
                 def trimmed = line.trim()
                 if (!trimmed || trimmed.startsWith('#')) return
                 if (trimmed.contains(',')) {
-                    def parts = trimmed.split(',', 2)
+                    def parts = trimmed.split(',')
                     def pk = parts[0].trim()
                     def sk = parts[1].trim()
                     if (pk.startsWith('unsb-pk-') && sk.startsWith('unsb-sk-')) {
@@ -1644,7 +1643,7 @@ class Client {
         // Priority 2: --account N => CSV row N (bypasses env vars)
         if (accountIndex >= 0) {
             def searchPaths = [
-                new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+                new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/accounts.csv'),
                 new File('accounts.csv')
             ]
             for (path in searchPaths) {
@@ -1666,7 +1665,7 @@ class Client {
         // Priority 4: ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
         def defaultIdx = (System.getenv('UNSANDBOX_ACCOUNT') ?: '0').toInteger()
         def searchPaths = [
-            new File(System.getProperty('user.home'), '.unsandbox/accounts.csv'),
+            new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/accounts.csv'),
             new File('accounts.csv')
         ]
         for (path in searchPaths) {
@@ -1831,6 +1830,8 @@ class Args {
     String snapshotShell = null
     String snapshotPorts = null
     Boolean keyExtend = false
+    Boolean keyRotate = false
+    String keyOtp = null
     Boolean imageList = false
     String imageInfo = null
     String imageDelete = null
@@ -2213,10 +2214,186 @@ def cmdLanguages(args) {
     }
 }
 
+/**
+ * The accounts.csv the CLI's credentials came from, or null (env vars).
+ * Mirrors getCredentials' tiers.
+ */
+def credentialsCsvPath(args) {
+    int index = args.accountIndex ?: -1
+    if (index < 0) {
+        if (System.getenv('UNSANDBOX_PUBLIC_KEY') && System.getenv('UNSANDBOX_SECRET_KEY')) {
+            return null
+        }
+        index = (System.getenv('UNSANDBOX_ACCOUNT') ?: '0').toInteger()
+    }
+    def searchPaths = [
+        new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/accounts.csv'),
+        new File('accounts.csv')
+    ]
+    for (path in searchPaths) {
+        def accts = loadAccountsFromCsv(path)
+        if (accts && index < accts.size()) {
+            return path
+        }
+    }
+    return null
+}
+
+/**
+ * Replace the secret on the line whose first field is publicKey. Every other
+ * line, field, comment and the order stay as they are. Temp file (0600) + rename.
+ */
+def rewriteAccountsCsv(File path, String publicKey, String newSecret) {
+    def lines = path.getText('UTF-8').split('\n', -1) as List
+    def changed = false
+    for (int j = 0; j < lines.size(); j++) {
+        def stripped = lines[j].trim()
+        if (!stripped || stripped.startsWith('#')) continue
+        def fields = lines[j].split(',', -1) as List
+        if (fields.size() >= 2 && fields[0].trim() == publicKey) {
+            fields[1] = newSecret
+            lines[j] = fields.join(',')
+            changed = true
+            break
+        }
+    }
+    if (!changed) return false
+    def target = path.absoluteFile.toPath()
+    def perms = java.nio.file.attribute.PosixFilePermissions.fromString('rw-------')
+    def tmp = java.nio.file.Files.createTempFile(target.parent, ".${path.name}.", '.tmp',
+        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(perms))
+    java.nio.file.Files.write(tmp, lines.join('\n').getBytes('UTF-8'))
+    java.nio.file.Files.setPosixFilePermissions(tmp, perms)
+    java.nio.file.Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    return true
+}
+
+/** POST /keys/self/rotate-secret with body {}; returns [status, json map]. */
+def rotatePost(String publicKey, String secretKey, String otp, String challenge) {
+    def path = '/keys/self/rotate-secret'
+    def body = '{}'
+    def timestamp = (System.currentTimeMillis() / 1000) as long
+    def connection = new URL("${API_BASE}${path}").openConnection() as java.net.HttpURLConnection
+    connection.requestMethod = 'POST'
+    connection.connectTimeout = 120000
+    connection.readTimeout = 120000
+    connection.setRequestProperty('Authorization', "Bearer ${publicKey}")
+    connection.setRequestProperty('X-Timestamp', timestamp.toString())
+    connection.setRequestProperty('X-Signature', signRequest(secretKey, timestamp, 'POST', path, body))
+    connection.setRequestProperty('Content-Type', 'application/json')
+    if (otp) {
+        connection.setRequestProperty('X-Sudo-OTP', otp)
+        connection.setRequestProperty('X-Sudo-Challenge', challenge ?: '')
+    }
+    connection.doOutput = true
+    connection.outputStream.withStream { it.write(body.getBytes('UTF-8')) }
+    int code = connection.responseCode
+    def stream = (code >= 200 && code < 300) ? connection.inputStream : connection.errorStream
+    def text = stream ? stream.getText('UTF-8') : ''
+    def data = [:]
+    try {
+        def parsed = new JsonSlurper().parseText(text)
+        if (parsed instanceof Map) data = parsed
+    } catch (Exception e) {
+        // Non-JSON body
+    }
+    return [code, data]
+}
+
+def stdinIsTerminal() {
+    def console = System.console()
+    if (console == null) return false
+    try {
+        // Java 22+: a Console may exist even when stdin is redirected.
+        return console.class.getMethod('isTerminal').invoke(console) as boolean
+    } catch (Exception e) {
+        return true
+    }
+}
+
+/** un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md). */
+def cmdKeyRotate(args) {
+    def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
+    def unsandboxDir = new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox')
+    def hash = java.security.MessageDigest.getInstance('SHA-256').digest(publicKey.getBytes('UTF-8')).encodeHex().toString()
+    def challengeFile = new File(unsandboxDir, "rotate-${hash.substring(0, 16)}.challenge")
+
+    def resp
+    if (args.keyOtp) {
+        if (!challengeFile.exists()) {
+            System.err.println('Error: no rotation in progress; run: un key --rotate')
+            System.exit(2)
+        }
+        def challenge = challengeFile.getText('UTF-8').trim()
+        resp = rotatePost(publicKey, secretKey, args.keyOtp.trim(), challenge)
+        challengeFile.delete()
+    } else {
+        resp = rotatePost(publicKey, secretKey, null, null)
+        if (resp[0] == 428) {
+            def challenge = (resp[1].challenge_id ?: '').toString()
+            if (stdinIsTerminal()) {
+                System.err.println('One-time code emailed to the key owner.')
+                System.err.print('Code: ')
+                System.err.flush()
+                def line = new BufferedReader(new InputStreamReader(System.in, 'UTF-8')).readLine()
+                def code = line ? line.trim() : ''
+                if (!code) {
+                    System.err.println('Error: cancelled')
+                    System.exit(1)
+                }
+                resp = rotatePost(publicKey, secretKey, code, challenge)
+            } else {
+                def dirPath = unsandboxDir.toPath()
+                def filePath = challengeFile.toPath()
+                def filePerms = java.nio.file.attribute.PosixFilePermissions.fromString('rw-------')
+                java.nio.file.Files.createDirectories(dirPath)
+                java.nio.file.Files.setPosixFilePermissions(dirPath,
+                    java.nio.file.attribute.PosixFilePermissions.fromString('rwx------'))
+                if (!java.nio.file.Files.exists(filePath)) {
+                    java.nio.file.Files.createFile(filePath,
+                        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(filePerms))
+                }
+                java.nio.file.Files.setPosixFilePermissions(filePath, filePerms)
+                java.nio.file.Files.write(filePath, challenge.getBytes('UTF-8'))
+                println('One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE')
+                return
+            }
+        }
+    }
+
+    int status = resp[0]
+    def data = resp[1]
+    if (status != 200) {
+        if (status == 403 && data.error == 'email_required') {
+            System.err.println('Error: this key has no email; add one or use POST /keys/recover')
+            System.exit(3)
+        }
+        if (status == 401) {
+            System.err.println('Error: authentication failed')
+            System.exit(3)
+        }
+        System.err.println("Error: ${data.message ?: data.error ?: 'HTTP ' + status}")
+        System.exit(4)
+    }
+    def newSecret = data.secret
+    if (!newSecret) {
+        System.err.println('Error: API returned no secret')
+        System.exit(4)
+    }
+    def csvPath = credentialsCsvPath(args)
+    if (csvPath && rewriteAccountsCsv(csvPath, publicKey, newSecret.toString())) {
+        println("Secret rotated. Updated ${csvPath.path} (public key ${publicKey}).")
+    } else {
+        println("New secret (shown once, store it now): ${newSecret}")
+        println('Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.')
+    }
+}
+
 def cmdKey(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
-    def curlCmd = ['curl', '-s', '-X', 'POST', "${PORTAL_BASE}/keys/validate",
+    def curlCmd = ['curl', '-s', '-X', 'POST', "${API_BASE}/keys/validate",
                    '-H', 'Content-Type: application/json']
 
     if (secretKey) {
@@ -2666,6 +2843,12 @@ def parseArgs(argv) {
             case '--extend':
                 args.keyExtend = true
                 break
+            case '--rotate':
+                args.keyRotate = true
+                break
+            case '--otp':
+                args.keyOtp = argv[++i]
+                break
             case '--json':
                 args.jsonOutput = true
                 break
@@ -2743,6 +2926,8 @@ Vault commands:
 
 Key options:
   --extend            Open browser to extend key
+  --rotate            Rotate the key's secret (emailed one-time code)
+  --otp CODE          Finish a rotation started without a terminal
 
 Image options:
   --list              List images
@@ -2790,7 +2975,11 @@ try {
     } else if (args.command == 'image') {
         cmdImage(args)
     } else if (args.command == 'key') {
-        cmdKey(args)
+        if (args.keyRotate) {
+            cmdKeyRotate(args)
+        } else {
+            cmdKey(args)
+        }
     } else if (args.sourceFile || args.inlineLang) {
         cmdExecute(args)
     } else {

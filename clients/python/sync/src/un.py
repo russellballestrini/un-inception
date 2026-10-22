@@ -32,7 +32,7 @@ except ImportError:
     requests = None  # type: ignore
 
 
-API_BASE = "https://api.unsandbox.com"
+API_BASE = os.environ.get("UNSANDBOX_API_URL", "https://api.unsandbox.com").rstrip("/")
 POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000]
 LANGUAGES_CACHE_TTL = 3600  # 1 hour
 
@@ -2755,7 +2755,11 @@ Examples:
                               help="Ports for spawned service (comma-separated)")
 
     # Key subcommand
-    subparsers.add_parser("key", help="Check API key validity")
+    key_parser = subparsers.add_parser("key", help="Check API key validity, or rotate its secret")
+    key_parser.add_argument("--rotate", action="store_true",
+                            help="Rotate this key's secret (sudo OTP); updates accounts.csv in place")
+    key_parser.add_argument("--otp", metavar="CODE",
+                            help="Finish a rotation started without a terminal")
 
     # Languages subcommand
     languages_parser = subparsers.add_parser("languages", help="List available languages")
@@ -2796,7 +2800,10 @@ def cli_main():
         elif args.command == "image":
             _handle_image_command(args, public_key, secret_key)
         elif args.command == "key":
-            _handle_key_command(public_key, secret_key)
+            if getattr(args, "rotate", False):
+                _handle_key_rotate(args, public_key, secret_key)
+            else:
+                _handle_key_command(public_key, secret_key)
         elif args.command == "languages":
             _handle_languages_command(args, public_key, secret_key)
         elif args.source or args.shell:
@@ -3253,6 +3260,127 @@ def _handle_key_command(public_key: str, secret_key: str):
         print(f"Expires: {result.get('expires_at')}")
     if result.get('reason'):
         print(f"Reason: {result.get('reason')}")
+
+
+def _credentials_csv_path(args) -> Optional[Path]:
+    """The accounts.csv the CLI's credentials came from, or None (flags / env vars).
+    Mirrors _resolve_credentials' tiers."""
+    if args.public_key and args.secret_key:
+        return None
+    if args.account is None and os.environ.get("UNSANDBOX_PUBLIC_KEY") and os.environ.get("UNSANDBOX_SECRET_KEY"):
+        return None
+    index = args.account if args.account is not None else int(os.environ.get("UNSANDBOX_ACCOUNT", "0"))
+    for path in (_get_unsandbox_dir() / "accounts.csv", Path("accounts.csv")):
+        if _load_credentials_from_csv(path, index):
+            return path
+    return None
+
+
+def _rewrite_accounts_csv(path: Path, public_key: str, new_secret: str) -> bool:
+    """Replace the secret on the line whose first field is public_key. Every other
+    line, field, comment and the order stay as they are. Temp file (0600) + rename."""
+    lines = path.read_text().split("\n")
+    changed = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = line.split(",")
+        if len(fields) >= 2 and fields[0].strip() == public_key:
+            fields[1] = new_secret
+            lines[i] = ",".join(fields)
+            changed = True
+            break
+    if not changed:
+        return False
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return True
+
+
+def _handle_key_rotate(args, public_key: str, secret_key: str):
+    """un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)."""
+    _check_requests()
+    path = "/keys/self/rotate-secret"
+    body = "{}"
+    unsandbox_dir = _get_unsandbox_dir()
+    challenge_file = unsandbox_dir / (
+        "rotate-" + hashlib.sha256(public_key.encode()).hexdigest()[:16] + ".challenge"
+    )
+
+    def post(otp=None, challenge=None):
+        ts = int(time.time())
+        headers = {
+            "Authorization": f"Bearer {public_key}",
+            "X-Timestamp": str(ts),
+            "X-Signature": _sign_request(secret_key, ts, "POST", path, body),
+            "Content-Type": "application/json",
+        }
+        if otp:
+            headers["X-Sudo-OTP"] = otp
+            headers["X-Sudo-Challenge"] = challenge or ""
+        return requests.post(f"{API_BASE}{path}", headers=headers, data=body, timeout=120)
+
+    def fail(resp):
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        if resp.status_code == 403 and data.get("error") == "email_required":
+            print("Error: this key has no email; add one or use POST /keys/recover", file=sys.stderr)
+            sys.exit(3)
+        if resp.status_code == 401:
+            print("Error: authentication failed", file=sys.stderr)
+            sys.exit(3)
+        print(f"Error: {data.get('message') or data.get('error') or 'HTTP ' + str(resp.status_code)}", file=sys.stderr)
+        sys.exit(4)
+
+    if args.otp:
+        try:
+            challenge = challenge_file.read_text().strip()
+        except OSError:
+            print("Error: no rotation in progress; run: un key --rotate", file=sys.stderr)
+            sys.exit(2)
+        resp = post(args.otp.strip(), challenge)
+        challenge_file.unlink(missing_ok=True)
+    else:
+        resp = post()
+        if resp.status_code == 428:
+            challenge = (resp.json() or {}).get("challenge_id", "")
+            if sys.stdin.isatty():
+                print("One-time code emailed to the key owner.", file=sys.stderr)
+                print("Code: ", end="", file=sys.stderr, flush=True)
+                otp = sys.stdin.readline().strip()
+                if not otp:
+                    print("Error: cancelled", file=sys.stderr)
+                    sys.exit(1)
+                resp = post(otp, challenge)
+            else:
+                unsandbox_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                fd = os.open(challenge_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.write(challenge)
+                os.chmod(challenge_file, 0o600)
+                print("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+                return
+
+    if resp.status_code != 200:
+        fail(resp)
+    new_secret = (resp.json() or {}).get("secret")
+    if not new_secret:
+        print("Error: API returned no secret", file=sys.stderr)
+        sys.exit(4)
+
+    csv_path = _credentials_csv_path(args)
+    if csv_path and _rewrite_accounts_csv(csv_path, public_key, new_secret):
+        print(f"Secret rotated. Updated {csv_path} (public key {public_key}).")
+    else:
+        print(f"New secret (shown once, store it now): {new_secret}")
+        print("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
 
 
 def _handle_languages_command(args, public_key: str, secret_key: str):

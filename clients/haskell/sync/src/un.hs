@@ -59,28 +59,39 @@ import System.Environment (getArgs, getEnv, lookupEnv)
 import System.Exit (exitWith, ExitCode(..), exitFailure)
 import System.FilePath (takeExtension, takeFileName)
 import System.Process (readProcessWithExitCode)
-import System.IO (hPutStrLn, hPutStr, hFlush, stderr, stdout)
+import System.IO (hPutStrLn, hPutStr, hFlush, stderr, stdout, stdin, hIsTerminalDevice)
 import System.Directory (createDirectoryIfMissing, setPermissions, getPermissions, setOwnerExecutable)
 import Data.List (isPrefixOf, intercalate)
 import Data.Char (isDigit, ord)
 import Text.Printf (printf)
 import Control.Monad (when, unless, forM_)
-import Control.Exception (try, catch, IOError)
+import Control.Exception (try, catch)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Base64 as B64
-import Crypto.Hash.SHA256 (hmac)
+import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
+import Crypto.Hash (SHA256(..), hashWith)
 import Numeric (showHex)
 import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime)
 import Data.Time.Clock (diffUTCTime)
 import qualified Data.Time.Clock
 import qualified System.Posix.Files
+import qualified System.Posix.Process
+import System.FilePath (takeDirectory, (</>))
 
 -- API constants
+-- | API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
+defaultApiBase :: String
+defaultApiBase = "https://api.unsandbox.com"
+
+{-# NOINLINE apiBase #-}
 apiBase :: String
-apiBase = "https://api.unsandbox.com"
+apiBase = unsafePerformIO $ do
+  v <- lookupEnv "UNSANDBOX_API_URL"
+  let base = maybe "" id v
+  return $ if null base then defaultApiBase else reverse (dropWhile (== '/') (reverse base))
 
 portalBase :: String
 portalBase = "https://unsandbox.com"
@@ -208,6 +219,8 @@ data ImageAction = ImageList | ImageInfo String | ImageDelete String
 
 data KeyOpts = KeyOpts
   { keyExtend :: Bool
+  , keyRotate :: Bool
+  , keyOtp :: Maybe String
   }
 
 -- Parse arguments
@@ -231,9 +244,11 @@ parseLanguages args = return $ parseLanguagesArgs args defaultLanguagesOpts
 parseKey :: [String] -> IO KeyOpts
 parseKey args = return $ parseKeyArgs args defaultKeyOpts
   where
-    defaultKeyOpts = KeyOpts False
+    defaultKeyOpts = KeyOpts False False Nothing
     parseKeyArgs [] opts = opts
     parseKeyArgs ("--extend":rest) opts = parseKeyArgs rest opts { keyExtend = True }
+    parseKeyArgs ("--rotate":rest) opts = parseKeyArgs rest opts { keyRotate = True }
+    parseKeyArgs ("--otp":code:rest) opts = parseKeyArgs rest opts { keyOtp = Just code }
     parseKeyArgs (_:rest) opts = parseKeyArgs rest opts
 
 parseSnapshot :: [String] -> IO SnapshotOpts
@@ -331,11 +346,14 @@ parseService args = return $ parseServiceArgs args defaultServiceOpts
 parseExecute :: [String] -> IO Command
 parseExecute args =
   case parseExecArgs args defaultExecOpts of
-    Just opts -> return $ Execute opts
-    Nothing -> return Help
+    Right (Just opts) -> return $ Execute opts
+    Right Nothing -> return Help
+    Left arg -> do
+      hPutStrLn stderr $ red ++ "Unknown option: " ++ arg ++ reset
+      exitFailure
   where
     defaultExecOpts = ExecuteOpts "" [] [] False Nothing Nothing Nothing
-    parseExecArgs [] opts = if null (exFile opts) then Nothing else Just opts
+    parseExecArgs [] opts = Right (if null (exFile opts) then Nothing else Just opts)
     parseExecArgs (arg:rest) opts
       | "-e" `isPrefixOf` arg = parseExecArgs rest opts { exEnv = parseEnv rest : exEnv opts }
       | "-f" `isPrefixOf` arg = parseExecArgs rest opts { exFiles = head rest : exFiles opts }
@@ -343,9 +361,7 @@ parseExecute args =
       | "-o" `isPrefixOf` arg = parseExecArgs rest opts { exOutDir = Just (head rest) }
       | "-n" `isPrefixOf` arg = parseExecArgs rest opts { exNetwork = Just (head rest) }
       | "-v" `isPrefixOf` arg = parseExecArgs rest opts { exVcpu = Just (read (head rest)) }
-      | "-" `isPrefixOf` arg = do
-        hPutStrLn stderr $ red ++ "Unknown option: " ++ arg ++ reset
-        exitFailure
+      | "-" `isPrefixOf` arg = Left arg
       | null (exFile opts) = parseExecArgs rest opts { exFile = arg }
       | otherwise = parseExecArgs rest opts
     parseEnv (kv:rest) =
@@ -939,6 +955,8 @@ printHelp = do
   putStrLn ""
   putStrLn "Key options:"
   putStrLn "  --extend        Open browser to extend/renew key"
+  putStrLn "  --rotate        Rotate this key's secret (sudo OTP), update accounts.csv"
+  putStrLn "  --otp CODE      Finish a rotation started without a terminal"
   putStrLn ""
   putStrLn "Image options:"
   putStrLn "  -l, --list           List all images"
@@ -991,7 +1009,7 @@ executeCommand opts = do
              ++ envJSON ++ filesJSON ++ artifactsJSON ++ networkJSON ++ vcpuJSON ++ "}"
 
   -- Call API
-  (exitCode, stdout, stderr) <- curlPost apiKey "https://api.unsandbox.com/execute" json
+  (exitCode, stdout, stderr) <- curlPost apiKey (apiBase ++ "/execute") json
 
   -- Print output
   unless (null stdout) $ putStr $ blue ++ stdout ++ reset
@@ -1007,23 +1025,23 @@ sessionCommand opts = do
   apiKey <- getApiKey
   case sessAction opts of
     SessionList -> do
-      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/sessions"
+      (_, stdout, _) <- curlGet apiKey (apiBase ++ "/sessions")
       putStrLn stdout
     SessionKill sid -> do
-      (_, stdout, _) <- curlDelete apiKey ("https://api.unsandbox.com/sessions/" ++ sid)
+      (_, stdout, _) <- curlDelete apiKey ((apiBase ++ "/sessions/") ++ sid)
       putStrLn $ green ++ "Session terminated: " ++ sid ++ reset
     SessionSnapshot sid -> do
       let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\",") (sessSnapshotName opts)
       let hotJSON = if sessHot opts then "\"hot\":true" else "\"hot\":false"
       let json = "{" ++ nameJSON ++ hotJSON ++ "}"
       hPutStrLn stderr $ "Creating snapshot of session " ++ sid ++ "..."
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/sessions/" ++ sid ++ "/snapshot") json
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/sessions/") ++ sid ++ "/snapshot") json
       putStrLn $ green ++ "Snapshot created" ++ reset
       putStrLn stdout
     SessionRestore snapshotId -> do
       -- --restore takes snapshot ID directly, calls /snapshots/:id/restore
       hPutStrLn stderr $ "Restoring from snapshot " ++ snapshotId ++ "..."
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ snapshotId ++ "/restore") "{}"
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/snapshots/") ++ snapshotId ++ "/restore") "{}"
       putStrLn $ green ++ "Session restored from snapshot" ++ reset
       putStrLn stdout
     SessionCreate -> do
@@ -1042,7 +1060,7 @@ sessionCommand opts = do
             ) (sessFiles opts)
           return $ ",\"input_files\":[" ++ intercalate "," fileEntries ++ "]"
       let json = "{\"shell\":\"" ++ shell ++ "\"" ++ networkJSON ++ vcpuJSON ++ filesJSON ++ "}"
-      (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/sessions" json
+      (_, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions") json
       putStrLn $ yellow ++ "Session created (WebSocket required for interactivity)" ++ reset
       putStrLn stdout
 
@@ -1052,22 +1070,22 @@ serviceCommand opts = do
   apiKey <- getApiKey
   case svcAction opts of
     ServiceList -> do
-      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/services"
+      (_, stdout, _) <- curlGet apiKey (apiBase ++ "/services")
       putStrLn stdout
     ServiceInfo sid -> do
-      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/services/" ++ sid)
+      (_, stdout, _) <- curlGet apiKey ((apiBase ++ "/services/") ++ sid)
       putStrLn stdout
     ServiceLogs sid -> do
-      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/logs")
+      (_, stdout, _) <- curlGet apiKey ((apiBase ++ "/services/") ++ sid ++ "/logs")
       putStrLn stdout
     ServiceSleep sid -> do
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/freeze") "{}"
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/services/") ++ sid ++ "/freeze") "{}"
       putStrLn $ green ++ "Service frozen: " ++ sid ++ reset
     ServiceWake sid -> do
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/unfreeze") "{}"
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/services/") ++ sid ++ "/unfreeze") "{}"
       putStrLn $ green ++ "Service unfreezing: " ++ sid ++ reset
     ServiceDestroy sid -> do
-      result <- curlDeleteWithSudo apiKey ("https://api.unsandbox.com/services/" ++ sid)
+      result <- curlDeleteWithSudo apiKey ((apiBase ++ "/services/") ++ sid)
       case result of
         SudoSuccess _ -> putStrLn $ green ++ "Service destroyed: " ++ sid ++ reset
         SudoCancelled -> exitFailure
@@ -1082,16 +1100,16 @@ serviceCommand opts = do
         Just vcpu -> do
           let json = "{\"vcpu\":" ++ show vcpu ++ "}"
           let ram = vcpu * 2
-          (_, stdout, _) <- curlPatch apiKey ("https://api.unsandbox.com/services/" ++ sid) json
+          (_, stdout, _) <- curlPatch apiKey ((apiBase ++ "/services/") ++ sid) json
           putStrLn $ green ++ "Service resized to " ++ show vcpu ++ " vCPU, " ++ show ram ++ " GB RAM" ++ reset
     ServiceExecute sid cmd -> do
       let json = "{\"command\":\"" ++ escapeJSON cmd ++ "\"}"
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/execute") json
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/services/") ++ sid ++ "/execute") json
       unless (null stdout) $ putStr $ blue ++ stdout ++ reset
     ServiceDumpBootstrap sid maybeFile -> do
       hPutStrLn stderr $ "Fetching bootstrap script from " ++ sid ++ "..."
       let json = "{\"command\":\"cat /tmp/bootstrap.sh\"}"
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/execute") json
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/services/") ++ sid ++ "/execute") json
       -- Extract stdout from JSON response
       let bootstrapScript = extractJsonString stdout "stdout"
       case bootstrapScript of
@@ -1111,18 +1129,18 @@ serviceCommand opts = do
       let hotJSON = if svcHot opts then "\"hot\":true" else "\"hot\":false"
       let json = "{" ++ nameJSON ++ hotJSON ++ "}"
       hPutStrLn stderr $ "Creating snapshot of service " ++ sid ++ "..."
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/services/" ++ sid ++ "/snapshot") json
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/services/") ++ sid ++ "/snapshot") json
       putStrLn $ green ++ "Snapshot created" ++ reset
       putStrLn stdout
     ServiceRestore snapshotId -> do
       -- --restore takes snapshot ID directly, calls /snapshots/:id/restore
       hPutStrLn stderr $ "Restoring from snapshot " ++ snapshotId ++ "..."
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ snapshotId ++ "/restore") "{}"
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/snapshots/") ++ snapshotId ++ "/restore") "{}"
       putStrLn $ green ++ "Service restored from snapshot" ++ reset
       putStrLn stdout
     ServiceSetUnfreezeOnDemand sid enabled -> do
       let json = "{\"unfreeze_on_demand\":" ++ (if enabled then "true" else "false") ++ "}"
-      (_, stdout, _) <- curlPatch apiKey ("https://api.unsandbox.com/services/" ++ sid) json
+      (_, stdout, _) <- curlPatch apiKey ((apiBase ++ "/services/") ++ sid) json
       putStrLn $ green ++ "Service unfreeze_on_demand set to " ++ (if enabled then "true" else "false") ++ ": " ++ sid ++ reset
     ServiceEnv action maybeTarget -> do
       case action of
@@ -1212,7 +1230,7 @@ serviceCommand opts = do
                 ) (svcFiles opts)
               return $ ",\"input_files\":[" ++ intercalate "," fileEntries ++ "]"
           let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ bootstrapContentJSON ++ networkJSON ++ vcpuJSON ++ filesJSON ++ "}"
-          (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/services" json
+          (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services") json
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout
 
@@ -1255,7 +1273,7 @@ curlPost :: String -> String -> String -> IO (ExitCode, String, String)
 curlPost apiKey url body = do
   (publicKey, secretKey) <- getApiKeys
   -- Extract path from URL
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "POST" path body
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", "-X", "POST"
@@ -1269,7 +1287,7 @@ curlPost apiKey url body = do
 curlGet :: String -> String -> IO (ExitCode, String, String)
 curlGet apiKey url = do
   (publicKey, secretKey) <- getApiKeys
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "GET" path ""
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", url ] ++ authHeaders) ""
@@ -1280,7 +1298,7 @@ curlGet apiKey url = do
 curlDelete :: String -> String -> IO (ExitCode, String, String)
 curlDelete apiKey url = do
   (publicKey, secretKey) <- getApiKeys
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "DELETE" path ""
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", "-X", "DELETE", url ] ++ authHeaders) ""
@@ -1291,7 +1309,7 @@ curlDelete apiKey url = do
 curlPatch :: String -> String -> String -> IO (ExitCode, String, String)
 curlPatch apiKey url body = do
   (publicKey, secretKey) <- getApiKeys
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "PATCH" path body
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", "-X", "PATCH"
@@ -1304,7 +1322,7 @@ curlPatch apiKey url body = do
 curlPut :: String -> String -> String -> IO (ExitCode, String, String)
 curlPut apiKey url body = do
   (publicKey, secretKey) <- getApiKeys
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "PUT" path body
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
     ([ "-s", "-X", "PUT"
@@ -1360,7 +1378,7 @@ handleSudoChallenge response method endpoint body = do
 curlDeleteWithSudo :: String -> String -> IO SudoResult
 curlDeleteWithSudo apiKey url = do
   (publicKey, secretKey) <- getApiKeys
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "DELETE" path ""
 
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
@@ -1384,7 +1402,7 @@ curlDeleteWithSudo apiKey url = do
 curlPostWithSudo :: String -> String -> String -> IO SudoResult
 curlPostWithSudo apiKey url body = do
   (publicKey, secretKey) <- getApiKeys
-  let path = drop (length "https://api.unsandbox.com") url
+  let path = drop (length apiBase) url
   authHeaders <- buildAuthHeaders publicKey secretKey "POST" path body
 
   (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
@@ -1474,7 +1492,7 @@ loadCredentialsFromCsv csvPath accountIndex = do
                      , let (pk, rest) = break (== ',') l
                      , not (null rest)
                      , let pk' = trim pk
-                           sk' = trim (drop 1 rest)
+                           sk' = trim (takeWhile (/= ',') (drop 1 rest))
                      , length pk' > 8 && length sk' > 8
                      ]
       if accountIndex < length accounts then
@@ -1482,7 +1500,7 @@ loadCredentialsFromCsv csvPath accountIndex = do
       else
         return Nothing
   where
-    trim = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+    trim = reverse . dropWhile (`elem` " \t\r") . reverse . dropWhile (`elem` " \t\r")
 
 -- Get API keys with correct priority:
 --   1. --account N (cliAccountIndex IORef) -> accounts.csv row N
@@ -1541,8 +1559,8 @@ hmacSha256 :: String -> String -> String
 hmacSha256 secret message =
   let secretBS = BSC.pack secret
       messageBS = BSC.pack message
-      mac = hmac secretBS messageBS
-  in concatMap (printf "%02x") (BS.unpack mac)
+      mac = hmac secretBS messageBS :: HMAC SHA256
+  in show (hmacGetDigest mac)
 
 makeSignature :: String -> String -> String -> String -> String -> String
 makeSignature secretKey timestamp method path body =
@@ -1566,33 +1584,31 @@ buildAuthHeaders publicKey maybeSecretKey method path body =
 -- Parse exit code from JSON response
 parseExitCode :: String -> Int
 parseExitCode resp =
-  case extractField "exit_code" resp of
-    Just s -> read s
-    Nothing -> 0
+  case jsonFieldRaw resp "exit_code" of
+    Just ('-':v) | not (null (takeWhile isDigit v)) -> negate (read (takeWhile isDigit v))
+    Just v | not (null (takeWhile isDigit v)) -> read (takeWhile isDigit v)
+    _ -> 0
+
+-- Text following "field": (whitespace skipped) in a JSON string, if present
+jsonFieldRaw :: String -> String -> Maybe String
+jsonFieldRaw json field = go json
   where
-    extractField field str =
-      case break (== ':') <$> words str >>= find (\(k,_) -> field `elem` words k) of
-        Just (_, ':':v) -> Just $ takeWhile isDigit v
-        _ -> Nothing
-    find f = foldr (\x acc -> if f x then Just x else acc) Nothing
+    needle = "\"" ++ field ++ "\""
+    go [] = Nothing
+    go s@(_:xs)
+      | needle `isPrefixOf` s =
+          case dropWhile (`elem` " \t\r\n") (drop (length needle) s) of
+            (':':v) -> Just (dropWhile (`elem` " \t\r\n") v)
+            _ -> go xs
+      | otherwise = go xs
 
 -- Extract JSON string field (simple parser for basic cases)
 extractJsonString :: String -> String -> Maybe String
 extractJsonString json field =
-  case break (== '"') rest of
-    (_, '"':value) ->
-      case break (== '"') value of
-        (v, _) -> Just v
+  case jsonFieldRaw json field of
+    Just ('"':value) -> Just (takeWhile (/= '"') value)
+    Just v | not (null v) && (isDigit (head v) || head v == '-') -> Just (takeWhile (`notElem` ",} \t\r\n") v)
     _ -> Nothing
-  where
-    needle = "\"" ++ field ++ "\":"
-    rest = case dropWhile (/= '"') $ dropWhile (not . isPrefixOf needle) $ tails json of
-      (_:xs) -> case dropWhile (/= ':') xs of
-        (_:ys) -> dropWhile (`elem` " \t\n") ys
-        _ -> ""
-      _ -> ""
-    tails [] = [[]]
-    tails s@(_:xs) = s : tails xs
 
 -- Snapshot command
 snapshotCommand :: SnapshotOpts -> IO ()
@@ -1600,13 +1616,13 @@ snapshotCommand opts = do
   apiKey <- getApiKey
   case snapAction opts of
     SnapshotList -> do
-      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/snapshots"
+      (_, stdout, _) <- curlGet apiKey (apiBase ++ "/snapshots")
       putStrLn stdout
     SnapshotInfo sid -> do
-      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
+      (_, stdout, _) <- curlGet apiKey ((apiBase ++ "/snapshots/") ++ sid)
       putStrLn stdout
     SnapshotDelete sid -> do
-      result <- curlDeleteWithSudo apiKey ("https://api.unsandbox.com/snapshots/" ++ sid)
+      result <- curlDeleteWithSudo apiKey ((apiBase ++ "/snapshots/") ++ sid)
       case result of
         SudoSuccess _ -> putStrLn $ green ++ "Snapshot deleted: " ++ sid ++ reset
         SudoCancelled -> exitFailure
@@ -1623,7 +1639,7 @@ snapshotCommand opts = do
           let portsJSON = maybe "" (\p -> "\"ports\":[" ++ p ++ "],") (snapClonePorts opts)
           let json = "{\"type\":\"" ++ cloneType ++ "\"," ++ nameJSON ++ portsJSON ++ "}"
           hPutStrLn stderr $ "Cloning snapshot " ++ sid ++ " to create new " ++ cloneType ++ "..."
-          (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/snapshots/" ++ sid ++ "/clone") json
+          (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/snapshots/") ++ sid ++ "/clone") json
           putStrLn $ green ++ "Snapshot cloned" ++ reset
           putStrLn stdout
 
@@ -1633,13 +1649,13 @@ imageCommand opts = do
   apiKey <- getApiKey
   case imgAction opts of
     ImageList -> do
-      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/images"
+      (_, stdout, _) <- curlGet apiKey (apiBase ++ "/images")
       putStrLn stdout
     ImageInfo iid -> do
-      (_, stdout, _) <- curlGet apiKey ("https://api.unsandbox.com/images/" ++ iid)
+      (_, stdout, _) <- curlGet apiKey ((apiBase ++ "/images/") ++ iid)
       putStrLn stdout
     ImageDelete iid -> do
-      result <- curlDeleteWithSudo apiKey ("https://api.unsandbox.com/images/" ++ iid)
+      result <- curlDeleteWithSudo apiKey ((apiBase ++ "/images/") ++ iid)
       case result of
         SudoSuccess _ -> putStrLn $ green ++ "Image deleted: " ++ iid ++ reset
         SudoCancelled -> exitFailure
@@ -1647,10 +1663,10 @@ imageCommand opts = do
           hPutStrLn stderr $ red ++ "Error: " ++ msg ++ reset
           exitFailure
     ImageLock iid -> do
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/lock") "{}"
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/images/") ++ iid ++ "/lock") "{}"
       putStrLn $ green ++ "Image locked: " ++ iid ++ reset
     ImageUnlock iid -> do
-      result <- curlPostWithSudo apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/unlock") "{}"
+      result <- curlPostWithSudo apiKey ((apiBase ++ "/images/") ++ iid ++ "/unlock") "{}"
       case result of
         SudoSuccess _ -> putStrLn $ green ++ "Image unlocked: " ++ iid ++ reset
         SudoCancelled -> exitFailure
@@ -1665,7 +1681,7 @@ imageCommand opts = do
         Just sourceType -> do
           let nameJSON = maybe "" (\n -> ",\"name\":\"" ++ escapeJSON n ++ "\"") (imgName opts)
           let json = "{\"source_type\":\"" ++ sourceType ++ "\",\"source_id\":\"" ++ sourceId ++ "\"" ++ nameJSON ++ "}"
-          (_, stdout, _) <- curlPost apiKey "https://api.unsandbox.com/images/publish" json
+          (_, stdout, _) <- curlPost apiKey (apiBase ++ "/images/publish") json
           putStrLn $ green ++ "Image published" ++ reset
           putStrLn stdout
     ImageVisibility iid -> do
@@ -1675,20 +1691,20 @@ imageCommand opts = do
           exitFailure
         Just mode -> do
           let json = "{\"visibility\":\"" ++ mode ++ "\"}"
-          (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/visibility") json
+          (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/images/") ++ iid ++ "/visibility") json
           putStrLn $ green ++ "Image visibility set to " ++ mode ++ ": " ++ iid ++ reset
     ImageSpawn iid -> do
       let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\"") (imgName opts)
       let portsJSON = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") (imgPorts opts)
       let json = if null nameJSON then "{" ++ (if null portsJSON then "" else drop 1 portsJSON) ++ "}"
                  else "{" ++ nameJSON ++ portsJSON ++ "}"
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/spawn") json
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/images/") ++ iid ++ "/spawn") json
       putStrLn $ green ++ "Service spawned from image" ++ reset
       putStrLn stdout
     ImageClone iid -> do
       let nameJSON = maybe "" (\n -> "\"name\":\"" ++ escapeJSON n ++ "\"") (imgName opts)
       let json = "{" ++ nameJSON ++ "}"
-      (_, stdout, _) <- curlPost apiKey ("https://api.unsandbox.com/images/" ++ iid ++ "/clone") json
+      (_, stdout, _) <- curlPost apiKey ((apiBase ++ "/images/") ++ iid ++ "/clone") json
       putStrLn $ green ++ "Image cloned" ++ reset
       putStrLn stdout
 
@@ -1723,7 +1739,7 @@ loadLanguagesCache = do
         Right _ -> return True
     getModificationTime path = do
       status <- System.Posix.Files.getFileStatus path
-      return $ posixSecondsToUTCTime $ realToFrac $ modificationTime status
+      return $ posixSecondsToUTCTime $ realToFrac $ System.Posix.Files.modificationTime status
     getCurrentTime = Data.Time.Clock.getCurrentTime
 
 saveLanguagesCache :: [String] -> IO ()
@@ -1751,7 +1767,7 @@ languagesCommand opts = do
   langs <- case cached of
     Just languages -> return languages
     Nothing -> do
-      (_, stdout, _) <- curlGet apiKey "https://api.unsandbox.com/languages"
+      (_, stdout, _) <- curlGet apiKey (apiBase ++ "/languages")
       let languages = maybe [] id (extractJsonArray stdout "languages")
       -- Save to cache
       when (not (null languages)) $ saveLanguagesCache languages
@@ -1790,6 +1806,7 @@ extractJsonArray json field =
 
 -- Key command
 keyCommand :: KeyOpts -> IO ()
+keyCommand opts | keyRotate opts = rotateKeyCommand (keyOtp opts)
 keyCommand opts = do
   apiKey <- getApiKey
 
@@ -1917,3 +1934,190 @@ curlPostPortal apiKey url body = do
   -- Check for clock drift error
   checkClockDriftError stdout
   return (exitCode, stdout, stderr)
+
+-- ============================================================================
+-- un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+-- ============================================================================
+
+-- | The accounts.csv our credentials came from, or Nothing (env vars).
+-- Mirrors getApiKeys' priority order.
+credentialsCsvPath :: IO (Maybe FilePath)
+credentialsCsvPath = do
+  home <- maybe "." id <$> lookupEnv "HOME"
+  let homeCsv = home ++ "/.unsandbox/accounts.csv"
+  mIdx <- readIORef cliAccountIndex
+  publicKey <- lookupEnv "UNSANDBOX_PUBLIC_KEY"
+  secretKey <- lookupEnv "UNSANDBOX_SECRET_KEY"
+  apiKey <- lookupEnv "UNSANDBOX_API_KEY"
+  defaultIndexStr <- lookupEnv "UNSANDBOX_ACCOUNT"
+  let defaultIndex = maybe 0 (\s -> case reads s of [(n,"")] -> n; _ -> 0) defaultIndexStr
+      fromCsv idx = do
+        c1 <- loadCredentialsFromCsv homeCsv idx
+        case c1 of
+          Just _ -> return (Just homeCsv)
+          Nothing -> do
+            c2 <- loadCredentialsFromCsv "accounts.csv" idx
+            return $ maybe Nothing (const (Just "accounts.csv")) c2
+  case (mIdx, publicKey, secretKey, apiKey) of
+    (Just idx, _, _, _) -> fromCsv idx
+    (Nothing, Just _, Just _, _) -> return Nothing
+    (Nothing, _, _, Just _) -> return Nothing
+    _ -> fromCsv defaultIndex
+
+-- | Split on a separator, keeping empty pieces (so join restores the input exactly)
+splitOnChar :: Char -> String -> [String]
+splitOnChar c str = case break (== c) str of
+  (a, []) -> [a]
+  (a, _:rest) -> a : splitOnChar c rest
+
+-- | Write a file created 0600 (umask 077 while creating, chmod after)
+writePrivateFile :: FilePath -> String -> IO ()
+writePrivateFile path content = do
+  old <- System.Posix.Files.setFileCreationMask 0o077
+  writeFile path content
+  _ <- System.Posix.Files.setFileCreationMask old
+  System.Posix.Files.setFileMode path 0o600
+
+-- | Replace the secret on the line whose first field equals publicKey. Every
+-- other line, field, comment and the order stay as they are. Temp file + rename.
+rewriteAccountsCsv :: FilePath -> String -> String -> IO Bool
+rewriteAccountsCsv path publicKey newSecret = do
+  content <- BSC.unpack <$> BS.readFile path
+  let trim = reverse . dropWhile (`elem` " \t\r") . reverse . dropWhile (`elem` " \t\r")
+      step (done, acc) line
+        | done = (True, line : acc)
+        | null (trim line) || "#" `isPrefixOf` trim line = (False, line : acc)
+        | otherwise = case splitOnChar ',' line of
+            (pk : _ : rest) | trim pk == publicKey ->
+              (True, intercalate "," (pk : newSecret : rest) : acc)
+            _ -> (False, line : acc)
+      (changed, revLines) = foldl step (False, []) (splitOnChar '\n' content)
+  if not changed
+    then return False
+    else do
+      pid <- System.Posix.Process.getProcessID
+      let tmp = takeDirectory path </> ("." ++ takeFileName path ++ "." ++ show pid ++ ".tmp")
+      writePrivateFile tmp (intercalate "\n" (reverse revLines))
+      System.Posix.Files.rename tmp path
+      return True
+
+-- | Escape a value for a curl config file string
+curlConfigQuote :: String -> String
+curlConfigQuote v = "\"" ++ concatMap esc v ++ "\""
+  where
+    esc '"' = "\\\""
+    esc '\\' = "\\\\"
+    esc c = [c]
+
+-- | POST /keys/self/rotate-secret with a fresh signature. Headers reach curl
+-- via a config on stdin, never on its command line. Returns (status, body).
+rotatePost :: String -> String -> Maybe (String, String) -> IO (Int, String)
+rotatePost publicKey secretKey sudo = do
+  let path = "/keys/self/rotate-secret"
+      body = "{}"
+  authHeaders <- buildAuthHeaders publicKey (Just secretKey) "POST" path body
+  let pairs ("-H" : h : rest) = h : pairs rest
+      pairs (_ : rest) = pairs rest
+      pairs [] = []
+      sudoHeaders = case sudo of
+        Just (otp, challenge) -> ["X-Sudo-OTP: " ++ otp, "X-Sudo-Challenge: " ++ challenge]
+        Nothing -> []
+      headers = ["Content-Type: application/json"] ++ pairs authHeaders ++ sudoHeaders
+      config = unlines [ "header = " ++ curlConfigQuote h | h <- headers ]
+  (_, out, _) <- readProcessWithExitCode "curl"
+    [ "-s", "-X", "POST", "-w", "\n%{http_code}", "-K", "-", "--data-binary", body
+    , apiBase ++ path ] config
+  let allLines = lines out
+      (bodyLines, statusLines) = splitAt (length allLines - 1) allLines
+      code = case statusLines of
+        [st] | not (null (filter isDigit st)) -> read (filter isDigit st)
+        _ -> 0
+  return (code, intercalate "\n" bodyLines)
+
+rotateKeyCommand :: Maybe String -> IO ()
+rotateKeyCommand mOtp = do
+  (publicKey, mSecret) <- getApiKeys
+  secretKey <- case mSecret of
+    Just sk -> return sk
+    Nothing -> do
+      hPutStrLn stderr "Error: rotation needs UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY"
+      exitWith (ExitFailure 3)
+  home <- maybe "." id <$> lookupEnv "HOME"
+  let unsandboxDir = home ++ "/.unsandbox"
+      digest = show (hashWith SHA256 (BSC.pack publicKey))
+      challengeFile = unsandboxDir ++ "/rotate-" ++ take 16 digest ++ ".challenge"
+      strip = reverse . dropWhile (`elem` " \t\r\n") . reverse . dropWhile (`elem` " \t\r\n")
+      removeChallenge = do
+        _ <- try (System.Posix.Files.removeLink challengeFile) :: IO (Either IOError ())
+        return ()
+      failWith (code, body)
+        | code == 403 && extractJsonString body "error" == Just "email_required" = do
+            hPutStrLn stderr "Error: this key has no email; add one or use POST /keys/recover"
+            exitWith (ExitFailure 3)
+        | code == 401 = do
+            hPutStrLn stderr "Error: authentication failed"
+            exitWith (ExitFailure 3)
+        | otherwise = do
+            let msg = case (extractJsonString body "message", extractJsonString body "error") of
+                  (Just m, _) -> m
+                  (_, Just e) -> e
+                  _ -> "HTTP " ++ show code
+            hPutStrLn stderr $ "Error: " ++ msg
+            exitWith (ExitFailure 4)
+
+  result <- case mOtp of
+    Just otp -> do
+      saved <- try (BSC.unpack <$> BS.readFile challengeFile) :: IO (Either IOError String)
+      case saved of
+        Left _ -> do
+          hPutStrLn stderr "Error: no rotation in progress; run: un key --rotate"
+          exitWith (ExitFailure 2)
+        Right challenge -> do
+          r <- rotatePost publicKey secretKey (Just (strip otp, strip challenge))
+          removeChallenge
+          return (Just r)
+    Nothing -> do
+      r@(code, body) <- rotatePost publicKey secretKey Nothing
+      if code /= 428
+        then return (Just r)
+        else do
+          let challenge = maybe "" id (extractJsonString body "challenge_id")
+          tty <- hIsTerminalDevice stdin
+          if tty
+            then do
+              hPutStrLn stderr "One-time code emailed to the key owner."
+              hPutStr stderr "Code: "
+              hFlush stderr
+              otp <- strip <$> getLine
+              when (null otp) $ do
+                hPutStrLn stderr "Error: cancelled"
+                exitFailure
+              Just <$> rotatePost publicKey secretKey (Just (otp, challenge))
+            else do
+              existed <- System.Posix.Files.fileExist unsandboxDir
+              unless existed $ do
+                createDirectoryIfMissing True unsandboxDir
+                System.Posix.Files.setFileMode unsandboxDir 0o700
+              writePrivateFile challengeFile challenge
+              putStrLn "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+              return Nothing
+
+  case result of
+    Nothing -> return ()
+    Just (code, body) -> do
+      when (code /= 200) $ failWith (code, body)
+      newSecret <- case extractJsonString body "secret" of
+        Just sk | not (null sk) -> return sk
+        _ -> do
+          hPutStrLn stderr "Error: API returned no secret"
+          exitWith (ExitFailure 4)
+      csvPath <- credentialsCsvPath
+      updated <- case csvPath of
+        Just p -> rewriteAccountsCsv p publicKey newSecret
+        Nothing -> return False
+      case csvPath of
+        Just p | updated ->
+          putStrLn $ "Secret rotated. Updated " ++ p ++ " (public key " ++ publicKey ++ ")."
+        _ -> do
+          putStrLn $ "New secret (shown once, store it now): " ++ newSecret
+          putStrLn "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."

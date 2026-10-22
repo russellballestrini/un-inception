@@ -43,7 +43,7 @@
 #   pwsh un.ps1 session [options]
 #   pwsh un.ps1 service [options]
 
-$API_BASE = "https://api.unsandbox.com"
+$API_BASE = $(if ($env:UNSANDBOX_API_URL) { $env:UNSANDBOX_API_URL } else { "https://api.unsandbox.com" }).TrimEnd("/")
 $PORTAL_BASE = "https://unsandbox.com"
 $LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
 
@@ -71,7 +71,7 @@ function Load-AccountsCSV {
         Get-Content $Path | Where-Object {
             $_.Trim() -ne "" -and -not $_.TrimStart().StartsWith("#")
         } | ForEach-Object {
-            $parts = $_ -split ",", 2
+            $parts = $_ -split ","
             if ($parts.Count -ge 2) {
                 $rows += ,@($parts[0].Trim(), $parts[1].Trim())
             }
@@ -84,12 +84,12 @@ function Load-AccountsCSV {
 }
 
 function Get-ApiKeys {
-    $home = $env:HOME
-    if (-not $home) { $home = $env:USERPROFILE }
+    $homeDir = $env:HOME
+    if (-not $homeDir) { $homeDir = $env:USERPROFILE }
 
     # --account N: load row N from accounts.csv, bypasses env vars
     if ($null -ne $script:AccountIndex) {
-        $result = Load-AccountsCSV -Path "$home/.unsandbox/accounts.csv" -Index $script:AccountIndex
+        $result = Load-AccountsCSV -Path "$homeDir/.unsandbox/accounts.csv" -Index $script:AccountIndex
         if (-not $result) {
             $result = Load-AccountsCSV -Path "./accounts.csv" -Index $script:AccountIndex
         }
@@ -120,7 +120,7 @@ function Get-ApiKeys {
     if ($env:UNSANDBOX_ACCOUNT) {
         try { $rowIdx = [int]$env:UNSANDBOX_ACCOUNT } catch {}
     }
-    $result = Load-AccountsCSV -Path "$home/.unsandbox/accounts.csv" -Index $rowIdx
+    $result = Load-AccountsCSV -Path "$homeDir/.unsandbox/accounts.csv" -Index $rowIdx
     if (-not $result) {
         $result = Load-AccountsCSV -Path "./accounts.csv" -Index $rowIdx
     }
@@ -630,6 +630,165 @@ function Invoke-Languages {
             Write-Output $lang
         }
     }
+}
+
+# The accounts.csv the credentials came from, or $null (env vars). Mirrors Get-ApiKeys.
+function Get-CredentialsCsvPath {
+    $homeDir = $env:HOME
+    if (-not $homeDir) { $homeDir = $env:USERPROFILE }
+    $idx = $script:AccountIndex
+    if ($null -eq $idx) {
+        if ($env:UNSANDBOX_PUBLIC_KEY -and $env:UNSANDBOX_SECRET_KEY) { return $null }
+        $idx = 0
+        if ($env:UNSANDBOX_ACCOUNT) { try { $idx = [int]$env:UNSANDBOX_ACCOUNT } catch {} }
+    }
+    foreach ($p in @("$homeDir/.unsandbox/accounts.csv", "./accounts.csv")) {
+        if (Load-AccountsCSV -Path $p -Index $idx) { return $p }
+    }
+    return $null
+}
+
+function Set-PrivateMode {
+    param($Path, [switch]$Directory)
+    if ($IsWindows) { return }
+    $mode = if ($Directory) { "UserRead, UserWrite, UserExecute" } else { "UserRead, UserWrite" }
+    [System.IO.File]::SetUnixFileMode($Path, [System.IO.UnixFileMode]$mode)
+}
+
+# Replace the secret (2nd field) on the line whose 1st field is the public key.
+# Every other line, field, comment and the order stay as they are. Temp file (0600) + rename.
+function Update-AccountsCsv {
+    param($Path, $PublicKey, $NewSecret)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $lines = [System.IO.File]::ReadAllText($full) -split "`n"
+    $changed = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $t = $lines[$i].Trim()
+        if (-not $t -or $t.StartsWith("#")) { continue }
+        $fields = $lines[$i] -split ","
+        if ($fields.Count -ge 2 -and $fields[0].Trim() -eq $PublicKey) {
+            $fields[1] = $NewSecret
+            $lines[$i] = $fields -join ","
+            $changed = $true
+            break
+        }
+    }
+    if (-not $changed) { return $false }
+    $tmp = Join-Path ([System.IO.Path]::GetDirectoryName($full)) ".accounts.csv.$PID.tmp"
+    [System.IO.File]::WriteAllText($tmp, "")
+    Set-PrivateMode $tmp
+    [System.IO.File]::WriteAllText($tmp, ($lines -join "`n"))
+    [System.IO.File]::Move($tmp, $full, $true)
+    return $true
+}
+
+# un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+function Invoke-KeyRotate {
+    param($Otp)
+    $publicKey, $secretKey = Get-ApiKeys
+    $path = "/keys/self/rotate-secret"
+    $body = "{}"
+    $homeDir = $env:HOME
+    if (-not $homeDir) { $homeDir = $env:USERPROFILE }
+    $dir = "$homeDir/.unsandbox"
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $pkHash = [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($publicKey))).Replace("-", "").ToLower()
+    $challengeFile = "$dir/rotate-$($pkHash.Substring(0, 16)).challenge"
+
+    $post = {
+        param($code, $challenge)
+        $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($secretKey)
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("${timestamp}:POST:${path}:${body}"))
+        $signature = [System.BitConverter]::ToString($hash).Replace("-", "").ToLower()
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds(120)
+        $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, "$API_BASE$path")
+        $req.Content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, "application/json")
+        $req.Content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new("application/json")
+        $req.Headers.TryAddWithoutValidation("Authorization", "Bearer $publicKey") | Out-Null
+        $req.Headers.Add("X-Timestamp", "$timestamp")
+        $req.Headers.Add("X-Signature", $signature)
+        if ($code) {
+            $req.Headers.Add("X-Sudo-OTP", $code)
+            $req.Headers.Add("X-Sudo-Challenge", "$challenge")
+        }
+        try {
+            $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+            $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        } catch {
+            [Console]::Error.WriteLine("Error: $($_.Exception.Message)")
+            exit 4
+        }
+        $data = $null
+        try { $data = $text | ConvertFrom-Json } catch {}
+        return @{ Status = [int]$resp.StatusCode; Data = $data }
+    }
+
+    if ($Otp) {
+        if (-not (Test-Path $challengeFile)) {
+            [Console]::Error.WriteLine("Error: no rotation in progress; run: un key --rotate")
+            exit 2
+        }
+        $challenge = ([System.IO.File]::ReadAllText($challengeFile)).Trim()
+        $result = & $post $Otp.Trim() $challenge
+        Remove-Item -Force -ErrorAction SilentlyContinue $challengeFile
+    } else {
+        $result = & $post $null $null
+        if ($result.Status -eq 428) {
+            $challenge = "$($result.Data.challenge_id)"
+            if (-not [Console]::IsInputRedirected) {
+                [Console]::Error.WriteLine("One-time code emailed to the key owner.")
+                [Console]::Error.Write("Code: ")
+                $code = [Console]::In.ReadLine()
+                if (-not $code -or -not $code.Trim()) {
+                    [Console]::Error.WriteLine("Error: cancelled")
+                    exit 1
+                }
+                $result = & $post $code.Trim() $challenge
+            } else {
+                if (-not (Test-Path $dir)) {
+                    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                    Set-PrivateMode $dir -Directory
+                }
+                [System.IO.File]::WriteAllText($challengeFile, "")
+                Set-PrivateMode $challengeFile
+                [System.IO.File]::WriteAllText($challengeFile, $challenge)
+                Write-Output "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+                exit 0
+            }
+        }
+    }
+
+    if ($result.Status -ne 200) {
+        $err = "$($result.Data.error)"
+        if ($result.Status -eq 403 -and $err -eq "email_required") {
+            [Console]::Error.WriteLine("Error: this key has no email; add one or use POST /keys/recover")
+            exit 3
+        }
+        if ($result.Status -eq 401) {
+            [Console]::Error.WriteLine("Error: authentication failed")
+            exit 3
+        }
+        $msg = if ($result.Data.message) { $result.Data.message } elseif ($err) { $err } else { "HTTP $($result.Status)" }
+        [Console]::Error.WriteLine("Error: $msg")
+        exit 4
+    }
+    $newSecret = "$($result.Data.secret)"
+    if (-not $newSecret) {
+        [Console]::Error.WriteLine("Error: API returned no secret")
+        exit 4
+    }
+
+    $csvPath = Get-CredentialsCsvPath
+    if ($csvPath -and (Update-AccountsCsv -Path $csvPath -PublicKey $publicKey -NewSecret $newSecret)) {
+        Write-Output "Secret rotated. Updated $csvPath (public key $publicKey)."
+    } else {
+        Write-Output "New secret (shown once, store it now): $newSecret"
+        Write-Output "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
+    }
+    exit 0
 }
 
 function Invoke-Key {
@@ -1227,6 +1386,8 @@ Snapshot options:
 
 Key options:
   --extend        Open browser to extend key
+  --rotate        Rotate this key's secret (sudo OTP); updates accounts.csv
+  --otp CODE      Finish a rotation started without a terminal
 "@
     exit 0
 }
@@ -1252,6 +1413,12 @@ if ($effectiveArgs[0] -eq "session") {
     Invoke-Image -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
 } elseif ($effectiveArgs[0] -eq "languages") {
     Invoke-Languages -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+} elseif ($effectiveArgs[0] -eq "key" -and $effectiveArgs -contains "--rotate") {
+    $otp = $null
+    for ($i = 1; $i -lt $effectiveArgs.Count; $i++) {
+        if ($effectiveArgs[$i] -eq "--otp" -and ($i + 1) -lt $effectiveArgs.Count) { $otp = $effectiveArgs[$i + 1] }
+    }
+    Invoke-KeyRotate -Otp $otp
 } elseif ($effectiveArgs[0] -eq "key") {
     Invoke-Key -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
 } else {

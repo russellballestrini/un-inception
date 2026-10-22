@@ -1,38 +1,39 @@
-      * PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-      *
-      * This is free public domain software for the public good of a permacomputer hosted
-      * at permacomputer.com - an always-on computer by the people, for the people. One
-      * which is durable, easy to repair, and distributed like tap water for machine
-      * learning intelligence.
-      *
-      * The permacomputer is community-owned infrastructure optimized around four values:
-      *
-      *   TRUTH    - First principles, math & science, open source code freely distributed
-      *   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
-      *   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
-      *   LOVE     - Be yourself without hurting others, cooperation through natural law
-      *
-      * This software contributes to that vision by enabling code execution across 42+
-      * programming languages through a unified interface, accessible to all. Code is
-      * seeds to sprout on any abandoned technology.
-      *
-      * Learn more: https://www.permacomputer.com
-      *
-      * Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
-      * software, either in source code form or as a compiled binary, for any purpose,
-      * commercial or non-commercial, and by any means.
-      *
-      * NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-      *
-      * That said, our permacomputer's digital membrane stratum continuously runs unit,
-      * integration, and functional tests on all of it's own software - with our
-      * permacomputer monitoring itself, repairing itself, with minimal human in the
-      * loop guidance. Our agents do their best.
-      *
-      * Copyright 2025 TimeHexOn & foxhop & russell@unturf
-      * https://www.timehexon.com
-      * https://www.foxhop.net
-      * https://www.unturf.com/software
+       >>SOURCE FORMAT IS FREE
+      *> PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+      *>
+      *> This is free public domain software for the public good of a permacomputer hosted
+      *> at permacomputer.com - an always-on computer by the people, for the people. One
+      *> which is durable, easy to repair, and distributed like tap water for machine
+      *> learning intelligence.
+      *>
+      *> The permacomputer is community-owned infrastructure optimized around four values:
+      *>
+      *>   TRUTH    - First principles, math & science, open source code freely distributed
+      *>   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
+      *>   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
+      *>   LOVE     - Be yourself without hurting others, cooperation through natural law
+      *>
+      *> This software contributes to that vision by enabling code execution across 42+
+      *> programming languages through a unified interface, accessible to all. Code is
+      *> seeds to sprout on any abandoned technology.
+      *>
+      *> Learn more: https://www.permacomputer.com
+      *>
+      *> Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+      *> software, either in source code form or as a compiled binary, for any purpose,
+      *> commercial or non-commercial, and by any means.
+      *>
+      *> NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+      *>
+      *> That said, our permacomputer's digital membrane stratum continuously runs unit,
+      *> integration, and functional tests on all of it's own software - with our
+      *> permacomputer monitoring itself, repairing itself, with minimal human in the
+      *> loop guidance. Our agents do their best.
+      *>
+      *> Copyright 2025 TimeHexOn & foxhop & russell@unturf
+      *> https://www.timehexon.com
+      *> https://www.foxhop.net
+      *> https://www.unturf.com/software
 
 
        IDENTIFICATION DIVISION.
@@ -107,13 +108,33 @@
        01  WS-ACCOUNT-STR      PIC X(16).
        01  WS-ACCT-POS         PIC 9(4) VALUE 0.
        01  WS-ERROR-MSG        PIC X(256).
+       01  WS-API-BASE         PIC X(512).
+       01  WS-CRED-SRC         PIC X(512).
+       01  WS-ROTATE-FLAG      PIC X(8).
+       01  WS-OTP              PIC X(64).
+       01  WS-ROT-CMD          PIC X(8192).
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
-      * Get first command line argument
-           ACCEPT WS-ARG1 FROM COMMAND-LINE.
+      *> API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com),
+      *> trailing slashes stripped, exported as UN_API for every request
+           ACCEPT WS-API-BASE FROM ENVIRONMENT "UNSANDBOX_API_URL".
+           IF WS-API-BASE = SPACES
+               MOVE "https://api.unsandbox.com" TO WS-API-BASE
+           END-IF.
+           MOVE FUNCTION LENGTH(FUNCTION TRIM(WS-API-BASE TRAILING))
+               TO WS-LEN.
+           PERFORM UNTIL WS-LEN < 2 OR WS-API-BASE(WS-LEN:1) NOT = "/"
+               MOVE SPACE TO WS-API-BASE(WS-LEN:1)
+               SUBTRACT 1 FROM WS-LEN
+           END-PERFORM.
+           DISPLAY "UN_API" UPON ENVIRONMENT-NAME.
+           DISPLAY WS-API-BASE UPON ENVIRONMENT-VALUE.
 
-      * Pre-scan: handle --account N global flag before subcommand
+      *> Get first command line argument
+           ACCEPT WS-ARG1 FROM ARGUMENT-VALUE.
+
+      *> Pre-scan: handle --account N global flag before subcommand
            IF WS-ARG1 = "--account"
                ACCEPT WS-ACCOUNT-STR FROM ARGUMENT-VALUE
                MOVE FUNCTION NUMVAL(WS-ACCOUNT-STR) TO WS-ACCOUNT-INDEX
@@ -124,11 +145,13 @@
                DISPLAY "Usage: un.cob <source_file>" UPON SYSERR
                DISPLAY "       un.cob session [options]" UPON SYSERR
                DISPLAY "       un.cob service [options]" UPON SYSERR
+               DISPLAY "       un.cob key [--extend | --rotate [--otp CODE]]"
+                   UPON SYSERR
                MOVE 1 TO RETURN-CODE
                STOP RUN
            END-IF.
 
-      * Check for subcommands
+      *> Check for subcommands
            IF WS-ARG1 = "session"
                PERFORM HANDLE-SESSION
                STOP RUN
@@ -159,63 +182,65 @@
                STOP RUN
            END-IF.
 
-      * Default: execute command
+      *> Default: execute command
            MOVE WS-ARG1 TO WS-FILENAME.
            PERFORM HANDLE-EXECUTE.
            STOP RUN.
 
        GET-CREDENTIALS.
-      * If already set, return immediately
+      *> If already set, return immediately
            IF WS-PUBLIC-KEY NOT = SPACES AND WS-SECRET-KEY NOT = SPACES
                EXIT PARAGRAPH
            END-IF.
 
-      * Build shell script to resolve credentials with full priority
+      *> Build shell script to resolve credentials with full priority
            IF WS-ACCOUNT-INDEX >= 0
                MOVE WS-ACCOUNT-INDEX TO WS-ACCOUNT-STR
-               STRING "IDX=" FUNCTION TRIM(WS-ACCOUNT-STR) "; "
+               STRING "umask 077; rm -f /tmp/unsb_creds.txt; SRC=''; "
+                   "IDX=" FUNCTION TRIM(WS-ACCOUNT-STR) "; "
                    "PK=''; SK=''; CNT=-1; "
-                   "for CSV in \"$HOME/.unsandbox/accounts.csv\" "
-                   "\"./accounts.csv\"; do "
-                   "[ -f \"$CSV\" ] || continue; "
-                   "while IFS= read -r line || [ -n \"$line\" ]; do "
-                   "case \"$line\" in \"#\"*|\"\"|\" \"*) continue ;; esac; "
+                   "for CSV in ""$HOME/.unsandbox/accounts.csv"" "
+                   """./accounts.csv""; do "
+                   "[ -f ""$CSV"" ] || continue; "
+                   "while IFS= read -r line || [ -n ""$line"" ]; do "
+                   "case ""$line"" in ""#""*|""""|"" ""*) continue ;; esac; "
                    "CNT=$((CNT+1)); "
-                   "if [ \"$CNT\" -eq \"$IDX\" ]; then "
-                   "PK=$(echo \"$line\" | cut -d',' -f1 | tr -d ' '); "
-                   "SK=$(echo \"$line\" | cut -d',' -f2 | tr -d ' '); "
-                   "break 2; fi; "
-                   "done < \"$CSV\"; done; "
-                   "if [ -z \"$PK\" ]; then "
+                   "if [ ""$CNT"" -eq ""$IDX"" ]; then "
+                   "PK=$(echo ""$line"" | cut -d',' -f1 | tr -d ' '); "
+                   "SK=$(echo ""$line"" | cut -d',' -f2 | tr -d ' '); "
+                   "SRC=""$CSV""; break 2; fi; "
+                   "done < ""$CSV""; done; "
+                   "if [ -z ""$PK"" ]; then "
                    "echo -e '\\x1b[31mError: Account index "
                    FUNCTION TRIM(WS-ACCOUNT-STR)
                    " not found in accounts.csv\\x1b[0m' >&2; exit 1; fi; "
-                   "printf '%s\\n%s\\n' \"$PK\" \"$SK\" "
+                   "printf '%s\n%s\n%s\n' ""$PK"" ""$SK"" ""$SRC"" "
                    "> /tmp/unsb_creds.txt"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            ELSE
-               STRING "PK=\"$UNSANDBOX_PUBLIC_KEY\"; "
-                   "SK=\"$UNSANDBOX_SECRET_KEY\"; "
-                   "if [ -z \"$PK\" ]; then PK=\"$UNSANDBOX_API_KEY\"; SK=''; fi; "
-                   "if [ -z \"$PK\" ]; then "
-                   "IDX=\"${UNSANDBOX_ACCOUNT:-0}\"; "
+               STRING "umask 077; rm -f /tmp/unsb_creds.txt; SRC=''; "
+                   "PK=""$UNSANDBOX_PUBLIC_KEY""; "
+                   "SK=""$UNSANDBOX_SECRET_KEY""; "
+                   "if [ -z ""$PK"" ]; then PK=""$UNSANDBOX_API_KEY""; SK=''; fi; "
+                   "if [ -z ""$PK"" ]; then "
+                   "IDX=""${UNSANDBOX_ACCOUNT:-0}""; "
                    "CNT=-1; "
-                   "for CSV in \"$HOME/.unsandbox/accounts.csv\" "
-                   "\"./accounts.csv\"; do "
-                   "[ -f \"$CSV\" ] || continue; "
-                   "while IFS= read -r line || [ -n \"$line\" ]; do "
-                   "case \"$line\" in \"#\"*|\"\"|\" \"*) continue ;; esac; "
+                   "for CSV in ""$HOME/.unsandbox/accounts.csv"" "
+                   """./accounts.csv""; do "
+                   "[ -f ""$CSV"" ] || continue; "
+                   "while IFS= read -r line || [ -n ""$line"" ]; do "
+                   "case ""$line"" in ""#""*|""""|"" ""*) continue ;; esac; "
                    "CNT=$((CNT+1)); "
-                   "if [ \"$CNT\" -eq \"$IDX\" ]; then "
-                   "PK=$(echo \"$line\" | cut -d',' -f1 | tr -d ' '); "
-                   "SK=$(echo \"$line\" | cut -d',' -f2 | tr -d ' '); "
-                   "break 2; fi; "
-                   "done < \"$CSV\"; done; fi; "
-                   "if [ -z \"$PK\" ]; then "
+                   "if [ ""$CNT"" -eq ""$IDX"" ]; then "
+                   "PK=$(echo ""$line"" | cut -d',' -f1 | tr -d ' '); "
+                   "SK=$(echo ""$line"" | cut -d',' -f2 | tr -d ' '); "
+                   "SRC=""$CSV""; break 2; fi; "
+                   "done < ""$CSV""; done; fi; "
+                   "if [ -z ""$PK"" ]; then "
                    "echo -e '\\x1b[31mError: No credentials found\\x1b[0m' "
                    ">&2; exit 1; fi; "
-                   "printf '%s\\n%s\\n' \"$PK\" \"$SK\" "
+                   "printf '%s\n%s\n%s\n' ""$PK"" ""$SK"" ""$SRC"" "
                    "> /tmp/unsb_creds.txt"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
@@ -223,20 +248,28 @@
 
            CALL "SYSTEM" USING WS-CURL-CMD
                RETURNING WS-EXIT-CODE.
+      *> STRING never blanks the rest of its target: clear the credential
+      *> script so it cannot trail into the next command built here
+           MOVE SPACES TO WS-CURL-CMD.
            IF WS-EXIT-CODE NOT = 0
                MOVE WS-EXIT-CODE TO RETURN-CODE
                STOP RUN
            END-IF.
 
-      * Read resolved credentials from temp file
+      *> Read resolved credentials from temp file
            MOVE SPACES TO WS-PUBLIC-KEY.
            MOVE SPACES TO WS-SECRET-KEY.
            OPEN INPUT CRED-FILE.
            IF WS-CRED-STATUS = "00"
                READ CRED-FILE INTO WS-PUBLIC-KEY
                READ CRED-FILE INTO WS-SECRET-KEY
+               MOVE SPACES TO WS-CRED-SRC
+               READ CRED-FILE INTO WS-CRED-SRC
+                   AT END MOVE SPACES TO WS-CRED-SRC
+               END-READ
                CLOSE CRED-FILE
            END-IF.
+           CALL "CBL_DELETE_FILE" USING "/tmp/unsb_creds.txt".
 
            IF WS-PUBLIC-KEY = SPACES
                DISPLAY "Error: Could not resolve credentials"
@@ -246,13 +279,13 @@
            END-IF.
 
        HANDLE-EXECUTE.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
            IF WS-API-KEY = SPACES
                MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
-      * Check if file exists
+      *> Check if file exists
            OPEN INPUT SOURCE-FILE.
            IF WS-FILE-STATUS NOT = "00"
                DISPLAY "Error: File not found: " WS-FILENAME
@@ -262,7 +295,7 @@
            END-IF.
            CLOSE SOURCE-FILE.
 
-      * Detect language from extension
+      *> Detect language from extension
            PERFORM DETECT-LANGUAGE.
 
            IF WS-LANGUAGE = "unknown"
@@ -272,21 +305,21 @@
                STOP RUN
            END-IF.
 
-      * Use curl to make request
+      *> Use curl to make request
            PERFORM MAKE-EXECUTE-REQUEST.
 
        HANDLE-SESSION.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
            IF WS-API-KEY = SPACES
                MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
-      * Initialize session parameters
+      *> Initialize session parameters
            MOVE SPACES TO WS-INPUT-FILES.
 
-      * Parse session arguments (simplified)
-      * For full implementation, would need to parse multiple args
+      *> Parse session arguments (simplified)
+      *> For full implementation, would need to parse multiple args
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
 
            IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
@@ -302,10 +335,10 @@
            END-IF.
 
        HANDLE-SERVICE.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
 
-      * Initialize service parameters
+      *> Initialize service parameters
            MOVE SPACES TO WS-NAME.
            MOVE SPACES TO WS-PORTS.
            MOVE SPACES TO WS-DOMAINS.
@@ -318,7 +351,7 @@
            MOVE SPACES TO WS-ENV-ACTION.
            MOVE SPACES TO WS-ENV-TARGET.
 
-      * Parse service arguments
+      *> Parse service arguments
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
 
            IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
@@ -367,7 +400,7 @@
            END-IF.
 
        DETECT-LANGUAGE.
-      * Find last dot in filename
+      *> Find last dot in filename
            MOVE FUNCTION LENGTH(FUNCTION TRIM(WS-FILENAME)) TO WS-LEN.
            MOVE 0 TO WS-DOT-POS.
            PERFORM VARYING WS-I FROM WS-LEN BY -1
@@ -406,38 +439,38 @@
            END-IF.
 
        MAKE-EXECUTE-REQUEST.
-      * Credentials already resolved by caller (GET-CREDENTIALS)
+      *> Credentials already resolved by caller (GET-CREDENTIALS)
 
-      * Build curl command using shell with HMAC signature
+      *> Build curl command using shell with HMAC signature
            STRING "TS=$(date +%s); "
                "BODY=$(jq -Rs '{language: """
                FUNCTION TRIM(WS-LANGUAGE)
                """, code: .}' < '"
                FUNCTION TRIM(WS-FILENAME)
                "'); "
-               "SIG=$(echo -n \"$TS:POST:/execute:$BODY\" | "
+               "SIG=$(echo -n ""$TS:POST:/execute:$BODY"" | "
                "openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP=$(curl -s -w '\n%{http_code}' -X POST "
-               "https://api.unsandbox.com/execute "
+               "$UN_API/execute "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "--data-binary \"$BODY\"); "
-               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
-               "BODY=$(echo \"$RESP\" | sed '$d'); "
-               "echo \"$BODY\" > /tmp/unsandbox_resp.json; "
-               "if echo \"$BODY\" | grep -q '\"timestamp\"' && "
-               "(echo \"$HTTP_CODE\" | grep -q '401' || "
-               "echo \"$BODY\" | grep -qi 'expired' || "
-               "echo \"$BODY\" | grep -qi 'invalid'); then "
+               "--data-binary ""$BODY""); "
+               "HTTP_CODE=$(echo ""$RESP"" | tail -n1); "
+               "BODY=$(echo ""$RESP"" | sed '$d'); "
+               "echo ""$BODY"" > /tmp/unsandbox_resp.json; "
+               "if echo ""$BODY"" | grep -q '""timestamp""' && "
+               "(echo ""$HTTP_CODE"" | grep -q '401' || "
+               "echo ""$BODY"" | grep -qi 'expired' || "
+               "echo ""$BODY"" | grep -qi 'invalid'); then "
                "echo -e '\x1b[31mError: Request timestamp expired "
                "(must be within 5 minutes of server time)\x1b[0m' >&2; "
-               "echo -e '\x1b[33mYour computer'"'"'s clock may have "
+               "echo -e '\x1b[33mYour computer'""'""'s clock may have "
                "drifted.\x1b[0m' >&2; "
                "echo 'Check your system time and sync with NTP if "
                "needed:' >&2; "
@@ -459,10 +492,10 @@
            MOVE WS-EXIT-CODE TO RETURN-CODE.
 
        SESSION-LIST.
-           STRING "curl -s -X GET https://api.unsandbox.com/sessions "
+           STRING "curl -s -X GET $UN_API/sessions "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq -r '.sessions[] | "
-               '"\(.id) \(.shell) \(.status) \(.created_at)"'' "
+               '"\(.id) \(.shell) \(.status) \(.created_at)"'' '
                "2>/dev/null || echo 'No active sessions'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -471,7 +504,7 @@
 
        SESSION-KILL.
            STRING "curl -s -X DELETE "
-               "https://api.unsandbox.com/sessions/"
+               "$UN_API/sessions/"
                FUNCTION TRIM(WS-ID) " "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
@@ -483,7 +516,7 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-SESSION-CREATE-ARGS.
-      * Parse arguments for session creation
+      *> Parse arguments for session creation
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
                IF WS-ARG3 = "-f"
@@ -511,7 +544,7 @@
            END-PERFORM.
 
        SESSION-CREATE.
-      * Build curl command for session creation with input_files support
+      *> Build curl command for session creation with input_files support
            STRING "INPUT_FILES=''; "
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -521,24 +554,24 @@
                    "IFS=',' read -ra FILES <<< '"
                    FUNCTION TRIM(WS-INPUT-FILES)
                    "'; "
-                   "for f in \"${FILES[@]}\"; do "
-                   "b64=$(base64 -w0 \"$f\" 2>/dev/null || base64 \"$f\"); "
-                   "name=$(basename \"$f\"); "
-                   "if [ -n \"$INPUT_FILES\" ]; then INPUT_FILES=\"$INPUT_FILES,\"; fi; "
-                   "INPUT_FILES=\"$INPUT_FILES{\\\"filename\\\":\\\"$name\\\",\\\"content\\\":\\\"$b64\\\"}\"; "
+                   "for f in ""${FILES[@]}""; do "
+                   "b64=$(base64 -w0 ""$f"" 2>/dev/null || base64 ""$f""); "
+                   "name=$(basename ""$f""); "
+                   "if [ -n ""$INPUT_FILES"" ]; then INPUT_FILES=""$INPUT_FILES,""; fi; "
+                   "INPUT_FILES=""$INPUT_FILES{\\""filename\\"":\\""$name\\"",\\""content\\"":\\""$b64\\""}""; "
                    "done; "
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
-               "if [ -n \"$INPUT_FILES\" ]; then "
-               "JSON='{\"shell\":\"bash\",\"input_files\":['\"$INPUT_FILES\"']}'; "
-               "else JSON='{\"shell\":\"bash\"}'; fi; "
-               "curl -s -X POST https://api.unsandbox.com/sessions "
+               "if [ -n ""$INPUT_FILES"" ]; then "
+               "JSON='{""shell"":""bash"",""input_files"":['""$INPUT_FILES""']}'; "
+               "else JSON='{""shell"":""bash""}'; fi; "
+               "curl -s -X POST $UN_API/sessions "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -d \"$JSON\" && "
+               "' -d ""$JSON"" && "
                "echo -e '\x1b[33mSession created (WebSocket required)\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -546,10 +579,10 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-LIST.
-           STRING "curl -s -X GET https://api.unsandbox.com/services "
+           STRING "curl -s -X GET $UN_API/services "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq -r '.services[] | "
-               '"\(.id) \(.name) \(.status)"'' "
+               '"\(.id) \(.name) \(.status)"'' '
                "2>/dev/null || echo 'No services'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -558,7 +591,7 @@
 
        SERVICE-INFO.
            STRING "curl -s -X GET "
-               "https://api.unsandbox.com/services/"
+               "$UN_API/services/"
                FUNCTION TRIM(WS-ID) " "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq ."
@@ -569,7 +602,7 @@
 
        SERVICE-LOGS.
            STRING "curl -s -X GET "
-               "https://api.unsandbox.com/services/"
+               "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/logs "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq -r '.logs'"
@@ -580,7 +613,7 @@
 
        SERVICE-SLEEP.
            STRING "curl -s -X POST "
-               "https://api.unsandbox.com/services/"
+               "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/freeze "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
@@ -593,7 +626,7 @@
 
        SERVICE-WAKE.
            STRING "curl -s -X POST "
-               "https://api.unsandbox.com/services/"
+               "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/unfreeze "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
@@ -606,13 +639,13 @@
 
        SERVICE-DESTROY.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:DELETE:/services/"
+               "SIG=$(echo -n ""$TS:DELETE:/services/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP=$(curl -s -w '\\n%{http_code}' -X DELETE "
-               "'https://api.unsandbox.com/services/"
+               """$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -620,24 +653,24 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG); "
-               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
-               "BODY=$(echo \"$RESP\" | sed '$d'); "
-               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
-               "CHALLENGE_ID=$(echo \"$BODY\" | jq -r '.challenge_id // empty'); "
+               "HTTP_CODE=$(echo ""$RESP"" | tail -n1); "
+               "BODY=$(echo ""$RESP"" | sed '$d'); "
+               "if [ ""$HTTP_CODE"" = ""428"" ]; then "
+               "CHALLENGE_ID=$(echo ""$BODY"" | jq -r '.challenge_id // empty'); "
                "echo -e '\\x1b[33mConfirmation required. Check your email "
                "for a one-time code.\\x1b[0m' >&2; "
                "echo -n 'Enter OTP: ' >&2; read OTP; "
-               "if [ -z \"$OTP\" ]; then "
+               "if [ -z ""$OTP"" ]; then "
                "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
                "exit 1; fi; "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n \"$TS2:DELETE:/services/"
+               "SIG2=$(echo -n ""$TS2:DELETE:/services/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP2=$(curl -s -w '\\n%{http_code}' -X DELETE "
-               "'https://api.unsandbox.com/services/"
+               """$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -647,26 +680,26 @@
                "-H 'X-Signature: '$SIG2 "
                "-H 'X-Sudo-OTP: '$OTP "
                "-H 'X-Sudo-Challenge: '$CHALLENGE_ID); "
-               "HTTP_CODE2=$(echo \"$RESP2\" | tail -n1); "
-               "if [ \"$HTTP_CODE2\" = \"200\" ] || "
-               "[ \"$HTTP_CODE2\" = \"204\" ]; then "
+               "HTTP_CODE2=$(echo ""$RESP2"" | tail -n1); "
+               "if [ ""$HTTP_CODE2"" = ""200"" ] || "
+               "[ ""$HTTP_CODE2"" = ""204"" ]; then "
                "echo -e '\\x1b[32mService destroyed: "
                FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
-               "else echo \"$RESP2\" | sed '$d' | jq . 2>/dev/null || "
-               "echo \"$RESP2\" | sed '$d'; exit 1; fi; "
-               "elif [ \"$HTTP_CODE\" = \"200\" ] || "
-               "[ \"$HTTP_CODE\" = \"204\" ]; then "
+               "else echo ""$RESP2"" | sed '$d' | jq . 2>/dev/null || "
+               "echo ""$RESP2"" | sed '$d'; exit 1; fi; "
+               "elif [ ""$HTTP_CODE"" = ""200"" ] || "
+               "[ ""$HTTP_CODE"" = ""204"" ]; then "
                "echo -e '\\x1b[32mService destroyed: "
                FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
-               "else echo \"$BODY\" | jq . 2>/dev/null || "
-               "echo \"$BODY\"; exit 1; fi"
+               "else echo ""$BODY"" | jq . 2>/dev/null || "
+               "echo ""$BODY""; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-DUMP-BOOTSTRAP.
-      * Check if WS-ARG3 contains --dump-file argument
+      *> Check if WS-ARG3 contains --dump-file argument
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            MOVE SPACES TO WS-BOOTSTRAP.
            IF WS-ARG3 = "--dump-file"
@@ -676,19 +709,19 @@
            STRING "echo 'Fetching bootstrap script from "
                FUNCTION TRIM(WS-ID) "...' >&2; "
                "RESP=$(curl -s -X POST "
-               "https://api.unsandbox.com/services/"
+               "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/execute "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -d '{\"command\":\"cat /tmp/bootstrap.sh\"}'); "
-               "STDOUT=$(echo \"$RESP\" | jq -r '.stdout // empty'); "
-               "if [ -n \"$STDOUT\" ]; then "
+               "' -d '{""command"":""cat /tmp/bootstrap.sh""}'); "
+               "STDOUT=$(echo ""$RESP"" | jq -r '.stdout // empty'); "
+               "if [ -n ""$STDOUT"" ]; then "
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
            IF WS-BOOTSTRAP NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "echo \"$STDOUT\" > '"
+                   "echo ""$STDOUT"" > '"
                    FUNCTION TRIM(WS-BOOTSTRAP)
                    "' && chmod 755 '"
                    FUNCTION TRIM(WS-BOOTSTRAP)
@@ -698,7 +731,7 @@
                END-STRING
            ELSE
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "echo \"$STDOUT\"; "
+                   "echo ""$STDOUT""; "
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -712,8 +745,8 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-SERVICE-CREATE-ARGS.
-      * Parse remaining arguments for service creation
-      * This is a simplified parser that looks for specific flags
+      *> Parse remaining arguments for service creation
+      *> This is a simplified parser that looks for specific flags
            MOVE SPACES TO WS-UNFREEZE-ON-DEMAND.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
@@ -756,7 +789,7 @@
            END-PERFORM.
 
        PARSE-SERVICE-ENV-ARGS.
-      * Parse -e and --env-file for env set command
+      *> Parse -e and --env-file for env set command
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
                IF WS-ARG3 = "-e"
@@ -776,7 +809,7 @@
            END-PERFORM.
 
        SERVICE-ENV.
-      * Handle env subcommand (status/set/export/delete)
+      *> Handle env subcommand (status/set/export/delete)
            IF WS-ENV-ACTION = "status"
                PERFORM SERVICE-ENV-STATUS
            ELSE IF WS-ENV-ACTION = "set"
@@ -795,12 +828,12 @@
 
        SERVICE-ENV-STATUS.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:GET:/services/"
+               "SIG=$(echo -n ""$TS:GET:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env:\" | openssl dgst -sha256 -hmac '"
+               "/env:"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X GET 'https://api.unsandbox.com/services/"
+               "curl -s -X GET ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env' "
                "-H 'Authorization: Bearer "
@@ -818,30 +851,30 @@
                "ENV_LINES='"
                FUNCTION TRIM(WS-SVC-ENVS)
                "'; "
-               "if [ -n \"$ENV_LINES\" ]; then "
-               "ENV_CONTENT=\"$ENV_LINES\"; fi; "
+               "if [ -n ""$ENV_LINES"" ]; then "
+               "ENV_CONTENT=""$ENV_LINES""; fi; "
                "ENV_FILE='"
                FUNCTION TRIM(WS-SVC-ENV-FILE)
                "'; "
-               "if [ -n \"$ENV_FILE\" ] && [ -f \"$ENV_FILE\" ]; then "
-               "while IFS= read -r line || [ -n \"$line\" ]; do "
-               "case \"$line\" in \"#\"*|\"\") continue ;; esac; "
-               "if [ -n \"$ENV_CONTENT\" ]; then "
-               "ENV_CONTENT=\"$ENV_CONTENT"
+               "if [ -n ""$ENV_FILE"" ] && [ -f ""$ENV_FILE"" ]; then "
+               "while IFS= read -r line || [ -n ""$line"" ]; do "
+               "case ""$line"" in ""#""*|"""") continue ;; esac; "
+               "if [ -n ""$ENV_CONTENT"" ]; then "
+               "ENV_CONTENT=""$ENV_CONTENT"
                X"0A"
-               "\"; fi; "
-               "ENV_CONTENT=\"$ENV_CONTENT$line\"; "
-               "done < \"$ENV_FILE\"; fi; "
-               "if [ -z \"$ENV_CONTENT\" ]; then "
+               """; fi; "
+               "ENV_CONTENT=""$ENV_CONTENT$line""; "
+               "done < ""$ENV_FILE""; fi; "
+               "if [ -z ""$ENV_CONTENT"" ]; then "
                "echo -e '\x1b[31mError: No environment variables "
                "to set\x1b[0m' >&2; exit 1; fi; "
                "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:PUT:/services/"
+               "SIG=$(echo -n ""$TS:PUT:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env:$ENV_CONTENT\" | openssl dgst -sha256 -hmac '"
+               "/env:$ENV_CONTENT"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X PUT 'https://api.unsandbox.com/services/"
+               "curl -s -X PUT ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env' "
                "-H 'Authorization: Bearer "
@@ -850,7 +883,7 @@
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
                "-H 'Content-Type: text/plain' "
-               "--data-binary \"$ENV_CONTENT\" | jq ."
+               "--data-binary ""$ENV_CONTENT"" | jq ."
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
@@ -858,12 +891,12 @@
 
        SERVICE-ENV-EXPORT.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:POST:/services/"
+               "SIG=$(echo -n ""$TS:POST:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env/export:\" | openssl dgst -sha256 -hmac '"
+               "/env/export:"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/services/"
+               "curl -s -X POST ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env/export' "
                "-H 'Authorization: Bearer "
@@ -878,12 +911,12 @@
 
        SERVICE-ENV-DELETE.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:DELETE:/services/"
+               "SIG=$(echo -n ""$TS:DELETE:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env:\" | openssl dgst -sha256 -hmac '"
+               "/env:"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X DELETE 'https://api.unsandbox.com/services/"
+               "curl -s -X DELETE ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env' "
                "-H 'Authorization: Bearer "
@@ -900,123 +933,272 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-CREATE.
-      * Build service creation with HMAC auth and auto-vault
-           STRING "BODY='{\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+      *> Build service creation with HMAC auth and auto-vault
+           STRING "BODY='{""name"":""" FUNCTION TRIM(WS-NAME) """"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
-      * Add ports if provided
+      *> Add ports if provided
            IF WS-PORTS NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"ports\":[" FUNCTION TRIM(WS-PORTS) "]"
+                   ",""ports"":[" FUNCTION TRIM(WS-PORTS) "]"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
-      * Add domains if provided
+      *> Add domains if provided
            IF WS-DOMAINS NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"domains\":[\"" FUNCTION TRIM(WS-DOMAINS) "\"]"
+                   ",""domains"":[""" FUNCTION TRIM(WS-DOMAINS) """]"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
-      * Add service_type if provided
+      *> Add service_type if provided
            IF WS-SERVICE-TYPE NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"service_type\":\"" FUNCTION TRIM(WS-SERVICE-TYPE) "\""
+                   ",""service_type"":""" FUNCTION TRIM(WS-SERVICE-TYPE) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
-      * Add bootstrap if provided
+      *> Add bootstrap if provided
            IF WS-BOOTSTRAP NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"bootstrap\":\"" FUNCTION TRIM(WS-BOOTSTRAP) "\""
+                   ",""bootstrap"":""" FUNCTION TRIM(WS-BOOTSTRAP) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
-      * Add unfreeze_on_demand if provided
+      *> Add unfreeze_on_demand if provided
            IF WS-UNFREEZE-ON-DEMAND NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"unfreeze_on_demand\":"
+                   ",""unfreeze_on_demand"":"
                    FUNCTION TRIM(WS-UNFREEZE-ON-DEMAND)
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
-      * Close JSON body
+      *> Close JSON body
            STRING FUNCTION TRIM(WS-CURL-CMD) "}'; "
                "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:POST:/services:$BODY\" | "
+               "SIG=$(echo -n ""$TS:POST:/services:$BODY"" | "
                "openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "RESP=$(curl -s -X POST https://api.unsandbox.com/services "
+               "RESP=$(curl -s -X POST $UN_API/services "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\"); "
-               "SVC_ID=$(echo \"$RESP\" | jq -r '.id // empty'); "
-               "if [ -n \"$SVC_ID\" ]; then "
-               "echo -e '\x1b[32m'\"$SVC_ID\"' created\x1b[0m'; "
+               "-d ""$BODY""); "
+               "SVC_ID=$(echo ""$RESP"" | jq -r '.id // empty'); "
+               "if [ -n ""$SVC_ID"" ]; then "
+               "echo -e '\x1b[32m'""$SVC_ID""' created\x1b[0m'; "
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
-      * Add auto-vault logic
+      *> Add auto-vault logic
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "ENV_CONTENT=''; "
                "ENV_LINES='" FUNCTION TRIM(WS-SVC-ENVS) "'; "
-               "if [ -n \"$ENV_LINES\" ]; then ENV_CONTENT=\"$ENV_LINES\"; fi; "
+               "if [ -n ""$ENV_LINES"" ]; then ENV_CONTENT=""$ENV_LINES""; fi; "
                "ENV_FILE='" FUNCTION TRIM(WS-SVC-ENV-FILE) "'; "
-               "if [ -n \"$ENV_FILE\" ] && [ -f \"$ENV_FILE\" ]; then "
-               "while IFS= read -r line || [ -n \"$line\" ]; do "
-               "case \"$line\" in \"#\"*|\"\") continue ;; esac; "
-               "if [ -n \"$ENV_CONTENT\" ]; then "
-               "ENV_CONTENT=\"$ENV_CONTENT" X"0A" "\"; fi; "
-               "ENV_CONTENT=\"$ENV_CONTENT$line\"; "
-               "done < \"$ENV_FILE\"; fi; "
-               "if [ -n \"$ENV_CONTENT\" ]; then "
+               "if [ -n ""$ENV_FILE"" ] && [ -f ""$ENV_FILE"" ]; then "
+               "while IFS= read -r line || [ -n ""$line"" ]; do "
+               "case ""$line"" in ""#""*|"""") continue ;; esac; "
+               "if [ -n ""$ENV_CONTENT"" ]; then "
+               "ENV_CONTENT=""$ENV_CONTENT" X"0A" """; fi; "
+               "ENV_CONTENT=""$ENV_CONTENT$line""; "
+               "done < ""$ENV_FILE""; fi; "
+               "if [ -n ""$ENV_CONTENT"" ]; then "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n \"$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT\" | "
+               "SIG2=$(echo -n ""$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT"" | "
                "openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X PUT \"https://api.unsandbox.com/services/$SVC_ID/env\" "
+               "curl -s -X PUT ""$UN_API/services/$SVC_ID/env"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
                "-H 'X-Timestamp: '$TS2 "
                "-H 'X-Signature: '$SIG2 "
                "-H 'Content-Type: text/plain' "
-               "--data-binary \"$ENV_CONTENT\" >/dev/null && "
+               "--data-binary ""$ENV_CONTENT"" >/dev/null && "
                "echo -e '\x1b[32mVault configured\x1b[0m'; fi; "
-               "else echo \"$RESP\" | jq .; fi"
+               "else echo ""$RESP"" | jq .; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-KEY.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
            IF WS-API-KEY = SPACES
                MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
-      * Parse key arguments
+      *> Parse key arguments: --extend, --rotate, --otp CODE
            MOVE SPACES TO WS-EXTEND-FLAG.
-           ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
+           MOVE SPACES TO WS-ROTATE-FLAG.
+           MOVE SPACES TO WS-OTP.
+           MOVE "x" TO WS-ARG2.
+           PERFORM UNTIL WS-ARG2 = SPACES
+               MOVE SPACES TO WS-ARG2
+               ACCEPT WS-ARG2 FROM ARGUMENT-VALUE
+                   ON EXCEPTION MOVE SPACES TO WS-ARG2
+               END-ACCEPT
+               EVALUATE WS-ARG2
+                   WHEN "--extend" MOVE "true" TO WS-EXTEND-FLAG
+                   WHEN "--rotate" MOVE "true" TO WS-ROTATE-FLAG
+                   WHEN "--otp"
+                       ACCEPT WS-OTP FROM ARGUMENT-VALUE
+                           ON EXCEPTION MOVE SPACES TO WS-OTP
+                       END-ACCEPT
+               END-EVALUATE
+           END-PERFORM.
 
-           IF WS-ARG2 = "--extend"
-               MOVE "true" TO WS-EXTEND-FLAG
+           IF WS-ROTATE-FLAG = "true"
+               PERFORM ROTATE-KEY
+           ELSE
+      *> Validate key
+               PERFORM VALIDATE-KEY
            END-IF.
 
-      * Validate key
-           PERFORM VALIDATE-KEY.
+       ROTATE-KEY.
+      *> un key --rotate [--otp CODE]: rotate this key's secret (CLI_SPEC.md).
+      *> Keys, OTP and the accounts.csv path reach the script through the
+      *> environment only; the script text itself is static, so nothing
+      *> secret ever appears on a process command line.
+           DISPLAY "UN_PK" UPON ENVIRONMENT-NAME.
+           DISPLAY WS-PUBLIC-KEY UPON ENVIRONMENT-VALUE.
+           DISPLAY "UN_SK" UPON ENVIRONMENT-NAME.
+           DISPLAY WS-SECRET-KEY UPON ENVIRONMENT-VALUE.
+           DISPLAY "UN_CSV" UPON ENVIRONMENT-NAME.
+           DISPLAY WS-CRED-SRC UPON ENVIRONMENT-VALUE.
+           IF WS-OTP NOT = SPACES
+               DISPLAY "UN_OTP" UPON ENVIRONMENT-NAME
+               DISPLAY WS-OTP UPON ENVIRONMENT-VALUE
+           END-IF.
+           MOVE SPACES TO WS-SECRET-KEY.
+           STRING
+               "exec bash -c 'A=${UNSANDBOX_API_URL:-https://api.unsandbox.c"
+               "om}; while [ ""${A%/}"" != ""$A"" ]; do A=${A%/}; done"
+               X"0A"
+               "P=/keys/self/rotate-secret; D=""$HOME/.unsandbox"""
+               X"0A"
+               "if command -v sha256sum >/dev/null 2>&1; then S=sha256sum; e"
+               "lse S=""shasum -a 256""; fi"
+               X"0A"
+               "CF=""$D/rotate-$(printf %s ""$UN_PK"" | $S | cut -c1-16).challe"
+               "nge"""
+               X"0A"
+               "RB=$(mktemp) || exit 1; trap '\''rm -f ""$RB""'\'' EXIT"
+               X"0A"
+               "hmac() { local k=$1 i c ip= op= ih= x"
+               X"0A"
+               "  for ((i=0;i<64;i++)); do if ((i<${#k})); then printf -v c "
+               "%d ""'\''${k:i:1}""; else c=0; fi"
+               X"0A"
+               "    printf -v ip '\''%s\\x%02x'\'' ""$ip"" $((c^54)); printf -"
+               "v op '\''%s\\x%02x'\'' ""$op"" $((c^92)); done"
+               X"0A"
+               "  ih=$( { printf ""$ip""; printf %s ""$2""; } | $S | cut -c1-64)"
+               X"0A"
+               "  for ((i=0;i<64;i+=2)); do x=""$x\\x${ih:i:2}""; done"
+               X"0A"
+               "  { printf ""$op""; printf ""$x""; } | $S | cut -c1-64; }"
+               X"0A"
+               "post() { local ts sig; ts=$(date +%s); sig=$(hmac ""$UN_SK"" """
+               "$ts:POST:$P:{}"")"
+               X"0A"
+               "  { printf '\''url = ""%s""\nrequest = ""POST""\n'\'' ""$A$P"""
+               X"0A"
+               "    printf '\''header = ""Content-Type: application/json""\nhe"
+               "ader = ""Authorization: Bearer %s""\n'\'' ""$UN_PK"""
+               X"0A"
+               "    printf '\''header = ""X-Timestamp: %s""\nheader = ""X-Signa"
+               "ture: %s""\n'\'' ""$ts"" ""$sig"""
+               X"0A"
+               "    if [ -n ""$1"" ]; then printf '\''header = ""X-Sudo-OTP: %s"
+               """\nheader = ""X-Sudo-Challenge: %s""\n'\'' ""$1"" ""$2""; fi"
+               X"0A"
+               "    printf '\''data = ""{}""\n'\''; } | curl -s -K - -o ""$RB"" "
+               "-w '\''%{http_code}'\''; }"
+               X"0A"
+               "if [ -n ""${UN_OTP:-}"" ]; then"
+               X"0A"
+               "  CH=$(cat ""$CF"" 2>/dev/null) || { echo ""Error: no rotation "
+               "in progress; run: un key --rotate"" >&2; exit 2; }"
+               X"0A"
+               "  CODE=$(post ""$UN_OTP"" ""$CH""); rm -f ""$CF"""
+               X"0A"
+               "else"
+               X"0A"
+               "  CODE=$(post)"
+               X"0A"
+               "  if [ ""$CODE"" = 428 ]; then CH=$(jq -r '\''.challenge_id //"
+               " empty'\'' ""$RB"")"
+               X"0A"
+               "    if [ -t 0 ]; then echo ""One-time code emailed to the key"
+               " owner."" >&2; printf '\''Code: '\'' >&2; read -r OTP"
+               X"0A"
+               "      [ -n ""$OTP"" ] || { echo ""Error: cancelled"" >&2; exit 1"
+               "; }; CODE=$(post ""$OTP"" ""$CH"")"
+               X"0A"
+               "    else (umask 077; mkdir -p ""$D"" && printf %s ""$CH"" > ""$CF"
+               """) && chmod 600 ""$CF"" || exit 1"
+               X"0A"
+               "      echo ""One-time code emailed to the key owner. Finish w"
+               "ith: un key --rotate --otp CODE""; exit 0; fi; fi"
+               X"0A"
+               "fi"
+               X"0A"
+               "if [ ""$CODE"" != 200 ]; then"
+               X"0A"
+               "  if [ ""$CODE"" = 403 ] && [ ""$(jq -r '\''.error // empty'\''"
+               " ""$RB"" 2>/dev/null)"" = email_required ]; then"
+               X"0A"
+               "    echo ""Error: this key has no email; add one or use POST "
+               "/keys/recover"" >&2; exit 3; fi"
+               X"0A"
+               "  [ ""$CODE"" = 401 ] && { echo ""Error: authentication failed"""
+               " >&2; exit 3; }"
+               X"0A"
+               "  M=$(jq -r '\''.message // .error // empty'\'' ""$RB"" 2>/dev"
+               "/null); echo ""Error: ${M:-HTTP $CODE}"" >&2; exit 4; fi"
+               X"0A"
+               "NS=$(jq -r '\''.secret // empty'\'' ""$RB""); [ -n ""$NS"" ] || "
+               "{ echo ""Error: API returned no secret"" >&2; exit 4; }"
+               X"0A"
+               "if [ -n ""${UN_CSV:-}"" ] && [ -f ""$UN_CSV"" ] && T=$(mktemp ""$"
+               "(dirname ""$UN_CSV"")/.accounts.csv.XXXXXX""); then"
+               X"0A"
+               "  chmod 600 ""$T""; NS=""$NS"" awk -F, -v OFS=, -v pk=""$UN_PK"" '"
+               "\''BEGIN{d=0} { t=$1; gsub(/^[ \t]+|[ \t\r]+$/,"""",t)"
+               X"0A"
+               "    if (!d && $0 !~ /^[ \t]*(#|$)/ && NF>=2 && t==pk) { $2=E"
+               "NVIRON[""NS""]; d=1 } print } END{exit d?0:1}'\'' ""$UN_CSV"" > "
+               """$T"" \"
+               X"0A"
+               "    && mv -f ""$T"" ""$UN_CSV"" && { echo ""Secret rotated. Updat"
+               "ed $UN_CSV (public key $UN_PK).""; exit 0; }; rm -f ""$T""; fi"
+               X"0A"
+               "echo ""New secret (shown once, store it now): $NS"""
+               X"0A"
+               "echo ""Warning: UNSANDBOX_SECRET_KEY / -k still hold the old,"
+               " now invalid, secret.""'"
+               DELIMITED BY SIZE INTO WS-ROT-CMD
+           END-STRING.
+           CALL "SYSTEM" USING WS-ROT-CMD
+               RETURNING WS-EXIT-CODE.
+      *> SYSTEM hands back the raw wait status (exit code * 256)
+           IF WS-EXIT-CODE > 255
+               DIVIDE WS-EXIT-CODE BY 256 GIVING WS-EXIT-CODE
+           END-IF.
+           MOVE WS-EXIT-CODE TO RETURN-CODE.
 
        VALIDATE-KEY.
-      * Build curl command to validate API key
+      *> Build curl command to validate API key
            STRING "curl -s -X POST "
                FUNCTION TRIM(WS-PORTAL-BASE)
                "/keys/validate "
@@ -1030,7 +1212,7 @@
                "fi; "
                "EXPIRED=$(jq -r '.expired // false' "
                "/tmp/unsandbox_key_resp.json); "
-               "PUBLIC_KEY=$(jq -r '.public_key // \"N/A\"' "
+               "PUBLIC_KEY=$(jq -r '.public_key // ""N/A""' "
                "/tmp/unsandbox_key_resp.json); "
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -1039,17 +1221,17 @@
                STRING FUNCTION TRIM(WS-CURL-CMD)
                    "xdg-open '"
                    FUNCTION TRIM(WS-PORTAL-BASE)
-                   "/keys/extend?pk='\"$PUBLIC_KEY\" 2>/dev/null; "
+                   "/keys/extend?pk='""$PUBLIC_KEY"" 2>/dev/null; "
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            ELSE
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "if [ \"$EXPIRED\" = \"true\" ]; then "
+                   "if [ ""$EXPIRED"" = ""true"" ]; then "
                    "echo -e '\x1b[31mExpired\x1b[0m'; "
                    "echo 'Public Key: '$PUBLIC_KEY; "
-                   "echo 'Tier: '$(jq -r '.tier // \"N/A\"' "
+                   "echo 'Tier: '$(jq -r '.tier // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Expired: '$(jq -r '.expires_at // \"N/A\"' "
+                   "echo 'Expired: '$(jq -r '.expires_at // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
                    "echo -e '\x1b[33mTo renew: Visit "
                    "https://unsandbox.com/keys/extend\x1b[0m'; "
@@ -1058,20 +1240,20 @@
                    "else "
                    "echo -e '\x1b[32mValid\x1b[0m'; "
                    "echo 'Public Key: '$PUBLIC_KEY; "
-                   "echo 'Tier: '$(jq -r '.tier // \"N/A\"' "
+                   "echo 'Tier: '$(jq -r '.tier // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Status: '$(jq -r '.status // \"N/A\"' "
+                   "echo 'Status: '$(jq -r '.status // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Expires: '$(jq -r '.expires_at // \"N/A\"' "
+                   "echo 'Expires: '$(jq -r '.expires_at // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
                    "echo 'Time Remaining: '$(jq -r "
-                   "'.time_remaining // \"N/A\"' "
+                   "'.time_remaining // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Rate Limit: '$(jq -r '.rate_limit // \"N/A\"' "
+                   "echo 'Rate Limit: '$(jq -r '.rate_limit // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Burst: '$(jq -r '.burst // \"N/A\"' "
+                   "echo 'Burst: '$(jq -r '.burst // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Concurrency: '$(jq -r '.concurrency // \"N/A\"' "
+                   "echo 'Concurrency: '$(jq -r '.concurrency // ""N/A""' "
                    "/tmp/unsandbox_key_resp.json); "
                    "fi; "
                    DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1086,7 +1268,7 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-SERVICE-RESIZE-ARGS.
-      * Parse -v argument for vcpu
+      *> Parse -v argument for vcpu
            MOVE 0 TO WS-VCPU.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
@@ -1098,7 +1280,7 @@
            END-PERFORM.
 
        SERVICE-RESIZE.
-      * Validate vcpu
+      *> Validate vcpu
            IF WS-VCPU < 1 OR WS-VCPU > 8
                DISPLAY "Error: --resize requires -v N (1-8)"
                    UPON SYSERR
@@ -1106,25 +1288,25 @@
                STOP RUN
            END-IF.
 
-      * Calculate RAM
+      *> Calculate RAM
            COMPUTE WS-RAM = WS-VCPU * 2.
 
-      * Build and execute resize request with HMAC auth
+      *> Build and execute resize request with HMAC auth
            STRING "TS=$(date +%s); "
-               "BODY='{\"vcpu\":" WS-VCPU "}'; "
-               "SIG=$(echo -n \"$TS:PATCH:/services/"
+               "BODY='{""vcpu"":" WS-VCPU "}'; "
+               "SIG=$(echo -n ""$TS:PATCH:/services/"
                FUNCTION TRIM(WS-ID)
-               ":$BODY\" | openssl dgst -sha256 -hmac '"
+               ":$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X PATCH 'https://api.unsandbox.com/services/"
+               "curl -s -X PATCH ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" >/dev/null && "
+               "-d ""$BODY"" >/dev/null && "
                "echo -e '\x1b[32mService resized to " WS-VCPU
                " vCPU, " WS-RAM " GB RAM\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1133,7 +1315,7 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-SERVICE-UOD-ARGS.
-      * Parse --enabled argument for unfreeze_on_demand
+      *> Parse --enabled argument for unfreeze_on_demand
            MOVE SPACES TO WS-UOD-ENABLED.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
@@ -1144,7 +1326,7 @@
            END-PERFORM.
 
        SERVICE-SET-UNFREEZE-ON-DEMAND.
-      * Validate enabled value
+      *> Validate enabled value
            IF WS-UOD-ENABLED NOT = "true" AND WS-UOD-ENABLED NOT = "false"
                DISPLAY "Error: --set-unfreeze-on-demand requires "
                    "--enabled true|false" UPON SYSERR
@@ -1152,23 +1334,23 @@
                STOP RUN
            END-IF.
 
-      * Build and execute set unfreeze_on_demand request with HMAC auth
+      *> Build and execute set unfreeze_on_demand request with HMAC auth
            STRING "TS=$(date +%s); "
-               "BODY='{\"unfreeze_on_demand\":"
+               "BODY='{""unfreeze_on_demand"":"
                FUNCTION TRIM(WS-UOD-ENABLED) "}'; "
-               "SIG=$(echo -n \"$TS:PATCH:/services/"
+               "SIG=$(echo -n ""$TS:PATCH:/services/"
                FUNCTION TRIM(WS-ID)
-               ":$BODY\" | openssl dgst -sha256 -hmac '"
+               ":$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X PATCH 'https://api.unsandbox.com/services/"
+               "curl -s -X PATCH ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" >/dev/null && "
+               "-d ""$BODY"" >/dev/null && "
                "echo -e '\x1b[32mService unfreeze_on_demand set to "
                FUNCTION TRIM(WS-UOD-ENABLED) "\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1177,75 +1359,75 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-LANGUAGES.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
 
-      * Parse --json flag
+      *> Parse --json flag
            MOVE SPACES TO WS-JSON-OUTPUT.
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
            IF WS-ARG2 = "--json"
                MOVE "true" TO WS-JSON-OUTPUT
            END-IF.
 
-      * Perform languages list
+      *> Perform languages list
            PERFORM LANGUAGES-LIST.
 
        LANGUAGES-LIST.
-      * Languages list with 1-hour cache
+      *> Languages list with 1-hour cache
            IF WS-JSON-OUTPUT = "true"
-      * JSON output: extract language names as array with caching
+      *> JSON output: extract language names as array with caching
                STRING "CACHE_TTL=3600; "
-                   "CACHE_FILE=\"$HOME/.unsandbox/languages.json\"; "
-                   "if [ -f \"$CACHE_FILE\" ]; then "
-                   "CACHE_TS=$(jq -r '.timestamp // 0' \"$CACHE_FILE\" 2>/dev/null); "
+                   "CACHE_FILE=""$HOME/.unsandbox/languages.json""; "
+                   "if [ -f ""$CACHE_FILE"" ]; then "
+                   "CACHE_TS=$(jq -r '.timestamp // 0' ""$CACHE_FILE"" 2>/dev/null); "
                    "CURRENT_TS=$(date +%s); "
                    "AGE=$((CURRENT_TS - CACHE_TS)); "
                    "if [ $AGE -lt $CACHE_TTL ]; then "
-                   "jq -c '.languages' \"$CACHE_FILE\"; exit 0; fi; fi; "
+                   "jq -c '.languages' ""$CACHE_FILE""; exit 0; fi; fi; "
                    "TS=$(date +%s); "
-                   "SIG=$(echo -n \"$TS:GET:/languages:\" | "
+                   "SIG=$(echo -n ""$TS:GET:/languages:"" | "
                    "openssl dgst -sha256 -hmac '"
                    FUNCTION TRIM(WS-SECRET-KEY)
                    "' | cut -d' ' -f2); "
-                   "RESP=$(curl -s -X GET 'https://api.unsandbox.com/languages' "
+                   "RESP=$(curl -s -X GET ""$UN_API""'/languages' "
                    "-H 'Authorization: Bearer "
                    FUNCTION TRIM(WS-PUBLIC-KEY)
                    "' "
                    "-H 'X-Timestamp: '$TS "
                    "-H 'X-Signature: '$SIG); "
-                   "LANGS=$(echo \"$RESP\" | jq -c '[.languages[].name]'); "
-                   "mkdir -p \"$HOME/.unsandbox\"; "
-                   "echo \"{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}\" "
-                   "> \"$CACHE_FILE\"; "
-                   "echo \"$LANGS\""
+                   "LANGS=$(echo ""$RESP"" | jq -c '[.languages[].name]'); "
+                   "mkdir -p ""$HOME/.unsandbox""; "
+                   "echo ""{\\""languages\\"":$LANGS,\\""timestamp\\"":$(date +%s)}"" "
+                   "> ""$CACHE_FILE""; "
+                   "echo ""$LANGS"""
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            ELSE
-      * Plain output: one language per line with caching
+      *> Plain output: one language per line with caching
                STRING "CACHE_TTL=3600; "
-                   "CACHE_FILE=\"$HOME/.unsandbox/languages.json\"; "
-                   "if [ -f \"$CACHE_FILE\" ]; then "
-                   "CACHE_TS=$(jq -r '.timestamp // 0' \"$CACHE_FILE\" 2>/dev/null); "
+                   "CACHE_FILE=""$HOME/.unsandbox/languages.json""; "
+                   "if [ -f ""$CACHE_FILE"" ]; then "
+                   "CACHE_TS=$(jq -r '.timestamp // 0' ""$CACHE_FILE"" 2>/dev/null); "
                    "CURRENT_TS=$(date +%s); "
                    "AGE=$((CURRENT_TS - CACHE_TS)); "
                    "if [ $AGE -lt $CACHE_TTL ]; then "
-                   "jq -r '.languages[]' \"$CACHE_FILE\"; exit 0; fi; fi; "
+                   "jq -r '.languages[]' ""$CACHE_FILE""; exit 0; fi; fi; "
                    "TS=$(date +%s); "
-                   "SIG=$(echo -n \"$TS:GET:/languages:\" | "
+                   "SIG=$(echo -n ""$TS:GET:/languages:"" | "
                    "openssl dgst -sha256 -hmac '"
                    FUNCTION TRIM(WS-SECRET-KEY)
                    "' | cut -d' ' -f2); "
-                   "RESP=$(curl -s -X GET 'https://api.unsandbox.com/languages' "
+                   "RESP=$(curl -s -X GET ""$UN_API""'/languages' "
                    "-H 'Authorization: Bearer "
                    FUNCTION TRIM(WS-PUBLIC-KEY)
                    "' "
                    "-H 'X-Timestamp: '$TS "
                    "-H 'X-Signature: '$SIG); "
-                   "LANGS=$(echo \"$RESP\" | jq -c '[.languages[].name]'); "
-                   "mkdir -p \"$HOME/.unsandbox\"; "
-                   "echo \"{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}\" "
-                   "> \"$CACHE_FILE\"; "
-                   "echo \"$RESP\" | jq -r '.languages[].name'"
+                   "LANGS=$(echo ""$RESP"" | jq -c '[.languages[].name]'); "
+                   "mkdir -p ""$HOME/.unsandbox""; "
+                   "echo ""{\\""languages\\"":$LANGS,\\""timestamp\\"":$(date +%s)}"" "
+                   "> ""$CACHE_FILE""; "
+                   "echo ""$RESP"" | jq -r '.languages[].name'"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -1253,17 +1435,17 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-IMAGE.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
 
-      * Initialize image parameters
+      *> Initialize image parameters
            MOVE SPACES TO WS-ID.
            MOVE SPACES TO WS-NAME.
            MOVE SPACES TO WS-PORTS.
            MOVE SPACES TO WS-IMAGE-SOURCE-TYPE.
            MOVE SPACES TO WS-IMAGE-VISIBILITY.
 
-      * Parse image arguments
+      *> Parse image arguments
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
 
            IF WS-ARG2 = "-l" OR WS-ARG2 = "--list"
@@ -1305,11 +1487,11 @@
 
        IMAGE-LIST.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:GET:/images:\" | "
+               "SIG=$(echo -n ""$TS:GET:/images:"" | "
                "openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X GET 'https://api.unsandbox.com/images' "
+               "curl -s -X GET ""$UN_API""'/images' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
                "' "
@@ -1322,12 +1504,12 @@
 
        IMAGE-INFO.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:GET:/images/"
+               "SIG=$(echo -n ""$TS:GET:/images/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X GET 'https://api.unsandbox.com/images/"
+               "curl -s -X GET ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -1342,13 +1524,13 @@
 
        IMAGE-DELETE.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:DELETE:/images/"
+               "SIG=$(echo -n ""$TS:DELETE:/images/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP=$(curl -s -w '\\n%{http_code}' -X DELETE "
-               "'https://api.unsandbox.com/images/"
+               """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -1356,24 +1538,24 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG); "
-               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
-               "BODY=$(echo \"$RESP\" | sed '$d'); "
-               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
-               "CHALLENGE_ID=$(echo \"$BODY\" | jq -r '.challenge_id // empty'); "
+               "HTTP_CODE=$(echo ""$RESP"" | tail -n1); "
+               "BODY=$(echo ""$RESP"" | sed '$d'); "
+               "if [ ""$HTTP_CODE"" = ""428"" ]; then "
+               "CHALLENGE_ID=$(echo ""$BODY"" | jq -r '.challenge_id // empty'); "
                "echo -e '\\x1b[33mConfirmation required. Check your email "
                "for a one-time code.\\x1b[0m' >&2; "
                "echo -n 'Enter OTP: ' >&2; read OTP; "
-               "if [ -z \"$OTP\" ]; then "
+               "if [ -z ""$OTP"" ]; then "
                "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
                "exit 1; fi; "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n \"$TS2:DELETE:/images/"
+               "SIG2=$(echo -n ""$TS2:DELETE:/images/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP2=$(curl -s -w '\\n%{http_code}' -X DELETE "
-               "'https://api.unsandbox.com/images/"
+               """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -1383,19 +1565,19 @@
                "-H 'X-Signature: '$SIG2 "
                "-H 'X-Sudo-OTP: '$OTP "
                "-H 'X-Sudo-Challenge: '$CHALLENGE_ID); "
-               "HTTP_CODE2=$(echo \"$RESP2\" | tail -n1); "
-               "if [ \"$HTTP_CODE2\" = \"200\" ] || "
-               "[ \"$HTTP_CODE2\" = \"204\" ]; then "
+               "HTTP_CODE2=$(echo ""$RESP2"" | tail -n1); "
+               "if [ ""$HTTP_CODE2"" = ""200"" ] || "
+               "[ ""$HTTP_CODE2"" = ""204"" ]; then "
                "echo -e '\\x1b[32mImage deleted: "
                FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
-               "else echo \"$RESP2\" | sed '$d' | jq . 2>/dev/null || "
-               "echo \"$RESP2\" | sed '$d'; exit 1; fi; "
-               "elif [ \"$HTTP_CODE\" = \"200\" ] || "
-               "[ \"$HTTP_CODE\" = \"204\" ]; then "
+               "else echo ""$RESP2"" | sed '$d' | jq . 2>/dev/null || "
+               "echo ""$RESP2"" | sed '$d'; exit 1; fi; "
+               "elif [ ""$HTTP_CODE"" = ""200"" ] || "
+               "[ ""$HTTP_CODE"" = ""204"" ]; then "
                "echo -e '\\x1b[32mImage deleted: "
                FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
-               "else echo \"$BODY\" | jq . 2>/dev/null || "
-               "echo \"$BODY\"; exit 1; fi"
+               "else echo ""$BODY"" | jq . 2>/dev/null || "
+               "echo ""$BODY""; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
@@ -1404,12 +1586,12 @@
        IMAGE-LOCK.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n \"$TS:POST:/images/"
+               "SIG=$(echo -n ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/lock:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/lock:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/lock' "
                "-H 'Content-Type: application/json' "
@@ -1418,7 +1600,7 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" >/dev/null && "
+               "-d ""$BODY"" >/dev/null && "
                "echo -e '\x1b[32mImage locked: "
                FUNCTION TRIM(WS-ID) "\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1429,13 +1611,13 @@
        IMAGE-UNLOCK.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n \"$TS:POST:/images/"
+               "SIG=$(echo -n ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP=$(curl -s -w '\\n%{http_code}' -X POST "
-               "'https://api.unsandbox.com/images/"
+               """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/unlock' "
                "-H 'Content-Type: application/json' "
@@ -1444,25 +1626,25 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\"); "
-               "HTTP_CODE=$(echo \"$RESP\" | tail -n1); "
-               "RESP_BODY=$(echo \"$RESP\" | sed '$d'); "
-               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
-               "CHALLENGE_ID=$(echo \"$RESP_BODY\" | jq -r '.challenge_id // empty'); "
+               "-d ""$BODY""); "
+               "HTTP_CODE=$(echo ""$RESP"" | tail -n1); "
+               "RESP_BODY=$(echo ""$RESP"" | sed '$d'); "
+               "if [ ""$HTTP_CODE"" = ""428"" ]; then "
+               "CHALLENGE_ID=$(echo ""$RESP_BODY"" | jq -r '.challenge_id // empty'); "
                "echo -e '\\x1b[33mConfirmation required. Check your email "
                "for a one-time code.\\x1b[0m' >&2; "
                "echo -n 'Enter OTP: ' >&2; read OTP; "
-               "if [ -z \"$OTP\" ]; then "
+               "if [ -z ""$OTP"" ]; then "
                "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
                "exit 1; fi; "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n \"$TS2:POST:/images/"
+               "SIG2=$(echo -n ""$TS2:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP2=$(curl -s -w '\\n%{http_code}' -X POST "
-               "'https://api.unsandbox.com/images/"
+               """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/unlock' "
                "-H 'Content-Type: application/json' "
@@ -1473,27 +1655,27 @@
                "-H 'X-Signature: '$SIG2 "
                "-H 'X-Sudo-OTP: '$OTP "
                "-H 'X-Sudo-Challenge: '$CHALLENGE_ID "
-               "-d \"$BODY\"); "
-               "HTTP_CODE2=$(echo \"$RESP2\" | tail -n1); "
-               "if [ \"$HTTP_CODE2\" = \"200\" ] || "
-               "[ \"$HTTP_CODE2\" = \"204\" ]; then "
+               "-d ""$BODY""); "
+               "HTTP_CODE2=$(echo ""$RESP2"" | tail -n1); "
+               "if [ ""$HTTP_CODE2"" = ""200"" ] || "
+               "[ ""$HTTP_CODE2"" = ""204"" ]; then "
                "echo -e '\\x1b[32mImage unlocked: "
                FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
-               "else echo \"$RESP2\" | sed '$d' | jq . 2>/dev/null || "
-               "echo \"$RESP2\" | sed '$d'; exit 1; fi; "
-               "elif [ \"$HTTP_CODE\" = \"200\" ] || "
-               "[ \"$HTTP_CODE\" = \"204\" ]; then "
+               "else echo ""$RESP2"" | sed '$d' | jq . 2>/dev/null || "
+               "echo ""$RESP2"" | sed '$d'; exit 1; fi; "
+               "elif [ ""$HTTP_CODE"" = ""200"" ] || "
+               "[ ""$HTTP_CODE"" = ""204"" ]; then "
                "echo -e '\\x1b[32mImage unlocked: "
                FUNCTION TRIM(WS-ID) "\\x1b[0m'; "
-               "else echo \"$RESP_BODY\" | jq . 2>/dev/null || "
-               "echo \"$RESP_BODY\"; exit 1; fi"
+               "else echo ""$RESP_BODY"" | jq . 2>/dev/null || "
+               "echo ""$RESP_BODY""; exit 1; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-IMAGE-PUBLISH-ARGS.
-      * Parse --source-type and --name for publish
+      *> Parse --source-type and --name for publish
            MOVE SPACES TO WS-IMAGE-SOURCE-TYPE.
            MOVE SPACES TO WS-NAME.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
@@ -1507,7 +1689,7 @@
            END-PERFORM.
 
        IMAGE-PUBLISH.
-      * Validate source-type
+      *> Validate source-type
            IF WS-IMAGE-SOURCE-TYPE = SPACES
                DISPLAY "Error: --publish requires --source-type "
                    "(service or snapshot)" UPON SYSERR
@@ -1515,36 +1697,36 @@
                STOP RUN
            END-IF.
 
-      * Build publish request
+      *> Build publish request
            STRING "TS=$(date +%s); "
-               "BODY='{\"source_type\":\""
+               "BODY='{""source_type"":"""
                FUNCTION TRIM(WS-IMAGE-SOURCE-TYPE)
-               "\",\"source_id\":\""
-               FUNCTION TRIM(WS-ID) "\""
+               """,""source_id"":"""
+               FUNCTION TRIM(WS-ID) """"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
            IF WS-NAME NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   ",""name"":""" FUNCTION TRIM(WS-NAME) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n \"$TS:POST:/images/publish:$BODY\" | "
+               "SIG=$(echo -n ""$TS:POST:/images/publish:$BODY"" | "
                "openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/images/publish' "
+               "curl -s -X POST ""$UN_API""'/images/publish' "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" && "
+               "-d ""$BODY"" && "
                "echo -e '\x1b[32mImage published\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -1553,15 +1735,15 @@
 
        IMAGE-VISIBILITY.
            STRING "TS=$(date +%s); "
-               "BODY='{\"visibility\":\""
+               "BODY='{""visibility"":"""
                FUNCTION TRIM(WS-IMAGE-VISIBILITY)
-               "\"}'; "
-               "SIG=$(echo -n \"$TS:POST:/images/"
+               """}'; "
+               "SIG=$(echo -n ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/visibility:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/visibility:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/visibility' "
                "-H 'Content-Type: application/json' "
@@ -1570,7 +1752,7 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" >/dev/null && "
+               "-d ""$BODY"" >/dev/null && "
                "echo -e '\x1b[32mImage visibility set to: "
                FUNCTION TRIM(WS-IMAGE-VISIBILITY) "\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1579,7 +1761,7 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-IMAGE-SPAWN-ARGS.
-      * Parse --name and --ports for spawn
+      *> Parse --name and --ports for spawn
            MOVE SPACES TO WS-NAME.
            MOVE SPACES TO WS-PORTS.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
@@ -1593,7 +1775,7 @@
            END-PERFORM.
 
        IMAGE-SPAWN.
-      * Build spawn request
+      *> Build spawn request
            STRING "TS=$(date +%s); "
                "BODY='{"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1601,7 +1783,7 @@
 
            IF WS-NAME NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   """name"":""" FUNCTION TRIM(WS-NAME) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -1613,19 +1795,19 @@
                    END-STRING
                END-IF
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "\"ports\":[" FUNCTION TRIM(WS-PORTS) "]"
+                   """ports"":[" FUNCTION TRIM(WS-PORTS) "]"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n \"$TS:POST:/images/"
+               "SIG=$(echo -n ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/spawn:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/spawn:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/spawn' "
                "-H 'Content-Type: application/json' "
@@ -1634,7 +1816,7 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" && "
+               "-d ""$BODY"" && "
                "echo -e '\x1b[32mService spawned from image\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -1642,7 +1824,7 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-IMAGE-CLONE-ARGS.
-      * Parse --name for clone
+      *> Parse --name for clone
            MOVE SPACES TO WS-NAME.
            ACCEPT WS-ARG3 FROM ARGUMENT-VALUE.
            PERFORM UNTIL WS-ARG3 = SPACES
@@ -1653,7 +1835,7 @@
            END-PERFORM.
 
        IMAGE-CLONE.
-      * Build clone request
+      *> Build clone request
            STRING "TS=$(date +%s); "
                "BODY='{"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -1661,19 +1843,19 @@
 
            IF WS-NAME NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   """name"":""" FUNCTION TRIM(WS-NAME) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n \"$TS:POST:/images/"
+               "SIG=$(echo -n ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/clone:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/clone:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/images/"
+               "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/clone' "
                "-H 'Content-Type: application/json' "
@@ -1682,7 +1864,7 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" && "
+               "-d ""$BODY"" && "
                "echo -e '\x1b[32mImage cloned\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -1690,10 +1872,10 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        HANDLE-SNAPSHOT.
-      * Get credentials
+      *> Get credentials
            PERFORM GET-CREDENTIALS.
 
-      * Get second argument (operation or --list)
+      *> Get second argument (operation or --list)
            ACCEPT WS-ARG2 FROM ARGUMENT-VALUE.
 
            EVALUATE WS-ARG2
@@ -1737,11 +1919,11 @@
 
        SNAPSHOT-LIST.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:GET:/snapshots:\" | "
+               "SIG=$(echo -n ""$TS:GET:/snapshots:"" | "
                "openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X GET 'https://api.unsandbox.com/snapshots' "
+               "curl -s -X GET ""$UN_API""'/snapshots' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
                "' "
@@ -1754,12 +1936,12 @@
 
        SNAPSHOT-INFO.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:GET:/snapshots/"
+               "SIG=$(echo -n ""$TS:GET:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X GET 'https://api.unsandbox.com/snapshots/"
+               "curl -s -X GET ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -1774,13 +1956,13 @@
 
        SNAPSHOT-DELETE.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:DELETE:/snapshots/"
+               "SIG=$(echo -n ""$TS:DELETE:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP=$(curl -s -w '\n%{http_code}' -X DELETE "
-               "'https://api.unsandbox.com/snapshots/"
+               """$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -1788,18 +1970,18 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG); "
-               "HTTP_CODE=$(echo \"$RESP\" | tail -1); "
-               "BODY=$(echo \"$RESP\" | head -n -1); "
-               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
-               "OTP=$(echo \"$BODY\" | jq -r '.otp // empty'); "
-               "if [ -n \"$OTP\" ]; then "
+               "HTTP_CODE=$(echo ""$RESP"" | tail -1); "
+               "BODY=$(echo ""$RESP"" | head -n -1); "
+               "if [ ""$HTTP_CODE"" = ""428"" ]; then "
+               "OTP=$(echo ""$BODY"" | jq -r '.otp // empty'); "
+               "if [ -n ""$OTP"" ]; then "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n \"$TS2:DELETE:/snapshots/"
+               "SIG2=$(echo -n ""$TS2:DELETE:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               ":\" | openssl dgst -sha256 -hmac '"
+               ":"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X DELETE 'https://api.unsandbox.com/snapshots/"
+               "curl -s -X DELETE ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "' "
                "-H 'Authorization: Bearer "
@@ -1809,7 +1991,7 @@
                "-H 'X-Signature: '$SIG2 "
                "-H 'X-Sudo-OTP: '$OTP | jq .; "
                "echo -e '\x1b[32mSnapshot deleted\x1b[0m'; fi; "
-               "else echo \"$BODY\" | jq .; fi"
+               "else echo ""$BODY"" | jq .; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
@@ -1817,12 +1999,12 @@
 
        SNAPSHOT-LOCK.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               "SIG=$(echo -n ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/lock:\" | openssl dgst -sha256 -hmac '"
+               "/lock:"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/lock' "
                "-H 'Authorization: Bearer "
@@ -1839,13 +2021,13 @@
        SNAPSHOT-UNLOCK.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               "SIG=$(echo -n ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
                "RESP=$(curl -s -w '\n%{http_code}' -X POST "
-               "'https://api.unsandbox.com/snapshots/"
+               """$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/unlock' "
                "-H 'Content-Type: application/json' "
@@ -1854,19 +2036,19 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\"); "
-               "HTTP_CODE=$(echo \"$RESP\" | tail -1); "
-               "BODY_RESP=$(echo \"$RESP\" | head -n -1); "
-               "if [ \"$HTTP_CODE\" = \"428\" ]; then "
-               "OTP=$(echo \"$BODY_RESP\" | jq -r '.otp // empty'); "
-               "if [ -n \"$OTP\" ]; then "
+               "-d ""$BODY""); "
+               "HTTP_CODE=$(echo ""$RESP"" | tail -1); "
+               "BODY_RESP=$(echo ""$RESP"" | head -n -1); "
+               "if [ ""$HTTP_CODE"" = ""428"" ]; then "
+               "OTP=$(echo ""$BODY_RESP"" | jq -r '.otp // empty'); "
+               "if [ -n ""$OTP"" ]; then "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n \"$TS2:POST:/snapshots/"
+               "SIG2=$(echo -n ""$TS2:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/unlock' "
                "-H 'Content-Type: application/json' "
@@ -1876,9 +2058,9 @@
                "-H 'X-Timestamp: '$TS2 "
                "-H 'X-Signature: '$SIG2 "
                "-H 'X-Sudo-OTP: '$OTP "
-               "-d \"$BODY\" | jq .; "
+               "-d ""$BODY"" | jq .; "
                "echo -e '\x1b[32mSnapshot unlocked\x1b[0m'; fi; "
-               "else echo \"$BODY_RESP\" | jq .; fi"
+               "else echo ""$BODY_RESP"" | jq .; fi"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
@@ -1887,12 +2069,12 @@
        SNAPSHOT-RESTORE.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               "SIG=$(echo -n ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/restore:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/restore:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/restore' "
                "-H 'Content-Type: application/json' "
@@ -1901,7 +2083,7 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" | jq . && "
+               "-d ""$BODY"" | jq . && "
                "echo -e '\x1b[32mSnapshot restored\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -1909,7 +2091,7 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        PARSE-SNAPSHOT-CLONE-ARGS.
-      * Parse --type, --name, --ports, --shell
+      *> Parse --type, --name, --ports, --shell
            MOVE SPACES TO WS-TYPE.
            MOVE SPACES TO WS-NAME.
            MOVE SPACES TO WS-PORTS.
@@ -1936,41 +2118,41 @@
            END-IF.
 
        SNAPSHOT-CLONE.
-      * Build clone request
+      *> Build clone request
            STRING "TS=$(date +%s); "
-               "BODY='{\"type\":\"" FUNCTION TRIM(WS-TYPE) "\""
+               "BODY='{""type"":""" FUNCTION TRIM(WS-TYPE) """"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
 
            IF WS-NAME NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"name\":\"" FUNCTION TRIM(WS-NAME) "\""
+                   ",""name"":""" FUNCTION TRIM(WS-NAME) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            IF WS-PORTS NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"ports\":[" FUNCTION TRIM(WS-PORTS) "]"
+                   ",""ports"":[" FUNCTION TRIM(WS-PORTS) "]"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            IF WS-SHELL NOT = SPACES
                STRING FUNCTION TRIM(WS-CURL-CMD)
-                   ",\"shell\":\"" FUNCTION TRIM(WS-SHELL) "\""
+                   ",""shell"":""" FUNCTION TRIM(WS-SHELL) """"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n \"$TS:POST:/snapshots/"
+               "SIG=$(echo -n ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/clone:$BODY\" | openssl dgst -sha256 -hmac '"
+               "/clone:$BODY"" | openssl dgst -sha256 -hmac '"
                FUNCTION TRIM(WS-SECRET-KEY)
                "' | cut -d' ' -f2); "
-               "curl -s -X POST 'https://api.unsandbox.com/snapshots/"
+               "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/clone' "
                "-H 'Content-Type: application/json' "
@@ -1979,7 +2161,7 @@
                "' "
                "-H 'X-Timestamp: '$TS "
                "-H 'X-Signature: '$SIG "
-               "-d \"$BODY\" | jq . && "
+               "-d ""$BODY"" | jq . && "
                "echo -e '\x1b[32mSnapshot cloned\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.

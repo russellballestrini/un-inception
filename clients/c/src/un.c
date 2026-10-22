@@ -34,13 +34,57 @@
 #include <poll.h>
 #include <libwebsockets.h>
 #include <pwd.h>
+#include <fcntl.h>
 
 #ifdef UNSANDBOX_LIBRARY
 #include "un.h"
 #endif
 
-#define API_URL "https://api.unsandbox.com/execute"
-#define API_BASE "https://api.unsandbox.com"
+// API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
+static const char* api_base(void) {
+    static char *base = NULL;
+    if (!base) {
+        const char *env = getenv("UNSANDBOX_API_URL");
+        base = strdup((env && *env) ? env : "https://api.unsandbox.com");
+        if (!base) return "https://api.unsandbox.com";
+        size_t n = strlen(base);
+        while (n > 0 && base[n - 1] == '/') base[--n] = '\0';
+    }
+    return base;
+}
+
+static const char* api_execute_url(void) {
+    static char *url = NULL;
+    if (!url) {
+        const char *b = api_base();
+        url = malloc(strlen(b) + sizeof("/execute"));
+        if (!url) return "https://api.unsandbox.com/execute";
+        sprintf(url, "%s/execute", b);
+    }
+    return url;
+}
+
+// WebSocket endpoint derived from the API base URL: host, port, TLS on/off
+__attribute__((unused))
+static const char* api_ws_host(int *port, int *use_ssl) {
+    static char host[256];
+    const char *b = api_base();
+    int ssl = 1;
+    if (strncmp(b, "https://", 8) == 0) b += 8;
+    else if (strncmp(b, "http://", 7) == 0) { b += 7; ssl = 0; }
+    size_t n = strcspn(b, ":/");
+    if (n >= sizeof(host)) n = sizeof(host) - 1;
+    memcpy(host, b, n);
+    host[n] = '\0';
+    int p = ssl ? 443 : 80;
+    if (b[n] == ':') p = atoi(b + n + 1);
+    if (port) *port = p;
+    if (use_ssl) *use_ssl = ssl;
+    return host;
+}
+
+#define API_URL api_execute_url()
+#define API_BASE api_base()
 #define PORTAL_BASE "https://unsandbox.com"
 #define MAX_FILE_SIZE (100 * 1024 * 1024) // 100MB max single file
 #define MAX_INPUT_FILES 1000
@@ -743,12 +787,22 @@ char* escape_json_string(const char *str) {
 
 // Extract JSON string value (simple parser)
 char* extract_json_string(const char *json, const char *key) {
+    // Matches "key":"value" with optional whitespace around the colon
     char search[256];
-    snprintf(search, sizeof(search), "\"%s\":\"", key);
-    const char *start = strstr(json, search);
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *start = NULL;
+    for (const char *p = strstr(json, search); p; p = strstr(p + 1, search)) {
+        const char *q = p + strlen(search);
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        if (*q != ':') continue;
+        q++;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        if (*q != '"') continue;
+        start = q + 1;
+        break;
+    }
     if (!start) return NULL;
 
-    start += strlen(search);
     const char *end = start;
 
     while (*end && !(*end == '"' && *(end - 1) != '\\')) {
@@ -2466,8 +2520,9 @@ static int shell_command(const UnsandboxCredentials *creds, const char *network_
     struct lws_client_connect_info ccinfo;
     memset(&ccinfo, 0, sizeof(ccinfo));
     ccinfo.context = context;
-    ccinfo.address = "api.unsandbox.com";
-    ccinfo.port = 443;
+    int ws_port = 443, ws_ssl = 1;
+    ccinfo.address = api_ws_host(&ws_port, &ws_ssl);
+    ccinfo.port = ws_port;
 
     char path[512];
     shell_ws_path(path, sizeof(path), creds, session_id);
@@ -2477,7 +2532,7 @@ static int shell_command(const UnsandboxCredentials *creds, const char *network_
     ccinfo.origin = ccinfo.address;
     ccinfo.protocol = shell_protocols[0].name;
     // LCCSCF_IP_LOW_LATENCY sets TCP_NODELAY to disable Nagle's algorithm
-    ccinfo.ssl_connection = LCCSCF_USE_SSL | LCCSCF_IP_LOW_LATENCY;
+    ccinfo.ssl_connection = (ws_ssl ? LCCSCF_USE_SSL : 0) | LCCSCF_IP_LOW_LATENCY;
 
     shell_wsi = lws_client_connect_via_info(&ccinfo);
     if (!shell_wsi) {
@@ -2606,8 +2661,9 @@ static int reconnect_session(const UnsandboxCredentials *creds, const char *sess
     struct lws_client_connect_info ccinfo;
     memset(&ccinfo, 0, sizeof(ccinfo));
     ccinfo.context = context;
-    ccinfo.address = "api.unsandbox.com";
-    ccinfo.port = 443;
+    int ws_port = 443, ws_ssl = 1;
+    ccinfo.address = api_ws_host(&ws_port, &ws_ssl);
+    ccinfo.port = ws_port;
 
     char path[512];
     shell_ws_path(path, sizeof(path), creds, session_id);
@@ -2616,7 +2672,7 @@ static int reconnect_session(const UnsandboxCredentials *creds, const char *sess
     ccinfo.host = ccinfo.address;
     ccinfo.origin = ccinfo.address;
     ccinfo.protocol = shell_protocols[0].name;
-    ccinfo.ssl_connection = LCCSCF_USE_SSL | LCCSCF_IP_LOW_LATENCY;
+    ccinfo.ssl_connection = (ws_ssl ? LCCSCF_USE_SSL : 0) | LCCSCF_IP_LOW_LATENCY;
 
     shell_wsi = lws_client_connect_via_info(&ccinfo);
     if (!shell_wsi) {
@@ -6493,6 +6549,257 @@ static char* clone_image(const UnsandboxCredentials *creds, const char *image_id
 // ============================================================================
 
 // ============================================================================
+// Key Secret Rotation (un key --rotate) - see CLI_SPEC.md
+// ============================================================================
+
+// Path of the accounts.csv the credentials came from, or NULL (flags / env vars).
+// Mirrors get_credentials' tiers. Caller frees.
+static char* credentials_csv_path(const char *cli_pk, const char *cli_sk, int account_index) {
+    if (cli_pk && cli_sk && *cli_pk && *cli_sk) return NULL;
+    if (account_index < 0) {
+        const char *env_pk = getenv("UNSANDBOX_PUBLIC_KEY");
+        const char *env_sk = getenv("UNSANDBOX_SECRET_KEY");
+        if (env_pk && env_sk && *env_pk && *env_sk) return NULL;
+    }
+    return get_accounts_csv_path();
+}
+
+// Replace the secret (2nd field) on the line whose 1st field equals public_key.
+// Every other line, field, comment and the order stay as they are.
+// Temp file (0600) in the same directory, then rename. Returns 1 on success.
+static int rewrite_accounts_csv(const char *path, const char *public_key, const char *new_secret) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char *out = NULL;
+    size_t out_len = 0;
+    FILE *mem = open_memstream(&out, &out_len);
+    if (!mem) { fclose(f); return 0; }
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n;
+    int changed = 0;
+    size_t pk_len = strlen(public_key);
+    while ((n = getline(&line, &cap, f)) != -1) {
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!changed && *p != '#' && *p != '\n' && *p != '\r' && *p != '\0') {
+            char *c1 = strchr(line, ',');
+            if (c1) {
+                const char *fe = c1;
+                while (fe > p && (fe[-1] == ' ' || fe[-1] == '\t')) fe--;
+                if ((size_t)(fe - p) == pk_len && strncmp(p, public_key, pk_len) == 0) {
+                    char *rest = c1 + 1 + strcspn(c1 + 1, ",\r\n");
+                    fwrite(line, 1, (size_t)(c1 + 1 - line), mem);
+                    fputs(new_secret, mem);
+                    fputs(rest, mem);
+                    changed = 1;
+                    continue;
+                }
+            }
+        }
+        fwrite(line, 1, (size_t)n, mem);
+    }
+    free(line);
+    fclose(f);
+    fclose(mem);
+    if (!changed) { free(out); return 0; }
+
+    char *tmp = malloc(strlen(path) + 64);
+    if (!tmp) { free(out); return 0; }
+    sprintf(tmp, "%s.%d.tmp", path, (int)getpid());
+    int ok = 0;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd >= 0) {
+        ok = (write(fd, out, out_len) == (ssize_t)out_len);
+        fchmod(fd, 0600);
+        if (close(fd) != 0) ok = 0;
+        if (ok && rename(tmp, path) != 0) ok = 0;
+        if (!ok) unlink(tmp);
+    }
+    free(tmp);
+    free(out);
+    return ok;
+}
+
+// POST /keys/self/rotate-secret with body {} (fresh signature each call).
+// Returns HTTP status (0 on transport failure); *body receives the response (caller frees).
+static long rotate_secret_post(const UnsandboxCredentials *creds, const char *otp,
+                               const char *challenge, char **body) {
+    const char *path = "/keys/self/rotate-secret";
+    *body = NULL;
+    CURL *curl = curl_easy_init();
+    if (!curl) return 0;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+    if (response.data) response.data[0] = '\0';
+
+    char url[600];
+    snprintf(url, sizeof(url), "%s%s", API_BASE, path);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, "{}");
+    char otp_header[256], ch_header[512];
+    if (otp) {
+        snprintf(otp_header, sizeof(otp_header), "X-Sudo-OTP: %s", otp);
+        snprintf(ch_header, sizeof(ch_header), "X-Sudo-Challenge: %s", challenge ? challenge : "");
+        headers = curl_slist_append(headers, otp_header);
+        headers = curl_slist_append(headers, ch_header);
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{}");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 0;
+    }
+    *body = response.data;
+    return http_code;
+}
+
+// Map a non-200 rotation answer to the spec's message and exit code.
+static int rotate_secret_fail(long http_code, const char *body) {
+    if (http_code == 0) return 4;
+    char *error = body ? extract_json_string(body, "error") : NULL;
+    char *message = body ? extract_json_string(body, "message") : NULL;
+    int ret;
+    if (http_code == 403 && error && strcmp(error, "email_required") == 0) {
+        fprintf(stderr, "Error: this key has no email; add one or use POST /keys/recover\n");
+        ret = 3;
+    } else if (http_code == 401) {
+        fprintf(stderr, "Error: authentication failed\n");
+        ret = 3;
+    } else {
+        if (message && *message) fprintf(stderr, "Error: %s\n", message);
+        else if (error && *error) fprintf(stderr, "Error: %s\n", error);
+        else fprintf(stderr, "Error: HTTP %ld\n", http_code);
+        ret = 4;
+    }
+    free(error);
+    free(message);
+    return ret;
+}
+
+// un key --rotate [--otp CODE]
+__attribute__((unused))
+static int rotate_api_key_secret(const UnsandboxCredentials *creds, const char *otp_arg,
+                                 const char *cli_pk, const char *cli_sk, int account_index) {
+    const char *home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) home = pw->pw_dir;
+    }
+    if (!home) home = ".";
+
+    unsigned char digest[32];
+    sha256_raw((const unsigned char *)creds->public_key, strlen(creds->public_key), digest);
+    char dir[1024], challenge_file[1200];
+    snprintf(dir, sizeof(dir), "%s/.unsandbox", home);
+    int off = snprintf(challenge_file, sizeof(challenge_file), "%s/rotate-", dir);
+    for (int i = 0; i < 8; i++) off += snprintf(challenge_file + off, sizeof(challenge_file) - off, "%02x", digest[i]);
+    snprintf(challenge_file + off, sizeof(challenge_file) - off, ".challenge");
+
+    char *body = NULL;
+    long code;
+    char otp_buf[256];
+
+    if (otp_arg) {
+        char challenge[512] = {0};
+        FILE *cf = fopen(challenge_file, "r");
+        if (!cf || !fgets(challenge, sizeof(challenge), cf)) {
+            if (cf) fclose(cf);
+            fprintf(stderr, "Error: no rotation in progress; run: un key --rotate\n");
+            return 2;
+        }
+        fclose(cf);
+        challenge[strcspn(challenge, " \t\r\n")] = '\0';
+        snprintf(otp_buf, sizeof(otp_buf), "%s", otp_arg);
+        otp_buf[strcspn(otp_buf, " \t\r\n")] = '\0';
+        code = rotate_secret_post(creds, otp_buf, challenge, &body);
+        unlink(challenge_file);
+    } else {
+        code = rotate_secret_post(creds, NULL, NULL, &body);
+        if (code == 428) {
+            char *challenge = body ? extract_json_string(body, "challenge_id") : NULL;
+            free(body);
+            body = NULL;
+            if (!challenge) challenge = strdup("");
+            if (isatty(STDIN_FILENO)) {
+                fprintf(stderr, "One-time code emailed to the key owner.\n");
+                fprintf(stderr, "Code: ");
+                fflush(stderr);
+                if (!fgets(otp_buf, sizeof(otp_buf), stdin)) otp_buf[0] = '\0';
+                otp_buf[strcspn(otp_buf, " \t\r\n")] = '\0';
+                if (!otp_buf[0]) {
+                    fprintf(stderr, "Error: cancelled\n");
+                    free(challenge);
+                    return 1;
+                }
+                code = rotate_secret_post(creds, otp_buf, challenge, &body);
+                free(challenge);
+            } else {
+                mkdir(dir, 0700);
+                int fd = open(challenge_file, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+                int ok = 0;
+                if (fd >= 0) {
+                    size_t len = strlen(challenge);
+                    ok = (write(fd, challenge, len) == (ssize_t)len);
+                    fchmod(fd, 0600);
+                    if (close(fd) != 0) ok = 0;
+                }
+                free(challenge);
+                if (!ok) {
+                    fprintf(stderr, "Error: cannot save challenge to %s\n", challenge_file);
+                    return 1;
+                }
+                printf("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n");
+                return 0;
+            }
+        }
+    }
+
+    if (code != 200) {
+        int ret = rotate_secret_fail(code, body);
+        free(body);
+        return ret;
+    }
+    char *new_secret = body ? extract_json_string(body, "secret") : NULL;
+    free(body);
+    if (!new_secret || !*new_secret) {
+        fprintf(stderr, "Error: API returned no secret\n");
+        free(new_secret);
+        return 4;
+    }
+
+    char *csv_path = credentials_csv_path(cli_pk, cli_sk, account_index);
+    if (csv_path && rewrite_accounts_csv(csv_path, creds->public_key, new_secret)) {
+        printf("Secret rotated. Updated %s (public key %s).\n", csv_path, creds->public_key);
+    } else {
+        printf("New secret (shown once, store it now): %s\n", new_secret);
+        printf("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n");
+    }
+    free(csv_path);
+    free(new_secret);
+    return 0;
+}
+
+// ============================================================================
 // Key Validation Support
 // ============================================================================
 
@@ -6881,6 +7188,8 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", prog);
     fprintf(stderr, "  %s key                             # check API key validity\n", prog);
     fprintf(stderr, "  %s key --extend                    # open portal to extend key\n", prog);
+    fprintf(stderr, "  %s key --rotate                    # rotate secret (sudo OTP), update accounts.csv\n", prog);
+    fprintf(stderr, "  %s key --rotate --otp CODE         # finish a rotation started without a terminal\n", prog);
     fprintf(stderr, "\nAuthentication:\n");
     fprintf(stderr, "  Credentials are loaded in order of priority:\n");
     fprintf(stderr, "  1. -p and -k flags (public and secret key)\n");
@@ -6913,7 +7222,9 @@ int unsandbox_health_check(void) {
     CURL *curl = curl_easy_init();
     if (!curl) return -1;
 
-    curl_easy_setopt(curl, CURLOPT_URL, API_BASE "/health");
+    char health_url[600];
+    snprintf(health_url, sizeof(health_url), "%s/health", API_BASE);
+    curl_easy_setopt(curl, CURLOPT_URL, health_url);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
 
@@ -9628,6 +9939,8 @@ int main(int argc, char *argv[]) {
     // Check for key command first
     if (argc >= 2 && strcmp(argv[1], "key") == 0) {
         int do_extend = 0;
+        int do_rotate = 0;
+        const char *rotate_otp = NULL;
 
         // Parse options
         for (int i = 2; i < argc; i++) {
@@ -9642,6 +9955,11 @@ int main(int argc, char *argv[]) {
                 cli_account_index = atoi(argv[i]);
             } else if (strcmp(argv[i], "--extend") == 0) {
                 do_extend = 1;
+            } else if (strcmp(argv[i], "--rotate") == 0) {
+                do_rotate = 1;
+            } else if (strcmp(argv[i], "--otp") == 0 && i + 1 < argc) {
+                i++;
+                rotate_otp = argv[i];
             }
         }
 
@@ -9684,6 +10002,15 @@ int main(int argc, char *argv[]) {
                 free_credentials(creds);
                 return 0;
             }
+        }
+
+        // --rotate [--otp CODE]: rotate this key's secret (sudo OTP)
+        if (do_rotate) {
+            curl_global_init(CURL_GLOBAL_DEFAULT);
+            int ret = rotate_api_key_secret(creds, rotate_otp, cli_public_key, cli_secret_key, cli_account_index);
+            curl_global_cleanup();
+            free_credentials(creds);
+            return ret;
         }
 
         // Default: validate key using HMAC authentication

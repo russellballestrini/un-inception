@@ -60,13 +60,15 @@
 unit module un;
 
 use JSON::Fast;
-use Digest::SHA;
+use Digest::SHA2;
+use Digest::HMAC;
 
 # ============================================================================
 # Configuration
 # ============================================================================
 
-constant $API_BASE is export = "https://api.unsandbox.com";
+# API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
+our $API_BASE is export = (%*ENV<UNSANDBOX_API_URL> || "https://api.unsandbox.com").subst(/'/'+$/, '');
 constant $PORTAL_BASE is export = "https://unsandbox.com";
 constant $DEFAULT_TIMEOUT is export = 300;
 constant $DEFAULT_TTL is export = 60;
@@ -82,7 +84,7 @@ constant $YELLOW = "\e[33m";
 constant $RESET = "\e[0m";
 
 # Extension to language mapping
-my %EXT_MAP is export = (
+our %EXT_MAP is export = (
     py => 'python', js => 'javascript', ts => 'typescript',
     rb => 'ruby', php => 'php', pl => 'perl', lua => 'lua',
     sh => 'bash', go => 'go', rs => 'rust', c => 'c',
@@ -136,7 +138,7 @@ class TimeoutError is UnsandboxError is export { }
 #| Signature = HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
 sub sign-request(Str $secret-key, Int $timestamp, Str $method, Str $path, Str $body = "") returns Str is export {
     my $message = "{$timestamp}:{$method}:{$path}:{$body}";
-    return hmac-hex($message, $secret-key, &sha256);
+    return hmac-hex($secret-key, $message, &sha256);
 }
 
 #| Get API credentials in priority order:
@@ -159,7 +161,7 @@ sub get-credentials(Str :$public-key, Str :$secret-key, Int :$account-index = -1
                     my $trimmed = $line.trim;
                     next if !$trimmed || $trimmed.starts-with('#');
                     if $trimmed.contains(',') {
-                        my ($pk, $sk) = $trimmed.split(',', 2);
+                        my ($pk, $sk) = $trimmed.split(',')[0, 1];
                         if $pk.starts-with('unsb-pk-') && $sk.starts-with('unsb-sk-') {
                             @valid.push(($pk, $sk));
                         }
@@ -252,7 +254,7 @@ sub api-request(
 
     @args.append: $url;
 
-    my $proc = run |@args, :out, :err;
+    my $proc = CORE::<&run>(|@args, :out, :err);
     my $resp-body = $proc.out.slurp;
     my $err = $proc.err.slurp;
 
@@ -322,7 +324,7 @@ sub api-request-with-status(
 
     @args.append: $url;
 
-    my $proc = run |@args, :out, :err;
+    my $proc = CORE::<&run>(|@args, :out, :err);
     my $output = $proc.out.slurp;
     my $err = $proc.err.slurp;
 
@@ -348,8 +350,8 @@ sub handle-sudo-challenge(
     Str $response-body,
     Str $endpoint,
     Str $method,
-    Str :$body-text,
     %data?,
+    Str :$body-text,
     Str :$public-key,
     Str :$secret-key,
     Int :$timeout = $DEFAULT_TIMEOUT
@@ -910,7 +912,7 @@ sub service-env-set(Str $service-id, Str $content, Str :$public-key, Str :$secre
     @args.append: '-H', "X-Signature: $signature";
     @args.append: '-d', $content;
 
-    my $proc = run |@args, :out, :err;
+    my $proc = CORE::<&run>(|@args, :out, :err);
     return $proc.exitcode == 0;
 }
 
@@ -1164,7 +1166,7 @@ sub logs-stream(
     @args.append: '-H', "X-Signature: $signature";
     @args.append: '-H', 'Accept: text/event-stream';
 
-    my $proc = run |@args, :out;
+    my $proc = CORE::<&run>(|@args, :out);
     for $proc.out.lines -> $line {
         if $line.starts-with('data: ') {
             my $data = $line.substr(6);
@@ -1192,7 +1194,7 @@ sub validate-keys(Str :$public-key, Str :$secret-key) returns Hash is export {
     @args.append: '-H', "X-Timestamp: $timestamp";
     @args.append: '-H', "X-Signature: $signature";
 
-    my $proc = run |@args, :out;
+    my $proc = CORE::<&run>(|@args, :out);
     my $resp = $proc.out.slurp;
     return from-json($resp);
 }
@@ -1384,7 +1386,7 @@ class Client is export {
 # ============================================================================
 
 sub uri-encode(Str $s) {
-    return $s.subst(/<-[A-Za-z0-9\-_.~]>/, { .encode.list.map({ '%' ~ .fmt('%02X') }).join }, :g);
+    return $s.subst(/<-[A..Za..z0..9\-_.~]>/, { .encode.list.map({ '%' ~ .fmt('%02X') }).join }, :g);
 }
 
 sub cmd-execute(@args, Int :$account-index = -1) {
@@ -1427,7 +1429,7 @@ sub cmd-execute(@args, Int :$account-index = -1) {
             }
             default {
                 if @args[$i].starts-with('-') {
-                    note "$RED\Unknown option: {@args[$i]}$RESET";
+                    note "{$RED}Unknown option: {@args[$i]}$RESET";
                     exit 1;
                 } else {
                     $source-file = @args[$i];
@@ -1503,7 +1505,7 @@ sub cmd-execute(@args, Int :$account-index = -1) {
             my $content = %artifact<content_base64>.decode('base64');
             my $path = "$output-dir/$filename";
             $path.IO.spurt($content, :bin);
-            run 'chmod', '755', $path;
+            CORE::<&run>('chmod', '755', $path);
             note "{$GREEN}Saved: $path{$RESET}";
         }
     }
@@ -1858,7 +1860,146 @@ sub cmd-languages(@args, Int :$account-index = -1) {
     }
 }
 
+#| The accounts.csv the credentials came from, or Nil (environment variables).
+#| Mirrors get-credentials tiers.
+sub credentials-csv-path(Int $account-index) {
+    my $idx = $account-index;
+    if $idx < 0 {
+        return Nil if (%*ENV<UNSANDBOX_PUBLIC_KEY> // '') && (%*ENV<UNSANDBOX_SECRET_KEY> // '');
+        $idx = (%*ENV<UNSANDBOX_ACCOUNT> // '0').Int;
+    }
+    for ($*HOME.add('.unsandbox').add('accounts.csv'), 'accounts.csv'.IO) -> $path {
+        next unless $path.e;
+        my @valid = $path.slurp.split("\n").map(*.trim).grep({ $_ && !.starts-with('#') && .contains(',') })
+            .map({ .split(',')[0, 1] }).grep({ .[0].starts-with('unsb-pk-') && .[1].starts-with('unsb-sk-') });
+        return $path if $idx < @valid.elems;
+    }
+    return Nil;
+}
+
+#| Replace the secret on the line whose first field equals $public-key. Every other
+#| line, field, comment and the order stay as they are. Temp file (0600) + rename.
+sub rewrite-accounts-csv(IO::Path $path, Str $public-key, Str $new-secret) returns Bool {
+    my @lines = $path.slurp.split("\n");
+    my $idx = @lines.first({
+        my $t = .trim;
+        my @f = .split(',');
+        $t && !$t.starts-with('#') && @f.elems >= 2 && @f[0].trim eq $public-key
+    }, :k);
+    return False without $idx;
+    my @fields = @lines[$idx].split(',');
+    @fields[1] = $new-secret;
+    @lines[$idx] = @fields.join(',');
+    my $tmp = $path.absolute.IO.parent.add(".{$path.basename}.{$*PID}.tmp");
+    $tmp.spurt('');
+    $tmp.chmod(0o600);
+    $tmp.spurt(@lines.join("\n"));
+    $tmp.rename($path);
+    return True;
+}
+
+#| POST /keys/self/rotate-secret, body {}; headers go through a 0600 file, never argv.
+sub rotate-post(Str $public-key, Str $secret-key, $otp?, $challenge?) {
+    my $path = '/keys/self/rotate-secret';
+    my $body = '{}';
+    my $timestamp = now.Int;
+    my $signature = sign-request($secret-key, $timestamp, 'POST', $path, $body);
+    my @headers = "Authorization: Bearer $public-key", "X-Timestamp: $timestamp",
+                  "X-Signature: $signature", "Content-Type: application/json";
+    @headers.append: "X-Sudo-OTP: $otp", "X-Sudo-Challenge: {$challenge // ''}" if $otp.defined;
+    my $hdr = $*TMPDIR.add("un_raku_rot_{$*PID}_{(^1_000_000_000).pick}.hdr");
+    $hdr.spurt('', :createonly);
+    $hdr.chmod(0o600);
+    $hdr.spurt(@headers.join("\n") ~ "\n");
+    # CORE::<&run>: this module exports its own run() (code execution).
+    my $proc = CORE::<&run>('curl', '-s', '-X', 'POST', '-w', "\n%\{http_code\}", '-H', '@' ~ $hdr,
+                   '--data-raw', $body, $API_BASE ~ $path, :out, :err);
+    my $out = $proc.out.slurp(:close);
+    $proc.err.slurp(:close);
+    $hdr.unlink;
+    my @parts = $out.split("\n");
+    my $code = (@parts.pop // '0').trim.Int;
+    my %data = try { my $d = from-json(@parts.join("\n")); $d ~~ Associative ?? $d.Hash !! {} } // {};
+    return ($code, %data);
+}
+
+#| un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+sub cmd-key-rotate(@args, Int :$account-index = -1) {
+    my ($public-key, $secret-key) = get-credentials(:$account-index);
+    my $dir = $*HOME.add('.unsandbox');
+    my $h = sha256($public-key.encode);
+    my $hex = $h ~~ Str ?? $h.lc !! $h.list.fmt('%02x', '');
+    my $challenge-file = $dir.add("rotate-{$hex.substr(0, 16)}.challenge");
+
+    my $otp-arg;
+    for ^@args.elems -> $i {
+        $otp-arg = @args[$i + 1].trim if @args[$i] eq '--otp' && $i + 1 < @args.elems;
+    }
+
+    my ($code, %data);
+    if $otp-arg.defined {
+        unless $challenge-file.e {
+            note "Error: no rotation in progress; run: un key --rotate";
+            exit 2;
+        }
+        ($code, %data) = rotate-post($public-key, $secret-key, $otp-arg, $challenge-file.slurp.trim);
+        $challenge-file.unlink;
+    } else {
+        ($code, %data) = rotate-post($public-key, $secret-key);
+        if $code == 428 {
+            my $challenge = ~(%data<challenge_id> // '');
+            if $*IN.t {
+                note "One-time code emailed to the key owner.";
+                $*ERR.print: "Code: ";
+                $*ERR.flush;
+                my $otp = ($*IN.get // '').trim;
+                unless $otp {
+                    note "Error: cancelled";
+                    exit 1;
+                }
+                ($code, %data) = rotate-post($public-key, $secret-key, $otp, $challenge);
+            } else {
+                $dir.mkdir(0o700);
+                $dir.chmod(0o700);
+                $challenge-file.spurt('');
+                $challenge-file.chmod(0o600);
+                $challenge-file.spurt($challenge);
+                say "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE";
+                exit 0;
+            }
+        }
+    }
+
+    if $code != 200 {
+        if $code == 403 && (%data<error> // '') eq 'email_required' {
+            note "Error: this key has no email; add one or use POST /keys/recover";
+            exit 3;
+        }
+        if $code == 401 {
+            note "Error: authentication failed";
+            exit 3;
+        }
+        note "Error: {%data<message> // %data<error> // "HTTP $code"}";
+        exit 4;
+    }
+
+    my $new-secret = ~(%data<secret> // '');
+    unless $new-secret {
+        note "Error: API returned no secret";
+        exit 4;
+    }
+
+    my $csv = credentials-csv-path($account-index);
+    if $csv.defined && rewrite-accounts-csv($csv, $public-key, $new-secret) {
+        say "Secret rotated. Updated {$csv} (public key {$public-key}).";
+    } else {
+        say "New secret (shown once, store it now): $new-secret";
+        say "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.";
+    }
+}
+
 sub cmd-key(@args, Int :$account-index = -1) {
+    return cmd-key-rotate(@args, :$account-index) if '--rotate' (elem) @args;
     my ($public-key, $secret-key) = get-credentials(:$account-index);
     my $extend = False;
 
@@ -1877,11 +2018,11 @@ sub cmd-key(@args, Int :$account-index = -1) {
 
     my $timestamp = now.Int;
     my $sig-input = "{$timestamp}:POST:/keys/validate:";
-    my $signature = hmac-hex($sig-input, $secret-key, &sha256);
+    my $signature = hmac-hex($secret-key, $sig-input, &sha256);
     @curl-args.append: '-H', "X-Timestamp: $timestamp";
     @curl-args.append: '-H', "X-Signature: $signature";
 
-    my $proc = run |@curl-args, :out, :err;
+    my $proc = CORE::<&run>(|@curl-args, :out, :err);
     my $body = $proc.out.slurp;
 
     my %result = from-json($body);
@@ -1890,7 +2031,7 @@ sub cmd-key(@args, Int :$account-index = -1) {
         my $pk = %result<public_key>;
         if $pk {
             say "{$BLUE}Opening browser to extend key...{$RESET}";
-            run 'xdg-open', "$PORTAL_BASE/keys/extend?pk=$pk";
+            CORE::<&run>('xdg-open', "$PORTAL_BASE/keys/extend?pk=$pk");
             return;
         } else {
             note "{$RED}Error: Could not retrieve public key{$RESET}";
@@ -2330,3 +2471,7 @@ sub MAIN(*@args is copy) is export {
         }
     }
 }
+
+# Run as a script (raku un.raku ...): Raku does not call a MAIN that lives
+# inside a `unit module`, so dispatch here when this file is the program.
+MAIN(|@*ARGS) if $*PROGRAM.resolve.Str eq $?FILE.IO.resolve.Str;

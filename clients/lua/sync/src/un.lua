@@ -24,7 +24,9 @@ local ltn12 = require("ltn12")
 local mime = require("mime")
 
 local Un = {}
-Un.API_BASE = "https://api.unsandbox.com"
+local _api_url = os.getenv("UNSANDBOX_API_URL")
+if not _api_url or _api_url == "" then _api_url = "https://api.unsandbox.com" end
+Un.API_BASE = (_api_url:gsub("/+$", ""))
 Un.PORTAL_BASE = "https://unsandbox.com"
 Un.VERSION = "4.3.4"
 Un.LAST_ERROR = ""
@@ -76,14 +78,137 @@ function Un.detect_language(filename)
     return ext and EXT_MAP[ext:lower()] or nil
 end
 
+-- ============================================================================
+-- SHA-256 / HMAC-SHA256, computed in-process (Lua 5.1 - 5.4)
+-- ============================================================================
+
+local MOD32 = 4294967296
+local band, bxor, rshift
+do
+    -- Lua 5.3+: native integer bit operators (compiled at runtime so 5.1 still parses this file)
+    local native = (loadstring or load)([[
+        return function(a, b) return a & b end,
+               function(a, b) return a ~ b end,
+               function(a, n) return (a & 0xFFFFFFFF) >> n end
+    ]])
+    if native then
+        band, bxor, rshift = native()
+    else
+        -- Lua 5.1 / 5.2 / LuaJIT: plain arithmetic, bit by bit
+        band = function(a, b)
+            local r, p = 0, 1
+            for _ = 1, 32 do
+                local x, y = a % 2, b % 2
+                if x == 1 and y == 1 then r = r + p end
+                a, b, p = (a - x) / 2, (b - y) / 2, p * 2
+            end
+            return r
+        end
+        bxor = function(a, b)
+            local r, p = 0, 1
+            for _ = 1, 32 do
+                local x, y = a % 2, b % 2
+                if x ~= y then r = r + p end
+                a, b, p = (a - x) / 2, (b - y) / 2, p * 2
+            end
+            return r
+        end
+        rshift = function(a, n)
+            return math.floor((a % MOD32) / 2 ^ n)
+        end
+    end
+end
+
+local function rrot(x, n)
+    -- the two halves share no bits, so + acts as |
+    return rshift(x, n) + (x * 2 ^ (32 - n)) % MOD32
+end
+
+local SHA256_K = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+}
+
+-- Raw 32-byte SHA-256 digest of msg
+local function sha256(msg)
+    local H = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }
+    local len = #msg
+    local bits, tail = len * 8, {}
+    for i = 8, 1, -1 do
+        tail[i] = string.char(bits % 256)
+        bits = math.floor(bits / 256)
+    end
+    msg = msg .. "\128" .. string.rep("\0", (55 - len) % 64) .. table.concat(tail)
+
+    for chunk = 1, #msg, 64 do
+        local w = {}
+        for i = 0, 15 do
+            local b1, b2, b3, b4 = msg:byte(chunk + i * 4, chunk + i * 4 + 3)
+            w[i] = ((b1 * 256 + b2) * 256 + b3) * 256 + b4
+        end
+        for i = 16, 63 do
+            local x, y = w[i - 15], w[i - 2]
+            local s0 = bxor(bxor(rrot(x, 7), rrot(x, 18)), rshift(x, 3))
+            local s1 = bxor(bxor(rrot(y, 17), rrot(y, 19)), rshift(y, 10))
+            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) % MOD32
+        end
+        local a, b, c, d, e, f, g, h = H[1], H[2], H[3], H[4], H[5], H[6], H[7], H[8]
+        for i = 0, 63 do
+            local S1 = bxor(bxor(rrot(e, 6), rrot(e, 11)), rrot(e, 25))
+            local ch = bxor(band(e, f), band(MOD32 - 1 - e, g))
+            local t1 = (h + S1 + ch + SHA256_K[i + 1] + w[i]) % MOD32
+            local S0 = bxor(bxor(rrot(a, 2), rrot(a, 13)), rrot(a, 22))
+            local maj = bxor(bxor(band(a, b), band(a, c)), band(b, c))
+            local t2 = (S0 + maj) % MOD32
+            h, g, f, e, d, c, b, a = g, f, e, (d + t1) % MOD32, c, b, a, (t1 + t2) % MOD32
+        end
+        H[1], H[2], H[3], H[4] = (H[1] + a) % MOD32, (H[2] + b) % MOD32, (H[3] + c) % MOD32, (H[4] + d) % MOD32
+        H[5], H[6], H[7], H[8] = (H[5] + e) % MOD32, (H[6] + f) % MOD32, (H[7] + g) % MOD32, (H[8] + h) % MOD32
+    end
+
+    local out = {}
+    for i = 1, 8 do
+        local v = H[i]
+        out[i] = string.char(math.floor(v / 16777216) % 256, math.floor(v / 65536) % 256,
+                             math.floor(v / 256) % 256, v % 256)
+    end
+    return table.concat(out)
+end
+
+local function to_hex(raw)
+    return (raw:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+end
+
+function Un.sha256_hex(message)
+    return to_hex(sha256(message))
+end
+
 function Un.hmac_sign(secret, message)
     if not secret or not message then return nil end
-    -- Use openssl for HMAC-SHA256
-    local cmd = "echo -n '" .. message:gsub("'", "'\\''") .. "' | openssl dgst -sha256 -hmac '" .. secret:gsub("'", "'\\''") .. "' | sed 's/^.* //'"
-    local handle = io.popen(cmd)
-    local result = handle:read("*a")
-    handle:close()
-    return result and result:gsub("%s+", "") or nil
+    local key = secret
+    if #key > 64 then key = sha256(key) end
+    key = key .. string.rep("\0", 64 - #key)
+    local ipad, opad = {}, {}
+    for i = 1, 64 do
+        local k = key:byte(i)
+        ipad[i] = string.char(bxor(k, 0x36))
+        opad[i] = string.char(bxor(k, 0x5c))
+    end
+    return to_hex(sha256(table.concat(opad) .. sha256(table.concat(ipad) .. message)))
+end
+
+-- Plain http:// for a local / staging UNSANDBOX_API_URL, https otherwise
+local function transport_request(req)
+    if req.url:match("^http://") then
+        return http.request(req)
+    end
+    return https.request(req)
 end
 
 -- ============================================================================
@@ -99,9 +224,10 @@ function Un.load_accounts_csv(path)
     for line in file:lines() do
         line = line:match("^%s*(.-)%s*$")
         if line ~= "" and not line:match("^#") then
-            local pk, sk = line:match("([^,]+),(.+)")
+            -- public_key,secret_key[,label...]
+            local pk, sk = line:match("^([^,]+),([^,]+)")
             if pk and sk then
-                table.insert(accounts, {pk, sk})
+                table.insert(accounts, {pk:match("^%s*(.-)%s*$"), sk:match("^%s*(.-)%s*$")})
             end
         end
     end
@@ -140,13 +266,14 @@ function Un.get_credentials(opts)
         return os.getenv("UNSANDBOX_API_KEY"), ""
     end
 
-    -- Tier 4: Home directory
+    -- Tier 4: Home directory (row UNSANDBOX_ACCOUNT, default 0)
+    local row = (tonumber(os.getenv("UNSANDBOX_ACCOUNT") or "") or 0) + 1
     local accounts = Un.load_accounts_csv()
-    if #accounts > 0 then return accounts[1][1], accounts[1][2] end
+    if #accounts >= row then return accounts[row][1], accounts[row][2] end
 
     -- Tier 5: Local directory
     accounts = Un.load_accounts_csv("./accounts.csv")
-    if #accounts > 0 then return accounts[1][1], accounts[1][2] end
+    if #accounts >= row then return accounts[row][1], accounts[row][2] end
 
     Un.set_error("No credentials found")
     return nil, nil
@@ -199,7 +326,7 @@ function Un.api_request(method, endpoint, body, opts, extra_headers)
     end
 
     local resp_body = {}
-    local resp, status = https.request({
+    local resp, status = transport_request({
         url = url,
         method = method,
         headers = headers,
@@ -243,7 +370,7 @@ function Un.api_request_with_sudo(method, endpoint, body, opts)
     end
 
     local resp_body = {}
-    local resp, status = https.request({
+    local resp, status = transport_request({
         url = Un.API_BASE .. endpoint,
         method = method,
         headers = headers,
@@ -698,7 +825,7 @@ function Un.validate_keys(opts)
     end
 
     local resp_body = {}
-    local resp, status = https.request({
+    local resp, status = transport_request({
         url = Un.PORTAL_BASE .. "/keys/validate",
         method = "POST",
         headers = headers,
@@ -715,7 +842,7 @@ end
 
 function Un.health_check(opts)
     local resp_body = {}
-    local resp, status = https.request({
+    local resp, status = transport_request({
         url = Un.API_BASE .. "/health",
         method = "GET",
         sink = ltn12.sink.table(resp_body)
@@ -753,6 +880,183 @@ local function run_file(filename)
     end
 end
 
+local function shell_quote(s)
+    return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
+-- Write content to path with mode 0600 from creation onward
+local function write_private_file(path, content)
+    os.execute("umask 077 && : > " .. shell_quote(path))
+    local f = io.open(path, "w")
+    if not f then return false end
+    f:write(content)
+    f:close()
+    os.execute("chmod 600 " .. shell_quote(path))
+    return true
+end
+
+local function stdin_is_tty()
+    local r = os.execute("test -t 0")
+    return r == true or r == 0
+end
+
+-- The accounts.csv the CLI's credentials came from, or nil (flags / env vars).
+-- Mirrors Un.get_credentials' tiers.
+local function credentials_csv_path()
+    local home_csv = os.getenv("HOME") .. "/.unsandbox/accounts.csv"
+    local row
+    if Un.ACCOUNT_INDEX >= 0 then
+        row = Un.ACCOUNT_INDEX + 1
+    else
+        if os.getenv("UNSANDBOX_PUBLIC_KEY") and os.getenv("UNSANDBOX_SECRET_KEY") then return nil end
+        if os.getenv("UNSANDBOX_API_KEY") then return nil end
+        row = (tonumber(os.getenv("UNSANDBOX_ACCOUNT") or "") or 0) + 1
+    end
+    for _, path in ipairs({ home_csv, "./accounts.csv" }) do
+        if #Un.load_accounts_csv(path) >= row then return path end
+    end
+    return nil
+end
+
+-- Replace the secret on the line whose first field is public_key. Every other
+-- line, field, comment and the order stay as they are. Temp file (0600) + rename.
+local function rewrite_accounts_csv(path, public_key, new_secret)
+    local f = io.open(path, "r")
+    if not f then return false end
+    local content = f:read("*a")
+    f:close()
+
+    local lines, changed = {}, false
+    for line in (content .. "\n"):gmatch("(.-)\n") do
+        local trimmed = line:match("^%s*(.-)%s*$")
+        if not changed and trimmed ~= "" and not trimmed:match("^#") then
+            local fields = {}
+            for field in (line .. ","):gmatch("(.-),") do table.insert(fields, field) end
+            if #fields >= 2 and fields[1]:match("^%s*(.-)%s*$") == public_key then
+                fields[2] = new_secret
+                line = table.concat(fields, ",")
+                changed = true
+            end
+        end
+        table.insert(lines, line)
+    end
+    if not changed then return false end
+
+    local dir, base = path:match("^(.*)/([^/]+)$")
+    if not dir then dir, base = ".", path end
+    local tmp = dir .. "/." .. base .. "." .. tostring(os.time()) .. tostring(math.random(100000, 999999)) .. ".tmp"
+    if not write_private_file(tmp, table.concat(lines, "\n")) then
+        os.remove(tmp)
+        return false
+    end
+    local ok = os.rename(tmp, path)
+    if not ok then os.remove(tmp) end
+    return ok and true or false
+end
+
+-- POST /keys/self/rotate-secret with body {}, optionally with sudo headers.
+-- Returns status code, decoded body table.
+local function rotate_post(pk, sk, otp, challenge)
+    local endpoint = "/keys/self/rotate-secret"
+    local body = "{}"
+    local timestamp = tostring(os.time())
+    local headers = {
+        ["Authorization"] = "Bearer " .. pk,
+        ["X-Timestamp"] = timestamp,
+        ["X-Signature"] = Un.hmac_sign(sk, timestamp .. ":POST:" .. endpoint .. ":" .. body),
+        ["Content-Type"] = "application/json",
+        ["Content-Length"] = tostring(#body),
+    }
+    if otp then
+        headers["X-Sudo-OTP"] = otp
+        headers["X-Sudo-Challenge"] = challenge or ""
+    end
+    local resp_body = {}
+    local _, status = transport_request({
+        url = Un.API_BASE .. endpoint,
+        method = "POST",
+        headers = headers,
+        source = ltn12.source.string(body),
+        sink = ltn12.sink.table(resp_body)
+    })
+    local data = {}
+    local ok, decoded = pcall(json.decode, table.concat(resp_body))
+    if ok and type(decoded) == "table" then data = decoded end
+    return tonumber(status) or 0, data
+end
+
+-- key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+local function cli_key_rotate(otp_arg)
+    local pk, sk = Un.get_credentials()
+    if not pk or not sk or sk == "" then
+        io.stderr:write("Error: " .. Un.last_error() .. "\n")
+        os.exit(3)
+    end
+    local dir = os.getenv("HOME") .. "/.unsandbox"
+    local challenge_file = dir .. "/rotate-" .. Un.sha256_hex(pk):sub(1, 16) .. ".challenge"
+    local status, data
+
+    if otp_arg then
+        local f = io.open(challenge_file, "r")
+        if not f then
+            io.stderr:write("Error: no rotation in progress; run: un key --rotate\n")
+            os.exit(2)
+        end
+        local challenge = (f:read("*a") or ""):match("^%s*(.-)%s*$")
+        f:close()
+        status, data = rotate_post(pk, sk, otp_arg:match("^%s*(.-)%s*$"), challenge)
+        os.remove(challenge_file)
+    else
+        status, data = rotate_post(pk, sk)
+        if status == 428 then
+            local challenge = tostring(data.challenge_id or "")
+            if stdin_is_tty() then
+                io.stderr:write("One-time code emailed to the key owner.\n")
+                io.stderr:write("Code: ")
+                io.stderr:flush()
+                local otp = (io.read("*line") or ""):match("^%s*(.-)%s*$")
+                if otp == "" then
+                    io.stderr:write("Error: cancelled\n")
+                    os.exit(1)
+                end
+                status, data = rotate_post(pk, sk, otp, challenge)
+            else
+                os.execute("mkdir -p -m 700 " .. shell_quote(dir))
+                write_private_file(challenge_file, challenge)
+                print("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+                return
+            end
+        end
+    end
+
+    if status ~= 200 then
+        if status == 403 and data.error == "email_required" then
+            io.stderr:write("Error: this key has no email; add one or use POST /keys/recover\n")
+            os.exit(3)
+        end
+        if status == 401 then
+            io.stderr:write("Error: authentication failed\n")
+            os.exit(3)
+        end
+        io.stderr:write("Error: " .. tostring(data.message or data.error or ("HTTP " .. tostring(status))) .. "\n")
+        os.exit(4)
+    end
+
+    local new_secret = data.secret
+    if type(new_secret) ~= "string" or new_secret == "" then
+        io.stderr:write("Error: API returned no secret\n")
+        os.exit(4)
+    end
+
+    local csv_path = credentials_csv_path()
+    if csv_path and rewrite_accounts_csv(csv_path, pk, new_secret) then
+        print("Secret rotated. Updated " .. csv_path .. " (public key " .. pk .. ").")
+    else
+        print("New secret (shown once, store it now): " .. new_secret)
+        print("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
+    end
+end
+
 -- CLI entry point
 if arg and arg[0] then
     local args = arg
@@ -782,6 +1086,7 @@ if arg and arg[0] then
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
         print("       lua un.lua key [--extend]")
+        print("       lua un.lua key --rotate [--otp CODE]")
         os.exit(1)
     end
 
@@ -798,6 +1103,21 @@ if arg and arg[0] then
             end
         end
     elseif cmd == "key" then
+        local rotate, otp = false, nil
+        local k = 2
+        while k <= #args do
+            if args[k] == "--rotate" then
+                rotate = true
+            elseif args[k] == "--otp" then
+                k = k + 1
+                otp = args[k]
+            end
+            k = k + 1
+        end
+        if rotate then
+            cli_key_rotate(otp)
+            os.exit(0)
+        end
         local result = Un.validate_keys()
         if result then
             if result.expired then
@@ -1124,6 +1444,7 @@ if arg and arg[0] then
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
         print("       lua un.lua key [--extend]")
+        print("       lua un.lua key --rotate [--otp CODE]")
     else
         -- Assume it's a file to execute
         run_file(cmd)

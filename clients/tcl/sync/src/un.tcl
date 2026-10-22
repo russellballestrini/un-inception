@@ -28,7 +28,7 @@ package require sha256
 
 namespace eval Un {
     variable VERSION "4.2.50"
-    variable API_BASE "https://api.unsandbox.com"
+    variable API_BASE [string trimright [expr {[info exists ::env(UNSANDBOX_API_URL)] && $::env(UNSANDBOX_API_URL) ne "" ? $::env(UNSANDBOX_API_URL) : "https://api.unsandbox.com"}] /]
     variable PORTAL_BASE "https://unsandbox.com"
     variable LANGUAGES_CACHE_TTL 3600
     variable LANGUAGES_CACHE_FILE [file join $::env(HOME) ".unsandbox" "languages.json"]
@@ -124,6 +124,181 @@ namespace eval Un {
         return $result
     }
 
+    proc default_account_row {} {
+        if {[info exists ::env(UNSANDBOX_ACCOUNT)] && [string is integer -strict $::env(UNSANDBOX_ACCOUNT)]} {
+            return $::env(UNSANDBOX_ACCOUNT)
+        }
+        return 0
+    }
+
+    # The accounts.csv our credentials came from, or "" (arguments / env vars).
+    # Mirrors get_credentials' tiers.
+    proc credentials_csv_path {{public_key ""} {secret_key ""}} {
+        variable ACCOUNT_INDEX
+        if {$public_key ne "" && $secret_key ne ""} { return "" }
+        set row $ACCOUNT_INDEX
+        if {$row < 0} {
+            if {([info exists ::env(UNSANDBOX_PUBLIC_KEY)] && [info exists ::env(UNSANDBOX_SECRET_KEY)]) || [info exists ::env(UNSANDBOX_API_KEY)]} {
+                return ""
+            }
+            set row [default_account_row]
+        }
+        foreach path [list [file join $::env(HOME) ".unsandbox" "accounts.csv"] "./accounts.csv"] {
+            if {[load_accounts_csv $path $row] ne ""} { return $path }
+        }
+        return ""
+    }
+
+    # Replace our secret (2nd field) on the line whose 1st field equals pk.
+    # Every other line, field, comment and our order stay as they are.
+    # Temp file 0600 in the same directory, then rename.
+    proc rewrite_accounts_csv {path pk new_secret} {
+        if {[catch {open $path r} fp]} { return 0 }
+        fconfigure $fp -translation binary
+        set lines [split [read $fp] "\n"]
+        close $fp
+        set changed 0
+        for {set i 0} {$i < [llength $lines]} {incr i} {
+            set line [lindex $lines $i]
+            if {[string index [string trimleft $line] 0] eq "#"} { continue }
+            set fields [split $line ","]
+            if {[llength $fields] >= 2 && [string trim [lindex $fields 0]] eq $pk} {
+                set cr [expr {[llength $fields] == 2 && [string index $line end] eq "\r" ? "\r" : ""}]
+                lset fields 1 "$new_secret$cr"
+                lset lines $i [join $fields ","]
+                set changed 1
+                break
+            }
+        }
+        if {!$changed} { return 0 }
+        set tmp [file join [file dirname $path] ".[file tail $path].[pid].tmp"]
+        if {[catch {
+            set out [open $tmp {WRONLY CREAT TRUNC} 0600]
+            fconfigure $out -translation binary
+            puts -nonewline $out [join $lines "\n"]
+            close $out
+            file attributes $tmp -permissions 0600
+            file rename -force $tmp $path
+        }]} {
+            catch {file delete $tmp}
+            return 0
+        }
+        return 1
+    }
+
+    # POST /keys/self/rotate-secret, body {}, signed. Returns {ncode response}.
+    proc rotate_secret_request {pk sk {otp ""} {challenge ""}} {
+        variable API_BASE
+        set endpoint "/keys/self/rotate-secret"
+        set body "{}"
+        set timestamp [clock seconds]
+        set headers [list Authorization "Bearer $pk" \
+            X-Timestamp $timestamp \
+            X-Signature [hmac_sign $sk "${timestamp}:POST:${endpoint}:${body}"]]
+        if {$otp ne ""} {
+            lappend headers X-Sudo-OTP $otp X-Sudo-Challenge $challenge
+        }
+        if {[catch {
+            set token [::http::geturl "${API_BASE}${endpoint}" -method POST -headers $headers \
+                -type application/json -query $body -timeout 120000]
+        } err]} {
+            return [list 0 "{\"error\": \"[string map {\\ \\\\ \" \\\"} $err]\"}"]
+        }
+        set ncode [::http::ncode $token]
+        set response [::http::data $token]
+        ::http::cleanup $token
+        return [list $ncode $response]
+    }
+
+    proc json_field {response key} {
+        if {[catch {::json::json2dict $response} d] || [catch {dict exists $d $key} has] || !$has} {
+            return ""
+        }
+        return [dict get $d $key]
+    }
+
+    # un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+    proc cmd_key_rotate {otp_given otp} {
+        variable RED RESET
+        if {[catch {get_credentials} creds]} {
+            puts stderr "${RED}Error: no credentials found${RESET}"
+            exit 3
+        }
+        lassign $creds pk sk
+        if {$sk eq ""} {
+            puts stderr "${RED}Error: no credentials found${RESET}"
+            exit 3
+        }
+        set dir [file join $::env(HOME) ".unsandbox"]
+        set challenge_file [file join $dir "rotate-[string range [::sha2::sha256 -hex $pk] 0 15].challenge"]
+
+        if {$otp_given} {
+            if {[catch {open $challenge_file r} fp]} {
+                puts stderr "${RED}Error: no rotation in progress; run: un key --rotate${RESET}"
+                exit 2
+            }
+            set challenge [string trim [read $fp]]
+            close $fp
+            lassign [rotate_secret_request $pk $sk [string trim $otp] $challenge] ncode response
+            catch {file delete $challenge_file}
+        } else {
+            lassign [rotate_secret_request $pk $sk] ncode response
+            if {$ncode == 428} {
+                set challenge [json_field $response challenge_id]
+                if {[catch {exec test -t 0 <@ stdin}] == 0} {
+                    puts stderr "One-time code emailed to the key owner."
+                    puts -nonewline stderr "Code: "
+                    flush stderr
+                    if {[gets stdin code] < 0} { set code "" }
+                    set code [string trim $code]
+                    if {$code eq ""} {
+                        puts stderr "${RED}Error: cancelled${RESET}"
+                        exit 1
+                    }
+                    lassign [rotate_secret_request $pk $sk $code $challenge] ncode response
+                } else {
+                    if {![file isdirectory $dir]} { file mkdir $dir }
+                    file attributes $dir -permissions 0700
+                    set fp [open $challenge_file {WRONLY CREAT TRUNC} 0600]
+                    puts -nonewline $fp $challenge
+                    close $fp
+                    file attributes $challenge_file -permissions 0600
+                    puts "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+                    return
+                }
+            }
+        }
+
+        if {$ncode != 200} {
+            if {$ncode == 403 && [json_field $response error] eq "email_required"} {
+                puts stderr "${RED}Error: this key has no email; add one or use POST /keys/recover${RESET}"
+                exit 3
+            }
+            if {$ncode == 401} {
+                puts stderr "${RED}Error: authentication failed${RESET}"
+                exit 3
+            }
+            set msg [json_field $response message]
+            if {$msg eq ""} { set msg [json_field $response error] }
+            if {$msg eq ""} { set msg "HTTP $ncode" }
+            puts stderr "${RED}Error: ${msg}${RESET}"
+            exit 4
+        }
+        set new_secret [json_field $response secret]
+        if {$new_secret eq ""} {
+            puts stderr "${RED}Error: API returned no secret${RESET}"
+            exit 4
+        }
+
+        set csv_path [credentials_csv_path]
+        if {$csv_path ne "" && [rewrite_accounts_csv $csv_path $pk $new_secret]} {
+            puts "Secret rotated. Updated $csv_path (public key $pk)."
+        } else {
+            puts "New secret (shown once, store it now): $new_secret"
+            puts "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
+        }
+    }
+
     proc get_credentials {{public_key ""} {secret_key ""} {account_index -1}} {
         variable ACCOUNT_INDEX
 
@@ -156,15 +331,16 @@ namespace eval Un {
             return [list $::env(UNSANDBOX_API_KEY) ""]
         }
 
-        # Tier 4: Home directory
-        set creds [load_accounts_csv [file join $::env(HOME) ".unsandbox" "accounts.csv"]]
+        # Tier 4: Home directory (row UNSANDBOX_ACCOUNT, default 0)
+        set row [default_account_row]
+        set creds [load_accounts_csv [file join $::env(HOME) ".unsandbox" "accounts.csv"] $row]
         if {$creds ne ""} {
             set parts [split $creds ","]
             return [list [lindex $parts 0] [lindex $parts 1]]
         }
 
         # Tier 5: Local directory
-        set creds [load_accounts_csv "./accounts.csv"]
+        set creds [load_accounts_csv "./accounts.csv" $row]
         if {$creds ne ""} {
             set parts [split $creds ","]
             return [list [lindex $parts 0] [lindex $parts 1]]
@@ -705,8 +881,22 @@ namespace eval Un {
         variable GREEN RED YELLOW PORTAL_BASE RESET
 
         set extend 0
-        foreach arg $args {
+        set rotate 0
+        set otp_given 0
+        set otp ""
+        for {set i 0} {$i < [llength $args]} {incr i} {
+            set arg [lindex $args $i]
             if {$arg eq "--extend"} { set extend 1 }
+            if {$arg eq "--rotate"} { set rotate 1 }
+            if {$arg eq "--otp" && $i + 1 < [llength $args]} {
+                set otp_given 1
+                set otp [lindex $args [incr i]]
+            }
+        }
+
+        if {$rotate} {
+            cmd_key_rotate $otp_given $otp
+            return
         }
 
         set result [validate_keys]
@@ -1037,6 +1227,7 @@ Usage:
   tclsh un.tcl image [options]
   tclsh un.tcl languages [--json]
   tclsh un.tcl key [--extend]
+  tclsh un.tcl key --rotate [--otp CODE]
 
 Commands:
   languages     List available programming languages

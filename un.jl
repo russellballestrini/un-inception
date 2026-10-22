@@ -69,7 +69,10 @@ const GREEN = "\033[32m"
 const YELLOW = "\033[33m"
 const RESET = "\033[0m"
 
-const API_BASE = "https://api.unsandbox.com"
+# API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
+const API_BASE = let u = get(ENV, "UNSANDBOX_API_URL", "")
+    isempty(u) ? "https://api.unsandbox.com" : String(rstrip(u, '/'))
+end
 const PORTAL_BASE = "https://unsandbox.com"
 const LANGUAGES_CACHE_TTL = 3600
 
@@ -86,7 +89,7 @@ function load_accounts_csv(path::String)::Vector{Tuple{String,String}}
             trimmed = strip(line)
             isempty(trimmed) && continue
             startswith(trimmed, "#") && continue
-            parts = split(trimmed, ","; limit=2)
+            parts = split(trimmed, ",")
             length(parts) >= 2 || continue
             pk = strip(parts[1])
             sk = strip(parts[2])
@@ -978,7 +981,157 @@ function cmd_languages(args)
     end
 end
 
+# The accounts.csv the credentials came from, or nothing (flags / environment
+# variables). Mirrors get_api_keys / get_credentials tiers.
+function credentials_csv_path(args_key, account_index::Int)
+    if args_key !== nothing && !isempty(string(args_key)) && !isempty(get(ENV, "UNSANDBOX_SECRET_KEY", ""))
+        return nothing
+    end
+    idx = account_index
+    if idx < 0
+        if !isempty(get(ENV, "UNSANDBOX_PUBLIC_KEY", "")) && !isempty(get(ENV, "UNSANDBOX_SECRET_KEY", ""))
+            return nothing
+        end
+        idx = something(tryparse(Int, get(ENV, "UNSANDBOX_ACCOUNT", "0")), 0)
+    end
+    for path in [joinpath(homedir(), ".unsandbox", "accounts.csv"), "accounts.csv"]
+        if idx < length(load_accounts_csv(path))
+            return path
+        end
+    end
+    return nothing
+end
+
+# Replace the secret on the line whose first field equals public_key. Every other
+# line, field, comment and the order stay as they are. Temp file (0600) + rename.
+function rewrite_accounts_csv(path::String, public_key::String, new_secret::String)::Bool
+    lines = split(read(path, String), "\n")
+    idx = findfirst(lines) do line
+        t = strip(line)
+        fields = split(line, ",")
+        !isempty(t) && !startswith(t, "#") && length(fields) >= 2 && strip(fields[1]) == public_key
+    end
+    idx === nothing && return false
+    fields = split(lines[idx], ",")
+    fields[2] = new_secret
+    lines[idx] = join(fields, ",")
+    tmp = joinpath(dirname(abspath(path)), ".$(basename(path)).$(getpid()).tmp")
+    open(tmp, "w") do io
+        chmod(tmp, 0o600)
+        write(io, join(lines, "\n"))
+    end
+    chmod(tmp, 0o600)
+    mv(tmp, path; force=true)
+    return true
+end
+
+# un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+function cmd_key_rotate(args)
+    account_index = something(get(args, "account", nothing), -1)
+    (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=account_index)
+    path = "/keys/self/rotate-secret"
+    body = "{}"
+    unsandbox_dir = joinpath(homedir(), ".unsandbox")
+    challenge_file = joinpath(unsandbox_dir, "rotate-" * bytes2hex(sha256(public_key))[1:16] * ".challenge")
+
+    function post(otp=nothing, challenge=nothing)
+        ts = Int64(floor(time()))
+        headers = [
+            "Authorization" => "Bearer $public_key",
+            "X-Timestamp" => string(ts),
+            "X-Signature" => compute_signature(secret_key, ts, "POST", path, body),
+            "Content-Type" => "application/json"
+        ]
+        if otp !== nothing
+            push!(headers, "X-Sudo-OTP" => otp)
+            push!(headers, "X-Sudo-Challenge" => something(challenge, ""))
+        end
+        return HTTP.post(API_BASE * path, headers, body; readtimeout=120, status_exception=false)
+    end
+
+    function parse_body(resp)
+        try
+            data = JSON.parse(String(copy(resp.body)))
+            return data isa AbstractDict ? data : Dict{String,Any}()
+        catch
+            return Dict{String,Any}()
+        end
+    end
+
+    function fail(resp)
+        data = parse_body(resp)
+        if resp.status == 403 && get(data, "error", nothing) == "email_required"
+            println(stderr, "Error: this key has no email; add one or use POST /keys/recover")
+            exit(3)
+        end
+        if resp.status == 401
+            println(stderr, "Error: authentication failed")
+            exit(3)
+        end
+        msg = something(get(data, "message", nothing), get(data, "error", nothing), "HTTP $(resp.status)")
+        println(stderr, "Error: $msg")
+        exit(4)
+    end
+
+    otp_arg = get(args, "otp", nothing)
+    if otp_arg !== nothing
+        if !isfile(challenge_file)
+            println(stderr, "Error: no rotation in progress; run: un key --rotate")
+            exit(2)
+        end
+        challenge = strip(read(challenge_file, String))
+        resp = post(String(strip(otp_arg)), String(challenge))
+        rm(challenge_file; force=true)
+    else
+        resp = post()
+        if resp.status == 428
+            challenge = string(something(get(parse_body(resp), "challenge_id", nothing), ""))
+            if stdin isa Base.TTY
+                println(stderr, "One-time code emailed to the key owner.")
+                print(stderr, "Code: ")
+                flush(stderr)
+                otp = String(strip(something(readline(stdin), "")))
+                if isempty(otp)
+                    println(stderr, "Error: cancelled")
+                    exit(1)
+                end
+                resp = post(otp, challenge)
+            else
+                mkpath(unsandbox_dir; mode=0o700)
+                chmod(unsandbox_dir, 0o700)
+                open(challenge_file, "w") do io
+                    chmod(challenge_file, 0o600)
+                    write(io, challenge)
+                end
+                chmod(challenge_file, 0o600)
+                println("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+                exit(0)
+            end
+        end
+    end
+
+    resp.status == 200 || fail(resp)
+    new_secret = get(parse_body(resp), "secret", nothing)
+    if new_secret === nothing || isempty(string(new_secret))
+        println(stderr, "Error: API returned no secret")
+        exit(4)
+    end
+    new_secret = string(new_secret)
+
+    csv_path = credentials_csv_path(args["api-key"], account_index)
+    if csv_path !== nothing && rewrite_accounts_csv(csv_path, public_key, new_secret)
+        println("Secret rotated. Updated $csv_path (public key $public_key).")
+    else
+        println("New secret (shown once, store it now): $new_secret")
+        println("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
+    end
+    exit(0)
+end
+
 function cmd_key(args)
+    if get(args, "rotate", false)
+        cmd_key_rotate(args)
+    end
     (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
     # For portal validation, we still use public_key as bearer token
     api_key = public_key
@@ -1036,13 +1189,37 @@ function cmd_key(args)
     exit(validate_key(api_key))
 end
 
+# First positional token of argv, skipping global options and their values.
+function first_positional(argv)
+    takes_value = ("-k", "--api-key", "--account", "-n", "--network", "-e", "--env", "-f", "--files", "-o", "--output-dir")
+    i = 1
+    while i <= length(argv)
+        a = argv[i]
+        if a in takes_value
+            i += 2
+        elseif startswith(a, "-")
+            i += 1
+        else
+            return a
+        end
+    end
+    return nothing
+end
+
 function main()
     s = ArgParseSettings(description="Unsandbox CLI - Execute code in secure sandboxes")
 
+    # ArgParse binds an optional positional before any command, so `un.jl key`
+    # would land in source_file; declare source_file only when no command leads.
+    if !(first_positional(ARGS) in ("session", "service", "languages", "key", "image", "snapshot"))
+        @add_arg_table! s begin
+            "source_file"
+                help = "Source file to execute"
+                required = false
+        end
+    end
+
     @add_arg_table! s begin
-        "source_file"
-            help = "Source file to execute"
-            required = false
         "--api-key", "-k"
             help = "API key (or set UNSANDBOX_API_KEY)"
         "--account"
@@ -1225,6 +1402,12 @@ function main()
         "--extend"
             help = "Open browser to extend/renew key"
             action = :store_true
+        "--rotate"
+            help = "Rotate this key's secret (sudo OTP); updates accounts.csv in place"
+            action = :store_true
+        "--otp"
+            help = "Finish a rotation started without a terminal"
+            arg_type = String
         "--api-key", "-k"
             help = "API key"
         "--account"

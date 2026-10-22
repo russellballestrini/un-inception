@@ -1,3 +1,4 @@
+#!/usr/bin/env ocaml
 (* PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
  *
  * This is free public domain software for the public good of a permacomputer hosted
@@ -71,14 +72,22 @@
     + Config file (~/.unsandbox/accounts.csv)
 *)
 
-#!/usr/bin/env ocaml
+#load "unix.cma";;
+#load "str.cma";;
 
 (* ============================================================================
    Configuration
    ============================================================================ *)
 
 (** API base URL *)
-let api_base = "https://api.unsandbox.com"
+let api_base =
+  let url = try Sys.getenv "UNSANDBOX_API_URL" with Not_found -> "" in
+  let url = if url = "" then "https://api.unsandbox.com" else url in
+  let rec strip u =
+    let n = String.length u in
+    if n > 0 && u.[n - 1] = '/' then strip (String.sub u 0 (n - 1)) else u
+  in
+  strip url
 
 (** Portal base URL *)
 let portal_base = "https://unsandbox.com"
@@ -202,6 +211,46 @@ let get_extension filename =
     String.sub filename dot_pos (String.length filename - dot_pos)
   with Not_found -> ""
 
+(** Escape JSON string *)
+let escape_json s =
+  let buf = Buffer.create (String.length s) in
+  String.iter (fun c ->
+    match c with
+    | '\\' -> Buffer.add_string buf "\\\\"
+    | '"' -> Buffer.add_string buf "\\\""
+    | '\n' -> Buffer.add_string buf "\\n"
+    | '\r' -> Buffer.add_string buf "\\r"
+    | '\t' -> Buffer.add_string buf "\\t"
+    | _ -> Buffer.add_char buf c
+  ) s;
+  Buffer.contents buf
+
+(** Unescape JSON string *)
+let unescape_json s =
+  let s = Str.global_replace (Str.regexp "\\\\n") "\n" s in
+  let s = Str.global_replace (Str.regexp "\\\\t") "\t" s in
+  let s = Str.global_replace (Str.regexp "\\\\\"") "\"" s in
+  let s = Str.global_replace (Str.regexp "\\\\\\\\") "\\" s in
+  s
+
+(** Extract JSON value - simple regex-based parser *)
+let extract_json_value json_str key =
+  let pattern = "\"" ^ key ^ "\"[ \t\r\n]*:[ \t\r\n]*\"\\([^\"]*\\)\"" in
+  let regex = Str.regexp pattern in
+  try
+    let _ = Str.search_forward regex json_str 0 in
+    Some (Str.matched_group 1 json_str)
+  with Not_found -> None
+
+(** Extract JSON integer value *)
+let extract_json_int json_str key =
+  let pattern = "\"" ^ key ^ "\"[ \t\r\n]*:[ \t\r\n]*\\([0-9]+\\)" in
+  let regex = Str.regexp pattern in
+  try
+    let _ = Str.search_forward regex json_str 0 in
+    Some (int_of_string (Str.matched_group 1 json_str))
+  with Not_found -> None
+
 (** Get languages cache file path *)
 let get_languages_cache_path () =
   let home = try Sys.getenv "HOME" with Not_found -> "." in
@@ -237,46 +286,6 @@ let save_languages_cache languages_json =
   output_string oc cache_content;
   close_out oc
 
-(** Escape JSON string *)
-let escape_json s =
-  let buf = Buffer.create (String.length s) in
-  String.iter (fun c ->
-    match c with
-    | '\\' -> Buffer.add_string buf "\\\\"
-    | '"' -> Buffer.add_string buf "\\\""
-    | '\n' -> Buffer.add_string buf "\\n"
-    | '\r' -> Buffer.add_string buf "\\r"
-    | '\t' -> Buffer.add_string buf "\\t"
-    | _ -> Buffer.add_char buf c
-  ) s;
-  Buffer.contents buf
-
-(** Unescape JSON string *)
-let unescape_json s =
-  let s = Str.global_replace (Str.regexp "\\\\n") "\n" s in
-  let s = Str.global_replace (Str.regexp "\\\\t") "\t" s in
-  let s = Str.global_replace (Str.regexp "\\\\\"") "\"" s in
-  let s = Str.global_replace (Str.regexp "\\\\\\\\") "\\" s in
-  s
-
-(** Extract JSON value - simple regex-based parser *)
-let extract_json_value json_str key =
-  let pattern = "\"" ^ key ^ "\"\\s*:\\s*\"\\([^\"]*\\)\"" in
-  let regex = Str.regexp pattern in
-  try
-    let _ = Str.search_forward regex json_str 0 in
-    Some (Str.matched_group 1 json_str)
-  with Not_found -> None
-
-(** Extract JSON integer value *)
-let extract_json_int json_str key =
-  let pattern = "\"" ^ key ^ "\"\\s*:\\s*\\([0-9]+\\)" in
-  let regex = Str.regexp pattern in
-  try
-    let _ = Str.search_forward regex json_str 0 in
-    Some (int_of_string (Str.matched_group 1 json_str))
-  with Not_found -> None
-
 (* ============================================================================
    Credentials Management
    ============================================================================ *)
@@ -291,14 +300,14 @@ let parse_accounts_csv content =
     let line = String.trim line in
     if String.length line = 0 || line.[0] = '#' then None
     else
-      try
-        let comma_pos = String.index line ',' in
-        let pk = String.trim (String.sub line 0 comma_pos) in
-        let sk = String.trim (String.sub line (comma_pos + 1) (String.length line - comma_pos - 1)) in
+      match String.split_on_char ',' line with
+      | pk :: sk :: _ ->
+        (* Fields after the secret (labels) are ignored *)
+        let pk = String.trim pk and sk = String.trim sk in
         if String.length pk > 8 && String.length sk > 8 then
           Some (pk, sk)
         else None
-      with Not_found -> None
+      | _ -> None
   ) lines
 
 (** Load credentials from a specific CSV path at the given account index *)
@@ -1717,6 +1726,169 @@ let key_command extend =
   let api_key = get_api_key () in
   validate_key api_key extend
 
+(* ============================================================================
+   Key rotation: un key --rotate [--otp CODE]  (see CLI_SPEC.md)
+   ============================================================================ *)
+
+(** The accounts.csv our credentials came from, or None (flags / env vars).
+    Mirrors get_credentials' tiers. *)
+let credentials_csv_path () =
+  let env_set name = try ignore (Sys.getenv name); true with Not_found -> false in
+  if !cli_account_index < 0 && env_set "UNSANDBOX_PUBLIC_KEY" && env_set "UNSANDBOX_SECRET_KEY" then None
+  else begin
+    let index =
+      if !cli_account_index >= 0 then !cli_account_index
+      else (try int_of_string (String.trim (Sys.getenv "UNSANDBOX_ACCOUNT"))
+            with Not_found | Failure _ -> 0) in
+    let home = try Sys.getenv "HOME" with Not_found -> "." in
+    let home_csv = Filename.concat home ".unsandbox/accounts.csv" in
+    List.find_opt (fun p -> load_csv_at p index <> None) [home_csv; "accounts.csv"]
+  end
+
+(** Write content to path with mode 0600 *)
+let write_private_file path content =
+  let oc = open_out_gen [Open_wronly; Open_creat; Open_trunc; Open_binary] 0o600 path in
+  output_string oc content;
+  close_out oc;
+  Unix.chmod path 0o600
+
+(** Replace the secret on the line whose first field equals public_key. Every
+    other line, field, comment and our order stay as they are. Temp file (0600)
+    in the same directory + rename. *)
+let rewrite_accounts_csv path public_key new_secret =
+  let lines = String.split_on_char '\n' (read_file path) in
+  let changed = ref false in
+  let lines = List.map (fun line ->
+    let stripped = String.trim line in
+    if !changed || stripped = "" || stripped.[0] = '#' then line
+    else match String.split_on_char ',' line with
+      | pk :: _ :: rest when String.trim pk = public_key ->
+        changed := true;
+        String.concat "," (pk :: new_secret :: rest)
+      | _ -> line
+  ) lines in
+  if not !changed then false
+  else begin
+    let tmp = Filename.concat (Filename.dirname path)
+        (Printf.sprintf ".%s.%d.tmp" (Filename.basename path) (Unix.getpid ())) in
+    write_private_file tmp (String.concat "\n" lines);
+    Unix.rename tmp path;
+    true
+  end
+
+(** POST /keys/self/rotate-secret; returns (http_code, body). Headers travel in
+    a 0600 temp file so our OTP never lands on a command line. *)
+let rotate_post public_key secret_key sudo =
+  let endpoint = "/keys/self/rotate-secret" in
+  let body = "{}" in
+  let timestamp = string_of_int (int_of_float (Unix.time ())) in
+  let signature = make_signature secret_key timestamp "POST" endpoint body in
+  let headers =
+    Printf.sprintf "Authorization: Bearer %s\nX-Timestamp: %s\nX-Signature: %s\nContent-Type: application/json\n"
+      public_key timestamp signature
+    ^ (match sudo with
+       | Some (otp, challenge) -> Printf.sprintf "X-Sudo-OTP: %s\nX-Sudo-Challenge: %s\n" otp challenge
+       | None -> "") in
+  let hdr_file = Filename.temp_file "un_ocaml_hdr" ".txt" in
+  let body_file = Filename.temp_file "un_ocaml_body" ".json" in
+  write_private_file hdr_file headers;
+  write_private_file body_file body;
+  let cmd = Printf.sprintf "curl -s -w '\\n%%{http_code}' -X POST '%s%s' -H @%s --data-binary @%s"
+      api_base endpoint (Filename.quote hdr_file) (Filename.quote body_file) in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (line :: acc)
+    with End_of_file -> acc
+  in
+  let rev_lines = read_all [] in
+  let _ = Unix.close_process_in ic in
+  (try Sys.remove hdr_file with _ -> ());
+  (try Sys.remove body_file with _ -> ());
+  match rev_lines with
+  | code :: rest ->
+    ((try int_of_string (String.trim code) with Failure _ -> 0), String.concat "\n" (List.rev rest))
+  | [] -> (0, "")
+
+let key_rotate_command otp =
+  let (public_key, secret_key) = get_api_keys () in
+  let home = try Sys.getenv "HOME" with Not_found -> "." in
+  let unsandbox_dir = Filename.concat home ".unsandbox" in
+  let pk_hash =
+    let ic = Unix.open_process_in
+        (Printf.sprintf "printf %%s %s | sha256sum" (Filename.quote public_key)) in
+    let line = try input_line ic with End_of_file -> "" in
+    let _ = Unix.close_process_in ic in
+    String.sub (line ^ String.make 16 '0') 0 16 in
+  let challenge_file = Filename.concat unsandbox_dir ("rotate-" ^ pk_hash ^ ".challenge") in
+  let fail (code, body) =
+    let error = extract_json_value body "error" in
+    if code = 403 && error = Some "email_required" then begin
+      Printf.fprintf stderr "Error: this key has no email; add one or use POST /keys/recover\n";
+      exit 3
+    end;
+    if code = 401 then begin
+      Printf.fprintf stderr "Error: authentication failed\n";
+      exit 3
+    end;
+    let msg = match extract_json_value body "message", error with
+      | Some m, _ -> m
+      | None, Some e -> e
+      | None, None -> Printf.sprintf "HTTP %d" code in
+    Printf.fprintf stderr "Error: %s\n" msg;
+    exit 4
+  in
+  let result =
+    match otp with
+    | Some code ->
+      let challenge =
+        try String.trim (read_file challenge_file)
+        with Sys_error _ ->
+          Printf.fprintf stderr "Error: no rotation in progress; run: un key --rotate\n";
+          exit 2 in
+      let r = rotate_post public_key secret_key (Some (String.trim code, challenge)) in
+      (try Sys.remove challenge_file with Sys_error _ -> ());
+      Some r
+    | None ->
+      let (code, body) as r = rotate_post public_key secret_key None in
+      if code <> 428 then Some r
+      else begin
+        let challenge = match extract_json_value body "challenge_id" with Some c -> c | None -> "" in
+        if Unix.isatty Unix.stdin then begin
+          Printf.fprintf stderr "One-time code emailed to the key owner.\n";
+          Printf.fprintf stderr "Code: %!";
+          let entered = try String.trim (input_line stdin) with End_of_file -> "" in
+          if entered = "" then begin
+            Printf.fprintf stderr "Error: cancelled\n";
+            exit 1
+          end;
+          Some (rotate_post public_key secret_key (Some (entered, challenge)))
+        end else begin
+          (try Unix.mkdir unsandbox_dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+          write_private_file challenge_file challenge;
+          Printf.printf "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n";
+          None
+        end
+      end
+  in
+  match result with
+  | None -> ()
+  | Some ((code, body) as r) ->
+    if code <> 200 then fail r;
+    (match extract_json_value body "secret" with
+     | None | Some "" ->
+       Printf.fprintf stderr "Error: API returned no secret\n";
+       exit 4
+     | Some new_secret ->
+       let updated = match credentials_csv_path () with
+         | Some path when rewrite_accounts_csv path public_key new_secret ->
+           Printf.printf "Secret rotated. Updated %s (public key %s).\n" path public_key;
+           true
+         | _ -> false in
+       if not updated then begin
+         Printf.printf "New secret (shown once, store it now): %s\n" new_secret;
+         Printf.printf "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n"
+       end)
+
 (* Session command *)
 let session_command action shell network vcpu input_files =
   let api_key = get_api_key () in
@@ -2091,7 +2263,8 @@ let () =
     Printf.printf "       un.ml [--account N] image [options]\n";
     Printf.printf "       un.ml [--account N] service env <action> <service_id>\n";
     Printf.printf "       un.ml languages [--json]\n";
-    Printf.printf "       un.ml key [--extend]\n\n";
+    Printf.printf "       un.ml key [--extend]\n";
+    Printf.printf "       un.ml key --rotate [--otp CODE]\n\n";
     Printf.printf "Global options:\n";
     Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n\n";
     Printf.printf "Service options: --name, --ports, --bootstrap, --bootstrap-file, -e KEY=VALUE, --env-file FILE\n";
@@ -2108,7 +2281,13 @@ let () =
     image_command rest
   | "key" :: rest ->
     let extend = List.mem "--extend" rest in
-    key_command extend
+    let rec find_otp = function
+      | "--otp" :: code :: _ -> Some code
+      | _ :: rest -> find_otp rest
+      | [] -> None
+    in
+    if List.mem "--rotate" rest then key_rotate_command (find_otp rest)
+    else key_command extend
   | "session" :: rest ->
     let input_files = parse_input_files [] rest in
     let rec parse_session action shell network vcpu = function

@@ -36,9 +36,16 @@ import (
 )
 
 const (
-	APIBase              = "https://api.unsandbox.com"
 	LanguagesCacheTTL    = 3600 // 1 hour
 )
+
+// APIBase is the API endpoint, overridable via UNSANDBOX_API_URL (trailing slash stripped)
+var APIBase = func() string {
+	if v := os.Getenv("UNSANDBOX_API_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "https://api.unsandbox.com"
+}()
 
 var (
 	PollDelaysMs = []int{300, 450, 700, 900, 650, 1600, 2000}
@@ -114,12 +121,16 @@ type Credentials struct {
 
 // getUnsandboxDir returns ~/.unsandbox directory path, creating if necessary
 func getUnsandboxDir() (string, error) {
-	user, err := user.Current()
-	if err != nil {
-		return "", err
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		u, uerr := user.Current()
+		if uerr != nil {
+			return "", uerr
+		}
+		home = u.HomeDir
 	}
 
-	dir := filepath.Join(user.HomeDir, ".unsandbox")
+	dir := filepath.Join(home, ".unsandbox")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
@@ -1697,6 +1708,7 @@ Usage:
   un service [options]              Manage services
   un snapshot [options]             Manage snapshots
   un key                            Check API key
+  un key --rotate [--otp CODE]      Rotate API secret (sudo OTP)
   un languages [--json]             List available languages
 
 Global Options:
@@ -3143,6 +3155,210 @@ func runKey(creds *Credentials) int {
 	return ExitSuccess
 }
 
+// credentialsCsvPath returns the accounts.csv the credentials came from, or ""
+// for flags / env vars. Mirrors ResolveCredentials' tiers.
+func credentialsCsvPath(opts *CLIOptions) string {
+	if opts.PublicKey != "" && opts.SecretKey != "" {
+		return ""
+	}
+	index := opts.AccountIndex
+	if index < 0 {
+		if os.Getenv("UNSANDBOX_PUBLIC_KEY") != "" && os.Getenv("UNSANDBOX_SECRET_KEY") != "" {
+			return ""
+		}
+		index = 0
+		if v, err := strconv.Atoi(os.Getenv("UNSANDBOX_ACCOUNT")); err == nil {
+			index = v
+		}
+	}
+	candidates := []string{}
+	if dir, err := getUnsandboxDir(); err == nil {
+		candidates = append(candidates, filepath.Join(dir, "accounts.csv"))
+	}
+	candidates = append(candidates, "accounts.csv")
+	for _, p := range candidates {
+		if loadCredentialsFromCsv(p, index) != nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// rewriteAccountsCsv replaces the secret on the line whose first field is publicKey.
+// Every other line, field, comment and the order stay as they are. Temp file (0600) + rename.
+func rewriteAccountsCsv(path, publicKey, newSecret string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	for i, line := range lines {
+		stripped := strings.TrimSpace(line)
+		if stripped == "" || strings.HasPrefix(stripped, "#") {
+			continue
+		}
+		fields := strings.Split(line, ",")
+		if len(fields) >= 2 && strings.TrimSpace(fields[0]) == publicKey {
+			fields[1] = newSecret
+			lines[i] = strings.Join(fields, ",")
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return false
+	}
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".%s.%d.tmp", filepath.Base(path), os.Getpid()))
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return false
+	}
+	_, werr := f.WriteString(strings.Join(lines, "\n"))
+	cerr := f.Close()
+	if werr != nil || cerr != nil || os.Chmod(tmp, 0600) != nil || os.Rename(tmp, path) != nil {
+		os.Remove(tmp)
+		return false
+	}
+	return true
+}
+
+// stdinIsTerminal reports whether stdin is an interactive terminal
+// (a character device other than the null device).
+func stdinIsTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if null, err := os.Stat(os.DevNull); err == nil && os.SameFile(fi, null) {
+		return false
+	}
+	return true
+}
+
+// runKeyRotate handles `un key --rotate [--otp CODE]` (see CLI_SPEC.md)
+func runKeyRotate(creds *Credentials, opts *CLIOptions, otpFlag string) int {
+	const path = "/keys/self/rotate-secret"
+	body := []byte("{}")
+	unsandboxDir, err := getUnsandboxDir()
+	if err != nil {
+		return cliError(err.Error(), ExitGeneralError)
+	}
+	pkHash := sha256.Sum256([]byte(creds.PublicKey))
+	challengeFile := filepath.Join(unsandboxDir, "rotate-"+hex.EncodeToString(pkHash[:])[:16]+".challenge")
+
+	post := func(otp, challenge string) (int, map[string]interface{}, error) {
+		timestamp := time.Now().Unix()
+		req, err := http.NewRequest("POST", APIBase+path, bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", creds.PublicKey))
+		req.Header.Set("X-Timestamp", fmt.Sprintf("%d", timestamp))
+		req.Header.Set("X-Signature", signRequest(creds.SecretKey, timestamp, "POST", path, body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "un-go/2.0")
+		if otp != "" {
+			req.Header.Set("X-Sudo-OTP", otp)
+			req.Header.Set("X-Sudo-Challenge", challenge)
+		}
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		var data map[string]interface{}
+		_ = json.Unmarshal(respBody, &data)
+		if data == nil {
+			data = map[string]interface{}{}
+		}
+		return resp.StatusCode, data, nil
+	}
+
+	str := func(data map[string]interface{}, key string) string {
+		if v, ok := data[key].(string); ok {
+			return v
+		}
+		return ""
+	}
+
+	var status int
+	var data map[string]interface{}
+	if otpFlag != "" {
+		raw, err := os.ReadFile(challengeFile)
+		if err != nil {
+			return cliError("no rotation in progress; run: un key --rotate", ExitInvalidArgs)
+		}
+		status, data, err = post(strings.TrimSpace(otpFlag), strings.TrimSpace(string(raw)))
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		os.Remove(challengeFile)
+	} else {
+		status, data, err = post("", "")
+		if err != nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		if status == 428 {
+			challenge := str(data, "challenge_id")
+			if stdinIsTerminal() {
+				fmt.Fprintln(os.Stderr, "One-time code emailed to the key owner.")
+				fmt.Fprint(os.Stderr, "Code: ")
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				otp := strings.TrimSpace(line)
+				if otp == "" {
+					return cliError("cancelled", ExitGeneralError)
+				}
+				status, data, err = post(otp, challenge)
+				if err != nil {
+					return cliError(err.Error(), ExitAPIError)
+				}
+			} else {
+				if err := os.MkdirAll(unsandboxDir, 0700); err != nil {
+					return cliError(err.Error(), ExitGeneralError)
+				}
+				if err := os.WriteFile(challengeFile, []byte(challenge), 0600); err != nil {
+					return cliError(err.Error(), ExitGeneralError)
+				}
+				os.Chmod(challengeFile, 0600)
+				fmt.Println("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+				return ExitSuccess
+			}
+		}
+	}
+
+	if status != 200 {
+		if status == 403 && str(data, "error") == "email_required" {
+			return cliError("this key has no email; add one or use POST /keys/recover", ExitAuthError)
+		}
+		if status == 401 {
+			return cliError("authentication failed", ExitAuthError)
+		}
+		msg := str(data, "message")
+		if msg == "" {
+			msg = str(data, "error")
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", status)
+		}
+		return cliError(msg, ExitAPIError)
+	}
+	newSecret := str(data, "secret")
+	if newSecret == "" {
+		return cliError("API returned no secret", ExitAPIError)
+	}
+
+	if csvPath := credentialsCsvPath(opts); csvPath != "" && rewriteAccountsCsv(csvPath, creds.PublicKey, newSecret) {
+		fmt.Printf("Secret rotated. Updated %s (public key %s).\n", csvPath, creds.PublicKey)
+	} else {
+		fmt.Printf("New secret (shown once, store it now): %s\n", newSecret)
+		fmt.Println("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
+	}
+	return ExitSuccess
+}
+
 // runLanguages handles the languages command
 func runLanguages(creds *Credentials, args []string) int {
 	// Check for --json flag
@@ -3301,7 +3517,23 @@ func CliMain() {
 	case "image":
 		exitCode = runImage(creds, cmdArgs, opts)
 	case "key":
-		exitCode = runKey(creds)
+		rotate, otp := false, ""
+		for i := 0; i < len(cmdArgs); i++ {
+			switch cmdArgs[i] {
+			case "--rotate":
+				rotate = true
+			case "--otp":
+				if i+1 < len(cmdArgs) {
+					otp = cmdArgs[i+1]
+					i++
+				}
+			}
+		}
+		if rotate {
+			exitCode = runKeyRotate(creds, opts, otp)
+		} else {
+			exitCode = runKey(creds)
+		}
 	case "languages":
 		exitCode = runLanguages(creds, cmdArgs)
 	default:

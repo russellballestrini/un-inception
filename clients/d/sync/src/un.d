@@ -53,8 +53,19 @@ import std.conv;
 import std.array;
 import std.algorithm;
 import std.typecons;
+import core.stdc.stdlib : exit;
 
-immutable string API_BASE = "https://api.unsandbox.com";
+// API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
+string API_BASE() {
+    static string cached;
+    if (cached is null) {
+        string base = environment.get("UNSANDBOX_API_URL", "");
+        if (base.empty) base = "https://api.unsandbox.com";
+        while (base.length > 0 && base[$-1] == '/') base = base[0 .. $-1];
+        cached = base;
+    }
+    return cached;
+}
 immutable string PORTAL_BASE = "https://unsandbox.com";
 immutable string BLUE = "\033[34m";
 immutable string RED = "\033[31m";
@@ -1497,14 +1508,14 @@ void validateKey(string publicKey, string secretKey, bool extend) {
 
     bool valid = result["valid"].type == JSONType.true_;
     bool expired = result["expired"].type == JSONType.true_;
-    string publicKey = "public_key" in result ? result["public_key"].str : "";
+    string respPublicKey = "public_key" in result ? result["public_key"].str : "";
     string tier = "tier" in result ? result["tier"].str : "";
     string status = "status" in result ? result["status"].str : "";
 
     if (expired) {
         // Expired key
         writefln("%sExpired%s", RED, RESET);
-        writefln("Public Key: %s", publicKey);
+        writefln("Public Key: %s", respPublicKey);
         writefln("Tier: %s", tier);
         if ("expires_at" in result) {
             writefln("Expired: %s", result["expires_at"].str);
@@ -1512,7 +1523,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
         writefln("%sTo renew: Visit https://unsandbox.com/keys/extend%s", YELLOW, RESET);
 
         if (extend) {
-            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ publicKey;
+            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ respPublicKey;
             writefln("\n%sOpening browser to extend key...%s", GREEN, RESET);
             openBrowser(extendURL);
         }
@@ -1522,7 +1533,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     if (valid) {
         // Valid key
         writefln("%sValid%s", GREEN, RESET);
-        writefln("Public Key: %s", publicKey);
+        writefln("Public Key: %s", respPublicKey);
         writefln("Tier: %s", tier);
         writefln("Status: %s", status);
 
@@ -1545,7 +1556,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
         }
 
         if (extend) {
-            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ publicKey;
+            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ respPublicKey;
             writefln("\n%sOpening browser to extend key...%s", GREEN, RESET);
             openBrowser(extendURL);
         }
@@ -1581,11 +1592,204 @@ Tuple!(string, string) loadAccountsCSV(string path, int index) {
     return tuple("", "");
 }
 
+// ---------------------------------------------------------------------------
+// un key --rotate [--otp CODE] — rotate this key's secret (see CLI_SPEC.md)
+// ---------------------------------------------------------------------------
+
+// String field from a JSON object body ("" when absent or not JSON).
+string rotateJsonField(string body_, string field) {
+    import std.json : parseJSON, JSONType;
+    try {
+        auto j = parseJSON(body_);
+        if (j.type == JSONType.object) {
+            if (auto v = field in j.object) {
+                if (v.type == JSONType.string) return v.str;
+            }
+        }
+    } catch (Exception e) {}
+    return "";
+}
+
+// Header values go into a curl shell command: allow only a safe alphabet.
+bool safeHeaderToken(string s) {
+    import std.ascii : isAlphaNum;
+    if (s.empty || s.length > 200) return false;
+    foreach (c; s) {
+        if (!isAlphaNum(c) && c != '-' && c != '_' && c != '.') return false;
+    }
+    return true;
+}
+
+// Write data to path with mode 0600 (created 0600, never world-readable).
+bool writePrivateFile(string path, string data) {
+    import core.sys.posix.fcntl : open, O_WRONLY, O_CREAT, O_TRUNC;
+    import core.sys.posix.unistd : write, close;
+    import core.sys.posix.sys.stat : fchmod;
+    import std.string : toStringz;
+    int fd = open(path.toStringz, O_WRONLY | O_CREAT | O_TRUNC, octal!"600");
+    if (fd < 0) return false;
+    bool ok = write(fd, data.ptr, data.length) == cast(long) data.length;
+    fchmod(fd, octal!"600");
+    if (close(fd) != 0) ok = false;
+    return ok;
+}
+
+// POST /keys/self/rotate-secret, body {}, fresh signature each call.
+CurlResult rotateSecretPost(string publicKey, string secretKey, string otp, string challenge) {
+    immutable string path = "/keys/self/rotate-secret";
+    immutable string body_ = "{}";
+    string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
+    if (!otp.empty) {
+        authHeaders ~= format(" -H 'X-Sudo-OTP: %s' -H 'X-Sudo-Challenge: %s'", otp, challenge);
+    }
+    string cmd = format(`curl -s --max-time 120 -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`,
+                        API_BASE, path, authHeaders, body_);
+    return execCurlWithStatus(cmd);
+}
+
+// Replace the secret (2nd field) on the line whose 1st field equals publicKey.
+// Every other line, field, comment and the order stay as they are.
+// Temp file (0600) in the same directory, then rename.
+bool rewriteAccountsCSV(string path, string publicKey, string newSecret) {
+    import std.file : exists, readText, rename, remove;
+    import core.sys.posix.unistd : getpid;
+    if (!exists(path)) return false;
+    string content = readText(path);
+    string[] lines = content.split("\n");
+    bool changed = false;
+    foreach (ref line; lines) {
+        string t = line.strip();
+        if (t.empty || t[0] == '#') continue;
+        auto parts = line.findSplit(",");
+        if (parts[1].empty || parts[0].strip() != publicKey) continue;
+        string rest = parts[2];
+        size_t cut = rest.length;
+        foreach (i, c; rest) {
+            if (c == ',' || c == '\r') { cut = i; break; }
+        }
+        line = parts[0] ~ "," ~ newSecret ~ rest[cut .. $];
+        changed = true;
+        break;
+    }
+    if (!changed) return false;
+    string tmp = format("%s.%d.tmp", path, getpid());
+    if (!writePrivateFile(tmp, lines.join("\n"))) {
+        try { remove(tmp); } catch (Exception e) {}
+        return false;
+    }
+    try {
+        rename(tmp, path);
+    } catch (Exception e) {
+        try { remove(tmp); } catch (Exception e2) {}
+        return false;
+    }
+    return true;
+}
+
+int rotateFail(CurlResult r) {
+    string error = rotateJsonField(r.body, "error");
+    string message = rotateJsonField(r.body, "message");
+    if (r.status == 403 && error == "email_required") {
+        stderr.writeln("Error: this key has no email; add one or use POST /keys/recover");
+        return 3;
+    }
+    if (r.status == 401) {
+        stderr.writeln("Error: authentication failed");
+        return 3;
+    }
+    if (!message.empty) stderr.writefln("Error: %s", message);
+    else if (!error.empty) stderr.writefln("Error: %s", error);
+    else stderr.writefln("Error: HTTP %d", r.status);
+    return 4;
+}
+
+// csvPath: the accounts.csv the credentials came from ("" for flags / env vars).
+int rotateKey(string publicKey, string secretKey, string otpArg, string csvPath) {
+    import std.digest.sha : sha256Of;
+    import std.digest : toHexString, LetterCase;
+    import std.file : exists, readText, remove, mkdirRecurse;
+    import core.sys.posix.unistd : isatty;
+    import core.sys.posix.sys.stat : chmod;
+    import std.string : toStringz;
+
+    if (publicKey.empty || secretKey.empty) {
+        stderr.writeln("Error: API credentials required");
+        return 3;
+    }
+    string dir = environment.get("HOME", ".") ~ "/.unsandbox";
+    auto digest = sha256Of(publicKey);
+    string prefix = toHexString!(LetterCase.lower)(digest).idup[0 .. 16];
+    string challengeFile = dir ~ "/rotate-" ~ prefix ~ ".challenge";
+
+    CurlResult r;
+    if (!otpArg.empty) {
+        if (!exists(challengeFile)) {
+            stderr.writeln("Error: no rotation in progress; run: un key --rotate");
+            return 2;
+        }
+        string challenge = readText(challengeFile).strip();
+        string otp = otpArg.strip();
+        if (!safeHeaderToken(otp) || !safeHeaderToken(challenge)) {
+            stderr.writeln("Error: invalid code or challenge");
+            return 2;
+        }
+        r = rotateSecretPost(publicKey, secretKey, otp, challenge);
+        try { remove(challengeFile); } catch (Exception e) {}
+    } else {
+        r = rotateSecretPost(publicKey, secretKey, "", "");
+        if (r.status == 428) {
+            string challenge = rotateJsonField(r.body, "challenge_id");
+            if (isatty(0)) {
+                stderr.writeln("One-time code emailed to the key owner.");
+                stderr.write("Code: ");
+                stderr.flush();
+                string line = stdin.readln();
+                string otp = line is null ? "" : line.strip();
+                if (otp.empty) {
+                    stderr.writeln("Error: cancelled");
+                    return 1;
+                }
+                if (!safeHeaderToken(otp) || !safeHeaderToken(challenge)) {
+                    stderr.writeln("Error: invalid code or challenge");
+                    return 2;
+                }
+                r = rotateSecretPost(publicKey, secretKey, otp, challenge);
+            } else {
+                if (!exists(dir)) {
+                    mkdirRecurse(dir);
+                    chmod(dir.toStringz, octal!"700");
+                }
+                if (!writePrivateFile(challengeFile, challenge)) {
+                    stderr.writefln("Error: cannot save challenge to %s", challengeFile);
+                    return 1;
+                }
+                writeln("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE");
+                return 0;
+            }
+        }
+    }
+
+    if (r.status != 200) return rotateFail(r);
+    string newSecret = rotateJsonField(r.body, "secret");
+    if (newSecret.empty) {
+        stderr.writeln("Error: API returned no secret");
+        return 4;
+    }
+    if (!csvPath.empty && rewriteAccountsCSV(csvPath, publicKey, newSecret)) {
+        writefln("Secret rotated. Updated %s (public key %s).", csvPath, publicKey);
+    } else {
+        writefln("New secret (shown once, store it now): %s", newSecret);
+        writeln("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.");
+    }
+    return 0;
+}
+
 int main(string[] args) {
     string publicKey;
     string secretKey;
     int accountIndex = -1;  // -1 = not set
     string explicitPublicKey;
+    string credsCsvPath;  // accounts.csv the credentials came from ("" = flags / env)
 
     // First pass: scan for --account N and -p flags
     for (size_t i = 1; i < args.length; i++) {
@@ -1602,11 +1806,13 @@ int main(string[] args) {
         string csvPath = home ~ "/.unsandbox/accounts.csv";
         auto creds = loadAccountsCSV(csvPath, accountIndex);
         if (creds[0].empty) {
-            creds = loadAccountsCSV("accounts.csv", accountIndex);
+            csvPath = "accounts.csv";
+            creds = loadAccountsCSV(csvPath, accountIndex);
         }
         if (!creds[0].empty) {
             publicKey = explicitPublicKey.empty ? creds[0] : explicitPublicKey;
             secretKey = creds[1];
+            credsCsvPath = csvPath;
         }
     } else {
         publicKey = explicitPublicKey.empty
@@ -1629,11 +1835,13 @@ int main(string[] args) {
             string csvPath = home ~ "/.unsandbox/accounts.csv";
             auto creds = loadAccountsCSV(csvPath, envAccount >= 0 ? envAccount : 0);
             if (creds[0].empty) {
-                creds = loadAccountsCSV("accounts.csv", envAccount >= 0 ? envAccount : 0);
+                csvPath = "accounts.csv";
+                creds = loadAccountsCSV(csvPath, envAccount >= 0 ? envAccount : 0);
             }
             if (!creds[0].empty) {
                 publicKey = creds[0];
                 secretKey = creds[1];
+                credsCsvPath = csvPath;
             }
         }
     }
@@ -1743,10 +1951,14 @@ int main(string[] args) {
 
     if (args[1] == "key") {
         bool extend = false;
+        bool rotate = false;
+        string otp;
 
         for (size_t i = 2; i < args.length; i++) {
             if (args[i] == "--extend") extend = true;
-            else if (args[i] == "-k" && i+1 < args.length) publicKey = args[++i];
+            else if (args[i] == "--rotate") rotate = true;
+            else if (args[i] == "--otp" && i+1 < args.length) otp = args[++i];
+            else if (args[i] == "-k" && i+1 < args.length) { publicKey = args[++i]; credsCsvPath = ""; }
             else if (args[i] == "--account" && i+1 < args.length) i++;  // already handled in first pass
         }
 
@@ -1754,6 +1966,8 @@ int main(string[] args) {
             stderr.writefln("%sError: UNSANDBOX_PUBLIC_KEY or UNSANDBOX_API_KEY not set%s", RED, RESET);
             return 1;
         }
+
+        if (rotate) return rotateKey(publicKey, secretKey, otp, credsCsvPath);
 
         validateKey(publicKey, secretKey, extend);
         return 0;

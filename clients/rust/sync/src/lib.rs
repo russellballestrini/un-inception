@@ -71,8 +71,15 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// API base URL
-const API_BASE: &str = "https://api.unsandbox.com";
+/// API base URL: UNSANDBOX_API_URL, default https://api.unsandbox.com, trailing slash stripped
+fn api_base() -> String {
+    env::var("UNSANDBOX_API_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://api.unsandbox.com".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
 
 /// Languages cache TTL in seconds (1 hour)
 const LANGUAGES_CACHE_TTL: u64 = 3600;
@@ -826,7 +833,7 @@ fn make_request<T: for<'de> Deserialize<'de>>(
         .timeout(Duration::from_secs(120))
         .build()?;
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
 
     let body_str = match body {
@@ -882,7 +889,7 @@ fn make_destructive_request<T: for<'de> Deserialize<'de>>(
         .timeout(Duration::from_secs(120))
         .build()?;
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
 
     let body_str = match body {
@@ -972,7 +979,7 @@ fn handle_sudo_challenge<T: for<'de> Deserialize<'de>>(
         .timeout(Duration::from_secs(120))
         .build()?;
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
 
     let body_str = match body {
@@ -2242,7 +2249,7 @@ pub fn set_service_env(
         .timeout(Duration::from_secs(120))
         .build()?;
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
     let signature = sign_request(&creds.secret_key, timestamp, "PUT", &path, &content);
 
@@ -2407,7 +2414,7 @@ pub fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
         .timeout(Duration::from_secs(30))
         .build()?;
 
-    let url = "https://api.unsandbox.com/keys/validate";
+    let url = format!("{}/keys/validate", api_base());
     let path = "/keys/validate";
     let timestamp = get_timestamp();
     let body_str = "";
@@ -2612,7 +2619,7 @@ pub fn logs_stream(source: &str, grep: &str, callback: LogCallback, creds: &Cred
         path = format!("{}?{}", path, params.join("&"));
     }
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
     let signature = sign_request(&creds.secret_key, timestamp, "GET", &path, "");
 
@@ -2713,7 +2720,7 @@ pub fn health_check() -> bool {
         Err(_) => return false,
     };
 
-    match client.get(format!("{}/health", API_BASE)).send() {
+    match client.get(format!("{}/health", api_base())).send() {
         Ok(resp) => resp.status().as_u16() == 200,
         Err(_) => false,
     }
@@ -2865,6 +2872,10 @@ struct CliOptions {
 
     // Languages options
     languages_json: bool,
+
+    // Key options
+    key_rotate: bool,       // key --rotate
+    key_otp: Option<String>, // key --otp CODE
 }
 
 fn print_help() {
@@ -2878,6 +2889,7 @@ USAGE:
     un snapshot [OPTIONS]                Manage snapshots
     un image [OPTIONS]                   Manage images
     un key                               Check API key
+    un key --rotate [--otp CODE]         Rotate API secret (sudo OTP)
     un languages [--json]                List supported languages
 
 GLOBAL OPTIONS:
@@ -3032,6 +3044,18 @@ fn parse_args(args: &[String]) -> CliOptions {
             "-k" | "--secret-key" => {
                 if i + 1 < args.len() {
                     opts.secret_key = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--rotate" => {
+                opts.key_rotate = true;
+                i += 1;
+            }
+            "--otp" => {
+                if i + 1 < args.len() {
+                    opts.key_otp = Some(args[i + 1].clone());
                     i += 2;
                 } else {
                     i += 1;
@@ -4247,7 +4271,7 @@ fn cmd_image(opts: &CliOptions) -> i32 {
     // Handle --lock
     if let Some(ref id) = opts.image_lock {
         match lock_image(id, &creds) {
-            Ok(()) => {
+            Ok(_) => {
                 println!("Image {} locked.", id);
                 return EXIT_SUCCESS;
             }
@@ -4261,7 +4285,7 @@ fn cmd_image(opts: &CliOptions) -> i32 {
     // Handle --unlock
     if let Some(ref id) = opts.image_unlock {
         match unlock_image(id, &creds) {
-            Ok(()) => {
+            Ok(_) => {
                 println!("Image {} unlocked.", id);
                 return EXIT_SUCCESS;
             }
@@ -4304,7 +4328,7 @@ fn cmd_image(opts: &CliOptions) -> i32 {
             }
         };
         match set_image_visibility(id, mode, &creds) {
-            Ok(()) => {
+            Ok(_) => {
                 println!("Image {} visibility set to {}.", id, mode);
                 return EXIT_SUCCESS;
             }
@@ -4323,7 +4347,8 @@ fn cmd_image(opts: &CliOptions) -> i32 {
             .split(',')
             .filter_map(|p| p.trim().parse().ok())
             .collect();
-        match spawn_from_image(id, &name, &ports, None, &creds) {
+        let ports_opt = if ports.is_empty() { None } else { Some(ports.as_slice()) };
+        match spawn_from_image(id, &name, ports_opt, None, None, &creds) {
             Ok(result) => {
                 println!("Service spawned: {}", result.service_id);
                 println!("Name: {}", result.name);
@@ -4375,6 +4400,10 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         }
     };
 
+    if opts.key_rotate {
+        return cmd_key_rotate(opts, &creds);
+    }
+
     match validate_keys(&creds) {
         Ok(result) => {
             if result.valid {
@@ -4400,6 +4429,256 @@ fn cmd_key(opts: &CliOptions) -> i32 {
             EXIT_API_ERROR
         }
     }
+}
+
+/// The accounts.csv the CLI's credentials came from, or None (flags / env vars).
+/// Mirrors resolve_credentials' tiers.
+fn credentials_csv_path(opts: &CliOptions) -> Option<PathBuf> {
+    if opts.public_key.as_deref().map_or(false, |v| !v.is_empty())
+        && opts.secret_key.as_deref().map_or(false, |v| !v.is_empty())
+    {
+        return None;
+    }
+    let index = match opts.account_index {
+        Some(idx) => idx,
+        None => {
+            let env_pk = env::var("UNSANDBOX_PUBLIC_KEY").unwrap_or_default();
+            let env_sk = env::var("UNSANDBOX_SECRET_KEY").unwrap_or_default();
+            if !env_pk.is_empty() && !env_sk.is_empty() {
+                return None;
+            }
+            env::var("UNSANDBOX_ACCOUNT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
+    };
+    let mut candidates = Vec::new();
+    if let Some(dir) = get_unsandbox_dir() {
+        candidates.push(dir.join("accounts.csv"));
+    }
+    candidates.push(PathBuf::from("accounts.csv"));
+    candidates
+        .into_iter()
+        .find(|p| load_credentials_from_csv(p, index).is_some())
+}
+
+/// Replace the secret on the line whose first field is public_key. Every other
+/// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+fn rewrite_accounts_csv(path: &PathBuf, public_key: &str, new_secret: &str) -> bool {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let mut lines: Vec<String> = content.split('\n').map(|l| l.to_string()).collect();
+    let mut changed = false;
+    for line in lines.iter_mut() {
+        let stripped = line.trim();
+        if stripped.is_empty() || stripped.starts_with('#') {
+            continue;
+        }
+        let mut fields: Vec<String> = line.split(',').map(|f| f.to_string()).collect();
+        if fields.len() >= 2 && fields[0].trim() == public_key {
+            fields[1] = new_secret.to_string();
+            *line = fields.join(",");
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "accounts.csv".to_string());
+    let tmp = path.with_file_name(format!(".{}.{}.tmp", name, std::process::id()));
+    let written = (|| -> io::Result<()> {
+        let mut f = open_private(&tmp)?;
+        f.write_all(lines.join("\n").as_bytes())?;
+        f.sync_all()?;
+        set_private(&tmp)?;
+        fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    true
+}
+
+/// Create/truncate a file with mode 0600 (unix)
+fn open_private(path: &PathBuf) -> io::Result<fs::File> {
+    let mut o = fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path)
+}
+
+/// chmod 0600 (unix; no-op elsewhere)
+fn set_private(path: &PathBuf) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// POST /keys/self/rotate-secret with body {} (fresh signature each call).
+/// Returns (status, parsed JSON body).
+fn post_rotate_secret(
+    creds: &Credentials,
+    otp: Option<&str>,
+    challenge: &str,
+) -> Result<(u16, serde_json::Value)> {
+    let path = "/keys/self/rotate-secret";
+    let body = "{}";
+    let client = Client::builder().timeout(Duration::from_secs(120)).build()?;
+    let timestamp = get_timestamp();
+    let signature = sign_request(&creds.secret_key, timestamp, "POST", path, body);
+    let mut req = client
+        .post(format!("{}{}", api_base(), path))
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("Content-Type", "application/json")
+        .body(body);
+    if let Some(code) = otp {
+        req = req
+            .header("X-Sudo-OTP", code)
+            .header("X-Sudo-Challenge", challenge);
+    }
+    let resp = req.send()?;
+    let status = resp.status().as_u16();
+    let text = resp.text().unwrap_or_default();
+    let data = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    Ok((status, data))
+}
+
+/// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+fn cmd_key_rotate(opts: &CliOptions, creds: &Credentials) -> i32 {
+    use sha2::Digest;
+    use std::io::IsTerminal;
+
+    let unsandbox_dir = match get_unsandbox_dir() {
+        Some(d) => d,
+        None => {
+            eprintln!("Error: cannot determine home directory");
+            return EXIT_ERROR;
+        }
+    };
+    let pk_hash = hex::encode(Sha256::digest(creds.public_key.as_bytes()));
+    let challenge_file = unsandbox_dir.join(format!("rotate-{}.challenge", &pk_hash[..16]));
+    let field = |data: &serde_json::Value, key: &str| -> String {
+        data.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    };
+
+    let result = if let Some(otp) = opts.key_otp.as_deref() {
+        let challenge = match fs::read_to_string(&challenge_file) {
+            Ok(c) => c.trim().to_string(),
+            Err(_) => {
+                eprintln!("Error: no rotation in progress; run: un key --rotate");
+                return EXIT_INVALID_ARGS;
+            }
+        };
+        let r = post_rotate_secret(creds, Some(otp.trim()), &challenge);
+        if r.is_ok() {
+            let _ = fs::remove_file(&challenge_file);
+        }
+        r
+    } else {
+        match post_rotate_secret(creds, None, "") {
+            Ok((428, data)) => {
+                let challenge = field(&data, "challenge_id");
+                if io::stdin().is_terminal() {
+                    eprintln!("One-time code emailed to the key owner.");
+                    eprint!("Code: ");
+                    let _ = io::stderr().flush();
+                    let mut line = String::new();
+                    let _ = io::stdin().read_line(&mut line);
+                    let otp = line.trim();
+                    if otp.is_empty() {
+                        eprintln!("Error: cancelled");
+                        return EXIT_ERROR;
+                    }
+                    post_rotate_secret(creds, Some(otp), &challenge)
+                } else {
+                    let saved = (|| -> io::Result<()> {
+                        fs::create_dir_all(&unsandbox_dir)?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = fs::set_permissions(&unsandbox_dir, fs::Permissions::from_mode(0o700));
+                        }
+                        let mut f = open_private(&challenge_file)?;
+                        f.write_all(challenge.as_bytes())?;
+                        set_private(&challenge_file)
+                    })();
+                    if let Err(e) = saved {
+                        eprintln!("Error: {}", e);
+                        return EXIT_ERROR;
+                    }
+                    println!("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE");
+                    return EXIT_SUCCESS;
+                }
+            }
+            other => other,
+        }
+    };
+
+    let (status, data) = match result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return EXIT_API_ERROR;
+        }
+    };
+    if status != 200 {
+        if status == 403 && field(&data, "error") == "email_required" {
+            eprintln!("Error: this key has no email; add one or use POST /keys/recover");
+            return EXIT_AUTH_ERROR;
+        }
+        if status == 401 {
+            eprintln!("Error: authentication failed");
+            return EXIT_AUTH_ERROR;
+        }
+        let mut msg = field(&data, "message");
+        if msg.is_empty() {
+            msg = field(&data, "error");
+        }
+        if msg.is_empty() {
+            msg = format!("HTTP {}", status);
+        }
+        eprintln!("Error: {}", msg);
+        return EXIT_API_ERROR;
+    }
+    let new_secret = field(&data, "secret");
+    if new_secret.is_empty() {
+        eprintln!("Error: API returned no secret");
+        return EXIT_API_ERROR;
+    }
+
+    match credentials_csv_path(opts) {
+        Some(csv) if rewrite_accounts_csv(&csv, &creds.public_key, &new_secret) => {
+            println!(
+                "Secret rotated. Updated {} (public key {}).",
+                csv.display(),
+                creds.public_key
+            );
+        }
+        _ => {
+            println!("New secret (shown once, store it now): {}", new_secret);
+            println!("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.");
+        }
+    }
+    EXIT_SUCCESS
 }
 
 fn cmd_languages(opts: &CliOptions) -> i32 {
@@ -4468,8 +4747,9 @@ pub fn cli_main() -> i32 {
         }
         Some(cmd) => {
             // Treat unknown command as file to execute
+            let cmd = cmd.to_string();
             let mut new_opts = opts;
-            new_opts.positional.insert(0, cmd.to_string());
+            new_opts.positional.insert(0, cmd);
             new_opts.command = None;
             cmd_execute(&new_opts)
         }

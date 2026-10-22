@@ -10,7 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-const string API_BASE = "https://api.unsandbox.com";
+var API_BASE = (Environment.GetEnvironmentVariable("UNSANDBOX_API_URL") is { Length: > 0 } apiUrlEnv ? apiUrlEnv : "https://api.unsandbox.com").TrimEnd('/');
 const string PORTAL_BASE = "https://unsandbox.com";
 const string VERSION = "4.3.4";
 
@@ -70,7 +70,7 @@ try
         case "snapshot": CmdSnapshot(parsedArgs); break;
         case "image": CmdImage(parsedArgs); break;
         case "languages": CmdLanguages(parsedArgs); break;
-        case "key": CmdKey(parsedArgs); break;
+        case "key": if (parsedArgs.KeyRotate) CmdKeyRotate(parsedArgs); else CmdKey(parsedArgs); break;
         default:
             if (parsedArgs.SourceFile != null) CmdExecute(parsedArgs);
             else { PrintHelp(); return 1; }
@@ -231,6 +231,7 @@ void CmdKey(Args args)
     {
         Console.Error.WriteLine($"{RED}Error: Invalid response from server{RESET}");
         Environment.Exit(1);
+        return;
     }
 
     var isValid = validEl.GetBoolean();
@@ -262,6 +263,195 @@ void CmdKey(Args args)
     else
     {
         Console.WriteLine($"{RED}Invalid{RESET}");
+    }
+}
+
+// The accounts.csv the CLI's credentials came from, or null (env vars / legacy key).
+// Mirrors GetApiKeys' tiers.
+string? CredentialsCsvPath(Args args)
+{
+    var index = args.Account;
+    if (index < 0)
+    {
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY")) &&
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY")))
+            return null;
+        index = 0;
+        var acctEnv = Environment.GetEnvironmentVariable("UNSANDBOX_ACCOUNT");
+        if (!string.IsNullOrEmpty(acctEnv) && int.TryParse(acctEnv, out var parsedIdx))
+            index = parsedIdx;
+    }
+    var home = Environment.GetEnvironmentVariable("HOME")
+        ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+    foreach (var path in new[] { Path.Combine(home, ".unsandbox", "accounts.csv"), "accounts.csv" })
+    {
+        var (pk, sk) = LoadAccountsCSV(path, index);
+        if (!string.IsNullOrEmpty(pk) && !string.IsNullOrEmpty(sk)) return path;
+    }
+    return null;
+}
+
+// Write a file created with mode 0600.
+void WritePrivateFile(string path, string content)
+{
+    var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+    if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    using (var stream = new FileStream(path, options))
+    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+    {
+        writer.Write(content);
+    }
+    if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+}
+
+// Replace the secret on the line whose first field is publicKey. Every other
+// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+bool RewriteAccountsCsv(string path, string publicKey, string newSecret)
+{
+    var lines = File.ReadAllText(path).Split('\n');
+    var changed = false;
+    for (var j = 0; j < lines.Length; j++)
+    {
+        var stripped = lines[j].Trim();
+        if (stripped.Length == 0 || stripped.StartsWith("#")) continue;
+        var fields = lines[j].Split(',');
+        if (fields.Length >= 2 && fields[0].Trim() == publicKey)
+        {
+            fields[1] = newSecret;
+            lines[j] = string.Join(",", fields);
+            changed = true;
+            break;
+        }
+    }
+    if (!changed) return false;
+    var full = Path.GetFullPath(path);
+    var tmp = Path.Combine(Path.GetDirectoryName(full)!, $".{Path.GetFileName(full)}.{Environment.ProcessId}.tmp");
+    WritePrivateFile(tmp, string.Join("\n", lines));
+    File.Move(tmp, full, overwrite: true);
+    return true;
+}
+
+// POST /keys/self/rotate-secret with body {}; returns (status, json).
+(int Status, JsonElement Data) RotatePost(string publicKey, string secretKey, string? otp, string? challenge)
+{
+    const string path = "/keys/self/rotate-secret";
+    const string body = "{}";
+    using var request = new HttpRequestMessage(HttpMethod.Post, path);
+    request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+    request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey));
+    var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes($"{timestamp}:POST:{path}:{body}"))).ToLowerInvariant();
+    request.Headers.Add("Authorization", $"Bearer {publicKey}");
+    request.Headers.Add("X-Timestamp", timestamp.ToString());
+    request.Headers.Add("X-Signature", signature);
+    if (otp != null)
+    {
+        request.Headers.Add("X-Sudo-OTP", otp);
+        request.Headers.Add("X-Sudo-Challenge", challenge ?? "");
+    }
+    var response = httpClient.Send(request);
+    using var reader = new StreamReader(response.Content.ReadAsStream());
+    var text = reader.ReadToEnd();
+    JsonElement data;
+    try { data = JsonDocument.Parse(text).RootElement.Clone(); }
+    catch { data = JsonDocument.Parse("{}").RootElement.Clone(); }
+    if (data.ValueKind != JsonValueKind.Object) data = JsonDocument.Parse("{}").RootElement.Clone();
+    return ((int)response.StatusCode, data);
+}
+
+string? JsonField(JsonElement data, string key) =>
+    data.TryGetProperty(key, out var v) && v.ValueKind != JsonValueKind.Null ? (v.ValueKind == JsonValueKind.String ? v.GetString() : v.ToString()) : null;
+
+// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+void CmdKeyRotate(Args args)
+{
+    var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
+    if (string.IsNullOrEmpty(secretKey))
+    {
+        Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
+        Environment.Exit(1);
+    }
+    var home = Environment.GetEnvironmentVariable("HOME")
+        ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+    var unsandboxDir = Path.Combine(home, ".unsandbox");
+    var hex = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(publicKey))).ToLowerInvariant();
+    var challengeFile = Path.Combine(unsandboxDir, $"rotate-{hex[..16]}.challenge");
+
+    int status;
+    JsonElement data;
+    if (args.KeyOtp != null)
+    {
+        if (!File.Exists(challengeFile))
+        {
+            Console.Error.WriteLine("Error: no rotation in progress; run: un key --rotate");
+            Environment.Exit(2);
+        }
+        var challenge = File.ReadAllText(challengeFile).Trim();
+        (status, data) = RotatePost(publicKey, secretKey, args.KeyOtp.Trim(), challenge);
+        File.Delete(challengeFile);
+    }
+    else
+    {
+        (status, data) = RotatePost(publicKey, secretKey, null, null);
+        if (status == 428)
+        {
+            var challenge = JsonField(data, "challenge_id") ?? "";
+            if (!Console.IsInputRedirected)
+            {
+                Console.Error.WriteLine("One-time code emailed to the key owner.");
+                Console.Error.Write("Code: ");
+                Console.Error.Flush();
+                var code = (Console.ReadLine() ?? "").Trim();
+                if (code.Length == 0)
+                {
+                    Console.Error.WriteLine("Error: cancelled");
+                    Environment.Exit(1);
+                }
+                (status, data) = RotatePost(publicKey, secretKey, code, challenge);
+            }
+            else
+            {
+                Directory.CreateDirectory(unsandboxDir);
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(unsandboxDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                WritePrivateFile(challengeFile, challenge);
+                Console.WriteLine("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE");
+                return;
+            }
+        }
+    }
+
+    if (status != 200)
+    {
+        if (status == 403 && JsonField(data, "error") == "email_required")
+        {
+            Console.Error.WriteLine("Error: this key has no email; add one or use POST /keys/recover");
+            Environment.Exit(3);
+        }
+        if (status == 401)
+        {
+            Console.Error.WriteLine("Error: authentication failed");
+            Environment.Exit(3);
+        }
+        Console.Error.WriteLine($"Error: {JsonField(data, "message") ?? JsonField(data, "error") ?? "HTTP " + status}");
+        Environment.Exit(4);
+    }
+    var newSecret = JsonField(data, "secret");
+    if (string.IsNullOrEmpty(newSecret))
+    {
+        Console.Error.WriteLine("Error: API returned no secret");
+        Environment.Exit(4);
+    }
+    var csvPath = CredentialsCsvPath(args);
+    if (csvPath != null && RewriteAccountsCsv(csvPath, publicKey, newSecret!))
+    {
+        Console.WriteLine($"Secret rotated. Updated {csvPath} (public key {publicKey}).");
+    }
+    else
+    {
+        Console.WriteLine($"New secret (shown once, store it now): {newSecret}");
+        Console.WriteLine("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.");
     }
 }
 
@@ -768,18 +958,6 @@ void CmdLanguages(Args args)
             Console.WriteLine(lang);
 }
 
-// HTTP exception with status code for sudo handling
-class HttpStatusException : Exception
-{
-    public int StatusCode { get; }
-    public string ResponseBody { get; }
-    public HttpStatusException(int statusCode, string responseBody) : base($"HTTP {statusCode}: {responseBody}")
-    {
-        StatusCode = statusCode;
-        ResponseBody = responseBody;
-    }
-}
-
 Dictionary<string, object> ApiRequest(string endpoint, HttpMethod method, Dictionary<string, object>? data, string publicKey, string secretKey, string? sudoOtp = null, string? sudoChallengeId = null)
 {
     var body = data != null ? JsonSerializer.Serialize(data, jsonOptions) : "";
@@ -1084,6 +1262,8 @@ Args ParseArgs(string[] args)
         else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
         else if (arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--rotate") result.KeyRotate = true;
+        else if (arg == "--otp") result.KeyOtp = args[++i];
         else if (arg == "--account") result.Account = int.Parse(args[++i]);
         else if (arg == "--delete")
         {
@@ -1212,6 +1392,8 @@ Languages options:
 
 Key options:
   --extend          Open browser to extend expired key
+  --rotate          Rotate the key's secret (emailed one-time code)
+  --otp CODE        Finish a rotation started without a terminal
 
 Environment:
   UNSANDBOX_PUBLIC_KEY   Your public API key
@@ -1227,7 +1409,7 @@ Environment:
 /// </summary>
 public static class Unsandbox
 {
-    private static readonly HttpClient _httpClient = new() { BaseAddress = new Uri("https://api.unsandbox.com"), Timeout = TimeSpan.FromMinutes(5) };
+    private static readonly HttpClient _httpClient = new() { BaseAddress = new Uri((Environment.GetEnvironmentVariable("UNSANDBOX_API_URL") is { Length: > 0 } u ? u : "https://api.unsandbox.com").TrimEnd('/')), Timeout = TimeSpan.FromMinutes(5) };
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -2120,7 +2302,8 @@ class Args
     public bool ServiceShowFreezePageEnabled = true;
     public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
-    public bool KeyExtend;
+    public bool KeyExtend, KeyRotate;
+    public string? KeyOtp;
     public int Account = -1;
     public bool SnapshotList;
     public string? SnapshotInfo, SnapshotDelete, SnapshotLock, SnapshotUnlock, SnapshotClone;
@@ -2133,4 +2316,16 @@ class Args
     public string? ImageSpawn, ImageClone;
     public string? ImageGrantAccess, ImageRevokeAccess, ImageTransfer;
     public bool LanguagesJson;
+}
+
+// HTTP exception with status code for sudo handling
+class HttpStatusException : Exception
+{
+    public int StatusCode { get; }
+    public string ResponseBody { get; }
+    public HttpStatusException(int statusCode, string responseBody) : base($"HTTP {statusCode}: {responseBody}")
+    {
+        StatusCode = statusCode;
+        ResponseBody = responseBody;
+    }
 }

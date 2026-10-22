@@ -46,6 +46,7 @@
 
 (use-modules (ice-9 popen)
              (ice-9 rdelim)
+             (ice-9 regex)
              (ice-9 format))
 
 (define blue "\x1b[34m")
@@ -53,6 +54,11 @@
 (define green "\x1b[32m")
 (define yellow "\x1b[33m")
 (define reset "\x1b[0m")
+
+(define api-base
+  ;; UNSANDBOX_API_URL points every request at staging or a local endpoint
+  (let ((url (or (getenv "UNSANDBOX_API_URL") "https://api.unsandbox.com")))
+    (string-trim-right url #\/)))
 
 (define portal-base "https://unsandbox.com")
 
@@ -132,7 +138,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
-         (cmd (string-append "curl -s -X POST https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s -X POST " api-base endpoint
                             " -H 'Content-Type: application/json' "
                             (string-join auth-headers " ")
                             " -d @" tmp-file))
@@ -163,7 +169,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "GET" endpoint ""))
-         (cmd (string-append "curl -s https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s " api-base endpoint
                             " " (string-join auth-headers " ")))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
@@ -191,7 +197,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
-         (cmd (string-append "curl -s -X DELETE https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s -X DELETE " api-base endpoint
                             " " (string-join auth-headers " ")))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
@@ -244,7 +250,7 @@
              (content-header (if body "-H 'Content-Type: application/json'" ""))
              (body-part (if body (format #f "-d '~a'" body) ""))
              (cmd (string-append "curl -s -w '\\n%{http_code}' " method-flag
-                                " https://api.unsandbox.com" endpoint
+                                " " api-base endpoint
                                 " " (string-join auth-headers " ")
                                 " " sudo-otp-header
                                 " " sudo-challenge-header
@@ -273,7 +279,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
-         (cmd (string-append "curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s -w '\\n%{http_code}' -X DELETE " api-base endpoint
                             " " (string-join auth-headers " ")))
          (port (open-input-pipe cmd))
          (output (let loop ((lines '()))
@@ -303,7 +309,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
-         (cmd (string-append "curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s -w '\\n%{http_code}' -X POST " api-base endpoint
                             " -H 'Content-Type: application/json' "
                             (string-join auth-headers " ")
                             " -d @" tmp-file))
@@ -335,7 +341,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "PATCH" endpoint json-data))
-         (cmd (string-append "curl -s -X PATCH https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s -X PATCH " api-base endpoint
                             " -H 'Content-Type: application/json' "
                             (string-join auth-headers " ")
                             " -d @" tmp-file))
@@ -400,7 +406,7 @@
          (public-key (car keys))
          (secret-key (cadr keys))
          (auth-headers (build-auth-headers public-key secret-key "PUT" endpoint content))
-         (cmd (string-append "curl -s -X PUT https://api.unsandbox.com" endpoint
+         (cmd (string-append "curl -s -X PUT " api-base endpoint
                             " -H 'Content-Type: text/plain' "
                             (string-join auth-headers " ")
                             " --data-binary @" tmp-file))
@@ -462,12 +468,13 @@
                   (let ((trimmed (string-trim-both line)))
                     (when (and (> (string-length trimmed) 0)
                                (not (char=? (string-ref trimmed 0) #\#)))
-                      (let ((comma-pos (string-index trimmed #\,)))
-                        (when comma-pos
+                      ;; fields: public_key,secret_key[,label...]
+                      (let ((fields (string-split trimmed #\,)))
+                        (when (>= (length fields) 2)
                           (set! rows (append rows
                                              (list (list
-                                                    (string-trim-both (substring trimmed 0 comma-pos))
-                                                    (string-trim-both (substring trimmed (1+ comma-pos)))))))))))
+                                                    (string-trim-both (car fields))
+                                                    (string-trim-both (cadr fields))))))))))
                   (loop))))
             (close-input-port port)
             (if (< index (length rows))
@@ -510,7 +517,7 @@
          (or result
              (begin
                (display "Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set (or UNSANDBOX_API_KEY for backwards compat)\n" (current-error-port))
-               (exit 1)))))))
+               (exit 1))))))))
 
 (define (get-api-key)
   (car (get-api-keys)))
@@ -533,10 +540,11 @@
   (if secret-key
       (let* ((timestamp (number->string (quotient (current-time) 1)))
              (signature (make-signature secret-key timestamp method path body)))
-        (list "-H" (format #f "Authorization: Bearer ~a" public-key)
-              "-H" (format #f "X-Timestamp: ~a" timestamp)
-              "-H" (format #f "X-Signature: ~a" signature)))
-      (list "-H" (format #f "Authorization: Bearer ~a" public-key))))
+        ;; quoted: callers join these into a shell command line
+        (list "-H" (format #f "'Authorization: Bearer ~a'" public-key)
+              "-H" (format #f "'X-Timestamp: ~a'" timestamp)
+              "-H" (format #f "'X-Signature: ~a'" signature)))
+      (list "-H" (format #f "'Authorization: Bearer ~a'" public-key))))
 
 (define (json-extract-string json key)
   "Extract string value for key from JSON (simple parser)"
@@ -989,7 +997,7 @@
 
 ;; Utility functions
 (define (health-check)
-  (let* ((cmd "curl -s https://api.unsandbox.com/health")
+  (let* ((cmd (string-append "curl -s " api-base "/health"))
          (port (open-input-pipe cmd))
          (result (let loop ((chars '()))
                    (let ((char (read-char port)))
@@ -1088,6 +1096,187 @@
                     (exit 1))))
             (loop (cdr args) files)))))
 
+;; ============================================================================
+;; un key --rotate [--otp CODE]: rotate this key's secret (sudo OTP).
+;; See CLI_SPEC.md "un key --rotate". curl runs without a shell; headers travel
+;; in a 0600 temp file so the OTP never appears on a command line.
+;; ============================================================================
+
+(define (json-string-field json key)
+  "Extract a string field from JSON without a subprocess (keeps secrets off argv)."
+  (let ((m (string-match (format #f "\"~a\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]*)\"" key) json)))
+    (and m (match:substring m 1))))
+
+(define (sha256-hex-prefix text n)
+  "First N hex chars of sha256(TEXT). Only ever called with a public key."
+  (let* ((port (open-pipe* OPEN_READ "sh" "-c" "printf '%s' \"$1\" | sha256sum" "sh" text))
+         (line (read-line port)))
+    (close-pipe port)
+    (substring line 0 n)))
+
+(define (credentials-csv-path)
+  "accounts.csv our credentials came from, or #f (env vars). Mirrors get-api-keys tiers."
+  (let ((home (or (getenv "HOME") ".")))
+    (define (first-csv idx)
+      (let ((home-csv (string-append home "/.unsandbox/accounts.csv")))
+        (cond
+          ((load-accounts-csv home-csv idx) home-csv)
+          ((load-accounts-csv "./accounts.csv" idx) "./accounts.csv")
+          (else #f))))
+    (cond
+      ((not (eq? *account-index* #f)) (first-csv *account-index*))
+      ((and (getenv "UNSANDBOX_PUBLIC_KEY") (getenv "UNSANDBOX_SECRET_KEY")) #f)
+      ((getenv "UNSANDBOX_API_KEY") #f)
+      (else
+       (let* ((acc-env (getenv "UNSANDBOX_ACCOUNT"))
+              (n (and acc-env (string->number acc-env))))
+         (first-csv (if (number? n) (inexact->exact n) 0)))))))
+
+(define (write-private-file path content)
+  "Create/truncate PATH with mode 0600 and write CONTENT."
+  (let ((port (open path (logior O_WRONLY O_CREAT O_TRUNC) #o600)))
+    (display content port)
+    (close-port port)
+    (chmod path #o600)))
+
+(define (rewrite-accounts-csv path public-key new-secret)
+  "Replace the secret on the line whose first field is PUBLIC-KEY; keep every other
+   line, field, comment and the order. Temp file (0600) in the same dir + rename."
+  (let* ((lines (string-split (read-file-raw path) #\newline))
+         (changed #f)
+         (new-lines
+          (map (lambda (line)
+                 (let ((trimmed (string-trim-both line)))
+                   (if (or changed
+                           (= (string-length trimmed) 0)
+                           (char=? (string-ref trimmed 0) #\#))
+                       line
+                       (let ((fields (string-split line #\,)))
+                         (if (and (>= (length fields) 2)
+                                  (string=? (string-trim-both (car fields)) public-key))
+                             (begin
+                               (set! changed #t)
+                               (string-join (cons (car fields) (cons new-secret (cddr fields))) ","))
+                             line)))))
+               lines)))
+    (and changed
+         (let ((tmp (string-append (dirname path) "/." (basename path) "."
+                                   (number->string (getpid)) ".tmp")))
+           (write-private-file tmp (string-join new-lines "\n"))
+           (rename-file tmp path)
+           #t))))
+
+(define (read-file-raw path)
+  "Whole file as one string, byte-for-byte line structure preserved."
+  (call-with-input-file path
+    (lambda (port)
+      (let loop ((chars '()))
+        (let ((c (read-char port)))
+          (if (eof-object? c)
+              (list->string (reverse chars))
+              (loop (cons c chars))))))))
+
+(define (rotate-post public-key secret-key otp challenge)
+  "POST /keys/self/rotate-secret with body {}. Returns (body . http-code)."
+  (let* ((path "/keys/self/rotate-secret")
+         (body "{}")
+         (timestamp (number->string (current-time)))
+         (signature (make-signature secret-key timestamp "POST" path body))
+         (hdr-file (format #f "/tmp/un_scm_hdr_~a_~a" (getpid) (random 999999)))
+         (headers (string-append
+                   "Authorization: Bearer " public-key "\n"
+                   "X-Timestamp: " timestamp "\n"
+                   "X-Signature: " signature "\n"
+                   "Content-Type: application/json\n"
+                   (if otp
+                       (string-append "X-Sudo-OTP: " otp "\n"
+                                      "X-Sudo-Challenge: " (or challenge "") "\n")
+                       ""))))
+    (write-private-file hdr-file headers)
+    (let* ((port (open-pipe* OPEN_READ "curl" "-s" "-w" "\n%{http_code}" "-X" "POST"
+                             (string-append api-base path)
+                             "-H" (string-append "@" hdr-file)
+                             "--data-binary" body))
+           (output (read-file-port port)))
+      (close-pipe port)
+      (delete-file hdr-file)
+      (parse-http-response-with-code output))))
+
+(define (read-file-port port)
+  (let loop ((chars '()))
+    (let ((c (read-char port)))
+      (if (eof-object? c)
+          (list->string (reverse chars))
+          (loop (cons c chars))))))
+
+(define (key-rotate-cmd otp-arg)
+  (let* ((keys (get-api-keys))
+         (public-key (car keys))
+         (secret-key (cadr keys))
+         (unsandbox-dir (string-append (or (getenv "HOME") ".") "/.unsandbox"))
+         (challenge-file (string-append unsandbox-dir "/rotate-"
+                                        (sha256-hex-prefix public-key 16) ".challenge")))
+    (define (fail body code)
+      (let ((err (json-string-field body "error"))
+            (msg (json-string-field body "message")))
+        (cond
+          ((and (= code 403) (equal? err "email_required"))
+           (display "Error: this key has no email; add one or use POST /keys/recover\n" (current-error-port))
+           (exit 3))
+          ((= code 401)
+           (display "Error: authentication failed\n" (current-error-port))
+           (exit 3))
+          (else
+           (format (current-error-port) "Error: ~a\n" (or msg err (format #f "HTTP ~a" code)))
+           (exit 4)))))
+    (unless secret-key
+      (display "Error: key rotation requires UNSANDBOX_SECRET_KEY (HMAC auth)\n" (current-error-port))
+      (exit 3))
+    (let ((resp
+           (if otp-arg
+               (let ((challenge (and (file-exists? challenge-file)
+                                     (string-trim-both (read-file-raw challenge-file)))))
+                 (unless challenge
+                   (display "Error: no rotation in progress; run: un key --rotate\n" (current-error-port))
+                   (exit 2))
+                 (let ((r (rotate-post public-key secret-key (string-trim-both otp-arg) challenge)))
+                   (when (file-exists? challenge-file) (delete-file challenge-file))
+                   r))
+               (let ((r (rotate-post public-key secret-key #f #f)))
+                 (if (= (cdr r) 428)
+                     (let ((challenge (or (json-string-field (car r) "challenge_id") "")))
+                       (if (isatty? (current-input-port))
+                           (begin
+                             (display "One-time code emailed to the key owner.\n" (current-error-port))
+                             (display "Code: " (current-error-port))
+                             (force-output (current-error-port))
+                             (let* ((line (read-line))
+                                    (otp (if (eof-object? line) "" (string-trim-both line))))
+                               (when (string=? otp "")
+                                 (display "Error: cancelled\n" (current-error-port))
+                                 (exit 1))
+                               (rotate-post public-key secret-key otp challenge)))
+                           (begin
+                             (unless (file-exists? unsandbox-dir)
+                               (mkdir unsandbox-dir #o700))
+                             (chmod unsandbox-dir #o700)
+                             (write-private-file challenge-file challenge)
+                             (display "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n")
+                             (exit 0))))
+                     r)))))
+      (unless (= (cdr resp) 200)
+        (fail (car resp) (cdr resp)))
+      (let ((new-secret (json-string-field (car resp) "secret"))
+            (csv-path (credentials-csv-path)))
+        (unless new-secret
+          (display "Error: API returned no secret\n" (current-error-port))
+          (exit 4))
+        (if (and csv-path (rewrite-accounts-csv csv-path public-key new-secret))
+            (format #t "Secret rotated. Updated ~a (public key ~a).\n" csv-path public-key)
+            (begin
+              (format #t "New secret (shown once, store it now): ~a\n" new-secret)
+              (display "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n")))))))
+
 (define (main args)
   (if (null? args)
       (begin
@@ -1096,6 +1285,7 @@
         (display "       un.scm service [options]\n")
         (display "       un.scm image [options]\n")
         (display "       un.scm key [--extend]\n")
+        (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
         (display "\nLanguages options:\n")
         (display "  --json              Output as JSON array\n")
@@ -1118,8 +1308,13 @@
          (let ((json-output (and (> (length args) 1) (equal? (cadr args) "--json"))))
            (languages-cmd json-output)))
         ((equal? (car args) "key")
-         (let ((extend (and (> (length args) 1) (equal? (cadr args) "--extend"))))
-           (validate-key-cmd extend)))
+         (let ((extend (member "--extend" (cdr args)))
+               (rotate (member "--rotate" (cdr args)))
+               (otp (let ((m (member "--otp" (cdr args))))
+                      (and m (pair? (cdr m)) (cadr m)))))
+           (if (or rotate otp)
+               (key-rotate-cmd otp)
+               (validate-key-cmd (and extend #t)))))
         ((equal? (car args) "snapshot")
          (cond
            ((and (> (length args) 1) (equal? (cadr args) "--list"))

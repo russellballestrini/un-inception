@@ -70,7 +70,14 @@ const process = std.process;
 const mem = std.mem;
 const time = std.time;
 
-const API_BASE = "https://api.unsandbox.com";
+const DEFAULT_API_BASE = "https://api.unsandbox.com";
+
+// API base URL: UNSANDBOX_API_URL (trailing slash stripped), default https://api.unsandbox.com
+fn apiBase() []const u8 {
+    const v = std.posix.getenv("UNSANDBOX_API_URL") orelse return DEFAULT_API_BASE;
+    const trimmed = mem.trimRight(u8, v, "/");
+    return if (trimmed.len == 0) DEFAULT_API_BASE else trimmed;
+}
 const PORTAL_BASE = "https://unsandbox.com";
 const MAX_ENV_CONTENT_SIZE: usize = 65536;
 const LANGUAGES_CACHE_TTL: i64 = 3600; // 1 hour in seconds
@@ -78,6 +85,16 @@ const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
 const YELLOW = "\x1b[33m";
 const RESET = "\x1b[0m";
+
+extern "c" fn system(command: [*:0]const u8) c_int;
+extern "c" fn getpid() c_int;
+
+// Run a shell command via libc system(); cmd need not be null-terminated.
+fn runShell(cmd: []const u8) c_int {
+    const z = std.heap.c_allocator.dupeZ(u8, cmd) catch return -1;
+    defer std.heap.c_allocator.free(z);
+    return system(z.ptr);
+}
 
 // HMAC-SHA256 computed in-process. Returns lowercase hex (caller frees).
 // Never shell out for this: a subprocess would expose secret_key in argv (ps)
@@ -192,7 +209,7 @@ const CurlResult = struct {
 };
 
 fn execCurlWithStatus(allocator: std.mem.Allocator, method: []const u8, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8, extra_headers: []const u8) !CurlResult {
-    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ API_BASE, endpoint });
+    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ apiBase(), endpoint });
     defer allocator.free(url);
 
     const auth_headers = try buildAuthCmd(allocator, method, endpoint, body, public_key, secret_key);
@@ -214,7 +231,7 @@ fn execCurlWithStatus(allocator: std.mem.Allocator, method: []const u8, endpoint
     };
     defer allocator.free(cmd);
 
-    _ = std.c.system(cmd.ptr);
+    _ = runShell(cmd);
 
     // Read response body
     const response_body = fs.cwd().readFileAlloc(allocator, response_file, 1024 * 1024) catch try allocator.dupe(u8, "");
@@ -294,7 +311,7 @@ fn execDestructiveCurl(allocator: std.mem.Allocator, method: []const u8, endpoin
 }
 
 fn execCurlPut(allocator: std.mem.Allocator, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8) !bool {
-    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ API_BASE, endpoint });
+    const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ apiBase(), endpoint });
     defer allocator.free(url);
 
     const auth_headers = try buildAuthCmd(allocator, "PUT", endpoint, body, public_key, secret_key);
@@ -310,7 +327,7 @@ fn execCurlPut(allocator: std.mem.Allocator, endpoint: []const u8, body: []const
     const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PUT '{s}' -H 'Content-Type: text/plain' {s} --data-binary @{s}", .{ url, auth_headers, body_file });
     defer allocator.free(cmd);
 
-    const ret = std.c.system(cmd.ptr);
+    const ret = runShell(cmd);
     return ret == 0;
 }
 
@@ -669,7 +686,7 @@ pub fn hmacSign(allocator: std.mem.Allocator, secret_key: []const u8, message: [
 }
 
 pub fn healthCheck(allocator: std.mem.Allocator) !bool {
-    const cmd = try std.fmt.allocPrint(allocator, "curl -s -o /dev/null -w '%{{http_code}}' '{s}/health' 2>/dev/null", .{API_BASE});
+    const cmd = try std.fmt.allocPrint(allocator, "curl -s -o /dev/null -w '%{{http_code}}' '{s}/health' 2>/dev/null", .{apiBase()});
     defer allocator.free(cmd);
 
     const result = try std.process.Child.run(.{
@@ -703,9 +720,9 @@ fn cmdServiceEnv(allocator: std.mem.Allocator, action: []const u8, target: []con
         defer allocator.free(path);
         const auth_headers = try buildAuthCmd(allocator, "GET", path, "", public_key, secret_key);
         defer allocator.free(auth_headers);
-        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}{s}' {s}", .{ API_BASE, path, auth_headers });
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}{s}' {s}", .{ apiBase(), path, auth_headers });
         defer allocator.free(cmd);
-        _ = std.c.system(cmd.ptr);
+        _ = runShell(cmd);
         std.debug.print("\n", .{});
     } else if (mem.eql(u8, action, "set")) {
         if (envs.items.len == 0 and env_file == null) {
@@ -730,18 +747,18 @@ fn cmdServiceEnv(allocator: std.mem.Allocator, action: []const u8, target: []con
         defer allocator.free(path);
         const auth_headers = try buildAuthCmd(allocator, "POST", path, "", public_key, secret_key);
         defer allocator.free(auth_headers);
-        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}{s}' {s}", .{ API_BASE, path, auth_headers });
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}{s}' {s}", .{ apiBase(), path, auth_headers });
         defer allocator.free(cmd);
-        _ = std.c.system(cmd.ptr);
+        _ = runShell(cmd);
         std.debug.print("\n", .{});
     } else if (mem.eql(u8, action, "delete")) {
         const path = try std.fmt.allocPrint(allocator, "/services/{s}/env", .{target});
         defer allocator.free(path);
         const auth_headers = try buildAuthCmd(allocator, "DELETE", path, "", public_key, secret_key);
         defer allocator.free(auth_headers);
-        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}{s}' {s}", .{ API_BASE, path, auth_headers });
+        const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}{s}' {s}", .{ apiBase(), path, auth_headers });
         defer allocator.free(cmd);
-        _ = std.c.system(cmd.ptr);
+        _ = runShell(cmd);
         std.debug.print("\n{s}Vault deleted for service {s}{s}\n", .{ GREEN, target, RESET });
     } else {
         std.debug.print("{s}Error: Unknown env action: {s}{s}\n", .{ RED, action, RESET });
@@ -902,6 +919,237 @@ fn resolveCredentials(allocator: std.mem.Allocator, arg_pk: []const u8, arg_sk: 
     std.process.exit(1);
 }
 
+/// The accounts.csv the credentials came from (caller frees), or null for
+/// flags / env vars. Mirrors resolveCredentials' tiers.
+fn credentialsCsvPath(allocator: std.mem.Allocator, arg_pk: []const u8, arg_sk: []const u8, account_index: i64) !?[]u8 {
+    if (arg_pk.len > 0 and arg_sk.len > 0) return null;
+    var index: usize = 0;
+    if (account_index >= 0) {
+        index = @intCast(account_index);
+    } else {
+        const env_pk = std.posix.getenv("UNSANDBOX_PUBLIC_KEY") orelse (std.posix.getenv("UNSANDBOX_API_KEY") orelse "");
+        const env_sk = std.posix.getenv("UNSANDBOX_SECRET_KEY") orelse "";
+        if (env_pk.len > 0 and env_sk.len > 0) return null;
+        const acct = std.posix.getenv("UNSANDBOX_ACCOUNT") orelse "0";
+        index = std.fmt.parseInt(usize, mem.trim(u8, acct, " \t"), 10) catch 0;
+    }
+    if (std.posix.getenv("HOME")) |home| {
+        const home_csv = try std.fmt.allocPrint(allocator, "{s}/.unsandbox/accounts.csv", .{home});
+        if (try loadCsvRow(allocator, home_csv, index)) |row| {
+            allocator.free(row.pk);
+            allocator.free(row.sk);
+            return home_csv;
+        }
+        allocator.free(home_csv);
+    }
+    if (try loadCsvRow(allocator, "accounts.csv", index)) |row| {
+        allocator.free(row.pk);
+        allocator.free(row.sk);
+        return try allocator.dupe(u8, "accounts.csv");
+    }
+    return null;
+}
+
+/// Replace the secret on the line whose first field is public_key. Every other
+/// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+fn rewriteAccountsCsv(allocator: std.mem.Allocator, path: []const u8, public_key: []const u8, new_secret: []const u8) !bool {
+    const content = fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024) catch return false;
+    defer allocator.free(content);
+
+    var out = std.ArrayList(u8).init(allocator);
+    defer out.deinit();
+    var changed = false;
+    var lines = mem.splitScalar(u8, content, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (!first) try out.append('\n');
+        first = false;
+        const stripped = mem.trim(u8, line, " \t\r");
+        if (!changed and stripped.len > 0 and stripped[0] != '#') {
+            if (mem.indexOfScalar(u8, line, ',')) |c1| {
+                if (mem.eql(u8, mem.trim(u8, line[0..c1], " \t\r"), public_key)) {
+                    const rest = line[c1 + 1 ..];
+                    const c2 = mem.indexOfScalar(u8, rest, ',') orelse rest.len;
+                    try out.appendSlice(line[0 .. c1 + 1]);
+                    try out.appendSlice(new_secret);
+                    try out.appendSlice(rest[c2..]);
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        try out.appendSlice(line);
+    }
+    if (!changed) return false;
+
+    const dir = fs.path.dirname(path) orelse ".";
+    const tmp = try std.fmt.allocPrint(allocator, "{s}/.{s}.{d}.tmp", .{ dir, fs.path.basename(path), getpid() });
+    defer allocator.free(tmp);
+    {
+        const f = fs.cwd().createFile(tmp, .{ .mode = 0o600, .truncate = true }) catch return false;
+        defer f.close();
+        f.writeAll(out.items) catch {
+            fs.cwd().deleteFile(tmp) catch {};
+            return false;
+        };
+        f.chmod(0o600) catch {};
+    }
+    fs.cwd().rename(tmp, path) catch {
+        fs.cwd().deleteFile(tmp) catch {};
+        return false;
+    };
+    return true;
+}
+
+/// Raw (unescaped-as-is) string value of "field" in a flat JSON object,
+/// tolerating whitespace around the colon. Null when absent or not a string.
+fn jsonStringField(json: []const u8, field: []const u8) ?[]const u8 {
+    var pos: usize = 0;
+    while (pos < json.len) {
+        const q = mem.indexOfPos(u8, json, pos, "\"") orelse return null;
+        if (q + 1 + field.len + 1 <= json.len and mem.eql(u8, json[q + 1 .. q + 1 + field.len], field) and json[q + 1 + field.len] == '"') {
+            var i = q + field.len + 2;
+            while (i < json.len and std.ascii.isWhitespace(json[i])) i += 1;
+            if (i < json.len and json[i] == ':') {
+                i += 1;
+                while (i < json.len and std.ascii.isWhitespace(json[i])) i += 1;
+                if (i >= json.len or json[i] != '"') return null;
+                const value_start = i + 1;
+                var j = value_start;
+                while (j < json.len and json[j] != '"') : (j += 1) {
+                    if (json[j] == '\\') j += 1;
+                }
+                if (j >= json.len) return null;
+                return json[value_start..j];
+            }
+        }
+        pos = q + 1;
+    }
+    return null;
+}
+
+/// Only [A-Za-z0-9_-] may reach the curl command line (OTP / challenge id).
+fn isSafeToken(v: []const u8) bool {
+    if (v.len == 0) return false;
+    for (v) |ch| {
+        if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_')) return false;
+    }
+    return true;
+}
+
+fn postRotateSecret(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8, otp: ?[]const u8, challenge: []const u8) !CurlResult {
+    if (otp) |code| {
+        if (!isSafeToken(code) or !isSafeToken(challenge)) {
+            std.debug.print("Error: invalid one-time code or challenge\n", .{});
+            std.process.exit(2);
+        }
+        const sudo_headers = try std.fmt.allocPrint(allocator, "-H 'X-Sudo-OTP: {s}' -H 'X-Sudo-Challenge: {s}'", .{ code, challenge });
+        defer allocator.free(sudo_headers);
+        return try execCurlWithStatus(allocator, "POST", "/keys/self/rotate-secret", "{}", public_key, secret_key, sudo_headers);
+    }
+    return try execCurlWithStatus(allocator, "POST", "/keys/self/rotate-secret", "{}", public_key, secret_key, "");
+}
+
+/// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+fn cmdKeyRotate(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8, otp_flag: ?[]const u8, arg_pk: []const u8, arg_sk: []const u8, account_index: i64) !u8 {
+    const stdout = std.io.getStdOut().writer();
+    const home = std.posix.getenv("HOME") orelse {
+        std.debug.print("Error: HOME not set\n", .{});
+        return 1;
+    };
+    const unsandbox_dir = try std.fmt.allocPrint(allocator, "{s}/.unsandbox", .{home});
+    defer allocator.free(unsandbox_dir);
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(public_key, &digest, .{});
+    const challenge_file = try std.fmt.allocPrint(allocator, "{s}/rotate-{s}.challenge", .{ unsandbox_dir, std.fmt.fmtSliceHexLower(digest[0..8]) });
+    defer allocator.free(challenge_file);
+
+    var result: CurlResult = undefined;
+    if (otp_flag) |otp_raw| {
+        const saved = fs.cwd().readFileAlloc(allocator, challenge_file, 4096) catch {
+            std.debug.print("Error: no rotation in progress; run: un key --rotate\n", .{});
+            return 2;
+        };
+        defer allocator.free(saved);
+        result = try postRotateSecret(allocator, public_key, secret_key, mem.trim(u8, otp_raw, &std.ascii.whitespace), mem.trim(u8, saved, &std.ascii.whitespace));
+        // status 0: curl never reached the API; keep the challenge for a retry
+        if (result.status != 0) fs.cwd().deleteFile(challenge_file) catch {};
+    } else {
+        result = try postRotateSecret(allocator, public_key, secret_key, null, "");
+        if (result.status == 428) {
+            const challenge_body = result.body;
+            defer allocator.free(challenge_body);
+            const challenge = jsonStringField(challenge_body, "challenge_id") orelse "";
+            if (std.posix.isatty(std.io.getStdIn().handle)) {
+                std.debug.print("One-time code emailed to the key owner.\n", .{});
+                std.debug.print("Code: ", .{});
+                var otp_buf: [128]u8 = undefined;
+                const line = std.io.getStdIn().reader().readUntilDelimiterOrEof(&otp_buf, '\n') catch null;
+                const otp = if (line) |l| mem.trim(u8, l, &std.ascii.whitespace) else "";
+                if (otp.len == 0) {
+                    std.debug.print("Error: cancelled\n", .{});
+                    return 1;
+                }
+                result = try postRotateSecret(allocator, public_key, secret_key, otp, challenge);
+            } else {
+                std.posix.mkdir(unsandbox_dir, 0o700) catch |err| switch (err) {
+                    error.PathAlreadyExists => {},
+                    else => {
+                        std.debug.print("Error: cannot create {s}\n", .{unsandbox_dir});
+                        return 1;
+                    },
+                };
+                const f = fs.cwd().createFile(challenge_file, .{ .mode = 0o600, .truncate = true }) catch {
+                    std.debug.print("Error: cannot write {s}\n", .{challenge_file});
+                    return 1;
+                };
+                defer f.close();
+                try f.writeAll(challenge);
+                f.chmod(0o600) catch {};
+                try stdout.print("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n", .{});
+                return 0;
+            }
+        }
+    }
+    defer allocator.free(result.body);
+
+    if (result.status != 200) {
+        const err_field = jsonStringField(result.body, "error") orelse "";
+        if (result.status == 403 and mem.eql(u8, err_field, "email_required")) {
+            std.debug.print("Error: this key has no email; add one or use POST /keys/recover\n", .{});
+            return 3;
+        }
+        if (result.status == 401) {
+            std.debug.print("Error: authentication failed\n", .{});
+            return 3;
+        }
+        if (jsonStringField(result.body, "message")) |msg| {
+            std.debug.print("Error: {s}\n", .{msg});
+        } else if (err_field.len > 0) {
+            std.debug.print("Error: {s}\n", .{err_field});
+        } else {
+            std.debug.print("Error: HTTP {d}\n", .{result.status});
+        }
+        return 4;
+    }
+    const new_secret = jsonStringField(result.body, "secret") orelse "";
+    if (new_secret.len == 0) {
+        std.debug.print("Error: API returned no secret\n", .{});
+        return 4;
+    }
+
+    if (try credentialsCsvPath(allocator, arg_pk, arg_sk, account_index)) |csv_path| {
+        defer allocator.free(csv_path);
+        if (try rewriteAccountsCsv(allocator, csv_path, public_key, new_secret)) {
+            try stdout.print("Secret rotated. Updated {s} (public key {s}).\n", .{ csv_path, public_key });
+            return 0;
+        }
+    }
+    try stdout.print("New secret (shown once, store it now): {s}\n", .{new_secret});
+    try stdout.print("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n", .{});
+    return 0;
+}
+
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -917,6 +1165,7 @@ pub fn main() !u8 {
         std.debug.print("       {s} service env <action> <service_id> [options]\n", .{args[0]});
         std.debug.print("       {s} image [options]\n", .{args[0]});
         std.debug.print("       {s} key [--extend]\n", .{args[0]});
+        std.debug.print("       {s} key --rotate [--otp CODE]\n", .{args[0]});
         std.debug.print("       {s} languages [--json]\n", .{args[0]});
         std.debug.print("\nVault commands:\n", .{});
         std.debug.print("  service env status <id>   Check vault status\n", .{});
@@ -1002,18 +1251,18 @@ pub fn main() !u8 {
         if (list) {
             const auth_headers = try buildAuthCmd(allocator, "GET", "/sessions", "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/sessions' {s}", .{ API_BASE, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/sessions' {s}", .{ apiBase(), auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (kill) |k| {
             const path = try std.fmt.allocPrint(allocator, "/sessions/{s}", .{k});
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "DELETE", path, "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}/sessions/{s}' {s}", .{ API_BASE, k, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X DELETE '{s}/sessions/{s}' {s}", .{ apiBase(), k, auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\x1b[32mSession terminated: {s}\x1b[0m\n", .{k});
         } else {
             const sh = shell orelse "bash";
@@ -1023,10 +1272,10 @@ pub fn main() !u8 {
             defer allocator.free(json);
             const auth_headers = try buildAuthCmd(allocator, "POST", "/sessions", json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/sessions' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/sessions' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), auth_headers, json });
             defer allocator.free(cmd);
             std.debug.print("\x1b[33mCreating session...\x1b[0m\n", .{});
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         }
         return 0;
@@ -1041,7 +1290,7 @@ pub fn main() !u8 {
         var bootstrap: ?[]const u8 = null;
         var bootstrap_file: ?[]const u8 = null;
         var info: ?[]const u8 = null;
-        var execute: ?[]const u8 = null;
+        var execute_id: ?[]const u8 = null;
         var command: ?[]const u8 = null;
         var dump_bootstrap: ?[]const u8 = null;
         var dump_file: ?[]const u8 = null;
@@ -1087,7 +1336,7 @@ pub fn main() !u8 {
                 info = args[i];
             } else if (mem.eql(u8, args[i], "--execute") and i + 1 < args.len) {
                 i += 1;
-                execute = args[i];
+                execute_id = args[i];
             } else if (mem.eql(u8, args[i], "--command") and i + 1 < args.len) {
                 i += 1;
                 command = args[i];
@@ -1143,20 +1392,20 @@ pub fn main() !u8 {
         if (list) {
             const auth_headers = try buildAuthCmd(allocator, "GET", "/services", "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/services' {s}", .{ API_BASE, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/services' {s}", .{ apiBase(), auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (info) |inf| {
             const path = try std.fmt.allocPrint(allocator, "/services/{s}", .{inf});
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "GET", path, "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/services/{s}' {s}", .{ API_BASE, inf, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/services/{s}' {s}", .{ apiBase(), inf, auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
-        } else if (execute) |exec_id| {
+        } else if (execute_id) |exec_id| {
             const cmd_text = command orelse "";
             const json = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\"}}", .{cmd_text});
             defer allocator.free(json);
@@ -1164,9 +1413,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, exec_id, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), exec_id, auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (dump_bootstrap) |bootstrap_id| {
             std.debug.print("Fetching bootstrap script from {s}...\n", .{bootstrap_id});
@@ -1176,9 +1425,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ API_BASE, bootstrap_id, auth_headers, json, tmp_file });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ apiBase(), bootstrap_id, auth_headers, json, tmp_file });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
 
             // Read the JSON response
             const json_content = fs.cwd().readFileAlloc(allocator, tmp_file, 1024 * 1024) catch |err| {
@@ -1204,7 +1453,7 @@ pub fn main() !u8 {
                         if (@import("builtin").os.tag != .windows) {
                             const chmod_cmd = try std.fmt.allocPrint(allocator, "chmod 755 {s}", .{file_path});
                             defer allocator.free(chmod_cmd);
-                            _ = std.c.system(chmod_cmd.ptr);
+                            _ = runShell(chmod_cmd);
                         }
                         std.debug.print("Bootstrap saved to {s}\n", .{file_path});
                     } else {
@@ -1240,9 +1489,9 @@ pub fn main() !u8 {
             defer allocator.free(auth_headers);
 
             // Execute PATCH request
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, resize_id, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), resize_id, auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
 
             // Calculate RAM
             const ram = vcpu * 2;
@@ -1263,9 +1512,9 @@ pub fn main() !u8 {
             const auth_headers = try buildAuthCmd(allocator, "PATCH", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
 
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, svc_id, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), svc_id, auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
 
             if (enabled) {
                 std.debug.print("\n{s}Unfreeze-on-demand enabled for service {s}{s}\n", .{ GREEN, svc_id, RESET });
@@ -1337,10 +1586,10 @@ pub fn main() !u8 {
             if (has_env) {
                 // Capture response to temp file to extract service_id
                 const response_file = "/tmp/unsandbox_service_create.json";
-                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ API_BASE, auth_headers, json_str, response_file });
+                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ apiBase(), auth_headers, json_str, response_file });
                 defer allocator.free(cmd);
                 std.debug.print("{s}Creating service...{s}\n", .{ YELLOW, RESET });
-                _ = std.c.system(cmd.ptr);
+                _ = runShell(cmd);
 
                 // Read response
                 const response_content = fs.cwd().readFileAlloc(allocator, response_file, 1024 * 1024) catch {
@@ -1365,10 +1614,10 @@ pub fn main() !u8 {
                     }
                 }
             } else {
-                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, auth_headers, json_str });
+                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), auth_headers, json_str });
                 defer allocator.free(cmd);
                 std.debug.print("{s}Creating service...{s}\n", .{ YELLOW, RESET });
-                _ = std.c.system(cmd.ptr);
+                _ = runShell(cmd);
                 std.debug.print("\n", .{});
             }
         }
@@ -1438,9 +1687,9 @@ pub fn main() !u8 {
             const json_file = "/tmp/unsandbox_languages_tmp.json";
             const auth_headers = try buildAuthCmd(allocator, "GET", "/languages", "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/languages' {s} -o {s}", .{ API_BASE, auth_headers, json_file });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/languages' {s} -o {s}", .{ apiBase(), auth_headers, json_file });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
 
             // Read the JSON response
             const api_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
@@ -1579,18 +1828,18 @@ pub fn main() !u8 {
         if (list) {
             const auth_headers = try buildAuthCmd(allocator, "GET", "/images", "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/images' {s}", .{ API_BASE, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/images' {s}", .{ apiBase(), auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (info) |inf| {
             const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{inf});
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "GET", path, "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/images/{s}' {s}", .{ API_BASE, inf, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X GET '{s}/images/{s}' {s}", .{ apiBase(), inf, auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (delete) |del_id| {
             const path = try std.fmt.allocPrint(allocator, "/images/{s}", .{del_id});
@@ -1603,9 +1852,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/lock' {s}", .{ API_BASE, lock_id, auth_headers });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/lock' {s}", .{ apiBase(), lock_id, auth_headers });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n{s}Image locked: {s}{s}\n", .{ GREEN, lock_id, RESET });
         } else if (unlock) |unlock_id| {
             const path = try std.fmt.allocPrint(allocator, "/images/{s}/unlock", .{unlock_id});
@@ -1623,9 +1872,9 @@ pub fn main() !u8 {
             defer allocator.free(json);
             const auth_headers = try buildAuthCmd(allocator, "POST", "/images/publish", json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/publish' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/publish' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (visibility_id) |vis_id| {
             if (visibility_mode == null) {
@@ -1638,9 +1887,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/visibility' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, vis_id, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/visibility' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), vis_id, auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n{s}Image visibility set to {s}: {s}{s}\n", .{ GREEN, visibility_mode.?, vis_id, RESET });
         } else if (spawn) |spawn_id| {
             const nm = name orelse "";
@@ -1651,9 +1900,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/spawn' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, spawn_id, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/spawn' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), spawn_id, auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else if (clone) |clone_id| {
             const nm = name orelse "";
@@ -1663,9 +1912,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/clone' -H 'Content-Type: application/json' {s} -d '{s}'", .{ API_BASE, clone_id, auth_headers, json });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/clone' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), clone_id, auth_headers, json });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
             std.debug.print("\n", .{});
         } else {
             std.debug.print("{s}Error: No image action specified. Use --list, --info, --delete, --publish, etc.{s}\n", .{ RED, RESET });
@@ -1677,15 +1926,26 @@ pub fn main() !u8 {
     // Handle key command
     if (mem.eql(u8, args[1], "key")) {
         var extend = false;
+        var rotate = false;
+        var otp_flag: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (mem.eql(u8, args[i], "--extend")) {
                 extend = true;
+            } else if (mem.eql(u8, args[i], "--rotate")) {
+                rotate = true;
+            } else if (mem.eql(u8, args[i], "--otp") and i + 1 < args.len) {
+                i += 1;
+                otp_flag = args[i];
             } else if (mem.eql(u8, args[i], "-k") and i + 1 < args.len) {
                 i += 1;
                 allocator.free(public_key);
                 public_key = try allocator.dupe(u8, args[i]);
             }
+        }
+
+        if (rotate) {
+            return try cmdKeyRotate(allocator, public_key, secret_key, otp_flag, arg_pk, arg_sk, account_index);
         }
 
         if (extend) {
@@ -1695,7 +1955,7 @@ pub fn main() !u8 {
             defer allocator.free(auth_headers);
             const cmd_validate = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ PORTAL_BASE, auth_headers, json_file });
             defer allocator.free(cmd_validate);
-            _ = std.c.system(cmd_validate.ptr);
+            _ = runShell(cmd_validate);
 
             // Read the JSON response to extract public_key
             const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
@@ -1737,7 +1997,7 @@ pub fn main() !u8 {
                 std.debug.print("\x1b[33mOpening browser to extend key...\x1b[0m\n", .{});
                 const open_cmd = try std.fmt.allocPrint(allocator, "xdg-open '{s}' 2>/dev/null || open '{s}' 2>/dev/null || start '{s}' 2>/dev/null", .{ url, url, url });
                 defer allocator.free(open_cmd);
-                _ = std.c.system(open_cmd.ptr);
+                _ = runShell(open_cmd);
             } else {
                 std.debug.print("\x1b[31mError: Could not extract public_key from response\x1b[0m\n", .{});
                 return 1;
@@ -1749,7 +2009,7 @@ pub fn main() !u8 {
             defer allocator.free(auth_headers);
             const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ PORTAL_BASE, auth_headers, json_file });
             defer allocator.free(cmd);
-            _ = std.c.system(cmd.ptr);
+            _ = runShell(cmd);
 
             // Read and parse the response
             const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
@@ -1858,7 +2118,7 @@ pub fn main() !u8 {
             } else if (mem.startsWith(u8, arg, "-")) {
                 const stderr = std.io.getStdErr().writer();
                 stderr.print("{s}Unknown option: {s}{s}\n", .{ RED, arg, RESET }) catch {};
-                std.os.exit(1);
+                std.process.exit(1);
             } else {
                 source_file = arg;
                 break;
@@ -1925,10 +2185,10 @@ pub fn main() !u8 {
     const auth_headers = try buildAuthCmd(allocator, "POST", "/execute", json_content, public_key, secret_key);
     defer allocator.free(auth_headers);
     const response_file = "/tmp/unsandbox_response.json";
-    const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/execute' -H 'Content-Type: application/json' {s} -d @{s} -o {s}", .{ API_BASE, auth_headers, json_file, response_file });
+    const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/execute' -H 'Content-Type: application/json' {s} -d @{s} -o {s}", .{ apiBase(), auth_headers, json_file, response_file });
     defer allocator.free(cmd);
 
-    _ = std.c.system(cmd.ptr);
+    _ = runShell(cmd);
 
     // Read response to check for clock drift errors
     const response_content = fs.cwd().readFileAlloc(allocator, response_file, 10 * 1024 * 1024) catch |err| {

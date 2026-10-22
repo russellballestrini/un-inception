@@ -36,12 +36,13 @@
 ;; https://www.unturf.com/software
 
 
-#!/usr/bin/env sbcl --script
-
 ;;;; Common Lisp UN CLI - Unsandbox CLI Client
 ;;;;
 ;;;; Full-featured CLI matching un.py capabilities
 ;;;; Uses curl for HTTP (no external dependencies)
+
+(require :asdf)
+(require :sb-posix)
 
 (defpackage :un-cli
   (:use :cl))
@@ -53,6 +54,9 @@
 (defparameter *green* (format nil "~C[32m" #\Escape))
 (defparameter *yellow* (format nil "~C[33m" #\Escape))
 (defparameter *reset* (format nil "~C[0m" #\Escape))
+
+(defparameter *api-base*
+  (string-right-trim "/" (or (sb-ext:posix-getenv "UNSANDBOX_API_URL") "https://api.unsandbox.com")))
 
 (defparameter *portal-base* "https://unsandbox.com")
 
@@ -151,7 +155,7 @@
          (destructuring-bind (public-key secret-key) (get-api-keys)
            (let* ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
                   (base-args (list "curl" "-s" "-X" "POST"
-                                  (format nil "https://api.unsandbox.com~a" endpoint)
+                                  (format nil "~a~a" *api-base* endpoint)
                                   "-H" "Content-Type: application/json"))
                   (response (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
              (check-clock-drift response)
@@ -162,7 +166,7 @@
   (destructuring-bind (public-key secret-key) (get-api-keys)
     (let* ((auth-headers (build-auth-headers public-key secret-key "GET" endpoint ""))
            (base-args (list "curl" "-s"
-                           (format nil "https://api.unsandbox.com~a" endpoint)))
+                           (format nil "~a~a" *api-base* endpoint)))
            (response (run-curl (append base-args auth-headers))))
       (check-clock-drift response)
       response)))
@@ -171,7 +175,7 @@
   (destructuring-bind (public-key secret-key) (get-api-keys)
     (let* ((auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
            (base-args (list "curl" "-s" "-X" "DELETE"
-                           (format nil "https://api.unsandbox.com~a" endpoint)))
+                           (format nil "~a~a" *api-base* endpoint)))
            (response (run-curl (append base-args auth-headers))))
       (check-clock-drift response)
       response)))
@@ -218,7 +222,7 @@
              (body-args (if body (list "-d" body) nil))
              (all-args (append (list "curl" "-s" "-w" "\\n%{http_code}")
                               method-args
-                              (list (format nil "https://api.unsandbox.com~a" endpoint))
+                              (list (format nil "~a~a" *api-base* endpoint))
                               auth-headers
                               sudo-headers
                               content-headers
@@ -239,7 +243,7 @@
   (destructuring-bind (public-key secret-key) (get-api-keys)
     (let* ((auth-headers (build-auth-headers public-key secret-key "DELETE" endpoint ""))
            (base-args (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "DELETE"
-                                   (format nil "https://api.unsandbox.com~a" endpoint))
+                                   (format nil "~a~a" *api-base* endpoint))
                              auth-headers))
            (response (run-curl base-args))
            (parsed (parse-response-with-status response))
@@ -257,7 +261,7 @@
          (destructuring-bind (public-key secret-key) (get-api-keys)
            (let* ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
                   (base-args (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "POST"
-                                          (format nil "https://api.unsandbox.com~a" endpoint)
+                                          (format nil "~a~a" *api-base* endpoint)
                                           "-H" "Content-Type: application/json")
                                     auth-headers
                                     (list "-d" (format nil "@~a" tmp-file))))
@@ -290,7 +294,7 @@
          (destructuring-bind (public-key secret-key) (get-api-keys)
            (let* ((auth-headers (build-auth-headers public-key secret-key "PATCH" endpoint json-data))
                   (base-args (list "curl" "-s" "-X" "PATCH"
-                                  (format nil "https://api.unsandbox.com~a" endpoint)
+                                  (format nil "~a~a" *api-base* endpoint)
                                   "-H" "Content-Type: application/json"))
                   (response (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
              (check-clock-drift response)
@@ -304,7 +308,7 @@
          (destructuring-bind (public-key secret-key) (get-api-keys)
            (let* ((auth-headers (build-auth-headers public-key secret-key "PUT" endpoint content))
                   (base-args (list "curl" "-s" "-X" "PUT"
-                                  (format nil "https://api.unsandbox.com~a" endpoint)
+                                  (format nil "~a~a" *api-base* endpoint)
                                   "-H" "Content-Type: text/plain"))
                   (response (run-curl (append base-args auth-headers (list "--data-binary" (format nil "@~a" tmp-file))))))
              (check-clock-drift response)
@@ -357,10 +361,12 @@
                 (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
                   (when (and (> (length trimmed) 0)
                              (not (char= (char trimmed 0) #\#)))
-                    (let ((comma-pos (position #\, trimmed)))
+                    (let* ((comma-pos (position #\, trimmed))
+                           (end-pos (and comma-pos (position #\, trimmed :start (1+ comma-pos)))))
+                      ;; public_key,secret_key[,label...] -- only field 2 is the secret
                       (when comma-pos
                         (push (list (string-trim '(#\Space #\Tab) (subseq trimmed 0 comma-pos))
-                                    (string-trim '(#\Space #\Tab) (subseq trimmed (1+ comma-pos))))
+                                    (string-trim '(#\Space #\Tab) (subseq trimmed (1+ comma-pos) end-pos)))
                               rows))))))
           (let ((rows (nreverse rows)))
             (when (< index (length rows))
@@ -420,7 +426,7 @@
 
 (defun build-auth-headers (public-key secret-key method path body)
   (if secret-key
-      (let* ((timestamp (write-to-string (floor (get-universal-time))))
+      (let* ((timestamp (write-to-string (- (get-universal-time) 2208988800)))
              (signature (make-signature secret-key timestamp method path body)))
         (list "-H" (format nil "Authorization: Bearer ~a" public-key)
               "-H" (format nil "X-Timestamp: ~a" timestamp)
@@ -563,8 +569,10 @@
   (let* ((field-pattern (format nil "\"~a\":" field))
          (start (search field-pattern json)))
     (when start
-      (let* ((value-start (+ start (length field-pattern)))
-             (first-char (char json value-start)))
+      (let* ((value-start (or (position-if-not (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return)))
+                                               json :start (+ start (length field-pattern)))
+                              (length json)))
+             (first-char (if (< value-start (length json)) (char json value-start) #\Space)))
         (cond
           ((char= first-char #\")
            ;; String value
@@ -643,6 +651,147 @@
 
 (defun key-cmd (extend-flag)
   (validate-key extend-flag))
+
+;; ---------------------------------------------------------------------------
+;; un key --rotate [--otp CODE]  (see CLI_SPEC.md)
+;; ---------------------------------------------------------------------------
+
+(defun credentials-csv-path ()
+  "The accounts.csv our credentials came from, or nil (env vars). Mirrors get-api-keys tiers."
+  (let ((home (uiop:getenv "HOME")))
+    (flet ((find-csv (idx)
+             (loop for path in (list (format nil "~a/.unsandbox/accounts.csv" home) "./accounts.csv")
+                   when (load-accounts-csv path idx) return path)))
+      (cond
+        ((not (null *account-index*)) (find-csv *account-index*))
+        ((and (uiop:getenv "UNSANDBOX_PUBLIC_KEY") (uiop:getenv "UNSANDBOX_SECRET_KEY")) nil)
+        ((uiop:getenv "UNSANDBOX_API_KEY") nil)
+        (t (let ((acc-env (uiop:getenv "UNSANDBOX_ACCOUNT")))
+             (find-csv (if acc-env (handler-case (parse-integer acc-env) (error () 0)) 0))))))))
+
+(defun write-private-file (path content)
+  "Write CONTENT to PATH with mode 0600 (umask 077 while creating)."
+  (let ((old-umask (sb-posix:umask #o077)))
+    (unwind-protect
+         (with-open-file (stream path :direction :output :if-exists :supersede)
+           (write-string content stream))
+      (sb-posix:umask old-umask)))
+  (sb-posix:chmod path #o600))
+
+(defun rewrite-accounts-csv (path public-key new-secret)
+  "Replace the secret on the line whose first field is PUBLIC-KEY. Every other line,
+   field, comment and the order stay as they are. Temp file (0600) + rename."
+  (let* ((lines (uiop:split-string (read-file path) :separator '(#\Newline)))
+         (changed nil)
+         (new-lines
+           (mapcar (lambda (line)
+                     (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
+                       (if (or changed (zerop (length trimmed)) (char= (char trimmed 0) #\#))
+                           line
+                           (let ((fields (uiop:split-string line :separator '(#\,))))
+                             (if (and (>= (length fields) 2)
+                                      (string= (string-trim '(#\Space #\Tab) (first fields)) public-key))
+                                 (progn (setf changed t)
+                                        (setf (second fields) new-secret)
+                                        (format nil "~{~a~^,~}" fields))
+                                 line)))))
+                   lines)))
+    (when changed
+      (let ((tmp (format nil "~a/.~a.~a.tmp" (directory-namestring (truename path))
+                         (file-namestring path) (sb-posix:getpid))))
+        (write-private-file tmp (format nil "~{~a~^~%~}" new-lines))
+        (sb-posix:rename tmp (namestring (truename path)))))
+    changed))
+
+(defun stdin-tty-p ()
+  (let ((r (ignore-errors (sb-unix:unix-isatty 0))))
+    (and r (not (eql r 0)))))
+
+(defun rotate-post (public-key secret-key otp challenge)
+  "POST /keys/self/rotate-secret, body {}. Returns (body . http-code).
+   OTP + challenge headers travel in a 0600 header file, never on a command line."
+  (let* ((endpoint "/keys/self/rotate-secret")
+         (body "{}")
+         (auth-headers (build-auth-headers public-key secret-key "POST" endpoint body))
+         (hdr-file (when otp (format nil "/tmp/un_lisp_hdr_~a_~a" (sb-posix:getpid) (random 999999)))))
+    (unwind-protect
+         (progn
+           (when hdr-file
+             (write-private-file hdr-file (format nil "X-Sudo-OTP: ~a~%X-Sudo-Challenge: ~a~%" otp (or challenge ""))))
+           (parse-response-with-status
+            (run-curl (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "POST"
+                                    (format nil "~a~a" *api-base* endpoint)
+                                    "-H" "Content-Type: application/json")
+                              auth-headers
+                              (when hdr-file (list "-H" (format nil "@~a" hdr-file)))
+                              (list "-d" body)))))
+      (when (and hdr-file (probe-file hdr-file)) (delete-file hdr-file)))))
+
+(defun rotate-fail (resp-body http-code)
+  (let ((err (parse-json-field resp-body "error"))
+        (msg (parse-json-field resp-body "message")))
+    (cond
+      ((and (= http-code 403) (equal err "email_required"))
+       (format *error-output* "Error: this key has no email; add one or use POST /keys/recover~%")
+       (uiop:quit 3))
+      ((= http-code 401)
+       (format *error-output* "Error: authentication failed~%")
+       (uiop:quit 3))
+      (t
+       (format *error-output* "Error: ~a~%" (or msg err (format nil "HTTP ~a" http-code)))
+       (uiop:quit 4)))))
+
+(defun key-rotate-cmd (otp-arg)
+  (destructuring-bind (public-key secret-key) (get-api-keys)
+    (let* ((home (uiop:getenv "HOME"))
+           (unsandbox-dir (format nil "~a/.unsandbox/" home))
+           (digest (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                (uiop:run-program (list "sha256sum") :output :string
+                                                  :input (make-string-input-stream public-key))))
+           (challenge-file (format nil "~arotate-~a.challenge" unsandbox-dir (subseq digest 0 16)))
+           (result nil))
+      (if otp-arg
+          (let ((challenge (and (probe-file challenge-file)
+                                (string-trim '(#\Space #\Tab #\Newline #\Return) (read-file challenge-file)))))
+            (unless challenge
+              (format *error-output* "Error: no rotation in progress; run: un key --rotate~%")
+              (uiop:quit 2))
+            (setf result (rotate-post public-key secret-key
+                                      (string-trim '(#\Space #\Tab #\Newline #\Return) otp-arg) challenge))
+            (when (probe-file challenge-file) (delete-file challenge-file)))
+          (progn
+            (setf result (rotate-post public-key secret-key nil nil))
+            (when (= (cdr result) 428)
+              (let ((challenge (or (parse-json-field (car result) "challenge_id") "")))
+                (if (stdin-tty-p)
+                    (progn
+                      (format *error-output* "One-time code emailed to the key owner.~%Code: ")
+                      (force-output *error-output*)
+                      (let ((otp (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                              (or (read-line *standard-input* nil) ""))))
+                        (when (zerop (length otp))
+                          (format *error-output* "Error: cancelled~%")
+                          (uiop:quit 1))
+                        (setf result (rotate-post public-key secret-key otp challenge))))
+                    (progn
+                      (ensure-directories-exist unsandbox-dir)
+                      (sb-posix:chmod unsandbox-dir #o700)
+                      (write-private-file challenge-file challenge)
+                      (format t "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE~%")
+                      (finish-output)
+                      (uiop:quit 0)))))))
+      (unless (= (cdr result) 200)
+        (rotate-fail (car result) (cdr result)))
+      (let ((new-secret (parse-json-field (car result) "secret"))
+            (csv-path (credentials-csv-path)))
+        (unless (and new-secret (> (length new-secret) 0))
+          (format *error-output* "Error: API returned no secret~%")
+          (uiop:quit 4))
+        (if (and csv-path (rewrite-accounts-csv csv-path public-key new-secret))
+            (format t "Secret rotated. Updated ~a (public key ~a).~%" csv-path public-key)
+            (progn
+              (format t "New secret (shown once, store it now): ~a~%" new-secret)
+              (format t "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.~%")))))))
 
 ;; Image access management functions
 (defun image-grant-access (id trusted-key)
@@ -804,7 +953,7 @@
 
 ;; Utility functions
 (defun health-check ()
-  (let* ((cmd "curl -s https://api.unsandbox.com/health")
+  (let* ((cmd (format nil "curl -s ~a/health" *api-base*))
          (result (uiop:run-program cmd :output :string)))
     (format t "~a~%" result)
     (search "ok" result)))
@@ -986,7 +1135,7 @@
           (format t "       un.lisp service [options]~%")
           (format t "       un.lisp image [options]~%")
           (format t "       un.lisp languages [--json]~%")
-          (format t "       un.lisp key [--extend]~%")
+          (format t "       un.lisp key [--extend] | key --rotate [--otp CODE]~%")
           (format t "~%Image options:~%")
           (format t "  --list              List all images~%")
           (format t "  --info ID           Get image details~%")
@@ -1116,8 +1265,15 @@
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))
           ((string= (first args) "key")
-           (let ((extend-flag (and (> (length args) 1) (string= (second args) "--extend"))))
-             (key-cmd extend-flag)))
+           (let ((extend-flag (member "--extend" (cdr args) :test #'string=))
+                 (rotate-flag (member "--rotate" (cdr args) :test #'string=))
+                 (otp-tail (member "--otp" (cdr args) :test #'string=)))
+             (when (and otp-tail (null (second otp-tail)))
+               (format *error-output* "Error: --otp requires CODE~%")
+               (uiop:quit 2))
+             (if (or rotate-flag otp-tail)
+                 (key-rotate-cmd (second otp-tail))
+                 (key-cmd extend-flag))))
           ((string= (first args) "snapshot")
            (cond
              ((and (> (length args) 1) (string= (second args) "--list"))

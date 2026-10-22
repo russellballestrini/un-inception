@@ -38,8 +38,15 @@ use Time::HiRes qw(time sleep);
 
 package Un;
 
+# Imports above land in main; Un needs its own.
+use JSON::PP;
+use Digest::SHA qw(hmac_sha256_hex);
+use File::Basename;
+use File::Path qw(make_path);
+use Time::HiRes qw(time sleep);
+
 our $VERSION = "4.3.4";
-our $API_BASE = 'https://api.unsandbox.com';
+our $API_BASE = ($ENV{UNSANDBOX_API_URL} || 'https://api.unsandbox.com') =~ s{/+$}{}r;
 our $PORTAL_BASE = 'https://unsandbox.com';
 
 # Thread-local error storage
@@ -110,7 +117,7 @@ sub load_accounts_csv {
     while (my $line = <$fh>) {
         chomp $line;
         next if !$line || $line =~ /^\s*#/;
-        my ($pk, $sk) = split /,/, $line, 2;
+        my ($pk, $sk) = map { defined $_ ? s/^\s+|\s+$//gr : $_ } (split /,/, $line)[0, 1];
         push @accounts, [$pk, $sk] if $pk && $sk;
     }
     close $fh;
@@ -144,13 +151,14 @@ sub get_credentials {
         return ($ENV{UNSANDBOX_API_KEY}, '');
     }
 
-    # Tier 4: Home directory
+    # Tier 4: Home directory (row UNSANDBOX_ACCOUNT, default 0)
+    my $row = int($ENV{UNSANDBOX_ACCOUNT} || 0);
     my $home_accounts = load_accounts_csv();
-    return @{$home_accounts->[0]} if @$home_accounts;
+    return @{$home_accounts->[$row]} if @$home_accounts > $row;
 
     # Tier 5: Local directory
     my $local_accounts = load_accounts_csv("./accounts.csv");
-    return @{$local_accounts->[0]} if @$local_accounts;
+    return @{$local_accounts->[$row]} if @$local_accounts > $row;
 
     set_error("No credentials found");
     return (undef, undef);
@@ -726,6 +734,79 @@ sub validate_keys {
     return undef;
 }
 
+# The accounts.csv our credentials came from, or undef (arguments / env vars).
+# Mirrors get_credentials' tiers.
+sub credentials_csv_path {
+    my (%opts) = @_;
+    return undef if $opts{public_key} && $opts{secret_key};
+    my $ai = exists $opts{account_index} ? $opts{account_index} : $Un::ACCOUNT_INDEX;
+    unless (defined $ai && $ai >= 0) {
+        return undef if ($ENV{UNSANDBOX_PUBLIC_KEY} && $ENV{UNSANDBOX_SECRET_KEY}) || $ENV{UNSANDBOX_API_KEY};
+        $ai = int($ENV{UNSANDBOX_ACCOUNT} || 0);
+    }
+    for my $path ("$ENV{HOME}/.unsandbox/accounts.csv", "./accounts.csv") {
+        return $path if @{load_accounts_csv($path)} > $ai;
+    }
+    return undef;
+}
+
+# Replace the secret (2nd field) on the line whose 1st field equals $pk. Every
+# other line, field, comment and the order stay as they are. Temp file 0600 + rename.
+sub rewrite_accounts_csv {
+    my ($path, $pk, $new_secret) = @_;
+    open my $in, '<', $path or return 0;
+    my @lines = <$in>;
+    close $in;
+    my $changed = 0;
+    for my $line (@lines) {
+        next if $line =~ /^\s*(#|$)/;
+        my $eol = $line =~ s/(\r?\n)$// ? $1 : '';
+        my @fields = split /,/, $line, -1;
+        if (@fields >= 2 && ($fields[0] =~ s/^\s+|\s+$//gr) eq $pk) {
+            $fields[1] = $new_secret;
+            $line = join(',', @fields) . $eol;
+            $changed = 1;
+            last;
+        }
+        $line .= $eol;
+    }
+    return 0 unless $changed;
+    my $tmp = dirname($path) . "/." . basename($path) . ".$$.tmp";
+    my $old_umask = umask(077);
+    my $ok = open(my $out, '>', $tmp);
+    umask($old_umask);
+    return 0 unless $ok;
+    print $out @lines;
+    close $out or do { unlink $tmp; return 0 };
+    chmod 0600, $tmp;
+    rename($tmp, $path) or do { unlink $tmp; return 0 };
+    return 1;
+}
+
+# POST /keys/self/rotate-secret, body {}, signed; optional sudo OTP headers.
+# Returns (status_code, decoded_json_hashref).
+sub rotate_secret_request {
+    my ($otp, $challenge, %opts) = @_;
+    my ($pk, $sk) = get_credentials(%opts);
+    my $endpoint = '/keys/self/rotate-secret';
+    my $body = '{}';
+    my $timestamp = int(time);
+    my $ua = LWP::UserAgent->new(timeout => 120);
+    my $req = HTTP::Request->new('POST', "$API_BASE$endpoint");
+    $req->header('Authorization' => "Bearer " . ($pk // ''));
+    $req->header('Content-Type' => 'application/json');
+    $req->header('X-Timestamp' => $timestamp);
+    $req->header('X-Signature' => hmac_sign($sk // '', "$timestamp:POST:$endpoint:$body"));
+    if (defined $otp) {
+        $req->header('X-Sudo-OTP' => $otp);
+        $req->header('X-Sudo-Challenge' => $challenge // '');
+    }
+    $req->content($body);
+    my $res = $ua->request($req);
+    my $data = eval { decode_json($res->content) };
+    return ($res->code, ref($data) eq 'HASH' ? $data : {});
+}
+
 sub health_check {
     my (%opts) = @_;
     my $ua = LWP::UserAgent->new(timeout => 10);
@@ -1291,8 +1372,93 @@ sub cmd_image {
     exit 1;
 }
 
+# un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+sub cmd_key_rotate {
+    my ($options) = @_;
+    my ($pk, $sk) = Un::get_credentials();
+    unless ($pk && $sk) {
+        print STDERR "${RED}Error: no credentials found${RESET}\n";
+        exit 3;
+    }
+    my $dir = "$ENV{HOME}/.unsandbox";
+    my $challenge_file = "$dir/rotate-" . substr(Digest::SHA::sha256_hex($pk), 0, 16) . ".challenge";
+    my ($code, $data);
+
+    if (defined $options->{otp}) {
+        open my $fh, '<', $challenge_file or do {
+            print STDERR "${RED}Error: no rotation in progress; run: un key --rotate${RESET}\n";
+            exit 2;
+        };
+        my $challenge = do { local $/; <$fh> } // '';
+        close $fh;
+        $challenge =~ s/^\s+|\s+$//g;
+        (my $otp = $options->{otp}) =~ s/^\s+|\s+$//g;
+        ($code, $data) = Un::rotate_secret_request($otp, $challenge);
+        unlink $challenge_file;
+    } else {
+        ($code, $data) = Un::rotate_secret_request();
+        if ($code == 428) {
+            my $challenge = $data->{challenge_id} // '';
+            if (-t STDIN) {
+                print STDERR "One-time code emailed to the key owner.\n";
+                print STDERR "Code: ";
+                my $otp = <STDIN>;
+                $otp = '' unless defined $otp;
+                $otp =~ s/^\s+|\s+$//g;
+                if ($otp eq '') {
+                    print STDERR "${RED}Error: cancelled${RESET}\n";
+                    exit 1;
+                }
+                ($code, $data) = Un::rotate_secret_request($otp, $challenge);
+            } else {
+                unless (-d $dir) { my $old = umask(077); make_path($dir); umask($old); }
+                chmod 0700, $dir;
+                my $old = umask(077);
+                open my $fh, '>', $challenge_file or do {
+                    umask($old);
+                    print STDERR "${RED}Error: cannot write $challenge_file${RESET}\n";
+                    exit 1;
+                };
+                umask($old);
+                print $fh $challenge;
+                close $fh;
+                chmod 0600, $challenge_file;
+                print "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n";
+                return;
+            }
+        }
+    }
+
+    if ($code != 200) {
+        if ($code == 403 && ($data->{error} // '') eq 'email_required') {
+            print STDERR "${RED}Error: this key has no email; add one or use POST /keys/recover${RESET}\n";
+            exit 3;
+        }
+        if ($code == 401) {
+            print STDERR "${RED}Error: authentication failed${RESET}\n";
+            exit 3;
+        }
+        print STDERR "${RED}Error: " . ($data->{message} || $data->{error} || "HTTP $code") . "${RESET}\n";
+        exit 4;
+    }
+    my $new_secret = $data->{secret};
+    unless ($new_secret) {
+        print STDERR "${RED}Error: API returned no secret${RESET}\n";
+        exit 4;
+    }
+
+    my $csv_path = Un::credentials_csv_path();
+    if ($csv_path && Un::rewrite_accounts_csv($csv_path, $pk, $new_secret)) {
+        print "Secret rotated. Updated $csv_path (public key $pk).\n";
+    } else {
+        print "New secret (shown once, store it now): $new_secret\n";
+        print "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n";
+    }
+}
+
 sub cmd_key {
     my ($options) = @_;
+    return cmd_key_rotate($options) if $options->{rotate};
     my $result = Un::validate_keys();
 
     if ($options->{extend}) {
@@ -1348,6 +1514,7 @@ Usage:
   perl un.pl image [options]
   perl un.pl languages [--json]
   perl un.pl key [--extend]
+  perl un.pl key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
@@ -1550,6 +1717,10 @@ sub main {
             $options{json} = 1;
         } elsif ($arg eq '--extend') {
             $options{extend} = 1;
+        } elsif ($arg eq '--rotate') {
+            $options{rotate} = 1;
+        } elsif ($arg eq '--otp') {
+            $options{otp} = $ARGV[++$i];
         } elsif ($arg eq 'env' && $options{command} && $options{command} eq 'service') {
             $options{env_action} = $ARGV[++$i];
             $options{env_target} = $ARGV[++$i] if defined $ARGV[$i+1] && $ARGV[$i+1] !~ /^-/;

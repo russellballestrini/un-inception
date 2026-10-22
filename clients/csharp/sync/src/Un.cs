@@ -49,7 +49,14 @@ using System.Security.Cryptography;
 
 class Un
 {
-    private const string API_BASE = "https://api.unsandbox.com";
+    private static readonly string API_BASE = ResolveApiBase();
+
+    internal static string ResolveApiBase()
+    {
+        string url = Environment.GetEnvironmentVariable("UNSANDBOX_API_URL");
+        if (string.IsNullOrEmpty(url)) url = "https://api.unsandbox.com";
+        return url.TrimEnd('/');
+    }
     private const string PORTAL_BASE = "https://unsandbox.com";
     private const string BLUE = "\x1B[34m";
     private const string RED = "\x1B[31m";
@@ -90,7 +97,8 @@ class Un
             }
             else if (parsedArgs.Command == "key")
             {
-                CmdKey(parsedArgs);
+                if (parsedArgs.KeyRotate) CmdKeyRotate(parsedArgs);
+                else CmdKey(parsedArgs);
             }
             else if (parsedArgs.Command == "languages")
             {
@@ -303,8 +311,8 @@ class Un
 
             if (args.KeyExtend && result.ContainsKey("public_key"))
             {
-                string publicKey = (string)result["public_key"];
-                string url = $"{PORTAL_BASE}/keys/extend?pk={publicKey}";
+                string extendPk = (string)result["public_key"];
+                string url = $"{PORTAL_BASE}/keys/extend?pk={extendPk}";
                 Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
                 OpenBrowser(url);
             }
@@ -312,6 +320,241 @@ class Un
         else
         {
             Console.WriteLine($"{RED}Invalid{RESET}");
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+    static extern int chmod(string path, uint mode);
+
+    [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+    static extern int rename(string oldpath, string newpath);
+
+    [System.Runtime.InteropServices.DllImport("libc")]
+    static extern uint umask(uint mask);
+
+    // The accounts.csv the CLI's credentials came from, or null (flags / env vars).
+    // Mirrors GetApiKeys' tiers.
+    static string CredentialsCsvPath(Args args)
+    {
+        int index = args.Account;
+        if (index < 0)
+        {
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY")) &&
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY")))
+                return null;
+            index = 0;
+            string acctEnv = Environment.GetEnvironmentVariable("UNSANDBOX_ACCOUNT");
+            if (!string.IsNullOrEmpty(acctEnv) && int.TryParse(acctEnv, out int parsedIdx))
+                index = parsedIdx;
+        }
+        string home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+        foreach (string path in new[] { Path.Combine(home, ".unsandbox", "accounts.csv"), "accounts.csv" })
+        {
+            var (pk, sk) = LoadAccountsCSV(path, index);
+            if (!string.IsNullOrEmpty(pk) && !string.IsNullOrEmpty(sk))
+                return path;
+        }
+        return null;
+    }
+
+    // Replace the secret on the line whose first field is publicKey. Every other
+    // line, field, comment and the order stay as they are. Temp file (0600) + rename.
+    static bool RewriteAccountsCsv(string path, string publicKey, string newSecret)
+    {
+        string[] lines = File.ReadAllText(path).Split('\n');
+        bool changed = false;
+        for (int j = 0; j < lines.Length; j++)
+        {
+            string stripped = lines[j].Trim();
+            if (stripped.Length == 0 || stripped.StartsWith("#")) continue;
+            string[] fields = lines[j].Split(',');
+            if (fields.Length >= 2 && fields[0].Trim() == publicKey)
+            {
+                fields[1] = newSecret;
+                lines[j] = string.Join(",", fields);
+                changed = true;
+                break;
+            }
+        }
+        if (!changed) return false;
+        string full = Path.GetFullPath(path);
+        string tmp = Path.Combine(Path.GetDirectoryName(full),
+            "." + Path.GetFileName(full) + "." + System.Diagnostics.Process.GetCurrentProcess().Id + ".tmp");
+        WritePrivateFile(tmp, string.Join("\n", lines));
+        if (rename(tmp, full) != 0)
+        {
+            File.Delete(tmp);
+            throw new IOException($"rename failed for {full}");
+        }
+        return true;
+    }
+
+    // Write a file created with mode 0600 (umask 077 during creation, then chmod).
+    static void WritePrivateFile(string path, string content)
+    {
+        uint old = umask(Convert.ToUInt32("077", 8));
+        try
+        {
+            File.WriteAllText(path, content, new UTF8Encoding(false));
+        }
+        finally
+        {
+            umask(old);
+        }
+        chmod(path, Convert.ToUInt32("600", 8));
+    }
+
+    // POST /keys/self/rotate-secret with body {}; returns (status, json).
+    static (int, Dictionary<string, object>) RotatePost(string publicKey, string secretKey, string otp, string challenge)
+    {
+        const string path = "/keys/self/rotate-secret";
+        const string body = "{}";
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(API_BASE + path);
+        request.Method = "POST";
+        request.ContentType = "application/json";
+        request.Timeout = 120000;
+        long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
+        {
+            byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes($"{timestamp}:POST:{path}:{body}"));
+            request.Headers.Add("Authorization", $"Bearer {publicKey}");
+            request.Headers.Add("X-Timestamp", timestamp.ToString());
+            request.Headers.Add("X-Signature", BitConverter.ToString(hash).Replace("-", "").ToLower());
+        }
+        if (otp != null)
+        {
+            request.Headers.Add("X-Sudo-OTP", otp);
+            request.Headers.Add("X-Sudo-Challenge", challenge ?? "");
+        }
+        byte[] bytes = Encoding.UTF8.GetBytes(body);
+        request.ContentLength = bytes.Length;
+        using (Stream stream = request.GetRequestStream())
+        {
+            stream.Write(bytes, 0, bytes.Length);
+        }
+        int status;
+        string text = "";
+        try
+        {
+            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+            using (StreamReader reader = new StreamReader(response.GetResponseStream()))
+            {
+                status = (int)response.StatusCode;
+                text = reader.ReadToEnd();
+            }
+        }
+        catch (WebException ex) when (ex.Response is HttpWebResponse errResponse)
+        {
+            status = (int)errResponse.StatusCode;
+            using (StreamReader reader = new StreamReader(errResponse.GetResponseStream()))
+            {
+                text = reader.ReadToEnd();
+            }
+        }
+        Dictionary<string, object> data;
+        try { data = ParseJson(text) ?? new Dictionary<string, object>(); }
+        catch { data = new Dictionary<string, object>(); }
+        return (status, data);
+    }
+
+    static string Field(Dictionary<string, object> data, string key)
+    {
+        return data.ContainsKey(key) && data[key] != null ? data[key].ToString() : null;
+    }
+
+    // un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+    static void CmdKeyRotate(Args args)
+    {
+        var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
+        if (string.IsNullOrEmpty(secretKey))
+        {
+            Console.Error.WriteLine($"{RED}Error: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set{RESET}");
+            Environment.Exit(1);
+        }
+        string home = Environment.GetEnvironmentVariable("HOME")
+            ?? Environment.GetEnvironmentVariable("USERPROFILE") ?? ".";
+        string unsandboxDir = Path.Combine(home, ".unsandbox");
+        string hex;
+        using (var sha = SHA256.Create())
+        {
+            hex = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(publicKey))).Replace("-", "").ToLower();
+        }
+        string challengeFile = Path.Combine(unsandboxDir, $"rotate-{hex.Substring(0, 16)}.challenge");
+
+        int status;
+        Dictionary<string, object> data;
+        if (args.KeyOtp != null)
+        {
+            if (!File.Exists(challengeFile))
+            {
+                Console.Error.WriteLine("Error: no rotation in progress; run: un key --rotate");
+                Environment.Exit(2);
+            }
+            string challenge = File.ReadAllText(challengeFile).Trim();
+            (status, data) = RotatePost(publicKey, secretKey, args.KeyOtp.Trim(), challenge);
+            File.Delete(challengeFile);
+        }
+        else
+        {
+            (status, data) = RotatePost(publicKey, secretKey, null, null);
+            if (status == 428)
+            {
+                string challenge = Field(data, "challenge_id") ?? "";
+                if (!Console.IsInputRedirected)
+                {
+                    Console.Error.WriteLine("One-time code emailed to the key owner.");
+                    Console.Error.Write("Code: ");
+                    Console.Error.Flush();
+                    string code = (Console.ReadLine() ?? "").Trim();
+                    if (code.Length == 0)
+                    {
+                        Console.Error.WriteLine("Error: cancelled");
+                        Environment.Exit(1);
+                    }
+                    (status, data) = RotatePost(publicKey, secretKey, code, challenge);
+                }
+                else
+                {
+                    Directory.CreateDirectory(unsandboxDir);
+                    chmod(unsandboxDir, Convert.ToUInt32("700", 8));
+                    WritePrivateFile(challengeFile, challenge);
+                    Console.WriteLine("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE");
+                    return;
+                }
+            }
+        }
+
+        if (status != 200)
+        {
+            if (status == 403 && Field(data, "error") == "email_required")
+            {
+                Console.Error.WriteLine("Error: this key has no email; add one or use POST /keys/recover");
+                Environment.Exit(3);
+            }
+            if (status == 401)
+            {
+                Console.Error.WriteLine("Error: authentication failed");
+                Environment.Exit(3);
+            }
+            Console.Error.WriteLine($"Error: {Field(data, "message") ?? Field(data, "error") ?? "HTTP " + status}");
+            Environment.Exit(4);
+        }
+        string newSecret = Field(data, "secret");
+        if (string.IsNullOrEmpty(newSecret))
+        {
+            Console.Error.WriteLine("Error: API returned no secret");
+            Environment.Exit(4);
+        }
+        string csvPath = CredentialsCsvPath(args);
+        if (csvPath != null && RewriteAccountsCsv(csvPath, publicKey, newSecret))
+        {
+            Console.WriteLine($"Secret rotated. Updated {csvPath} (public key {publicKey}).");
+        }
+        else
+        {
+            Console.WriteLine($"New secret (shown once, store it now): {newSecret}");
+            Console.WriteLine("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.");
         }
     }
 
@@ -1336,6 +1579,8 @@ class Un
         public string EnvAction = null;
         public string EnvTarget = null;
         public bool KeyExtend = false;
+        public bool KeyRotate = false;
+        public string KeyOtp = null;
         public bool LanguagesJson = false;
         public int Account = -1;
     }
@@ -1398,6 +1643,8 @@ class Un
             else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
             else if (arg == "--redeploy") result.ServiceRedeploy = args[++i];
             else if (arg == "--extend") result.KeyExtend = true;
+            else if (arg == "--rotate") result.KeyRotate = true;
+            else if (arg == "--otp") result.KeyOtp = args[++i];
             else if (arg == "--json") result.LanguagesJson = true;
             else if (arg == "--account") result.Account = int.Parse(args[++i]);
             else if (!arg.StartsWith("-")) result.SourceFile = arg;
@@ -1545,6 +1792,8 @@ Service env commands:
 
 Key options:
   --extend          Open browser to extend expired key
+  --rotate          Rotate the key's secret (emailed one-time code)
+  --otp CODE        Finish a rotation started without a terminal
 
 Languages options:
   --json            Output as JSON array");
@@ -1560,7 +1809,7 @@ Languages options:
 /// </summary>
 public static class Unsandbox
 {
-    private const string API_BASE = "https://api.unsandbox.com";
+    private static readonly string API_BASE = Un.ResolveApiBase();
     private const string VERSION = "4.3.4";
     private static string _lastError;
 

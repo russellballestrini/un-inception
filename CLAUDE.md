@@ -180,7 +180,7 @@ python un.py service --list         # Manage services
 
 **HMAC Authentication** (current):
 ```bash
-export UNSANDBOX_PUBLIC_KEY="unsb-pk-xxxx-xxxx-xxxx-xxxx"
+export UNSANDBOX_PUBLIC_KEY="unsb-pk-xxxx-xxxx-xxxx-xxxx"  # or rely on ~/.unsandbox/accounts.csv
 export UNSANDBOX_SECRET_KEY="unsb-sk-xxxxx-xxxxx-xxxxx-xxxxx"
 ```
 
@@ -272,8 +272,8 @@ See [docs/INCEPTION-TESTING.md](docs/INCEPTION-TESTING.md) for details.
 
 ```bash
 # Set auth
-export UNSANDBOX_PUBLIC_KEY="unsb-pk-zhi3-b6cv-jvqc-uven"
-export UNSANDBOX_SECRET_KEY="unsb-sk-z4a93-a33xy-7u7eh-pngpg"
+export UNSANDBOX_PUBLIC_KEY="unsb-pk-xxxx-xxxx-xxxx-xxxx"  # or rely on ~/.unsandbox/accounts.csv
+export UNSANDBOX_SECRET_KEY="unsb-sk-xxxxx-xxxxx-xxxxx-xxxxx"
 
 # Run all available tests
 ./tests/run_all_tests.sh

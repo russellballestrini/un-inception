@@ -89,7 +89,7 @@ RESET <- "\033[0m"
 #' @title API Base URL
 #' @description Base URL for the Unsandbox API
 #' @export
-API_BASE <- "https://api.unsandbox.com"
+API_BASE <- sub("/+$", "", if (nzchar(Sys.getenv("UNSANDBOX_API_URL"))) Sys.getenv("UNSANDBOX_API_URL") else "https://api.unsandbox.com")
 
 #' @title Portal Base URL
 #' @description Base URL for the Unsandbox web portal
@@ -248,7 +248,7 @@ check_clock_drift <- function(response_text) {
 #' @return Hexadecimal signature string
 #' @keywords internal
 compute_signature <- function(secret_key, message) {
-    return(hmac(message, secret_key, algo = "sha256"))
+    return(hmac(secret_key, message, algo = "sha256"))
 }
 
 #' Build Authentication Headers
@@ -401,7 +401,7 @@ api_request_text <- function(endpoint, public_key, secret_key, body) {
     if (secret_key != "") {
         timestamp <- as.integer(Sys.time())
         sig_input <- paste0(timestamp, ":PUT:", endpoint, ":", body)
-        signature <- hmac(sig_input, secret_key, algo = "sha256")
+        signature <- hmac(secret_key, sig_input, algo = "sha256")
         headers <- add_headers(
             `Content-Type` = "text/plain",
             `Authorization` = paste("Bearer", public_key),
@@ -1532,7 +1532,7 @@ sdk_version <- function() {
 #' @return HMAC-SHA256 signature
 #' @export
 hmac_sign <- function(secret_key, message) {
-    return(digest(message, algo = "sha256", key = secret_key, serialize = FALSE, hmac = TRUE))
+    return(hmac(secret_key, message, algo = "sha256"))
 }
 
 # Null coalescing operator
@@ -2050,7 +2050,186 @@ cmd_languages <- function(args) {
     }
 }
 
+# The accounts.csv our credentials came from, or NULL (arguments / env vars).
+# Mirrors get_credentials' tiers and its row counting.
+credentials_csv_path <- function(account_index = -1) {
+    idx <- account_index
+    if (idx < 0) {
+        if (Sys.getenv("UNSANDBOX_PUBLIC_KEY") != "" && Sys.getenv("UNSANDBOX_SECRET_KEY") != "") {
+            return(NULL)
+        }
+        env_account <- Sys.getenv("UNSANDBOX_ACCOUNT")
+        idx <- if (env_account != "") as.integer(env_account) else 0
+    }
+    for (accounts_file in c(file.path(Sys.getenv("HOME"), ".unsandbox", "accounts.csv"), "accounts.csv")) {
+        if (!file.exists(accounts_file)) next
+        n <- 0
+        for (line in readLines(accounts_file, warn = FALSE)) {
+            trimmed <- trimws(line)
+            if (nchar(trimmed) == 0 || startsWith(trimmed, "#")) next
+            parts <- strsplit(trimmed, ",")[[1]]
+            if (length(parts) >= 2 && startsWith(parts[1], "unsb-pk-") && startsWith(parts[2], "unsb-sk-")) {
+                n <- n + 1
+            }
+        }
+        if (n > idx) return(accounts_file)
+    }
+    return(NULL)
+}
+
+# Replace our secret (2nd field) on the line whose 1st field equals public_key.
+# Every other line, field, comment and our order stay as they are.
+# Temp file 0600 in the same directory, then rename.
+rewrite_accounts_csv <- function(path, public_key, new_secret) {
+    size <- file.info(path)$size
+    if (is.na(size)) return(FALSE)
+    txt <- if (size > 0) readChar(path, size, useBytes = TRUE) else ""
+    lines <- strsplit(txt, "\n", fixed = TRUE)[[1]]
+    changed <- FALSE
+    for (i in seq_along(lines)) {
+        line <- lines[i]
+        if (startsWith(trimws(line), "#")) next
+        fields <- strsplit(line, ",", fixed = TRUE)[[1]]
+        if (length(fields) >= 2 && trimws(fields[1]) == public_key) {
+            # strsplit drops a trailing empty field; keep it.
+            trailing <- if (endsWith(line, ",")) "," else ""
+            cr <- if (length(fields) == 2 && endsWith(fields[2], "\r")) "\r" else ""
+            fields[2] <- paste0(new_secret, cr)
+            lines[i] <- paste0(paste(fields, collapse = ","), trailing)
+            changed <- TRUE
+            break
+        }
+    }
+    if (!changed) return(FALSE)
+    out <- paste(lines, collapse = "\n")
+    if (endsWith(txt, "\n")) out <- paste0(out, "\n")
+    tmp <- file.path(dirname(path), paste0(".", basename(path), ".", Sys.getpid(), ".tmp"))
+    old_umask <- Sys.umask("077")
+    ok <- tryCatch({
+        con <- file(tmp, open = "wb")
+        writeChar(out, con, eos = NULL, useBytes = TRUE)
+        close(con)
+        TRUE
+    }, error = function(e) FALSE)
+    Sys.umask(old_umask)
+    if (!ok) { unlink(tmp); return(FALSE) }
+    Sys.chmod(tmp, "600", use_umask = FALSE)
+    if (!file.rename(tmp, path)) { unlink(tmp); return(FALSE) }
+    return(TRUE)
+}
+
+# POST /keys/self/rotate-secret, body {}, signed. Returns list(status, data).
+rotate_secret_request <- function(public_key, secret_key, otp = NULL, challenge = NULL) {
+    endpoint <- "/keys/self/rotate-secret"
+    body <- "{}"
+    timestamp <- as.integer(Sys.time())
+    hdrs <- c(
+        `Content-Type` = "application/json",
+        `Authorization` = paste("Bearer", public_key),
+        `X-Timestamp` = as.character(timestamp),
+        `X-Signature` = compute_signature(secret_key, paste0(timestamp, ":POST:", endpoint, ":", body))
+    )
+    if (!is.null(otp)) {
+        hdrs <- c(hdrs, `X-Sudo-OTP` = otp, `X-Sudo-Challenge` = if (is.null(challenge)) "" else challenge)
+    }
+    tryCatch({
+        response <- POST(paste0(API_BASE, endpoint), add_headers(.headers = hdrs),
+                         body = body, encode = "raw", timeout(120))
+        text <- content(response, "text", encoding = "UTF-8")
+        data <- tryCatch(fromJSON(text), error = function(e) list())
+        if (!is.list(data)) data <- list()
+        list(status = status_code(response), data = data)
+    }, error = function(e) {
+        list(status = 0, data = list(error = conditionMessage(e)))
+    })
+}
+
+# un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+cmd_key_rotate <- function(args) {
+    account_index <- if (!is.null(args$account_index)) args$account_index else -1
+    keys <- tryCatch(get_credentials(account_index = account_index), error = function(e) NULL)
+    if (is.null(keys) || keys$secret_key == "") {
+        cat(sprintf("%sError: no credentials found%s\n", RED, RESET), file = stderr())
+        quit(status = 3)
+    }
+    public_key <- keys$public_key
+    secret_key <- keys$secret_key
+    unsandbox_dir <- file.path(Sys.getenv("HOME"), ".unsandbox")
+    challenge_file <- file.path(unsandbox_dir, paste0(
+        "rotate-", substr(digest(public_key, algo = "sha256", serialize = FALSE), 1, 16), ".challenge"))
+
+    if (!is.null(args$otp)) {
+        if (!file.exists(challenge_file)) {
+            cat(sprintf("%sError: no rotation in progress; run: un key --rotate%s\n", RED, RESET), file = stderr())
+            quit(status = 2)
+        }
+        challenge <- trimws(paste(readLines(challenge_file, warn = FALSE), collapse = ""))
+        resp <- rotate_secret_request(public_key, secret_key, trimws(args$otp), challenge)
+        unlink(challenge_file)
+    } else {
+        resp <- rotate_secret_request(public_key, secret_key)
+        if (resp$status == 428) {
+            challenge <- if (!is.null(resp$data$challenge_id)) resp$data$challenge_id else ""
+            if (isatty(stdin())) {
+                cat("One-time code emailed to the key owner.\n", file = stderr())
+                cat("Code: ", file = stderr())
+                con <- file("stdin")
+                otp <- trimws(readLines(con, n = 1, warn = FALSE))
+                close(con)
+                if (length(otp) == 0 || otp == "") {
+                    cat(sprintf("%sError: cancelled%s\n", RED, RESET), file = stderr())
+                    quit(status = 1)
+                }
+                resp <- rotate_secret_request(public_key, secret_key, otp, challenge)
+            } else {
+                old_umask <- Sys.umask("077")
+                dir.create(unsandbox_dir, showWarnings = FALSE, recursive = TRUE, mode = "0700")
+                Sys.chmod(unsandbox_dir, "700", use_umask = FALSE)
+                con <- file(challenge_file, open = "wb")
+                writeChar(challenge, con, eos = NULL, useBytes = TRUE)
+                close(con)
+                Sys.umask(old_umask)
+                Sys.chmod(challenge_file, "600", use_umask = FALSE)
+                cat("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n")
+                return(invisible())
+            }
+        }
+    }
+
+    if (resp$status != 200) {
+        err <- resp$data$error
+        if (resp$status == 403 && identical(err, "email_required")) {
+            cat(sprintf("%sError: this key has no email; add one or use POST /keys/recover%s\n", RED, RESET), file = stderr())
+            quit(status = 3)
+        }
+        if (resp$status == 401) {
+            cat(sprintf("%sError: authentication failed%s\n", RED, RESET), file = stderr())
+            quit(status = 3)
+        }
+        msg <- if (!is.null(resp$data$message)) resp$data$message else if (!is.null(err)) err else paste("HTTP", resp$status)
+        cat(sprintf("%sError: %s%s\n", RED, msg, RESET), file = stderr())
+        quit(status = 4)
+    }
+    new_secret <- resp$data$secret
+    if (is.null(new_secret) || new_secret == "") {
+        cat(sprintf("%sError: API returned no secret%s\n", RED, RESET), file = stderr())
+        quit(status = 4)
+    }
+
+    csv_path <- credentials_csv_path(account_index)
+    if (!is.null(csv_path) && rewrite_accounts_csv(csv_path, public_key, new_secret)) {
+        cat(sprintf("Secret rotated. Updated %s (public key %s).\n", csv_path, public_key))
+    } else {
+        cat(sprintf("New secret (shown once, store it now): %s\n", new_secret))
+        cat("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n")
+    }
+    invisible(NULL)
+}
+
 cmd_key <- function(args) {
+    if (!is.null(args$rotate) && args$rotate) {
+        return(invisible(cmd_key_rotate(args)))
+    }
     keys <- get_credentials(account_index = if (!is.null(args$account_index)) args$account_index else -1)
     public_key <- keys$public_key
     secret_key <- keys$secret_key
@@ -2067,7 +2246,7 @@ cmd_key <- function(args) {
         if (secret_key != "") {
             timestamp <- as.integer(Sys.time())
             sig_input <- paste0(timestamp, ":POST:/keys/validate:")
-            signature <- hmac(sig_input, secret_key, algo = "sha256")
+            signature <- hmac(secret_key, sig_input, algo = "sha256")
             headers <- add_headers(
                 `Content-Type` = "application/json",
                 `Authorization` = paste("Bearer", public_key),
@@ -2108,7 +2287,7 @@ cmd_key <- function(args) {
     if (secret_key != "") {
         timestamp <- as.integer(Sys.time())
         sig_input <- paste0(timestamp, ":POST:/keys/validate:")
-        signature <- hmac(sig_input, secret_key, algo = "sha256")
+        signature <- hmac(secret_key, sig_input, algo = "sha256")
         headers <- add_headers(
             `Content-Type` = "application/json",
             `Authorization` = paste("Bearer", public_key),
@@ -2835,6 +3014,13 @@ parse_args <- function() {
         } else if (arg == "--extend") {
             result$extend <- TRUE
             i <- i + 1
+        } else if (arg == "--rotate") {
+            result$rotate <- TRUE
+            i <- i + 1
+        } else if (arg == "--otp") {
+            i <- i + 1
+            result$otp <- args[i]
+            i <- i + 1
         } else if (arg == "--source-type") {
             i <- i + 1
             result$source_type <- args[i]
@@ -2903,6 +3089,7 @@ main <- function() {
         cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r image [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
+        cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
         cat("\nLanguages options:\n", file = stderr())
         cat("  --json              Output as JSON array\n", file = stderr())

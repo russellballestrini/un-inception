@@ -1,38 +1,38 @@
-// PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
-//
-// This is free public domain software for the public good of a permacomputer hosted
-// at permacomputer.com - an always-on computer by the people, for the people. One
-// which is durable, easy to repair, and distributed like tap water for machine
-// learning intelligence.
-//
-// The permacomputer is community-owned infrastructure optimized around four values:
-//
-//   TRUTH    - First principles, math & science, open source code freely distributed
-//   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
-//   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
-//   LOVE     - Be yourself without hurting others, cooperation through natural law
-//
-// This software contributes to that vision by enabling code execution across 42+
-// programming languages through a unified interface, accessible to all. Code is
-// seeds to sprout on any abandoned technology.
-//
-// Learn more: https://www.permacomputer.com
-//
-// Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
-// software, either in source code form or as a compiled binary, for any purpose,
-// commercial or non-commercial, and by any means.
-//
-// NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-//
-// That said, our permacomputer's digital membrane stratum continuously runs unit,
-// integration, and functional tests on all of it's own software - with our
-// permacomputer monitoring itself, repairing itself, with minimal human in the
-// loop guidance. Our agents do their best.
-//
-// Copyright 2025 TimeHexOn & foxhop & russell@unturf
-// https://www.timehexon.com
-// https://www.foxhop.net
-// https://www.unturf.com/software
+# PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
+#
+# This is free public domain software for the public good of a permacomputer hosted
+# at permacomputer.com - an always-on computer by the people, for the people. One
+# which is durable, easy to repair, and distributed like tap water for machine
+# learning intelligence.
+#
+# The permacomputer is community-owned infrastructure optimized around four values:
+#
+#   TRUTH    - First principles, math & science, open source code freely distributed
+#   FREEDOM  - Voluntary partnerships, freedom from tyranny & corporate control
+#   HARMONY  - Minimal waste, self-renewing systems with diverse thriving connections
+#   LOVE     - Be yourself without hurting others, cooperation through natural law
+#
+# This software contributes to that vision by enabling code execution across 42+
+# programming languages through a unified interface, accessible to all. Code is
+# seeds to sprout on any abandoned technology.
+#
+# Learn more: https://www.permacomputer.com
+#
+# Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+# software, either in source code form or as a compiled binary, for any purpose,
+# commercial or non-commercial, and by any means.
+#
+# NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
+#
+# That said, our permacomputer's digital membrane stratum continuously runs unit,
+# integration, and functional tests on all of it's own software - with our
+# permacomputer monitoring itself, repairing itself, with minimal human in the
+# loop guidance. Our agents do their best.
+#
+# Copyright 2025 TimeHexOn & foxhop & russell@unturf
+# https://www.timehexon.com
+# https://www.foxhop.net
+# https://www.unturf.com/software
 
 
 # UN CLI - Nim Implementation (using curl subprocess)
@@ -43,10 +43,10 @@
 #   un.nim session --list
 #   un.nim service --name web --ports 8080
 
-import os, strutils, osproc, strformat, times
+import os, strutils, osproc, strformat, times, terminal, tables
+from posix import nil
 
 const
-  API_BASE = "https://api.unsandbox.com"
   PORTAL_BASE = "https://unsandbox.com"
   BLUE = "\x1b[34m"
   RED = "\x1b[31m"
@@ -54,6 +54,11 @@ const
   YELLOW = "\x1b[33m"
   RESET = "\x1b[0m"
   LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
+
+# API base URL: UNSANDBOX_API_URL (trailing slash stripped), default https://api.unsandbox.com
+let API_BASE = block:
+  let v = getEnv("UNSANDBOX_API_URL", "").strip(leading = false, chars = {'/'})
+  if v.len > 0: v else: "https://api.unsandbox.com"
 
 let langMap = {
   ".py": "python", ".js": "javascript", ".ts": "typescript",
@@ -91,9 +96,76 @@ proc buildInputFilesJson(files: seq[string]): string =
     entries.add(fmt"""{{"filename":"{basename}","content":"{content}"}}""")
   result = fmt""","input_files":[{entries.join(",")}]"""
 
+# SHA-256 / HMAC-SHA256 computed in-process (FIPS 180-4, RFC 2104). Never shell
+# out for this: a subprocess would expose the secret key in argv (ps) and
+# interpolate the message into a shell.
+const sha256K: array[64, uint32] = [
+  0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32, 0x3956c25b'u32, 0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32,
+  0xd807aa98'u32, 0x12835b01'u32, 0x243185be'u32, 0x550c7dc3'u32, 0x72be5d74'u32, 0x80deb1fe'u32, 0x9bdc06a7'u32, 0xc19bf174'u32,
+  0xe49b69c1'u32, 0xefbe4786'u32, 0x0fc19dc6'u32, 0x240ca1cc'u32, 0x2de92c6f'u32, 0x4a7484aa'u32, 0x5cb0a9dc'u32, 0x76f988da'u32,
+  0x983e5152'u32, 0xa831c66d'u32, 0xb00327c8'u32, 0xbf597fc7'u32, 0xc6e00bf3'u32, 0xd5a79147'u32, 0x06ca6351'u32, 0x14292967'u32,
+  0x27b70a85'u32, 0x2e1b2138'u32, 0x4d2c6dfc'u32, 0x53380d13'u32, 0x650a7354'u32, 0x766a0abb'u32, 0x81c2c92e'u32, 0x92722c85'u32,
+  0xa2bfe8a1'u32, 0xa81a664b'u32, 0xc24b8b70'u32, 0xc76c51a3'u32, 0xd192e819'u32, 0xd6990624'u32, 0xf40e3585'u32, 0x106aa070'u32,
+  0x19a4c116'u32, 0x1e376c08'u32, 0x2748774c'u32, 0x34b0bcb5'u32, 0x391c0cb3'u32, 0x4ed8aa4a'u32, 0x5b9cca4f'u32, 0x682e6ff3'u32,
+  0x748f82ee'u32, 0x78a5636f'u32, 0x84c87814'u32, 0x8cc70208'u32, 0x90befffa'u32, 0xa4506ceb'u32, 0xbef9a3f7'u32, 0xc67178f2'u32]
+
+proc rotr32(x: uint32, n: int): uint32 {.inline.} = (x shr n) or (x shl (32 - n))
+
+proc sha256Raw(data: string): string =
+  ## Raw 32-byte SHA-256 digest of data.
+  var h: array[8, uint32] = [0x6a09e667'u32, 0xbb67ae85'u32, 0x3c6ef372'u32, 0xa54ff53a'u32,
+                             0x510e527f'u32, 0x9b05688c'u32, 0x1f83d9ab'u32, 0x5be0cd19'u32]
+  var msg = data
+  let bitLen = uint64(data.len) * 8
+  msg.add('\x80')
+  while msg.len mod 64 != 56:
+    msg.add('\x00')
+  for i in countdown(7, 0):
+    msg.add(char((bitLen shr (i * 8)) and 0xff))
+  var w: array[64, uint32]
+  var chunk = 0
+  while chunk < msg.len:
+    for t in 0 ..< 16:
+      let o = chunk + t * 4
+      w[t] = (uint32(ord(msg[o])) shl 24) or (uint32(ord(msg[o+1])) shl 16) or
+             (uint32(ord(msg[o+2])) shl 8) or uint32(ord(msg[o+3]))
+    for t in 16 ..< 64:
+      let s0 = rotr32(w[t-15], 7) xor rotr32(w[t-15], 18) xor (w[t-15] shr 3)
+      let s1 = rotr32(w[t-2], 17) xor rotr32(w[t-2], 19) xor (w[t-2] shr 10)
+      w[t] = w[t-16] + s0 + w[t-7] + s1
+    var a = h[0]; var b = h[1]; var c = h[2]; var d = h[3]
+    var e = h[4]; var f = h[5]; var g = h[6]; var hh = h[7]
+    for t in 0 ..< 64:
+      let S1 = rotr32(e, 6) xor rotr32(e, 11) xor rotr32(e, 25)
+      let ch = (e and f) xor ((not e) and g)
+      let temp1 = hh + S1 + ch + sha256K[t] + w[t]
+      let S0 = rotr32(a, 2) xor rotr32(a, 13) xor rotr32(a, 22)
+      let maj = (a and b) xor (a and c) xor (b and c)
+      let temp2 = S0 + maj
+      hh = g; g = f; f = e; e = d + temp1
+      d = c; c = b; b = a; a = temp1 + temp2
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh
+    chunk += 64
+  result = newStringOfCap(32)
+  for v in h:
+    for i in countdown(3, 0):
+      result.add(char((v shr (i * 8)) and 0xff))
+
+proc sha256Hex(data: string): string =
+  result = sha256Raw(data).toHex().toLowerAscii()
+
 proc computeHmac(secretKey: string, message: string): string =
-  let cmd = fmt"echo -n '{message}' | openssl dgst -sha256 -hmac '{secretKey}' -hex 2>/dev/null | sed 's/.*= //'"
-  result = execProcess(cmd).strip()
+  var key = secretKey
+  if key.len > 64:
+    key = sha256Raw(key)
+  key.setLen(64)  # zero-padded
+  var ipad = newString(64)
+  var opad = newString(64)
+  for i in 0 ..< 64:
+    ipad[i] = char(ord(key[i]) xor 0x36)
+    opad[i] = char(ord(key[i]) xor 0x5c)
+  result = sha256Raw(opad & sha256Raw(ipad & message)).toHex().toLowerAscii()
 
 proc getTimestamp(): string =
   result = $toUnix(getTime())
@@ -431,7 +503,7 @@ proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network:
     quit(1)
 
   let code = readFile(sourceFile)
-  var json = fmt"""{"language":"{lang}","code":"{escapeJson(code)}""""
+  var json = fmt"""{{"language":"{lang}","code":"{escapeJson(code)}""""
 
   if envs.len > 0:
     json.add(""","env":{""")
@@ -508,7 +580,7 @@ proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execut
     return
 
   if execute != "":
-    let json = fmt"""{"command":"{escapeJson(command)}"}"""
+    let json = fmt"""{{"command":"{escapeJson(command)}"}}"""
     let path = fmt"/sessions/{execute}/execute"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
     let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
@@ -541,7 +613,8 @@ proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execut
         stderr.write(errout)
     return
 
-  var json = fmt"""{"shell":"{if shell != "": shell else: "bash"}""""
+  let shellName = if shell != "": shell else: "bash"
+  var json = fmt"""{{"shell":"{shellName}""""
   if network != "": json.add(fmt""","network":"{network}"""")
   if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
   if tmux: json.add(""","persistence":"tmux"""")
@@ -694,7 +767,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     return
 
   if execute != "":
-    let json = fmt"""{"command":"{escapeJson(command)}"}"""
+    let json = fmt"""{{"command":"{escapeJson(command)}"}}"""
     let path = fmt"/services/{execute}/execute"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
     let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
@@ -752,7 +825,6 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
           try:
             writeFile(dumpFile, bootstrapScript)
             when defined(posix):
-              import os
               setFilePermissions(dumpFile, {fpUserExec, fpUserWrite, fpUserRead, fpGroupExec, fpGroupRead, fpOthersExec, fpOthersRead})
             echo "Bootstrap saved to " & dumpFile
           except IOError as e:
@@ -769,7 +841,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     return
 
   if name != "":
-    var json = fmt"""{"name":"{name}""""
+    var json = fmt"""{{"name":"{name}""""
     if ports != "": json.add(fmt""","ports":[{ports}]""")
     if bootstrap != "":
       json.add(fmt""","bootstrap":"{escapeJson(bootstrap)}"""")
@@ -1027,7 +1099,8 @@ proc cmdSnapshot(list: bool, infoId, sessionId, serviceId, restoreId, deleteId, 
     return
 
   if cloneId != "":
-    var json = fmt"""{{"clone_type":"{if cloneType != "": cloneType else: "session"}"""""
+    let cloneTypeName = if cloneType != "": cloneType else: "session"
+    var json = fmt"""{{"clone_type":"{cloneTypeName}""""
     if name != "": json.add(fmt""","name":"{name}"""")
     if ports != "": json.add(fmt""","ports":[{ports}]""")
     json.add("}")
@@ -1241,6 +1314,200 @@ proc loadCredentialsFromCsv(csvPath: string, accountIndex: int): tuple[pk: strin
   except:
     discard
 
+proc credentialsCsvPath(argPk, argSk: string, accountIndex: int): string =
+  ## The accounts.csv the credentials came from, or "" (flags / env vars).
+  ## Mirrors resolveCredentials' tiers.
+  if argPk != "" and argSk != "":
+    return ""
+  var index = accountIndex
+  if index < 0:
+    if getEnv("UNSANDBOX_PUBLIC_KEY", "") != "" and getEnv("UNSANDBOX_SECRET_KEY", "") != "":
+      return ""
+    try:
+      index = parseInt(getEnv("UNSANDBOX_ACCOUNT", "0"))
+    except ValueError:
+      index = 0
+  for path in [getHomeDir() / ".unsandbox" / "accounts.csv", "accounts.csv"]:
+    if loadCredentialsFromCsv(path, index).pk != "":
+      return path
+  return ""
+
+proc writePrivateFile(path, content: string): bool =
+  ## Create/truncate path with mode 0600 and write content.
+  let fd = posix.open(path.cstring, posix.O_WRONLY or posix.O_CREAT or posix.O_TRUNC, posix.Mode(0o600))
+  if fd < 0:
+    return false
+  var written = 0
+  while written < content.len:
+    let n = posix.write(fd, unsafeAddr content[written], content.len - written)
+    if n <= 0:
+      discard posix.close(fd)
+      return false
+    written += n
+  discard posix.fchmod(fd, posix.Mode(0o600))
+  return posix.close(fd) == 0
+
+proc rewriteAccountsCsv(path, publicKey, newSecret: string): bool =
+  ## Replace the secret on the line whose first field is publicKey. Every other
+  ## line, field, comment and the order stay as they are. Temp file (0600) + rename.
+  var content: string
+  try:
+    content = readFile(path)
+  except IOError:
+    return false
+  var lines = content.split('\n')
+  var changed = false
+  for i in 0 ..< lines.len:
+    let stripped = lines[i].strip()
+    if stripped.len == 0 or stripped.startsWith("#"):
+      continue
+    var fields = lines[i].split(',')
+    if fields.len >= 2 and fields[0].strip() == publicKey:
+      fields[1] = newSecret
+      lines[i] = fields.join(",")
+      changed = true
+      break
+  if not changed:
+    return false
+  let (dir, name, ext) = splitFile(path)
+  let tmp = (if dir.len > 0: dir else: ".") / ("." & name & ext & "." & $getCurrentProcessId() & ".tmp")
+  if not writePrivateFile(tmp, lines.join("\n")):
+    discard tryRemoveFile(tmp)
+    return false
+  try:
+    moveFile(tmp, path)
+  except OSError:
+    discard tryRemoveFile(tmp)
+    return false
+  return true
+
+proc isSafeToken(v: string): bool =
+  ## Only [A-Za-z0-9_-] may reach the curl command line (OTP / challenge id).
+  if v.len == 0:
+    return false
+  for c in v:
+    if not (c.isAlphaNumeric or c == '-' or c == '_'):
+      return false
+  return true
+
+proc jsonStringField(json, field: string): string =
+  ## String value of "field" in a flat JSON object, tolerating whitespace around ':'.
+  var pos = 0
+  let key = "\"" & field & "\""
+  while true:
+    let k = json.find(key, pos)
+    if k < 0:
+      return ""
+    var i = k + key.len
+    while i < json.len and json[i] in Whitespace: inc i
+    if i < json.len and json[i] == ':':
+      inc i
+      while i < json.len and json[i] in Whitespace: inc i
+      if i >= json.len or json[i] != '"':
+        return ""
+      inc i
+      var value = ""
+      while i < json.len and json[i] != '"':
+        if json[i] == '\\' and i + 1 < json.len:
+          inc i
+        value.add(json[i])
+        inc i
+      return value
+    pos = k + 1
+
+proc postRotateSecret(publicKey, secretKey, otp, challenge: string): (int, string) =
+  ## POST /keys/self/rotate-secret, body {}, fresh in-process signature per call.
+  let path = "/keys/self/rotate-secret"
+  let authHeaders = buildAuthHeaders("POST", path, "{}", publicKey, secretKey)
+  var sudoHeaders = ""
+  if otp != "":
+    if not isSafeToken(otp) or not isSafeToken(challenge):
+      stderr.writeLine("Error: invalid one-time code or challenge")
+      quit(2)
+    sudoHeaders = fmt"-H 'X-Sudo-OTP: {otp}' -H 'X-Sudo-Challenge: {challenge}'"
+  let cmd = fmt"""curl -s -w '\n%{{http_code}}' -X POST '{API_BASE}{path}' -H 'Content-Type: application/json' {authHeaders} {sudoHeaders} -d '{{}}'"""
+  let output = execProcess(cmd).strip(leading = false)
+  let nl = output.rfind('\n')
+  let statusStr = if nl >= 0: output[nl+1 .. ^1] else: output
+  let body = if nl >= 0: output[0 ..< nl] else: ""
+  var status = 0
+  try:
+    status = parseInt(statusStr.strip())
+  except ValueError:
+    status = 0
+  return (status, body)
+
+proc cmdKeyRotate(otpFlag, publicKey, secretKey, credsCsv: string) =
+  ## un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+  let unsandboxDir = getHomeDir() / ".unsandbox"
+  let challengeFile = unsandboxDir / ("rotate-" & sha256Hex(publicKey)[0 ..< 16] & ".challenge")
+  var status: int
+  var body: string
+  if otpFlag != "":
+    var challenge: string
+    try:
+      challenge = readFile(challengeFile).strip()
+    except IOError:
+      stderr.writeLine("Error: no rotation in progress; run: un key --rotate")
+      quit(2)
+    (status, body) = postRotateSecret(publicKey, secretKey, otpFlag.strip(), challenge)
+    if status != 0:  # 0: curl never reached the API; keep the challenge for a retry
+      discard tryRemoveFile(challengeFile)
+  else:
+    (status, body) = postRotateSecret(publicKey, secretKey, "", "")
+    if status == 428:
+      let challenge = jsonStringField(body, "challenge_id")
+      if isatty(stdin):
+        stderr.writeLine("One-time code emailed to the key owner.")
+        stderr.write("Code: ")
+        stderr.flushFile()
+        var otp = ""
+        try:
+          otp = stdin.readLine().strip()
+        except EOFError:
+          otp = ""
+        if otp == "":
+          stderr.writeLine("Error: cancelled")
+          quit(1)
+        (status, body) = postRotateSecret(publicKey, secretKey, otp, challenge)
+      else:
+        if not dirExists(unsandboxDir):
+          try:
+            createDir(unsandboxDir)
+            setFilePermissions(unsandboxDir, {fpUserRead, fpUserWrite, fpUserExec})
+          except OSError:
+            stderr.writeLine("Error: cannot create " & unsandboxDir)
+            quit(1)
+        if not writePrivateFile(challengeFile, challenge):
+          stderr.writeLine("Error: cannot write " & challengeFile)
+          quit(1)
+        echo "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+        return
+
+  if status != 200:
+    let errField = jsonStringField(body, "error")
+    if status == 403 and errField == "email_required":
+      stderr.writeLine("Error: this key has no email; add one or use POST /keys/recover")
+      quit(3)
+    if status == 401:
+      stderr.writeLine("Error: authentication failed")
+      quit(3)
+    var msg = jsonStringField(body, "message")
+    if msg == "": msg = errField
+    if msg == "": msg = "HTTP " & $status
+    stderr.writeLine("Error: " & msg)
+    quit(4)
+  let newSecret = jsonStringField(body, "secret")
+  if newSecret == "":
+    stderr.writeLine("Error: API returned no secret")
+    quit(4)
+
+  if credsCsv != "" and rewriteAccountsCsv(credsCsv, publicKey, newSecret):
+    echo fmt"Secret rotated. Updated {credsCsv} (public key {publicKey})."
+  else:
+    echo fmt"New secret (shown once, store it now): {newSecret}"
+    echo "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
+
 proc resolveCredentials(argPk: string, argSk: string, accountIndex: int): tuple[pk: string, sk: string] =
   ## Resolve credentials using 5-tier priority:
   ##   1. Explicit -p/-k flags (argPk/argSk)
@@ -1308,6 +1575,7 @@ proc main() =
       i.inc
     i.inc
 
+  let credsCsv = credentialsCsvPath(argPublicKey, argSecretKey, accountIndex)
   let resolved = resolveCredentials(argPublicKey, argSecretKey, accountIndex)
   var publicKey = resolved.pk
   var secretKey = resolved.sk
@@ -1322,6 +1590,7 @@ proc main() =
     stderr.writeLine("       un.nim service env <action> <service_id> [options]")
     stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
+    stderr.writeLine("       un.nim key --rotate [--otp CODE]")
     stderr.writeLine("")
     stderr.writeLine("Languages options:")
     stderr.writeLine("  --json              Output as JSON array")
@@ -1458,12 +1727,22 @@ proc main() =
 
   if args[0] == "key":
     var extend = false
+    var rotate = false
+    var otpFlag = ""
     var i = 1
     while i < args.len:
       case args[i]
       of "--extend": extend = true
+      of "--rotate": rotate = true
+      of "--otp":
+        if i + 1 < args.len:
+          otpFlag = args[i+1]
+          inc i
       of "-k": publicKey = args[i+1]; inc i
       inc i
+    if rotate:
+      cmdKeyRotate(otpFlag, publicKey, secretKey, credsCsv)
+      return
     cmdKey(extend, publicKey, secretKey)
     return
 
@@ -1587,7 +1866,7 @@ proc main() =
   var artifacts = false
   var network, sourceFile = ""
   var vcpu = 0
-  var i = 0
+  i = 0
   while i < args.len:
     case args[i]
     of "-e": envs.add(args[i+1]); inc i

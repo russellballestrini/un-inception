@@ -72,7 +72,18 @@ import java.util.*;
  */
 public class Un {
 
-    private static final String API_BASE = "https://api.unsandbox.com";
+    private static final String API_BASE = resolveApiBase();
+
+    private static String resolveApiBase() {
+        String base = System.getenv("UNSANDBOX_API_URL");
+        if (base == null || base.isEmpty()) {
+            base = "https://api.unsandbox.com";
+        }
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        return base;
+    }
     private static final int[] POLL_DELAYS_MS = {300, 450, 700, 900, 650, 1600, 2000};
     private static final long LANGUAGES_CACHE_TTL_MS = 3600 * 1000; // 1 hour
     private static final int DEFAULT_TIMEOUT_MS = 120000; // 2 minutes
@@ -136,7 +147,10 @@ public class Un {
     // ========================================================================
 
     private static Path getUnsandboxDir() {
-        String home = System.getProperty("user.home");
+        String home = System.getenv("HOME");
+        if (home == null || home.isEmpty()) {
+            home = System.getProperty("user.home");
+        }
         Path unsandboxDir = Paths.get(home, ".unsandbox");
         try {
             if (!Files.exists(unsandboxDir)) {
@@ -2887,6 +2901,8 @@ public class Un {
         List<String> files = new ArrayList<>();
         List<String> positionalArgs = new ArrayList<>();
         boolean showHelp = false;
+        boolean rotateKey = false;
+        String otpCode = null;
 
         int i = 0;
         while (i < args.length) {
@@ -2955,6 +2971,16 @@ public class Un {
                 }
                 files.add(args[++i]);
                 i++;
+            } else if (arg.equals("--otp") && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
+                if (i + 1 >= args.length) {
+                    System.err.println("Error: --otp requires an argument");
+                    System.exit(2);
+                }
+                otpCode = args[++i];
+                i++;
+            } else if (arg.equals("--rotate") && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
+                rotateKey = true;
+                i++;
             } else if (arg.startsWith("-")) {
                 System.err.println("Error: Unknown option: " + arg);
                 System.exit(2);
@@ -2970,6 +2996,9 @@ public class Un {
         }
 
         String command = positionalArgs.get(0);
+
+        String cliPublicKey = publicKey;
+        String cliSecretKey = secretKey;
 
         // Pre-resolve credentials so --account N is honoured by all subcommands.
         // Only resolve if explicit keys were not supplied via -p/-k flags.
@@ -2994,7 +3023,11 @@ public class Un {
                 handleImage(positionalArgs, publicKey, secretKey);
                 break;
             case "key":
-                handleKey(publicKey, secretKey);
+                if (rotateKey) {
+                    handleKeyRotate(publicKey, secretKey, otpCode, credentialsCsvPath(cliPublicKey, cliSecretKey, accountIndex));
+                } else {
+                    handleKey(publicKey, secretKey);
+                }
                 break;
             case "languages":
                 handleLanguages(positionalArgs, publicKey, secretKey);
@@ -3017,6 +3050,7 @@ public class Un {
         System.out.println("  java Un snapshot [options]             Manage snapshots");
         System.out.println("  java Un image [options]                Manage images");
         System.out.println("  java Un key                            Check API key");
+        System.out.println("  java Un key --rotate [--otp CODE]      Rotate API key secret (emailed OTP)");
         System.out.println("  java Un languages [--json]             List supported languages");
         System.out.println();
         System.out.println("Global Options:");
@@ -3867,6 +3901,226 @@ public class Un {
     private static void handleKey(String publicKey, String secretKey) throws Exception {
         Map<String, Object> result = validateKeys(publicKey, secretKey);
         printMap(result);
+    }
+
+    /**
+     * The accounts.csv the CLI's credentials came from, or null (flags / env vars).
+     * Mirrors resolveCredentials' tiers.
+     */
+    private static Path credentialsCsvPath(String publicKey, String secretKey, int accountIndex) {
+        if (publicKey != null && !publicKey.isEmpty() && secretKey != null && !secretKey.isEmpty()) {
+            return null;
+        }
+        int index = accountIndex;
+        if (index < 0) {
+            String envPk = System.getenv("UNSANDBOX_PUBLIC_KEY");
+            String envSk = System.getenv("UNSANDBOX_SECRET_KEY");
+            if (envPk != null && !envPk.isEmpty() && envSk != null && !envSk.isEmpty()) {
+                return null;
+            }
+            index = 0;
+            String accountEnv = System.getenv("UNSANDBOX_ACCOUNT");
+            if (accountEnv != null && !accountEnv.isEmpty()) {
+                try {
+                    index = Integer.parseInt(accountEnv);
+                } catch (NumberFormatException e) {
+                    // Use default
+                }
+            }
+        }
+        Path[] candidates = {getUnsandboxDir().resolve("accounts.csv"), Paths.get("accounts.csv")};
+        for (Path candidate : candidates) {
+            if (loadCredentialsFromCsv(candidate, index) != null) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Replace the secret on the line whose first field is publicKey. Every other
+     * line, field, comment and the order stay as they are. Temp file (0600) + rename.
+     */
+    private static boolean rewriteAccountsCsv(Path path, String publicKey, String newSecret) throws IOException {
+        String content = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String[] lines = content.split("\n", -1);
+        boolean changed = false;
+        for (int j = 0; j < lines.length; j++) {
+            String stripped = lines[j].trim();
+            if (stripped.isEmpty() || stripped.startsWith("#")) {
+                continue;
+            }
+            String[] fields = lines[j].split(",", -1);
+            if (fields.length >= 2 && fields[0].trim().equals(publicKey)) {
+                fields[1] = newSecret;
+                lines[j] = String.join(",", fields);
+                changed = true;
+                break;
+            }
+        }
+        if (!changed) {
+            return false;
+        }
+        Path dir = path.toAbsolutePath().getParent();
+        Path tmp = dir.resolve("." + path.getFileName() + "." + ProcessHandle.current().pid() + ".tmp");
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> perms =
+            java.nio.file.attribute.PosixFilePermissions.fromString("rw-------");
+        Files.deleteIfExists(tmp);
+        Files.createFile(tmp, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(perms));
+        Files.write(tmp, String.join("\n", lines).getBytes(StandardCharsets.UTF_8));
+        Files.setPosixFilePermissions(tmp, perms);
+        Files.move(tmp, path.toAbsolutePath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        return true;
+    }
+
+    /** POST /keys/self/rotate-secret with body {}; returns {status, body}. */
+    private static Object[] rotatePost(String publicKey, String secretKey, String otp, String challenge) throws IOException {
+        String path = "/keys/self/rotate-secret";
+        String body = "{}";
+        long timestamp = System.currentTimeMillis() / 1000;
+        HttpURLConnection conn = (HttpURLConnection) new URL(API_BASE + path).openConnection();
+        conn.setRequestMethod("POST");
+        conn.setConnectTimeout(DEFAULT_TIMEOUT_MS);
+        conn.setReadTimeout(DEFAULT_TIMEOUT_MS);
+        conn.setRequestProperty("Authorization", "Bearer " + publicKey);
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signRequest(secretKey, timestamp, "POST", path, body));
+        conn.setRequestProperty("Content-Type", "application/json");
+        if (otp != null) {
+            conn.setRequestProperty("X-Sudo-OTP", otp);
+            conn.setRequestProperty("X-Sudo-Challenge", challenge != null ? challenge : "");
+        }
+        conn.setDoOutput(true);
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        int code = conn.getResponseCode();
+        InputStream in = (code >= 200 && code < 300) ? conn.getInputStream() : conn.getErrorStream();
+        String text = "";
+        if (in != null) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                text = sb.toString();
+            }
+        }
+        Map<String, Object> json;
+        try {
+            json = parseJson(text);
+        } catch (Exception e) {
+            json = new HashMap<>();
+        }
+        if (json == null) {
+            json = new HashMap<>();
+        }
+        return new Object[]{code, json};
+    }
+
+    private static boolean stdinIsTerminal() {
+        Console console = System.console();
+        if (console == null) {
+            return false;
+        }
+        try {
+            // Java 22+: a Console may exist even when stdin is redirected.
+            return (Boolean) Console.class.getMethod("isTerminal").invoke(console);
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md). */
+    @SuppressWarnings("unchecked")
+    private static void handleKeyRotate(String publicKey, String secretKey, String otp, Path csvPath) throws Exception {
+        Path unsandboxDir = getUnsandboxDir();
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        StringBuilder hex = new StringBuilder();
+        for (byte b : md.digest(publicKey.getBytes(StandardCharsets.UTF_8))) {
+            hex.append(String.format("%02x", b));
+        }
+        Path challengeFile = unsandboxDir.resolve("rotate-" + hex.substring(0, 16) + ".challenge");
+
+        Object[] resp;
+        if (otp != null) {
+            String challenge;
+            try {
+                challenge = new String(Files.readAllBytes(challengeFile), StandardCharsets.UTF_8).trim();
+            } catch (IOException e) {
+                System.err.println("Error: no rotation in progress; run: un key --rotate");
+                System.exit(2);
+                return;
+            }
+            resp = rotatePost(publicKey, secretKey, otp.trim(), challenge);
+            Files.deleteIfExists(challengeFile);
+        } else {
+            resp = rotatePost(publicKey, secretKey, null, null);
+            if ((Integer) resp[0] == 428) {
+                Object cid = ((Map<String, Object>) resp[1]).get("challenge_id");
+                String challenge = cid != null ? cid.toString() : "";
+                if (stdinIsTerminal()) {
+                    System.err.println("One-time code emailed to the key owner.");
+                    System.err.print("Code: ");
+                    System.err.flush();
+                    String line = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8)).readLine();
+                    String code = line != null ? line.trim() : "";
+                    if (code.isEmpty()) {
+                        System.err.println("Error: cancelled");
+                        System.exit(1);
+                    }
+                    resp = rotatePost(publicKey, secretKey, code, challenge);
+                } else {
+                    java.util.Set<java.nio.file.attribute.PosixFilePermission> dirPerms =
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rwx------");
+                    java.util.Set<java.nio.file.attribute.PosixFilePermission> filePerms =
+                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------");
+                    Files.createDirectories(unsandboxDir);
+                    Files.setPosixFilePermissions(unsandboxDir, dirPerms);
+                    if (!Files.exists(challengeFile)) {
+                        Files.createFile(challengeFile,
+                            java.nio.file.attribute.PosixFilePermissions.asFileAttribute(filePerms));
+                    }
+                    Files.setPosixFilePermissions(challengeFile, filePerms);
+                    Files.write(challengeFile, challenge.getBytes(StandardCharsets.UTF_8));
+                    System.out.println("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE");
+                    return;
+                }
+            }
+        }
+
+        int status = (Integer) resp[0];
+        Map<String, Object> data = (Map<String, Object>) resp[1];
+        if (status != 200) {
+            if (status == 403 && "email_required".equals(data.get("error"))) {
+                System.err.println("Error: this key has no email; add one or use POST /keys/recover");
+                System.exit(3);
+            }
+            if (status == 401) {
+                System.err.println("Error: authentication failed");
+                System.exit(3);
+            }
+            Object msg = data.get("message");
+            if (msg == null) {
+                msg = data.get("error");
+            }
+            System.err.println("Error: " + (msg != null ? msg.toString() : "HTTP " + status));
+            System.exit(4);
+        }
+        Object secret = data.get("secret");
+        if (secret == null || secret.toString().isEmpty()) {
+            System.err.println("Error: API returned no secret");
+            System.exit(4);
+        }
+        String newSecret = secret.toString();
+        if (csvPath != null && rewriteAccountsCsv(csvPath, publicKey, newSecret)) {
+            System.out.println("Secret rotated. Updated " + csvPath + " (public key " + publicKey + ").");
+        } else {
+            System.out.println("New secret (shown once, store it now): " + newSecret);
+            System.out.println("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.");
+        }
     }
 
     private static void handleLanguages(List<String> args, String publicKey, String secretKey) throws Exception {

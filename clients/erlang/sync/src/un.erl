@@ -1,3 +1,4 @@
+#!/usr/bin/env escript
 %% PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 %%
 %% This is free public domain software for the public good of a permacomputer hosted
@@ -35,7 +36,6 @@
 %% https://www.unturf.com/software
 
 
-#!/usr/bin/env escript
 
 %%% @doc unsandbox.com Erlang SDK
 %%%
@@ -61,7 +61,10 @@
 %%%   4. ~/.unsandbox/accounts.csv row 0 (or UNSANDBOX_ACCOUNT env)
 %%%   5. ./accounts.csv row 0
 
--define(API_BASE, "https://api.unsandbox.com").
+%% Library API functions go unused when run as an escript CLI.
+-compile([nowarn_unused_function]).
+
+-define(API_BASE, api_base()).
 -define(PORTAL_BASE, "https://unsandbox.com").
 -define(VERSION, "4.2.0").
 -define(LANGUAGES_CACHE_TTL, 3600).
@@ -685,6 +688,16 @@ portal_post(Endpoint, Json, Opts) ->
     check_clock_drift_error(Result),
     Result.
 
+%% Generic signed request used by the image CLI commands.
+api_request(Endpoint, Method, Body, PublicKey, SecretKey) ->
+    Opts = #{public_key => PublicKey, secret_key => SecretKey},
+    case Method of
+        "GET" -> api_get(Endpoint, Opts);
+        "POST" -> api_post(Endpoint, Body, Opts);
+        "DELETE" -> api_delete(Endpoint, Opts);
+        "PATCH" -> api_patch(Endpoint, Body, Opts)
+    end.
+
 get_api_keys_from_opts(Opts) ->
     case {maps:get(public_key, Opts, undefined), maps:get(secret_key, Opts, undefined)} of
         {Pk, Sk} when Pk =/= undefined, Sk =/= undefined -> {Pk, Sk};
@@ -816,19 +829,6 @@ session_command(["--kill", SessionId | _]) ->
     _ = curl_delete(ApiKey, "/sessions/" ++ SessionId),
     io:format("\033[32mSession terminated: ~s\033[0m~n", [SessionId]);
 
-session_command(Args) ->
-    validate_session_args(Args),
-    ApiKey = get_api_key(),
-    Shell = get_shell_opt(Args, "bash"),
-    InputFiles = get_input_files(Args),
-    InputFilesJson = build_input_files_json(InputFiles),
-    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ InputFilesJson ++ "}",
-    TmpFile = write_temp_file(Json),
-    Response = curl_post(ApiKey, "/sessions", TmpFile),
-    file:delete(TmpFile),
-    io:format("\033[33mSession created (WebSocket required)\033[0m~n"),
-    io:format("~s~n", [Response]).
-
 %% Session snapshot commands
 session_command(["--snapshot", SessionId | Rest]) ->
     ApiKey = get_api_key(),
@@ -849,6 +849,19 @@ session_command(["--restore", SnapshotId | _Rest]) ->
     file:delete(TmpFile),
     io:format("\033[32mSession restored from snapshot\033[0m~n"),
     io:format("~s~n", [Response]);
+
+session_command(Args) ->
+    validate_session_args(Args),
+    ApiKey = get_api_key(),
+    Shell = get_shell_opt(Args, "bash"),
+    InputFiles = get_input_files(Args),
+    InputFilesJson = build_input_files_json(InputFiles),
+    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ InputFilesJson ++ "}",
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/sessions", TmpFile),
+    file:delete(TmpFile),
+    io:format("\033[33mSession created (WebSocket required)\033[0m~n"),
+    io:format("~s~n", [Response]).
 
 validate_session_args([]) -> ok;
 validate_session_args(["--shell", _ | Rest]) -> validate_session_args(Rest);
@@ -933,13 +946,13 @@ service_command(["--destroy", ServiceId | _]) ->
     end;
 
 service_command(["--resize", ServiceId, "--vcpu", VcpuStr | _]) ->
-    service_resize(ServiceId, VcpuStr);
+    cli_service_resize(ServiceId, VcpuStr);
 
 service_command(["--resize", ServiceId, "-v", VcpuStr | _]) ->
-    service_resize(ServiceId, VcpuStr);
+    cli_service_resize(ServiceId, VcpuStr);
 
 service_command(["--set-unfreeze-on-demand", ServiceId, EnabledStr | _]) ->
-    service_set_unfreeze_on_demand(ServiceId, EnabledStr);
+    cli_service_set_unfreeze_on_demand(ServiceId, EnabledStr);
 
 service_command(["--execute", ServiceId, "--command", Command | _]) ->
     ApiKey = get_api_key(),
@@ -1018,14 +1031,14 @@ service_command(["env", "set", ServiceId | Rest]) ->
             io:format(standard_error, "Error: No environment variables specified. Use -e KEY=VALUE or --env-file FILE~n", []),
             halt(1);
         _ ->
-            service_env_set(ServiceId, Content)
+            cli_service_env_set(ServiceId, Content)
     end;
 
 service_command(["env", "export", ServiceId | _]) ->
-    service_env_export(ServiceId);
+    cli_service_env_export(ServiceId);
 
 service_command(["env", "delete", ServiceId | _]) ->
-    service_env_delete(ServiceId);
+    cli_service_env_delete(ServiceId);
 
 service_command(["env" | _]) ->
     io:format(standard_error, "Usage: un.erl service env <status|set|export|delete> <service_id> [options]~n", []),
@@ -1086,7 +1099,7 @@ service_command(Args) ->
                         "" -> ok;
                         _ ->
                             io:format("Setting vault for ~s...~n", [ServiceId]),
-                            service_env_set(ServiceId, EnvContent)
+                            cli_service_env_set(ServiceId, EnvContent)
                     end
             end
     end.
@@ -1304,8 +1317,6 @@ build_spawn_json(Name, Ports) ->
     end,
     "{" ++ string:join(lists:reverse(Parts2), ",") ++ "}".
 
-%% Languages cache TTL (1 hour in seconds)
--define(LANGUAGES_CACHE_TTL, 3600).
 
 %% Get languages cache path
 get_languages_cache_path() ->
@@ -1405,6 +1416,12 @@ languages_command(Args) ->
 
 %% Key command
 key_command(Args) ->
+    case lists:member("--rotate", Args) of
+        true -> key_rotate(Args);
+        false -> key_command_validate(Args)
+    end.
+
+key_command_validate(Args) ->
     ApiKey = get_api_key(),
     case has_extend_flag(Args) of
         true ->
@@ -1573,6 +1590,210 @@ get_api_key() ->
     {PublicKey, _} = get_api_keys(),
     PublicKey.
 
+%% API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
+api_base() ->
+    case os:getenv("UNSANDBOX_API_URL") of
+        false -> "https://api.unsandbox.com";
+        "" -> "https://api.unsandbox.com";
+        Url -> string:trim(Url, trailing, "/")
+    end.
+
+%% The accounts.csv the credentials came from, or undefined (environment
+%% variables). Mirrors get_api_keys/0 tiers.
+credentials_csv_path() ->
+    Home = case os:getenv("HOME") of false -> "."; H -> H end,
+    HomeCsv = filename:join([Home, ".unsandbox", "accounts.csv"]),
+    Index = case erlang:get(account_index) of
+        undefined ->
+            EnvPair = os:getenv("UNSANDBOX_PUBLIC_KEY") =/= false andalso
+                      os:getenv("UNSANDBOX_SECRET_KEY") =/= false,
+            case EnvPair orelse os:getenv("UNSANDBOX_API_KEY") =/= false of
+                true -> undefined;
+                false ->
+                    case os:getenv("UNSANDBOX_ACCOUNT") of
+                        false -> 0;
+                        IdxStr -> try list_to_integer(string:trim(IdxStr)) catch _:_ -> 0 end
+                    end
+            end;
+        N -> N
+    end,
+    case Index of
+        undefined -> undefined;
+        _ ->
+            Found = [P || P <- [HomeCsv, "accounts.csv"],
+                          load_credentials_from_csv(P, Index) =/= error],
+            case Found of [First | _] -> First; [] -> undefined end
+    end.
+
+%% Replace the secret on the line whose first field equals PublicKey. Every other
+%% line, field, comment and the order stay as they are. Temp file (0600) + rename.
+rewrite_accounts_csv(Path, PublicKey, NewSecret) ->
+    {ok, Bin} = file:read_file(Path),
+    Lines = string:split(binary_to_list(Bin), "\n", all),
+    {NewLines, Changed} = lists:mapfoldl(fun(Line, Done) ->
+        Trimmed = string:trim(Line),
+        Fields = string:split(Line, ",", all),
+        IsTarget = (not Done) andalso Trimmed =/= "" andalso
+                   not lists:prefix("#", Trimmed) andalso length(Fields) >= 2 andalso
+                   string:trim(hd(Fields)) == PublicKey,
+        case IsTarget of
+            true ->
+                [First, _Old | Rest] = Fields,
+                {string:join([First, NewSecret | Rest], ","), true};
+            false -> {Line, Done}
+        end
+    end, false, Lines),
+    case Changed of
+        false -> false;
+        true ->
+            Tmp = filename:join(filename:dirname(Path),
+                                "." ++ filename:basename(Path) ++ "." ++ os:getpid() ++ ".tmp"),
+            ok = file:write_file(Tmp, <<>>),
+            ok = file:change_mode(Tmp, 8#600),
+            ok = file:write_file(Tmp, string:join(NewLines, "\n")),
+            ok = file:rename(Tmp, Path),
+            true
+    end.
+
+stdin_is_tty() ->
+    case file:read_link("/proc/self/fd/0") of
+        {ok, Target} -> lists:prefix("/dev/pts/", Target) orelse lists:prefix("/dev/tty", Target);
+        _ -> false
+    end.
+
+%% POST /keys/self/rotate-secret, body {}; headers go through a 0600 file, never argv.
+rotate_post(PublicKey, SecretKey, Otp, Challenge) ->
+    Path = "/keys/self/rotate-secret",
+    Body = "{}",
+    Timestamp = integer_to_list(erlang:system_time(second)),
+    Signature = make_signature(SecretKey, Timestamp, "POST", Path, Body),
+    SudoLines = case Otp of
+        undefined -> [];
+        _ -> ["X-Sudo-OTP: " ++ Otp, "X-Sudo-Challenge: " ++ Challenge]
+    end,
+    HeaderLines = ["Authorization: Bearer " ++ PublicKey,
+                   "X-Timestamp: " ++ Timestamp,
+                   "X-Signature: " ++ Signature,
+                   "Content-Type: application/json"] ++ SudoLines,
+    HdrFile = "/tmp/un_erl_rot_" ++ os:getpid() ++ "_" ++ integer_to_list(rand:uniform(999999999)) ++ ".hdr",
+    ok = file:write_file(HdrFile, <<>>, [exclusive]),
+    ok = file:change_mode(HdrFile, 8#600),
+    ok = file:write_file(HdrFile, string:join(HeaderLines, "\n") ++ "\n"),
+    Cmd = "curl -s -X POST -w '\\n%{http_code}' -H @" ++ HdrFile ++
+          " --data-raw '{}' '" ++ ?API_BASE ++ Path ++ "'",
+    Output = os:cmd(Cmd),
+    file:delete(HdrFile),
+    case lists:reverse(string:split(Output, "\n", all)) of
+        [StatusStr | BodyRev] ->
+            Code = try list_to_integer(string:trim(StatusStr)) catch _:_ -> 0 end,
+            {Code, string:join(lists:reverse(BodyRev), "\n")};
+        _ -> {0, Output}
+    end.
+
+%% String field from a JSON object, tolerant of whitespace around the colon.
+json_string_field(Json, Field) ->
+    case re:run(Json, "\"" ++ Field ++ "\"\\s*:\\s*\"([^\"]*)\"", [{capture, [1], list}]) of
+        {match, [Value]} -> Value;
+        nomatch -> ""
+    end.
+
+rotate_fail(Code, Resp) ->
+    Error = json_string_field(Resp, "error"),
+    if
+        Code == 403 andalso Error == "email_required" ->
+            io:format(standard_error, "Error: this key has no email; add one or use POST /keys/recover~n", []),
+            halt(3);
+        Code == 401 ->
+            io:format(standard_error, "Error: authentication failed~n", []),
+            halt(3);
+        true ->
+            Msg = case {json_string_field(Resp, "message"), Error} of
+                {"", ""} -> "HTTP " ++ integer_to_list(Code);
+                {"", E} -> E;
+                {M, _} -> M
+            end,
+            io:format(standard_error, "Error: ~s~n", [Msg]),
+            halt(4)
+    end.
+
+get_otp_arg([]) -> undefined;
+get_otp_arg(["--otp", Code | _]) -> string:trim(Code);
+get_otp_arg([_ | Rest]) -> get_otp_arg(Rest).
+
+%% un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+key_rotate(Args) ->
+    {PublicKey, SecretKey} = get_api_keys(),
+    case SecretKey of
+        false ->
+            io:format(standard_error, "Error: authentication failed~n", []),
+            halt(3);
+        _ -> ok
+    end,
+    Home = case os:getenv("HOME") of false -> "."; H -> H end,
+    UnsandboxDir = filename:join([Home, ".unsandbox"]),
+    Hash = lists:flatten([io_lib:format("~2.16.0b", [X]) || X <- binary_to_list(crypto:hash(sha256, PublicKey))]),
+    ChallengeFile = filename:join([UnsandboxDir, "rotate-" ++ lists:sublist(Hash, 16) ++ ".challenge"]),
+    {Code, Resp} = case get_otp_arg(Args) of
+        undefined ->
+            case rotate_post(PublicKey, SecretKey, undefined, undefined) of
+                {428, Body428} ->
+                    Challenge = json_string_field(Body428, "challenge_id"),
+                    case stdin_is_tty() of
+                        true ->
+                            io:format(standard_error, "One-time code emailed to the key owner.~n", []),
+                            io:format(standard_error, "Code: ", []),
+                            Otp = case io:get_line("") of
+                                L when is_list(L) -> string:trim(L);
+                                _ -> ""
+                            end,
+                            case Otp of
+                                "" ->
+                                    io:format(standard_error, "Error: cancelled~n", []),
+                                    halt(1);
+                                _ -> rotate_post(PublicKey, SecretKey, Otp, Challenge)
+                            end;
+                        false ->
+                            ok = filelib:ensure_dir(ChallengeFile),
+                            ok = file:change_mode(UnsandboxDir, 8#700),
+                            ok = file:write_file(ChallengeFile, <<>>),
+                            ok = file:change_mode(ChallengeFile, 8#600),
+                            ok = file:write_file(ChallengeFile, Challenge),
+                            io:format("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE~n"),
+                            halt(0)
+                    end;
+                Other -> Other
+            end;
+        OtpArg ->
+            case file:read_file(ChallengeFile) of
+                {ok, ChBin} ->
+                    Result = rotate_post(PublicKey, SecretKey, OtpArg, string:trim(binary_to_list(ChBin))),
+                    file:delete(ChallengeFile),
+                    Result;
+                _ ->
+                    io:format(standard_error, "Error: no rotation in progress; run: un key --rotate~n", []),
+                    halt(2)
+            end
+    end,
+    case Code of
+        200 -> ok;
+        _ -> rotate_fail(Code, Resp)
+    end,
+    case json_string_field(Resp, "secret") of
+        "" ->
+            io:format(standard_error, "Error: API returned no secret~n", []),
+            halt(4);
+        NewSecret ->
+            CsvPath = credentials_csv_path(),
+            Updated = CsvPath =/= undefined andalso rewrite_accounts_csv(CsvPath, PublicKey, NewSecret),
+            case Updated of
+                true ->
+                    io:format("Secret rotated. Updated ~s (public key ~s).~n", [CsvPath, PublicKey]);
+                false ->
+                    io:format("New secret (shown once, store it now): ~s~n", [NewSecret]),
+                    io:format("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.~n")
+            end
+    end.
+
 hmac_sha256(Secret, Message) ->
     string:lowercase(
         lists:flatten([io_lib:format("~2.16.0b", [X]) || X <- binary_to_list(crypto:mac(hmac, sha256, Secret, Message))])
@@ -1696,7 +1917,7 @@ curl_post(ApiKey, Endpoint, TmpFile) ->
     BodyStr = binary_to_list(Body),
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, BodyStr),
-    Cmd = "curl -s -X POST https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
           " -d @" ++ TmpFile,
@@ -1720,7 +1941,7 @@ curl_post_portal(ApiKey, Endpoint, Data) ->
 curl_get(ApiKey, Endpoint) ->
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "GET", Endpoint, ""),
-    Cmd = "curl -s https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s " ++ ?API_BASE ++ Endpoint ++
           AuthHeaders,
     Result = os:cmd(Cmd),
     check_clock_drift_error(Result),
@@ -1729,7 +1950,7 @@ curl_get(ApiKey, Endpoint) ->
 curl_delete(ApiKey, Endpoint) ->
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
-    Cmd = "curl -s -X DELETE https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++
           AuthHeaders,
     Result = os:cmd(Cmd),
     check_clock_drift_error(Result),
@@ -1761,18 +1982,18 @@ handle_sudo_challenge(Response, Method, Endpoint, Body) ->
                     end,
                     Cmd = case Method of
                         "DELETE" ->
-                            "curl -s -X DELETE https://api.unsandbox.com" ++ Endpoint ++
+                            "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++
                             AuthHeaders ++ SudoHeaders ++ ChallengeHeader;
                         "POST" ->
                             TmpFile = write_temp_file(Body),
-                            Result = "curl -s -X POST https://api.unsandbox.com" ++ Endpoint ++
+                            Result = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
                                 " -H 'Content-Type: application/json'" ++
                                 AuthHeaders ++ SudoHeaders ++ ChallengeHeader ++
                                 " -d @" ++ TmpFile,
                             file:delete(TmpFile),
                             Result;
                         _ ->
-                            "curl -s https://api.unsandbox.com" ++ Endpoint ++
+                            "curl -s " ++ ?API_BASE ++ Endpoint ++
                             AuthHeaders ++ SudoHeaders ++ ChallengeHeader
                     end,
                     RetryResult = os:cmd(Cmd),
@@ -1787,7 +2008,7 @@ handle_sudo_challenge(Response, Method, Endpoint, Body) ->
 curl_delete_with_sudo(ApiKey, Endpoint) ->
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
-    Cmd = "curl -s -w '\\n%{http_code}' -X DELETE https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -w '\\n%{http_code}' -X DELETE " ++ ?API_BASE ++ Endpoint ++
           AuthHeaders,
     Result = os:cmd(Cmd),
     %% Split response and status code
@@ -1809,7 +2030,7 @@ curl_post_with_sudo(ApiKey, Endpoint, Json) ->
     TmpFile = write_temp_file(Json),
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
-    Cmd = "curl -s -w '\\n%{http_code}' -X POST https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -w '\\n%{http_code}' -X POST " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
           " -d @" ++ TmpFile,
@@ -1835,7 +2056,7 @@ curl_patch(ApiKey, Endpoint, TmpFile) ->
     BodyStr = binary_to_list(Body),
     {PublicKey, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PATCH", Endpoint, BodyStr),
-    Cmd = "curl -s -X PATCH https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -X PATCH " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
           " -d @" ++ TmpFile,
@@ -1847,7 +2068,7 @@ curl_put_text(Endpoint, Content) ->
     {PublicKey, SecretKey} = get_api_keys(),
     TmpFile = write_temp_file(Content),
     AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PUT", Endpoint, Content),
-    Cmd = "curl -s -X PUT https://api.unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -X PUT " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: text/plain'" ++
           AuthHeaders ++
           " --data-binary @" ++ TmpFile,
@@ -1880,12 +2101,12 @@ service_env_status(ServiceId) ->
     Response = curl_get(ApiKey, Endpoint),
     io:format("~s~n", [Response]).
 
-service_env_set(ServiceId, Content) ->
+cli_service_env_set(ServiceId, Content) ->
     Endpoint = "/services/" ++ ServiceId ++ "/env",
     Response = curl_put_text(Endpoint, Content),
     io:format("~s~n", [Response]).
 
-service_env_export(ServiceId) ->
+cli_service_env_export(ServiceId) ->
     ApiKey = get_api_key(),
     Endpoint = "/services/" ++ ServiceId ++ "/env/export",
     TmpFile = write_temp_file("{}"),
@@ -1896,12 +2117,12 @@ service_env_export(ServiceId) ->
         ContentStr -> io:format("~s", [ContentStr])
     end.
 
-service_env_delete(ServiceId) ->
+cli_service_env_delete(ServiceId) ->
     ApiKey = get_api_key(),
     _ = curl_delete(ApiKey, "/services/" ++ ServiceId ++ "/env"),
     io:format("\033[32mVault deleted: ~s\033[0m~n", [ServiceId]).
 
-service_resize(ServiceId, VcpuStr) ->
+cli_service_resize(ServiceId, VcpuStr) ->
     ApiKey = get_api_key(),
     Vcpu = list_to_integer(VcpuStr),
     if
@@ -1917,7 +2138,7 @@ service_resize(ServiceId, VcpuStr) ->
     Ram = Vcpu * 2,
     io:format("\033[32mService resized to ~B vCPU, ~B GB RAM\033[0m~n", [Vcpu, Ram]).
 
-service_set_unfreeze_on_demand(ServiceId, EnabledStr) ->
+cli_service_set_unfreeze_on_demand(ServiceId, EnabledStr) ->
     ApiKey = get_api_key(),
     Enabled = case string:lowercase(EnabledStr) of
         "true" -> "true";

@@ -58,13 +58,40 @@
 #!/usr/bin/env -S clang -x objective-c -framework Foundation -o /tmp/un_objc && /tmp/un_objc
 
 #import <Foundation/Foundation.h>
+#if defined(__APPLE__) || __has_include(<CommonCrypto/CommonHMAC.h>)
 #import <CommonCrypto/CommonHMAC.h>
+#import <CommonCrypto/CommonDigest.h>
+#define UN_SHA256(data, len, out) CC_SHA256((data), (CC_LONG)(len), (out))
+#else
+// Non-Apple (GNUstep): HMAC-SHA256 via OpenSSL libcrypto (link with -lcrypto)
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#define CC_SHA256_DIGEST_LENGTH 32
+#define kCCHmacAlgSHA256 0
+#define CCHmac(alg, key, keyLen, data, dataLen, out) \
+    HMAC(EVP_sha256(), (key), (int)(keyLen), (const unsigned char*)(data), (dataLen), (out), NULL)
+#define UN_SHA256(data, len, out) EVP_Digest((data), (len), (out), NULL, EVP_sha256(), NULL)
+#endif
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-static NSString* const UN_API_BASE = @"https://api.unsandbox.com";
+// API base: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash.
+static NSString* UNApiBase(void) {
+    static NSString* base = nil;
+    if (!base) {
+        NSString* env = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_API_URL"];
+        NSString* b = ([env length] > 0) ? env : @"https://api.unsandbox.com";
+        while ([b hasSuffix:@"/"]) b = [b substringToIndex:[b length] - 1];
+        base = [b copy];
+    }
+    return base;
+}
+#define UN_API_BASE UNApiBase()
 static NSString* const UN_PORTAL_BASE = @"https://unsandbox.com";
 static const NSInteger UN_DEFAULT_TIMEOUT = 300;
 static const NSInteger UN_DEFAULT_TTL = 60;
@@ -209,6 +236,12 @@ NSString* UNComputeSignature(NSString* secretKey, long timestamp, NSString* meth
 // Credentials Loading
 // ============================================================================
 
+// Home directory: $HOME when set (GNUstep's NSHomeDirectory() ignores it), else NSHomeDirectory().
+static NSString* UNHomeDirectory(void) {
+    NSString* home = [[[NSProcessInfo processInfo] environment] objectForKey:@"HOME"];
+    return [home length] > 0 ? home : NSHomeDirectory();
+}
+
 // Global account index: -1 means not set (use env vars / default CSV row).
 // Set by main() when --account N is parsed.
 static NSInteger g_accountIndex = -1;
@@ -275,7 +308,7 @@ BOOL UNGetCredentials(NSString** publicKey, NSString** secretKey, NSString* argP
 
     // Priority 2: --account N -> accounts.csv row N (bypasses env vars)
     if (g_accountIndex >= 0) {
-        NSString* home = NSHomeDirectory();
+        NSString* home = UNHomeDirectory();
         NSString* homeCsv = [home stringByAppendingPathComponent:@".unsandbox/accounts.csv"];
         UNLoadCredentialsFromCSV(homeCsv, g_accountIndex, publicKey, secretKey);
         if (*publicKey && [*publicKey length] > 0) return YES;
@@ -305,7 +338,7 @@ BOOL UNGetCredentials(NSString** publicKey, NSString** secretKey, NSString* argP
     }
 
     // Priority 4: Config file ~/.unsandbox/accounts.csv (default row)
-    NSString* home = NSHomeDirectory();
+    NSString* home = UNHomeDirectory();
     NSString* accountIndexStr = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_ACCOUNT"];
     NSInteger defaultIndex = accountIndexStr ? [accountIndexStr integerValue] : 0;
     NSString* homeCsv = [home stringByAppendingPathComponent:@".unsandbox/accounts.csv"];
@@ -368,7 +401,7 @@ void UNCheckClockDrift(NSString* response) {
  * Get path to languages cache file.
  */
 NSString* UNLanguagesCachePath(void) {
-    NSString* home = NSHomeDirectory();
+    NSString* home = UNHomeDirectory();
     return [home stringByAppendingPathComponent:@".unsandbox/languages.json"];
 }
 
@@ -1696,9 +1729,203 @@ void cmdService(NSArray* args) {
     exit(1);
 }
 
+/**
+ * The accounts.csv the CLI's credentials came from, or nil (environment variables).
+ * Mirrors UNGetCredentials' tiers.
+ */
+NSString* UNCredentialsCsvPath(void) {
+    NSDictionary* env = [[NSProcessInfo processInfo] environment];
+    NSInteger index = g_accountIndex;
+    if (index < 0) {
+        if ([env[@"UNSANDBOX_PUBLIC_KEY"] length] > 0 && [env[@"UNSANDBOX_SECRET_KEY"] length] > 0) return nil;
+        if ([env[@"UNSANDBOX_API_KEY"] length] > 0) return nil;
+        index = env[@"UNSANDBOX_ACCOUNT"] ? [env[@"UNSANDBOX_ACCOUNT"] integerValue] : 0;
+    }
+    NSString* homeCsv = [UNHomeDirectory() stringByAppendingPathComponent:@".unsandbox/accounts.csv"];
+    for (NSString* path in @[homeCsv, @"accounts.csv"]) {
+        NSString* pk = nil, *sk = nil;
+        UNLoadCredentialsFromCSV(path, index, &pk, &sk);
+        if ([pk length] > 0) return path;
+    }
+    return nil;
+}
+
+/**
+ * Replace the secret (2nd field) on the line whose 1st field is publicKey. Every other
+ * line, field, comment and the order stay as they are. Temp file (0600) + rename.
+ */
+BOOL UNRewriteAccountsCsv(NSString* path, NSString* publicKey, NSString* newSecret) {
+    NSString* content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (!content) return NO;
+    NSMutableArray* lines = [[content componentsSeparatedByString:@"\n"] mutableCopy];
+    BOOL changed = NO;
+    for (NSUInteger i = 0; i < [lines count]; i++) {
+        NSString* trimmed = [lines[i] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trimmed length] == 0 || [trimmed hasPrefix:@"#"]) continue;
+        NSMutableArray* fields = [[lines[i] componentsSeparatedByString:@","] mutableCopy];
+        if ([fields count] >= 2 &&
+            [[fields[0] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] isEqualToString:publicKey]) {
+            fields[1] = newSecret;
+            lines[i] = [fields componentsJoinedByString:@","];
+            changed = YES;
+            break;
+        }
+    }
+    if (!changed) return NO;
+
+    NSString* dir = [path stringByDeletingLastPathComponent];
+    if ([dir length] == 0) dir = @".";
+    NSString* tmpl = [dir stringByAppendingPathComponent:@".accounts.csv.XXXXXX"];
+    char tmpPath[4096];
+    strncpy(tmpPath, [tmpl fileSystemRepresentation], sizeof(tmpPath) - 1);
+    tmpPath[sizeof(tmpPath) - 1] = 0;
+    int fd = mkstemp(tmpPath);  // created 0600
+    if (fd < 0) return NO;
+    fchmod(fd, 0600);
+    NSData* data = [[lines componentsJoinedByString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+    const char* bytes = [data bytes];
+    size_t left = [data length];
+    while (left > 0) {
+        ssize_t n = write(fd, bytes, left);
+        if (n <= 0) { close(fd); unlink(tmpPath); return NO; }
+        bytes += n; left -= (size_t)n;
+    }
+    if (fsync(fd) != 0 || close(fd) != 0) { unlink(tmpPath); return NO; }
+    if (rename(tmpPath, [path fileSystemRepresentation]) != 0) { unlink(tmpPath); return NO; }
+    return YES;
+}
+
+/**
+ * POST /keys/self/rotate-secret with body {} (HMAC-signed), optionally with sudo OTP headers.
+ */
+static NSDictionary* UNRotatePost(NSString* publicKey, NSString* secretKey, NSString* otp, NSString* challenge, NSInteger* outStatus) {
+    NSString* path = @"/keys/self/rotate-secret";
+    NSString* body = @"{}";
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[UN_API_BASE stringByAppendingString:path]]];
+    [request setHTTPMethod:@"POST"];
+    [request setTimeoutInterval:120];
+    [request setHTTPBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+    [request setValue:UNComputeSignature(secretKey, timestamp, @"POST", path, body) forHTTPHeaderField:@"X-Signature"];
+    if ([otp length] > 0) {
+        [request setValue:otp forHTTPHeaderField:@"X-Sudo-OTP"];
+        [request setValue:(challenge ?: @"") forHTTPHeaderField:@"X-Sudo-Challenge"];
+    }
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* data = [NSURLConnection sendSynchronousRequest:request returningResponse:&response error:&error];
+    *outStatus = response ? [response statusCode] : 0;
+    if (*outStatus == 0) {
+        fprintf(stderr, "Error: %s\n", [[error localizedDescription] ?: @"request failed" UTF8String]);
+        exit(4);
+    }
+    id json = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [json isKindOfClass:[NSDictionary class]] ? json : @{};
+}
+
+/**
+ * un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+ */
+void cmdKeyRotate(NSString* publicKey, NSString* secretKey, NSString* otpArg) {
+    NSString* dir = [UNHomeDirectory() stringByAppendingPathComponent:@".unsandbox"];
+    const char* pk = [publicKey UTF8String];
+    unsigned char digest[32];
+    UN_SHA256(pk, strlen(pk), digest);
+    NSMutableString* hex = [NSMutableString string];
+    for (int i = 0; i < 8; i++) [hex appendFormat:@"%02x", digest[i]];
+    NSString* challengeFile = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"rotate-%@.challenge", hex]];
+
+    NSInteger status = 0;
+    NSDictionary* resp = nil;
+    if (otpArg) {
+        NSString* challenge = [NSString stringWithContentsOfFile:challengeFile encoding:NSUTF8StringEncoding error:nil];
+        if (!challenge) {
+            fprintf(stderr, "Error: no rotation in progress; run: un key --rotate\n");
+            exit(2);
+        }
+        challenge = [challenge stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString* otp = [otpArg stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        resp = UNRotatePost(publicKey, secretKey, otp, challenge, &status);
+        unlink([challengeFile fileSystemRepresentation]);
+    } else {
+        resp = UNRotatePost(publicKey, secretKey, nil, nil, &status);
+        if (status == 428) {
+            NSString* challenge = [resp[@"challenge_id"] isKindOfClass:[NSString class]] ? resp[@"challenge_id"] : @"";
+            if (isatty(STDIN_FILENO)) {
+                fprintf(stderr, "One-time code emailed to the key owner.\n");
+                fprintf(stderr, "Code: ");
+                fflush(stderr);
+                char buf[256];
+                NSString* otp = fgets(buf, sizeof(buf), stdin) ? [[NSString stringWithUTF8String:buf]
+                    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] : @"";
+                if ([otp length] == 0) {
+                    fprintf(stderr, "Error: cancelled\n");
+                    exit(1);
+                }
+                resp = UNRotatePost(publicKey, secretKey, otp, challenge, &status);
+            } else {
+                mkdir([dir fileSystemRepresentation], 0700);
+                int fd = open([challengeFile fileSystemRepresentation], O_WRONLY | O_CREAT | O_TRUNC, 0600);
+                const char* c = [challenge UTF8String];
+                if (fd < 0 || write(fd, c, strlen(c)) != (ssize_t)strlen(c) || fchmod(fd, 0600) != 0 || close(fd) != 0) {
+                    fprintf(stderr, "Error: cannot save challenge to %s\n", [challengeFile UTF8String]);
+                    exit(1);
+                }
+                printf("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n");
+                return;
+            }
+        }
+    }
+
+    if (status != 200) {
+        if (status == 403 && [resp[@"error"] isEqual:@"email_required"]) {
+            fprintf(stderr, "Error: this key has no email; add one or use POST /keys/recover\n");
+            exit(3);
+        }
+        if (status == 401) {
+            fprintf(stderr, "Error: authentication failed\n");
+            exit(3);
+        }
+        id msg = resp[@"message"] ?: resp[@"error"];
+        NSString* text = [msg isKindOfClass:[NSString class]] ? msg : [NSString stringWithFormat:@"HTTP %ld", (long)status];
+        fprintf(stderr, "Error: %s\n", [text UTF8String]);
+        exit(4);
+    }
+    NSString* newSecret = [resp[@"secret"] isKindOfClass:[NSString class]] ? resp[@"secret"] : nil;
+    if ([newSecret length] == 0) {
+        fprintf(stderr, "Error: API returned no secret\n");
+        exit(4);
+    }
+
+    NSString* csvPath = UNCredentialsCsvPath();
+    if (csvPath && UNRewriteAccountsCsv(csvPath, publicKey, newSecret)) {
+        printf("Secret rotated. Updated %s (public key %s).\n", [csvPath UTF8String], [publicKey UTF8String]);
+    } else {
+        printf("New secret (shown once, store it now): %s\n", [newSecret UTF8String]);
+        printf("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n");
+    }
+}
+
 void cmdKey(NSArray* args) {
     NSString* publicKey, *secretKey;
     UNGetApiKeysCLI(&publicKey, &secretKey);
+
+    BOOL rotate = NO;
+    NSString* otp = nil;
+    for (NSUInteger i = 0; i < [args count]; i++) {
+        if ([args[i] isEqualToString:@"--rotate"]) {
+            rotate = YES;
+        } else if ([args[i] isEqualToString:@"--otp"] && i + 1 < [args count]) {
+            otp = args[++i];
+        }
+    }
+    if (rotate) {
+        cmdKeyRotate(publicKey, secretKey, otp);
+        return;
+    }
 
     printf("%sValid%s\n", [GREEN UTF8String], [RESET UTF8String]);
     printf("Public Key: %s\n", [publicKey UTF8String]);
@@ -2190,7 +2417,7 @@ void cmdLogs(NSArray* args) {
         if (secretKey && [secretKey length] > 0) {
             NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
             NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
-            NSString* signature = hmacSign(secretKey, message);
+            NSString* signature = UNHmacSha256Hex(secretKey, message);
             [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
             [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
             [request setValue:signature forHTTPHeaderField:@"X-Signature"];
@@ -2241,7 +2468,7 @@ void cmdLogs(NSArray* args) {
     if (secretKey && [secretKey length] > 0) {
         NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
         NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
-        NSString* signature = hmacSign(secretKey, message);
+        NSString* signature = UNHmacSha256Hex(secretKey, message);
         [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
         [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
         [request setValue:signature forHTTPHeaderField:@"X-Signature"];
@@ -2364,7 +2591,9 @@ void showHelp(void) {
     printf("  un.m service [options]\n");
     printf("  un.m image [options]\n");
     printf("  un.m languages [--json]\n");
-    printf("  un.m key [options]\n\n");
+    printf("  un.m key [options]\n");
+    printf("  un.m key --rotate              Rotate this key's secret (sudo OTP), update accounts.csv\n");
+    printf("  un.m key --rotate --otp CODE   Finish a rotation started without a terminal\n\n");
     printf("Execute options:\n");
     printf("  -e KEY=VALUE    Environment variable (multiple allowed)\n");
     printf("  -f FILE         Input file (multiple allowed)\n");

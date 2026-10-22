@@ -52,17 +52,23 @@
  */
 
 import * as fs from 'fs';
+import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
-const API_BASE = "https://api.unsandbox.com";
+const API_BASE = (process.env.UNSANDBOX_API_URL || "https://api.unsandbox.com").replace(/\/+$/, "");
 const PORTAL_BASE = "https://unsandbox.com";
 const LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
 const SDK_VERSION = "4.2.0";
 
 // Thread-local error storage
 let _lastError: string | null = null;
+
+/** http for a plain http:// API base (local / staging), https otherwise. */
+function transport(url: URL): typeof https | typeof http {
+  return url.protocol === 'http:' ? http : https;
+}
 
 // =============================================================================
 // Exported Utility Functions (for library usage)
@@ -96,7 +102,7 @@ export function hmacSign(secretKey: string, message: string): string {
 export async function healthCheck(): Promise<boolean> {
   return new Promise((resolve) => {
     const url = new URL(`${API_BASE}/health`);
-    const req = https.get(url, (res) => {
+    const req = transport(url).get(url, (res) => {
       resolve(res.statusCode === 200);
     });
     req.on('error', (e) => {
@@ -198,6 +204,8 @@ interface Args {
   showFreezePage: boolean | null;
   setShowFreezePage: string | null;
   redeploy: string | null;
+  rotate: boolean;
+  otp: string | null;
 }
 
 interface ApiKeys {
@@ -304,6 +312,7 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
 
     const options: https.RequestOptions = {
       hostname: url.hostname,
+      port: url.port || undefined,
       path: url.pathname + url.search,
       method: method,
       headers: {
@@ -315,7 +324,7 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
       timeout: 300000
     };
 
-    const req = https.request(options, (res) => {
+    const req = transport(url).request(options, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
       res.on('end', () => {
@@ -367,6 +376,7 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
 
     const options: https.RequestOptions = {
       hostname: url.hostname,
+      port: url.port || undefined,
       path: url.pathname + url.search,
       method: method,
       headers: {
@@ -378,7 +388,7 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
       timeout: 300000
     };
 
-    const req = https.request(options, (res) => {
+    const req = transport(url).request(options, (res) => {
       let responseBody = '';
       res.on('data', chunk => responseBody += chunk);
       res.on('end', async () => {
@@ -416,6 +426,7 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
 
             const retryOptions: https.RequestOptions = {
               hostname: url.hostname,
+              port: url.port || undefined,
               path: url.pathname + url.search,
               method: method,
               headers: {
@@ -429,7 +440,7 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
               timeout: 300000
             };
 
-            const retryReq = https.request(retryOptions, (retryRes) => {
+            const retryReq = transport(url).request(retryOptions, (retryRes) => {
               let retryBody = '';
               retryRes.on('data', chunk => retryBody += chunk);
               retryRes.on('end', () => {
@@ -503,6 +514,7 @@ function portalRequest(endpoint: string, method: string = "GET", data: any = nul
 
     const options: https.RequestOptions = {
       hostname: url.hostname,
+      port: url.port || undefined,
       path: url.pathname + url.search,
       method: method,
       headers: {
@@ -514,7 +526,7 @@ function portalRequest(endpoint: string, method: string = "GET", data: any = nul
       timeout: 30000
     };
 
-    const req = https.request(options, (res) => {
+    const req = transport(url).request(options, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
       res.on('end', () => {
@@ -547,6 +559,7 @@ function apiRequestText(endpoint: string, method: string, body: string, keys: Ap
 
     const options: https.RequestOptions = {
       hostname: url.hostname,
+      port: url.port || undefined,
       path: url.pathname,
       method: method,
       headers: {
@@ -558,7 +571,7 @@ function apiRequestText(endpoint: string, method: string, body: string, keys: Ap
       timeout: 300000
     };
 
-    const req = https.request(options, (res) => {
+    const req = transport(url).request(options, (res) => {
       let responseBody = '';
       res.on('data', chunk => responseBody += chunk);
       res.on('end', () => {
@@ -1250,7 +1263,171 @@ async function cmdImage(args: Args): Promise<void> {
 
 async function cmdKey(args: Args): Promise<void> {
   const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
+  if (args.rotate) {
+    await keyRotate(args, keys);
+    return;
+  }
   await validateKey(keys, args.extend);
+}
+
+/**
+ * The accounts.csv the CLI's credentials came from, or null (flags / env vars).
+ * Mirrors getApiKeys' tiers.
+ */
+function credentialsCsvPath(args: Args): string | null {
+  if (args.publicKey && args.apiKey) return null;
+  if (args.account === null && process.env.UNSANDBOX_PUBLIC_KEY && process.env.UNSANDBOX_SECRET_KEY) return null;
+  const index = args.account !== null ? args.account
+    : (process.env.UNSANDBOX_ACCOUNT ? parseInt(process.env.UNSANDBOX_ACCOUNT) : 0);
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+  for (const p of [path.join(homeDir, '.unsandbox', 'accounts.csv'), './accounts.csv']) {
+    if (loadAccountsCSV(p, index)) return p;
+  }
+  return null;
+}
+
+/**
+ * Replace the secret on the line whose first field is publicKey. Every other
+ * line, field, comment and the order stay as they are. Temp file (0600) + rename.
+ */
+function rewriteAccountsCsv(csvPath: string, publicKey: string, newSecret: string): boolean {
+  const lines = fs.readFileSync(csvPath, 'utf-8').split('\n');
+  let changed = false;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t || t.startsWith('#')) continue;
+    const fields = lines[i].split(',');
+    if (fields.length >= 2 && fields[0].trim() === publicKey) {
+      fields[1] = newSecret;
+      lines[i] = fields.join(',');
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) return false;
+  const tmp = path.join(path.dirname(csvPath), `.${path.basename(csvPath)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, lines.join('\n'), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, csvPath);
+  return true;
+}
+
+/** POST /keys/self/rotate-secret with body {}, optionally with sudo headers. */
+function rotatePost(keys: ApiKeys, otp: string | null, challenge: string | null): Promise<{ status: number; data: any }> {
+  return new Promise((resolve) => {
+    const endpoint = '/keys/self/rotate-secret';
+    const body = '{}';
+    const url = new URL(API_BASE + endpoint);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = crypto.createHmac('sha256', keys.secretKey)
+      .update(`${timestamp}:POST:${endpoint}:${body}`).digest('hex');
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${keys.publicKey}`,
+      'X-Timestamp': timestamp,
+      'X-Signature': signature,
+      'Content-Type': 'application/json',
+      'Content-Length': String(Buffer.byteLength(body)),
+    };
+    if (otp) {
+      headers['X-Sudo-OTP'] = otp;
+      headers['X-Sudo-Challenge'] = challenge || '';
+    }
+    const req = transport(url).request({
+      hostname: url.hostname,
+      port: url.port || undefined,
+      path: url.pathname,
+      method: 'POST',
+      headers,
+      timeout: 120000,
+    }, (res) => {
+      let text = '';
+      res.on('data', chunk => text += chunk);
+      res.on('end', () => {
+        let data: any = {};
+        try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
+        resolve({ status: res.statusCode || 0, data });
+      });
+    });
+    req.on('error', (e) => {
+      console.error(`${RED}Error: ${e.message}${RESET}`);
+      process.exit(1);
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+/** un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md). */
+async function keyRotate(args: Args, keys: ApiKeys): Promise<void> {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '.';
+  const unsandboxDir = path.join(homeDir, '.unsandbox');
+  const challengeFile = path.join(unsandboxDir,
+    'rotate-' + crypto.createHash('sha256').update(keys.publicKey).digest('hex').slice(0, 16) + '.challenge');
+
+  const fail = (resp: { status: number; data: any }): never => {
+    if (resp.status === 403 && resp.data.error === 'email_required') {
+      console.error('Error: this key has no email; add one or use POST /keys/recover');
+      process.exit(3);
+    }
+    if (resp.status === 401) {
+      console.error('Error: authentication failed');
+      process.exit(3);
+    }
+    console.error(`Error: ${resp.data.message || resp.data.error || 'HTTP ' + resp.status}`);
+    process.exit(4);
+  };
+
+  let resp: { status: number; data: any };
+  if (args.otp) {
+    let challenge: string;
+    try {
+      challenge = fs.readFileSync(challengeFile, 'utf-8').trim();
+    } catch (e) {
+      console.error('Error: no rotation in progress; run: un key --rotate');
+      process.exit(2);
+    }
+    resp = await rotatePost(keys, args.otp.trim(), challenge);
+    try { fs.unlinkSync(challengeFile); } catch (e) { /* already gone */ }
+  } else {
+    resp = await rotatePost(keys, null, null);
+    if (resp.status === 428) {
+      const challenge: string = resp.data.challenge_id || '';
+      if (process.stdin.isTTY) {
+        console.error('One-time code emailed to the key owner.');
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        const otp: string = await new Promise((resolve) => {
+          rl.question('Code: ', (answer: string) => { rl.close(); resolve(answer.trim()); });
+        });
+        if (!otp) {
+          console.error('Error: cancelled');
+          process.exit(1);
+        }
+        resp = await rotatePost(keys, otp, challenge);
+      } else {
+        fs.mkdirSync(unsandboxDir, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(challengeFile, challenge, { mode: 0o600 });
+        fs.chmodSync(challengeFile, 0o600);
+        console.log('One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE');
+        return;
+      }
+    }
+  }
+
+  if (resp.status !== 200) fail(resp);
+  const newSecret = resp.data.secret;
+  if (!newSecret) {
+    console.error('Error: API returned no secret');
+    process.exit(4);
+  }
+
+  const csvPath = credentialsCsvPath(args);
+  if (csvPath && rewriteAccountsCsv(csvPath, keys.publicKey, newSecret)) {
+    console.log(`Secret rotated. Updated ${csvPath} (public key ${keys.publicKey}).`);
+  } else {
+    console.log(`New secret (shown once, store it now): ${newSecret}`);
+    console.log('Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.');
+  }
 }
 
 function parseArgs(argv: string[]): Args {
@@ -1310,6 +1487,8 @@ function parseArgs(argv: string[]): Args {
     showFreezePage: null,
     setShowFreezePage: null,
     redeploy: null,
+    rotate: false,
+    otp: null,
   };
 
   let i = 2;
@@ -1488,6 +1667,12 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--set-show-freeze-page' && i + 1 < argv.length) {
       args.setShowFreezePage = argv[++i];
       i++;
+    } else if (arg === '--rotate') {
+      args.rotate = true;
+      i++;
+    } else if (arg === '--otp' && i + 1 < argv.length) {
+      args.otp = argv[++i];
+      i++;
     } else if (arg === '--redeploy' && i + 1 < argv.length) {
       args.redeploy = argv[++i];
       i++;
@@ -1596,6 +1781,8 @@ Image options:
 
 Key options:
   --extend         Open browser to extend key expiration
+  --rotate         Rotate this key's secret (sudo OTP); updates accounts.csv
+  --otp CODE       Finish a rotation started without a terminal (with --rotate)
 
 Languages options:
   --json           Output as JSON array

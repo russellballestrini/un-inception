@@ -46,7 +46,9 @@ open System.Net
 open System.Text
 open System.Security.Cryptography
 
-let apiBase = "https://api.unsandbox.com"
+let apiBase =
+    let fromEnv = Environment.GetEnvironmentVariable("UNSANDBOX_API_URL")
+    (if String.IsNullOrEmpty(fromEnv) then "https://api.unsandbox.com" else fromEnv).TrimEnd('/')
 let portalBase = "https://unsandbox.com"
 let languagesCacheTtl = 3600 // 1 hour in seconds
 
@@ -129,6 +131,8 @@ type Args = {
     mutable EnvAction: string option
     mutable EnvTarget: string option
     mutable KeyExtend: bool
+    mutable KeyRotate: bool
+    mutable KeyOtp: string option
     // Image command options
     mutable ImageList: bool
     mutable ImageInfo: string option
@@ -245,7 +249,7 @@ let rec toJson (obj: obj) =
     | :? ResizeArray<obj> as lst ->
         let items = lst |> Seq.map toJson |> String.concat ","
         sprintf "[%s]" items
-    | :? (string * obj) list as lst ->
+    | :? list<string * obj> as lst ->
         let entries = lst |> List.map (fun (k, v) -> sprintf "\"%s\":%s" k (toJson v)) |> String.concat ","
         sprintf "{%s}" entries
     | _ -> jsonEscape (obj.ToString())
@@ -690,18 +694,22 @@ let cmdExecute (args: Args) =
     let mutable payload = [("language", box language); ("code", box code)]
 
     if args.Env.Count > 0 then
-        let envVars = args.Env |> Seq.choose (fun e ->
-            let parts = e.Split([|'='|], 2)
-            if parts.Length = 2 then Some (parts.[0], box parts.[1]) else None
-        ) |> Seq.toList
+        let envVars =
+            args.Env
+            |> Seq.choose (fun e ->
+                let parts = e.Split([|'='|], 2)
+                if parts.Length = 2 then Some (parts.[0], box parts.[1]) else None)
+            |> Seq.toList
         if not (List.isEmpty envVars) then
             payload <- payload @ [("env", box envVars)]
 
     if args.Files.Count > 0 then
-        let inputFiles = args.Files |> Seq.map (fun filepath ->
-            let content = File.ReadAllBytes(filepath)
-            [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))]
-        ) |> Seq.toList
+        let inputFiles =
+            args.Files
+            |> Seq.map (fun filepath ->
+                let content = File.ReadAllBytes(filepath)
+                [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))])
+            |> Seq.toList
         payload <- payload @ [("input_files", box inputFiles)]
 
     if args.Artifacts then
@@ -763,10 +771,12 @@ let cmdSession (args: Args) =
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
         if args.Files.Count > 0 then
-            let inputFiles = args.Files |> Seq.map (fun filepath ->
-                let content = File.ReadAllBytes(filepath)
-                [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))]
-            ) |> Seq.toList
+            let inputFiles =
+                args.Files
+                |> Seq.map (fun filepath ->
+                    let content = File.ReadAllBytes(filepath)
+                    [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))])
+                |> Seq.toList
             payload <- payload @ [("input_files", box inputFiles)]
 
         printfn "%sCreating session...%s" yellow reset
@@ -796,11 +806,20 @@ let cmdKey (args: Args) =
 
     ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
 
-    let request = WebRequest.Create(portalBase + "/keys/validate") :?> HttpWebRequest
+    let request = WebRequest.Create(apiBase + "/keys/validate") :?> HttpWebRequest
     request.Method <- "POST"
     request.ContentType <- "application/json"
     request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+    if not (String.IsNullOrEmpty(secretKey)) then
+        let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
+        let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(sprintf "%d:POST:/keys/validate:{}" timestamp))
+        request.Headers.Add("X-Timestamp", timestamp.ToString())
+        request.Headers.Add("X-Signature", BitConverter.ToString(hash).Replace("-", "").ToLower())
     request.Timeout <- 30000
+    let validateBody = Encoding.UTF8.GetBytes("{}")
+    request.ContentLength <- int64 validateBody.Length
+    using (request.GetRequestStream()) (fun stream -> stream.Write(validateBody, 0, validateBody.Length))
 
     try
         use response = request.GetResponse() :?> HttpWebResponse
@@ -867,6 +886,180 @@ let cmdKey (args: Args) =
 
         printfn "Reason: %s" errorMsg
         exit 1
+
+[<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+extern int chmod(string path, uint32 mode)
+
+[<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
+extern int rename(string oldpath, string newpath)
+
+[<System.Runtime.InteropServices.DllImport("libc")>]
+extern uint32 umask(uint32 mask)
+
+// The accounts.csv the CLI's credentials came from, or None (env vars / legacy key).
+// Mirrors getApiKeys' tiers.
+let credentialsCsvPath (args: Args) =
+    let home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+    let homeCsv = Path.Combine(home, ".unsandbox", "accounts.csv")
+    let findIn idx =
+        [ homeCsv; "accounts.csv" ]
+        |> List.tryFind (fun path -> (loadCredentialsFromCsv path idx).IsSome)
+    match args.AccountIndex with
+    | Some idx -> findIn idx
+    | None ->
+        let envPk = Environment.GetEnvironmentVariable("UNSANDBOX_PUBLIC_KEY")
+        let envSk = Environment.GetEnvironmentVariable("UNSANDBOX_SECRET_KEY")
+        let legacyKey = match args.ApiKey with | Some k -> k | None -> Environment.GetEnvironmentVariable("UNSANDBOX_API_KEY")
+        if not (String.IsNullOrEmpty(envPk)) && not (String.IsNullOrEmpty(envSk)) then None
+        elif not (String.IsNullOrEmpty(legacyKey)) then None
+        else
+            let envIdx = Environment.GetEnvironmentVariable("UNSANDBOX_ACCOUNT")
+            let idx =
+                if String.IsNullOrEmpty(envIdx) then 0
+                else match System.Int32.TryParse(envIdx) with | (true, n) -> n | _ -> 0
+            findIn idx
+
+// Write a file created with mode 0600 (umask 077 during creation, then chmod).
+let writePrivateFile (path: string) (content: string) =
+    let oldMask = umask (Convert.ToUInt32("077", 8))
+    try
+        File.WriteAllText(path, content, UTF8Encoding(false))
+    finally
+        umask oldMask |> ignore
+    chmod(path, Convert.ToUInt32("600", 8)) |> ignore
+
+// Replace the secret on the line whose first field is publicKey. Every other
+// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+let rewriteAccountsCsv (path: string) (publicKey: string) (newSecret: string) =
+    let lines = File.ReadAllText(path).Split('\n')
+    let target =
+        lines
+        |> Array.tryFindIndex (fun line ->
+            let stripped = line.Trim()
+            let fields = line.Split(',')
+            stripped.Length > 0 && not (stripped.StartsWith("#")) && fields.Length >= 2 && fields.[0].Trim() = publicKey)
+    match target with
+    | None -> false
+    | Some j ->
+        let fields = lines.[j].Split(',')
+        fields.[1] <- newSecret
+        lines.[j] <- String.Join(",", fields)
+        let full = Path.GetFullPath(path)
+        let tmp =
+            Path.Combine(Path.GetDirectoryName(full),
+                         sprintf ".%s.%d.tmp" (Path.GetFileName(full)) (System.Diagnostics.Process.GetCurrentProcess().Id))
+        writePrivateFile tmp (String.Join("\n", lines))
+        if rename(tmp, full) <> 0 then
+            File.Delete(tmp)
+            raise (IOException(sprintf "rename failed for %s" full))
+        true
+
+// POST /keys/self/rotate-secret with body {}; returns (status, raw JSON body).
+let rotatePost (publicKey: string) (secretKey: string) (otp: string option) (challenge: string) =
+    let path = "/keys/self/rotate-secret"
+    let body = "{}"
+    let request = WebRequest.Create(apiBase + path) :?> HttpWebRequest
+    request.Method <- "POST"
+    request.ContentType <- "application/json"
+    request.Timeout <- 120000
+    let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+    use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
+    let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(sprintf "%d:POST:%s:%s" timestamp path body))
+    request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
+    request.Headers.Add("X-Timestamp", timestamp.ToString())
+    request.Headers.Add("X-Signature", BitConverter.ToString(hash).Replace("-", "").ToLower())
+    match otp with
+    | Some code ->
+        request.Headers.Add("X-Sudo-OTP", code)
+        request.Headers.Add("X-Sudo-Challenge", challenge)
+    | None -> ()
+    let bytes = Encoding.UTF8.GetBytes(body)
+    request.ContentLength <- int64 bytes.Length
+    using (request.GetRequestStream()) (fun stream -> stream.Write(bytes, 0, bytes.Length))
+    try
+        use response = request.GetResponse() :?> HttpWebResponse
+        use reader = new StreamReader(response.GetResponseStream())
+        (int response.StatusCode, reader.ReadToEnd())
+    with
+    | :? WebException as ex when ex.Response <> null ->
+        let httpResponse = ex.Response :?> HttpWebResponse
+        use reader = new StreamReader(httpResponse.GetResponseStream())
+        (int httpResponse.StatusCode, reader.ReadToEnd())
+
+// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+let cmdKeyRotate (args: Args) =
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
+    if String.IsNullOrEmpty(secretKey) then
+        eprintfn "%sError: UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY not set%s" red reset
+        exit 1
+    let home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+    let unsandboxDir = Path.Combine(home, ".unsandbox")
+    let hex =
+        use sha = SHA256.Create()
+        BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(publicKey))).Replace("-", "").ToLower()
+    let challengeFile = Path.Combine(unsandboxDir, sprintf "rotate-%s.challenge" (hex.Substring(0, 16)))
+    let field (json: string) (key: string) = extractJsonValue json key
+
+    let finalResponse =
+        match args.KeyOtp with
+        | Some code ->
+            if not (File.Exists(challengeFile)) then
+                eprintfn "Error: no rotation in progress; run: un key --rotate"
+                exit 2
+            let challenge = File.ReadAllText(challengeFile).Trim()
+            let resp = rotatePost publicKey secretKey (Some (code.Trim())) challenge
+            File.Delete(challengeFile)
+            Some resp
+        | None ->
+            let (status, text) = rotatePost publicKey secretKey None ""
+            if status <> 428 then Some (status, text)
+            else
+                let challenge = defaultArg (field text "challenge_id") ""
+                if not Console.IsInputRedirected then
+                    eprintfn "One-time code emailed to the key owner."
+                    eprintf "Code: "
+                    Console.Error.Flush()
+                    let line = Console.ReadLine()
+                    let code = if isNull line then "" else line.Trim()
+                    if code.Length = 0 then
+                        eprintfn "Error: cancelled"
+                        exit 1
+                    Some (rotatePost publicKey secretKey (Some code) challenge)
+                else
+                    Directory.CreateDirectory(unsandboxDir) |> ignore
+                    chmod(unsandboxDir, Convert.ToUInt32("700", 8)) |> ignore
+                    writePrivateFile challengeFile challenge
+                    printfn "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE"
+                    None
+
+    match finalResponse with
+    | None -> ()
+    | Some (status, text) ->
+        if status <> 200 then
+            if status = 403 && field text "error" = Some "email_required" then
+                eprintfn "Error: this key has no email; add one or use POST /keys/recover"
+                exit 3
+            if status = 401 then
+                eprintfn "Error: authentication failed"
+                exit 3
+            let msg =
+                match field text "message", field text "error" with
+                | Some m, _ when m <> "" -> m
+                | _, Some e when e <> "" -> e
+                | _ -> sprintf "HTTP %d" status
+            eprintfn "Error: %s" msg
+            exit 4
+        match field text "secret" with
+        | None | Some "" ->
+            eprintfn "Error: API returned no secret"
+            exit 4
+        | Some newSecret ->
+            match credentialsCsvPath args with
+            | Some csvPath when rewriteAccountsCsv csvPath publicKey newSecret ->
+                printfn "Secret rotated. Updated %s (public key %s)." csvPath publicKey
+            | _ ->
+                printfn "New secret (shown once, store it now): %s" newSecret
+                printfn "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."
 
 let cmdLanguages (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
@@ -1118,10 +1311,12 @@ let cmdService (args: Args) =
                 eprintfn "%sError: Bootstrap file not found: %s%s" red args.ServiceBootstrapFile.Value reset
                 exit 1
         if args.Files.Count > 0 then
-            let inputFiles = args.Files |> Seq.map (fun filepath ->
-                let content = File.ReadAllBytes(filepath)
-                [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))]
-            ) |> Seq.toList
+            let inputFiles =
+                args.Files
+                |> Seq.map (fun filepath ->
+                    let content = File.ReadAllBytes(filepath)
+                    [("filename", box (Path.GetFileName(filepath))); ("content_base64", box (Convert.ToBase64String(content)))])
+                |> Seq.toList
             payload <- payload @ [("input_files", box inputFiles)]
         if args.Network.IsSome then
             payload <- payload @ [("network", box args.Network.Value)]
@@ -1211,6 +1406,8 @@ let parseArgs (argv: string[]) =
         EnvAction = None
         EnvTarget = None
         KeyExtend = false
+        KeyRotate = false
+        KeyOtp = None
         ImageList = false
         ImageInfo = None
         ImageDelete = None
@@ -1348,6 +1545,10 @@ let parseArgs (argv: string[]) =
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
         | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
         | "--extend" -> args.KeyExtend <- true
+        | "--rotate" -> args.KeyRotate <- true
+        | "--otp" ->
+            i <- i + 1
+            args.KeyOtp <- Some argv.[i]
         | "--info" ->
             i <- i + 1
             match args.Command with
@@ -1469,6 +1670,8 @@ let printHelp () =
     printfn ""
     printfn "Key options:"
     printfn "  --extend          Open browser to extend key"
+    printfn "  --rotate          Rotate the key's secret (emailed one-time code)"
+    printfn "  --otp CODE        Finish a rotation started without a terminal"
     printfn "  -k KEY            API key to validate"
     printfn ""
     printfn "Languages options:"
@@ -1484,7 +1687,7 @@ let main argv =
         | Some "service" -> cmdService args; 0
         | Some "snapshot" -> cmdSnapshot args; 0
         | Some "image" -> cmdImage args; 0
-        | Some "key" -> cmdKey args; 0
+        | Some "key" -> (if args.KeyRotate then cmdKeyRotate args else cmdKey args); 0
         | Some "languages" -> cmdLanguages args; 0
         | _ ->
             match args.SourceFile with

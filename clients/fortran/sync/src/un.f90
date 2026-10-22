@@ -102,6 +102,7 @@
 !
 !------------------------------------------------------------------------------
 module unsandbox_sdk
+    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
     implicit none
     private
 
@@ -112,8 +113,11 @@ module unsandbox_sdk
     public :: get_credentials
     public :: sign_request
     public :: detect_language
+    public :: api_base_url
+    public :: set_env
 
     ! API configuration
+    ! Default API base; override with UNSANDBOX_API_URL (see api_base_url())
     character(len=*), parameter, public :: API_BASE = 'https://api.unsandbox.com'
     character(len=*), parameter, public :: PORTAL_BASE = 'https://unsandbox.com'
     integer, parameter, public :: DEFAULT_TTL = 60
@@ -190,7 +194,46 @@ module unsandbox_sdk
         procedure :: languages => client_languages
     end type unsandbox_client
 
+    interface
+        function c_setenv(name, value, overwrite) bind(C, name='setenv') result(rc)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: name, value
+            integer(c_int), value :: overwrite
+            integer(c_int) :: rc
+        end function c_setenv
+    end interface
+
 contains
+
+    !--------------------------------------------------------------------------
+    ! Function: api_base_url
+    ! Description: API base URL from UNSANDBOX_API_URL (default API_BASE),
+    !              trailing slashes stripped. Used for every API request.
+    !--------------------------------------------------------------------------
+    function api_base_url() result(base)
+        character(len=1024) :: base
+        integer :: ios, n
+
+        call get_environment_variable('UNSANDBOX_API_URL', base, status=ios)
+        if (ios /= 0 .or. len_trim(base) == 0) base = API_BASE
+        n = len_trim(base)
+        do while (n > 1 .and. base(n:n) == '/')
+            base(n:n) = ' '
+            n = n - 1
+        end do
+    end function api_base_url
+
+    !--------------------------------------------------------------------------
+    ! Subroutine: set_env
+    ! Description: Export a variable to child shells. Secrets travel to helper
+    !              shells this way, never on a command line (ps sees those).
+    !--------------------------------------------------------------------------
+    subroutine set_env(name, value)
+        character(len=*), intent(in) :: name, value
+        integer(c_int) :: rc
+
+        rc = c_setenv(trim(name) // c_null_char, value // c_null_char, 1_c_int)
+    end subroutine set_env
 
     !--------------------------------------------------------------------------
     ! Subroutine: load_csv_row
@@ -254,16 +297,18 @@ contains
     !   status        - Output: 0 on success, non-zero on error
     !   account_index - Optional input: if >= 0, load that CSV row directly
     !--------------------------------------------------------------------------
-    subroutine get_credentials(public_key, secret_key, status, account_index)
+    subroutine get_credentials(public_key, secret_key, status, account_index, source_csv)
         character(len=*), intent(out) :: public_key, secret_key
         integer, intent(out) :: status
         integer, intent(in), optional :: account_index
+        character(len=*), intent(out), optional :: source_csv   ! accounts.csv used, or ''
         character(len=1024) :: home_dir, accounts_path, api_key, acct_env
         integer :: ios, acct_idx, default_index
 
         status = 0
         public_key = ''
         secret_key = ''
+        if (present(source_csv)) source_csv = ''
 
         ! Priority 1: account_index >= 0 -> load that CSV row (bypasses env vars)
         if (present(account_index)) then
@@ -273,10 +318,16 @@ contains
                 if (ios == 0) then
                     accounts_path = trim(home_dir) // '/.unsandbox/accounts.csv'
                     call load_csv_row(accounts_path, acct_idx, public_key, secret_key)
-                    if (len_trim(public_key) > 0) return
+                    if (len_trim(public_key) > 0) then
+                        if (present(source_csv)) source_csv = accounts_path
+                        return
+                    end if
                 end if
                 call load_csv_row('accounts.csv', acct_idx, public_key, secret_key)
-                if (len_trim(public_key) > 0) return
+                if (len_trim(public_key) > 0) then
+                    if (present(source_csv)) source_csv = 'accounts.csv'
+                    return
+                end if
                 status = 1
                 return
             end if
@@ -304,12 +355,18 @@ contains
         if (ios == 0) then
             accounts_path = trim(home_dir) // '/.unsandbox/accounts.csv'
             call load_csv_row(accounts_path, default_index, public_key, secret_key)
-            if (len_trim(public_key) > 0) return
+            if (len_trim(public_key) > 0) then
+                if (present(source_csv)) source_csv = accounts_path
+                return
+            end if
         end if
 
         ! Priority 4: ./accounts.csv
         call load_csv_row('accounts.csv', default_index, public_key, secret_key)
-        if (len_trim(public_key) > 0) return
+        if (len_trim(public_key) > 0) then
+            if (present(source_csv)) source_csv = 'accounts.csv'
+            return
+        end if
 
         ! Priority 5: Legacy API key
         call get_environment_variable('UNSANDBOX_API_KEY', api_key, status=ios)
@@ -338,6 +395,9 @@ contains
         if (comma_pos > 0) then
             field1 = line(1:comma_pos-1)
             field2 = line(comma_pos+1:)
+            ! Only the 2nd field: later fields (labels) are not part of the secret
+            comma_pos = index(field2, ',')
+            if (comma_pos > 0) field2 = field2(1:comma_pos-1)
         end if
     end subroutine parse_csv_line
 
@@ -562,7 +622,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:POST:/execute:$BODY" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'RESP=$(curl -s -X POST ', API_BASE, '/execute ', &
+            'RESP=$(curl -s -X POST ', trim(api_base_url()), '/execute ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -611,7 +671,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:POST:/execute/async:$BODY" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X POST ', API_BASE, '/execute/async ', &
+            'curl -s -X POST ', trim(api_base_url()), '/execute/async ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -646,7 +706,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:GET:/jobs/', trim(job_id), ':" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X GET ', API_BASE, '/jobs/', trim(job_id), ' ', &
+            'curl -s -X GET ', trim(api_base_url()), '/jobs/', trim(job_id), ' ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" | jq .'
@@ -687,7 +747,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:GET:/jobs/', trim(job_id), ':" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'RESP=$(curl -s -X GET ', API_BASE, '/jobs/', trim(job_id), ' ', &
+            'RESP=$(curl -s -X GET ', trim(api_base_url()), '/jobs/', trim(job_id), ' ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG"); ', &
@@ -725,7 +785,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:DELETE:/jobs/', trim(job_id), ':" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X DELETE ', API_BASE, '/jobs/', trim(job_id), ' ', &
+            'curl -s -X DELETE ', trim(api_base_url()), '/jobs/', trim(job_id), ' ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" | jq .'
@@ -750,7 +810,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:GET:/jobs:" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X GET ', API_BASE, '/jobs ', &
+            'curl -s -X GET ', trim(api_base_url()), '/jobs ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" | jq .'
@@ -784,7 +844,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:POST:/run:$BODY" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X POST ', API_BASE, '/run ', &
+            'curl -s -X POST ', trim(api_base_url()), '/run ', &
             '-H "Content-Type: text/plain" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -823,7 +883,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:POST:/run/async:$BODY" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X POST ', API_BASE, '/run/async ', &
+            'curl -s -X POST ', trim(api_base_url()), '/run/async ', &
             '-H "Content-Type: text/plain" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -854,7 +914,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:POST:/image:$BODY" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X POST ', API_BASE, '/image ', &
+            'curl -s -X POST ', trim(api_base_url()), '/image ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -881,7 +941,7 @@ contains
             'TS=$(date +%s); ', &
             'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', &
             trim(self%secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X GET ', API_BASE, '/languages ', &
+            'curl -s -X GET ', trim(api_base_url()), '/languages ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" | jq .'
@@ -919,6 +979,9 @@ program unsandbox_cli
     session_id = ''
     service_id = ''
     account_index = -1
+
+    ! Every API request below targets $UN_API (UNSANDBOX_API_URL or default)
+    call set_env('UN_API', trim(api_base_url()))
 
     ! Get command line arguments count
     nargs = command_argument_count()
@@ -983,6 +1046,7 @@ contains
         write(*, '(A)') '       ./un snapshot [options]'
         write(*, '(A)') '       ./un image [options]'
         write(*, '(A)') '       ./un key [--extend]'
+        write(*, '(A)') '       ./un key --rotate [--otp CODE]'
         write(*, '(A)') '       ./un languages [--json]'
         write(*, '(A)') ''
         write(*, '(A)') 'Execute options:'
@@ -1059,11 +1123,11 @@ contains
         character(len=4096) :: full_cmd
         character(len=1024) :: env_opts, file_opts, net_opt, public_key, secret_key
         integer :: i, arg_idx
-        logical :: artifacts, has_env, has_files
+        logical :: artifacts, has_env, has_files, file_exists
 
         ! Check if file exists
-        inquire(file=trim(fname), exist=stat)
-        if (.not. stat) then
+        inquire(file=trim(fname), exist=file_exists)
+        if (.not. file_exists) then
             write(0, '(A,A)') 'Error: File not found: ', trim(fname)
             stop 1
         end if
@@ -1087,7 +1151,7 @@ contains
             'TS=$(date +%s); ', &
             'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .}'' < "', trim(fname), '"); ', &
             'SIG=$(echo -n "$TS:POST:/execute:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-            'curl -s -X POST https://api.unsandbox.com/execute ', &
+            'curl -s -X POST $UN_API/execute ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -1097,7 +1161,7 @@ contains
             'if echo "$RESP" | grep -q "timestamp" && ', &
             '(echo "$RESP" | grep -Eq "(401|expired|invalid)"); then ', &
             'echo -e "\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m" >&2; ', &
-            'echo -e "\x1b[33mYour computer'\''s clock may have drifted.\x1b[0m" >&2; ', &
+            'echo -e "\x1b[33mYour computer''s clock may have drifted.\x1b[0m" >&2; ', &
             'echo "Check your system time and sync with NTP if needed:" >&2; ', &
             'echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; ', &
             'echo "  macOS:   sudo sntp -sS time.apple.com" >&2; ', &
@@ -1171,7 +1235,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/sessions:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/sessions ', &
+                'curl -s -X GET $UN_API/sessions ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" | ', &
@@ -1182,7 +1246,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:DELETE:/sessions/', trim(session_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X DELETE https://api.unsandbox.com/sessions/', &
+                'curl -s -X DELETE $UN_API/sessions/', &
                 trim(session_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1203,7 +1267,7 @@ contains
                     'BODY=''{"shell":"bash","input_files":[''"$INPUT_FILES"'']}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/sessions:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/sessions ', &
+                    'curl -s -X POST $UN_API/sessions ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
@@ -1215,7 +1279,7 @@ contains
                     'BODY=''{"shell":"bash"}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/sessions:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/sessions ', &
+                    'curl -s -X POST $UN_API/sessions ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
@@ -1377,7 +1441,7 @@ contains
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:GET:/services/', trim(env_target), '/env:" | ', &
                     'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X GET "https://api.unsandbox.com/services/', trim(env_target), '/env" ', &
+                    'curl -s -X GET "$UN_API/services/', trim(env_target), '/env" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
                     '-H "X-Signature: $SIG" | jq .'
@@ -1402,7 +1466,7 @@ contains
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:PUT:/services/', trim(env_target), '/env:$ENV_CONTENT" | ', &
                     'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X PUT "https://api.unsandbox.com/services/', trim(env_target), '/env" ', &
+                    'curl -s -X PUT "$UN_API/services/', trim(env_target), '/env" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
                     '-H "X-Signature: $SIG" ', &
@@ -1415,7 +1479,7 @@ contains
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/services/', trim(env_target), '/env/export:" | ', &
                     'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST "https://api.unsandbox.com/services/', trim(env_target), '/env/export" ', &
+                    'curl -s -X POST "$UN_API/services/', trim(env_target), '/env/export" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
                     '-H "X-Signature: $SIG" | jq -r ".content // empty"'
@@ -1426,7 +1490,7 @@ contains
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:DELETE:/services/', trim(env_target), '/env:" | ', &
                     'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X DELETE "https://api.unsandbox.com/services/', trim(env_target), '/env" ', &
+                    'curl -s -X DELETE "$UN_API/services/', trim(env_target), '/env" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
                     '-H "X-Signature: $SIG" >/dev/null && ', &
@@ -1444,7 +1508,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/services:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/services ', &
+                'curl -s -X GET $UN_API/services ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" | ', &
@@ -1455,7 +1519,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/services/', &
+                'curl -s -X GET $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1465,7 +1529,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/services/', trim(service_id), '/logs:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/services/', &
+                'curl -s -X GET $UN_API/services/', &
                 trim(service_id), '/logs ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1475,7 +1539,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/freeze:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/services/', &
+                'curl -s -X POST $UN_API/services/', &
                 trim(service_id), '/freeze ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1486,7 +1550,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/unfreeze:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/services/', &
+                'curl -s -X POST $UN_API/services/', &
                 trim(service_id), '/unfreeze ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1497,7 +1561,7 @@ contains
             write(full_cmd, '(50A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE https://api.unsandbox.com/services/', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1511,7 +1575,7 @@ contains
                 'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
                 'TS2=$(date +%s); ', &
                 'SIG2=$(echo -n "$TS2:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X DELETE https://api.unsandbox.com/services/', trim(service_id), ' ', &
+                'curl -s -X DELETE $UN_API/services/', trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
                 '-H "X-Signature: $SIG2" ', &
@@ -1533,7 +1597,7 @@ contains
                 'BODY=''{"vcpu":''$VCPU''}''; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:PATCH:/services/', trim(service_id), ':$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X PATCH https://api.unsandbox.com/services/', &
+                'curl -s -X PATCH $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1550,7 +1614,7 @@ contains
                 'BODY="{\"unfreeze_on_demand\":$ENABLED}"; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:PATCH:/services/', trim(service_id), ':$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X PATCH https://api.unsandbox.com/services/', &
+                'curl -s -X PATCH $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1565,7 +1629,7 @@ contains
                 'BODY=''{"command":"cat /tmp/bootstrap.sh"}''; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/execute:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -X POST https://api.unsandbox.com/services/', &
+                'RESP=$(curl -s -X POST $UN_API/services/', &
                 trim(service_id), '/execute ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1585,7 +1649,7 @@ contains
                 'BODY=''{"name":"', trim(service_name), '"}''; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/services:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -X POST https://api.unsandbox.com/services ', &
+                'RESP=$(curl -s -X POST $UN_API/services ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1607,7 +1671,7 @@ contains
                 'if [ -n "$ENV_CONTENT" ]; then ', &
                 'TS2=$(date +%s); ', &
                 'SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X PUT "https://api.unsandbox.com/services/$SVC_ID/env" ', &
+                'curl -s -X PUT "$UN_API/services/$SVC_ID/env" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
                 '-H "X-Signature: $SIG2" ', &
@@ -1703,7 +1767,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/snapshots:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/snapshots ', &
+                'curl -s -X GET $UN_API/snapshots ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" | jq .'
@@ -1713,7 +1777,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/snapshots/', trim(snapshot_id), ' ', &
+                'curl -s -X GET $UN_API/snapshots/', trim(snapshot_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" | jq .'
@@ -1723,7 +1787,7 @@ contains
             write(full_cmd, '(30A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:DELETE:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE https://api.unsandbox.com/snapshots/', trim(snapshot_id), ' ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE $UN_API/snapshots/', trim(snapshot_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG"); ', &
@@ -1734,7 +1798,7 @@ contains
                 'if [ -n "$OTP" ]; then ', &
                 'TS2=$(date +%s); ', &
                 'SIG2=$(echo -n "$TS2:DELETE:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X DELETE https://api.unsandbox.com/snapshots/', trim(snapshot_id), ' ', &
+                'curl -s -X DELETE $UN_API/snapshots/', trim(snapshot_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
                 '-H "X-Signature: $SIG2" ', &
@@ -1747,7 +1811,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/lock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/lock ', &
+                'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/lock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" | jq . && ', &
@@ -1759,7 +1823,7 @@ contains
                 'TS=$(date +%s); ', &
                 'BODY="{}"; ', &
                 'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -w "\n%{http_code}" -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/unlock ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X POST $UN_API/snapshots/', trim(snapshot_id), '/unlock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" ', &
@@ -1772,7 +1836,7 @@ contains
                 'if [ -n "$OTP" ]; then ', &
                 'TS2=$(date +%s); ', &
                 'SIG2=$(echo -n "$TS2:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/unlock ', &
+                'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/unlock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
                 '-H "X-Signature: $SIG2" ', &
@@ -1788,7 +1852,7 @@ contains
                 'TS=$(date +%s); ', &
                 'BODY="{}"; ', &
                 'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/restore:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/restore ', &
+                'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/restore ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" ', &
@@ -1816,7 +1880,7 @@ contains
             end if
             write(full_cmd, '(A,20A)') trim(full_cmd), '}''; ', &
                 'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/snapshots/', trim(snapshot_id), '/clone ', &
+                'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/clone ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG" ', &
@@ -1920,7 +1984,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/images:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/images ', &
+                'curl -s -X GET $UN_API/images ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
             call execute_command_line(trim(full_cmd), wait=.true.)
@@ -1928,7 +1992,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X GET https://api.unsandbox.com/images/', trim(image_id), ' ', &
+                'curl -s -X GET $UN_API/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
             call execute_command_line(trim(full_cmd), wait=.true.)
@@ -1936,7 +2000,7 @@ contains
             write(full_cmd, '(50A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE https://api.unsandbox.com/images/', trim(image_id), ' ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X DELETE $UN_API/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG"); ', &
                 'HTTP_CODE=$(echo "$RESP" | tail -n1); ', &
@@ -1948,7 +2012,7 @@ contains
                 'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
                 'TS2=$(date +%s); ', &
                 'SIG2=$(echo -n "$TS2:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X DELETE https://api.unsandbox.com/images/', trim(image_id), ' ', &
+                'curl -s -X DELETE $UN_API/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" ', &
                 '-H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID" >/dev/null && ', &
@@ -1961,7 +2025,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/lock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/lock ', &
+                'curl -s -X POST $UN_API/images/', trim(image_id), '/lock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
                 'echo -e "\x1b[32mImage locked: ', trim(image_id), '\x1b[0m"'
@@ -1970,7 +2034,7 @@ contains
             write(full_cmd, '(50A)') &
                 'TS=$(date +%s); BODY="{}"; ', &
                 'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -w "\n%{http_code}" -X POST https://api.unsandbox.com/images/', trim(image_id), '/unlock ', &
+                'RESP=$(curl -s -w "\n%{http_code}" -X POST $UN_API/images/', trim(image_id), '/unlock ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" -d "$BODY"); ', &
@@ -1983,7 +2047,7 @@ contains
                 'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
                 'TS2=$(date +%s); ', &
                 'SIG2=$(echo -n "$TS2:POST:/images/', trim(image_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/unlock ', &
+                'curl -s -X POST $UN_API/images/', trim(image_id), '/unlock ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" ', &
@@ -2003,7 +2067,7 @@ contains
                     'BODY=''{"source_type":"', trim(source_type), '","source_id":"', trim(image_id), '","name":"', trim(name), '"}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/publish:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/publish ', &
+                    'curl -s -X POST $UN_API/images/publish ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2014,7 +2078,7 @@ contains
                     'BODY=''{"source_type":"', trim(source_type), '","source_id":"', trim(image_id), '"}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/publish:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/publish ', &
+                    'curl -s -X POST $UN_API/images/publish ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2027,7 +2091,7 @@ contains
                 'BODY=''{"visibility":"', trim(visibility_mode), '"}''; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/visibility:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/visibility ', &
+                'curl -s -X POST $UN_API/images/', trim(image_id), '/visibility ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2040,7 +2104,7 @@ contains
                     'BODY=''{"name":"', trim(name), '","ports":[', trim(ports), ']}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/spawn ', &
+                    'curl -s -X POST $UN_API/images/', trim(image_id), '/spawn ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2051,7 +2115,7 @@ contains
                     'BODY=''{"name":"', trim(name), '"}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/spawn ', &
+                    'curl -s -X POST $UN_API/images/', trim(image_id), '/spawn ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2062,7 +2126,7 @@ contains
                     'BODY=''{}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/spawn ', &
+                    'curl -s -X POST $UN_API/images/', trim(image_id), '/spawn ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2076,7 +2140,7 @@ contains
                     'BODY=''{"name":"', trim(name), '"}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/clone ', &
+                    'curl -s -X POST $UN_API/images/', trim(image_id), '/clone ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2087,7 +2151,7 @@ contains
                     'BODY=''{}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                    'curl -s -X POST https://api.unsandbox.com/images/', trim(image_id), '/clone ', &
+                    'curl -s -X POST $UN_API/images/', trim(image_id), '/clone ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
@@ -2103,28 +2167,39 @@ contains
 
     subroutine handle_key()
         character(len=4096) :: full_cmd
-        character(len=256) :: arg
-        character(len=1024) :: public_key, secret_key
+        character(len=256) :: arg, otp_code
+        character(len=1024) :: public_key, secret_key, source_csv
         integer :: i, stat
-        logical :: extend_mode
+        logical :: extend_mode, rotate_mode
         character(len=32) :: portal_base
 
         portal_base = 'https://unsandbox.com'
         extend_mode = .false.
+        rotate_mode = .false.
+        otp_code = ''
 
-        ! Check for --extend flag
+        ! Check for --extend, --rotate, --otp CODE
         do i = 2, command_argument_count()
             call get_command_argument(i, arg)
             if (trim(arg) == '--extend') then
                 extend_mode = .true.
+            else if (trim(arg) == '--rotate') then
+                rotate_mode = .true.
+            else if (trim(arg) == '--otp' .and. i < command_argument_count()) then
+                call get_command_argument(i + 1, otp_code)
             end if
         end do
 
         ! Get API key
-        call get_credentials(public_key, secret_key, stat, account_index)
+        call get_credentials(public_key, secret_key, stat, account_index, source_csv)
         if (stat /= 0) then
             write(0, '(A)') 'Error: No credentials found'
             stop 1
+        end if
+
+        if (rotate_mode) then
+            call handle_key_rotate(public_key, secret_key, source_csv, otp_code)
+            return
         end if
 
         if (extend_mode) then
@@ -2200,6 +2275,90 @@ contains
         call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
     end subroutine handle_key
 
+    !--------------------------------------------------------------------------
+    ! Subroutine: handle_key_rotate
+    ! Description: un key --rotate [--otp CODE] -- rotate this key's secret
+    !   (sudo OTP), then update the accounts.csv the keys came from. Flow per
+    !   CLI_SPEC.md. Secrets reach the helper shell through the environment
+    !   only; the script text holds none (HMAC computed with bash builtins).
+    !--------------------------------------------------------------------------
+    subroutine handle_key_rotate(public_key, secret_key, source_csv, otp_code)
+        character(len=*), intent(in) :: public_key, secret_key, source_csv, otp_code
+        character(len=:), allocatable :: script
+        character(len=1), parameter :: nl = achar(10)
+        integer :: stat
+
+        script = &
+            'A=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ "${A%/}" != "$A" ]; do A=${A%' // &
+            '/}; done' // nl // &
+            'P=/keys/self/rotate-secret; D="$HOME/.unsandbox"' // nl // &
+            'if command -v sha256sum >/dev/null 2>&1; then S=sha256sum; else S="shasum -a 256"; fi' // nl // &
+            'CF="$D/rotate-$(printf %s "$UN_PK" | $S | cut -c1-16).challenge"' // nl // &
+            'RB=$(mktemp) || exit 1; trap ''rm -f "$RB"'' EXIT' // nl // &
+            'hmac() { local k=$1 i c ip= op= ih= x' // nl // &
+            '  for ((i=0;i<64;i++)); do if ((i<${#k})); then printf -v c %d "''${k:i:1}"; else c=0; f' // &
+            'i' // nl // &
+            '    printf -v ip ''%s\\x%02x'' "$ip" $((c^54)); printf -v op ''%s\\x%02x'' "$op" $((c^92' // &
+            ')); done' // nl // &
+            '  ih=$( { printf "$ip"; printf %s "$2"; } | $S | cut -c1-64)' // nl // &
+            '  for ((i=0;i<64;i+=2)); do x="$x\\x${ih:i:2}"; done' // nl // &
+            '  { printf "$op"; printf "$x"; } | $S | cut -c1-64; }' // nl // &
+            'post() { local ts sig; ts=$(date +%s); sig=$(hmac "$UN_SK" "$ts:POST:$P:{}")' // nl // &
+            '  { printf ''url = "%s"\nrequest = "POST"\n'' "$A$P"' // nl // &
+            '    printf ''header = "Content-Type: application/json"\nheader = "Authorization: Bearer ' // &
+            '%s"\n'' "$UN_PK"' // nl // &
+            '    printf ''header = "X-Timestamp: %s"\nheader = "X-Signature: %s"\n'' "$ts" "$sig"' // nl // &
+            '    if [ -n "$1" ]; then printf ''header = "X-Sudo-OTP: %s"\nheader = "X-Sudo-Challenge:' // &
+            ' %s"\n'' "$1" "$2"; fi' // nl // &
+            '    printf ''data = "{}"\n''; } | curl -s -K - -o "$RB" -w ''%{http_code}''; }' // nl // &
+            'if [ -n "${UN_OTP:-}" ]; then' // nl // &
+            '  CH=$(cat "$CF" 2>/dev/null) || { echo "Error: no rotation in progress; run: un key --r' // &
+            'otate" >&2; exit 2; }' // nl // &
+            '  CODE=$(post "$UN_OTP" "$CH"); rm -f "$CF"' // nl // &
+            'else' // nl // &
+            '  CODE=$(post)' // nl // &
+            '  if [ "$CODE" = 428 ]; then CH=$(jq -r ''.challenge_id // empty'' "$RB")' // nl // &
+            '    if [ -t 0 ]; then echo "One-time code emailed to the key owner." >&2; printf ''Code:' // &
+            ' '' >&2; read -r OTP' // nl // &
+            '      [ -n "$OTP" ] || { echo "Error: cancelled" >&2; exit 1; }; CODE=$(post "$OTP" "$CH' // &
+            '")' // nl // &
+            '    else (umask 077; mkdir -p "$D" && printf %s "$CH" > "$CF") && chmod 600 "$CF" || exi' // &
+            't 1' // nl // &
+            '      echo "One-time code emailed to the key owner. Finish with: un key --rotate --otp C' // &
+            'ODE"; exit 0; fi; fi' // nl // &
+            'fi' // nl // &
+            'if [ "$CODE" != 200 ]; then' // nl // &
+            '  if [ "$CODE" = 403 ] && [ "$(jq -r ''.error // empty'' "$RB" 2>/dev/null)" = email_req' // &
+            'uired ]; then' // nl // &
+            '    echo "Error: this key has no email; add one or use POST /keys/recover" >&2; exit 3; ' // &
+            'fi' // nl // &
+            '  [ "$CODE" = 401 ] && { echo "Error: authentication failed" >&2; exit 3; }' // nl // &
+            '  M=$(jq -r ''.message // .error // empty'' "$RB" 2>/dev/null); echo "Error: ${M:-HTTP $' // &
+            'CODE}" >&2; exit 4; fi' // nl // &
+            'NS=$(jq -r ''.secret // empty'' "$RB"); [ -n "$NS" ] || { echo "Error: API returned no s' // &
+            'ecret" >&2; exit 4; }' // nl // &
+            'if [ -n "${UN_CSV:-}" ] && [ -f "$UN_CSV" ] && T=$(mktemp "$(dirname "$UN_CSV")/.account' // &
+            's.csv.XXXXXX"); then' // nl // &
+            '  chmod 600 "$T"; NS="$NS" awk -F, -v OFS=, -v pk="$UN_PK" ''BEGIN{d=0} { t=$1; gsub(/^[' // &
+            ' \t]+|[ \t\r]+$/,"",t)' // nl // &
+            '    if (!d && $0 !~ /^[ \t]*(#|$)/ && NF>=2 && t==pk) { $2=ENVIRON["NS"]; d=1 } print } ' // &
+            'END{exit d?0:1}'' "$UN_CSV" > "$T" \' // nl // &
+            '    && mv -f "$T" "$UN_CSV" && { echo "Secret rotated. Updated $UN_CSV (public key $UN_P' // &
+            'K)."; exit 0; }; rm -f "$T"; fi' // nl // &
+            'echo "New secret (shown once, store it now): $NS"' // nl // &
+            'echo "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."' // nl
+
+        call set_env('UN_PK', trim(public_key))
+        call set_env('UN_SK', trim(secret_key))
+        call set_env('UN_CSV', trim(source_csv))
+        call set_env('UN_OTP', trim(otp_code))
+        call set_env('UN_ROTATE_SH', script)
+        stat = 1
+        call execute_command_line('bash -c "$UN_ROTATE_SH"', wait=.true., exitstat=stat)
+        call set_env('UN_SK', '')
+        if (stat /= 0) stop stat, quiet=.true.
+    end subroutine handle_key_rotate
+
     subroutine handle_languages()
         character(len=8192) :: full_cmd
         character(len=256) :: arg
@@ -2237,7 +2396,7 @@ contains
                 'jq -c ".languages" "$CACHE_FILE"; exit 0; fi; fi; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -X GET https://api.unsandbox.com/languages ', &
+                'RESP=$(curl -s -X GET $UN_API/languages ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG"); ', &
@@ -2258,7 +2417,7 @@ contains
                 'jq -r ".languages[]" "$CACHE_FILE"; exit 0; fi; fi; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
-                'RESP=$(curl -s -X GET https://api.unsandbox.com/languages ', &
+                'RESP=$(curl -s -X GET $UN_API/languages ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
                 '-H "X-Signature: $SIG"); ', &

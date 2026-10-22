@@ -48,7 +48,7 @@ import kotlin.system.exitProcess
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
-val API_BASE = "https://api.unsandbox.com"
+val API_BASE = (System.getenv("UNSANDBOX_API_URL")?.takeIf { it.isNotEmpty() } ?: "https://api.unsandbox.com").trimEnd('/')
 val PORTAL_BASE = "https://unsandbox.com"
 val LANGUAGES_CACHE_TTL = 3600L  // 1 hour in seconds
 val BLUE = "\u001B[34m"
@@ -108,6 +108,8 @@ data class Args(
     var serviceShowFreezePage: String? = null,
     var serviceshowFreezePageValue: Boolean? = null,
     var keyExtend: Boolean = false,
+    var keyRotate: Boolean = false,
+    var keyOtp: String? = null,
     var envFile: String? = null,
     var envAction: String? = null,
     var envTarget: String? = null,
@@ -136,7 +138,7 @@ fun main(args: Array<String>) {
             "session" -> cmdSession(parsedArgs)
             "service" -> cmdService(parsedArgs)
             "languages" -> cmdLanguages(parsedArgs)
-            "key" -> cmdKey(parsedArgs)
+            "key" -> if (parsedArgs.keyRotate) cmdKeyRotate(parsedArgs) else cmdKey(parsedArgs)
             "image" -> cmdImage(parsedArgs)
             else -> if (parsedArgs.sourceFile != null) {
                 cmdExecute(parsedArgs)
@@ -706,6 +708,173 @@ fun cmdKey(args: Args) {
     }
 }
 
+// The accounts.csv the CLI's credentials came from, or null (flags / env vars).
+// Mirrors getApiKeys' tiers.
+fun credentialsCsvPath(args: Args): File? {
+    val index: Int
+    if (args.accountIndex >= 0) {
+        index = args.accountIndex
+    } else {
+        if (args.apiKey != null) return null
+        if (!System.getenv("UNSANDBOX_PUBLIC_KEY").isNullOrEmpty()) return null
+        index = System.getenv("UNSANDBOX_ACCOUNT")?.toIntOrNull()?.takeIf { it >= 0 } ?: 0
+    }
+    val home = System.getenv("HOME") ?: System.getProperty("user.home") ?: "."
+    for (path in listOf("$home/.unsandbox/accounts.csv", "accounts.csv")) {
+        if (loadAccountsCSV(path, index) != null) return File(path)
+    }
+    return null
+}
+
+// Replace the secret on the line whose first field is publicKey. Every other
+// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+fun rewriteAccountsCsv(path: File, publicKey: String, newSecret: String): Boolean {
+    val lines = path.readText().split("\n").toMutableList()
+    var changed = false
+    for (j in lines.indices) {
+        val stripped = lines[j].trim()
+        if (stripped.isEmpty() || stripped.startsWith("#")) continue
+        val fields = lines[j].split(",").toMutableList()
+        if (fields.size >= 2 && fields[0].trim() == publicKey) {
+            fields[1] = newSecret
+            lines[j] = fields.joinToString(",")
+            changed = true
+            break
+        }
+    }
+    if (!changed) return false
+    val target = path.absoluteFile.toPath()
+    val perms = java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")
+    val tmp = java.nio.file.Files.createTempFile(target.parent, ".${path.name}.", ".tmp",
+        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(perms))
+    java.nio.file.Files.write(tmp, lines.joinToString("\n").toByteArray(Charsets.UTF_8))
+    java.nio.file.Files.setPosixFilePermissions(tmp, perms)
+    java.nio.file.Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+        java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    return true
+}
+
+// POST /keys/self/rotate-secret with body {}; returns (status, json).
+fun rotatePost(publicKey: String, secretKey: String, otp: String?, challenge: String?): Pair<Int, Map<String, Any>> {
+    val path = "/keys/self/rotate-secret"
+    val body = "{}"
+    val timestamp = System.currentTimeMillis() / 1000
+    val connection = URL(API_BASE + path).openConnection() as HttpURLConnection
+    connection.requestMethod = "POST"
+    connection.connectTimeout = 120000
+    connection.readTimeout = 120000
+    connection.setRequestProperty("Authorization", "Bearer $publicKey")
+    connection.setRequestProperty("X-Timestamp", timestamp.toString())
+    connection.setRequestProperty("X-Signature", hmacSha256(secretKey, "$timestamp:POST:$path:$body"))
+    connection.setRequestProperty("Content-Type", "application/json")
+    if (otp != null) {
+        connection.setRequestProperty("X-Sudo-OTP", otp)
+        connection.setRequestProperty("X-Sudo-Challenge", challenge ?: "")
+    }
+    connection.doOutput = true
+    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+    val code = connection.responseCode
+    val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+    val text = stream?.bufferedReader()?.readText() ?: ""
+    val data = try { parseJson(text) } catch (e: Exception) { emptyMap<String, Any>() }
+    return Pair(code, data)
+}
+
+fun stdinIsTerminal(): Boolean {
+    val console = System.console() ?: return false
+    return try {
+        // Java 22+: a Console may exist even when stdin is redirected.
+        console.javaClass.getMethod("isTerminal").invoke(console) as Boolean
+    } catch (e: Exception) {
+        true
+    }
+}
+
+// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+fun cmdKeyRotate(args: Args) {
+    val (pk, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
+    if (pk.isNullOrEmpty()) {
+        System.err.println("${RED}Error: UNSANDBOX_PUBLIC_KEY not set${RESET}")
+        exitProcess(1)
+    }
+    val publicKey: String = pk
+    val home = System.getenv("HOME") ?: System.getProperty("user.home") ?: "."
+    val unsandboxDir = File("$home/.unsandbox")
+    val hash = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(publicKey.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    val challengeFile = File(unsandboxDir, "rotate-${hash.substring(0, 16)}.challenge")
+
+    var resp: Pair<Int, Map<String, Any>>
+    val otpArg = args.keyOtp
+    if (otpArg != null) {
+        if (!challengeFile.exists()) {
+            System.err.println("Error: no rotation in progress; run: un key --rotate")
+            exitProcess(2)
+        }
+        val challenge = challengeFile.readText().trim()
+        resp = rotatePost(publicKey, secretKey, otpArg.trim(), challenge)
+        challengeFile.delete()
+    } else {
+        resp = rotatePost(publicKey, secretKey, null, null)
+        if (resp.first == 428) {
+            val challenge = resp.second["challenge_id"]?.toString() ?: ""
+            if (stdinIsTerminal()) {
+                System.err.println("One-time code emailed to the key owner.")
+                System.err.print("Code: ")
+                System.err.flush()
+                val code = readLine()?.trim() ?: ""
+                if (code.isEmpty()) {
+                    System.err.println("Error: cancelled")
+                    exitProcess(1)
+                }
+                resp = rotatePost(publicKey, secretKey, code, challenge)
+            } else {
+                val filePerms = java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")
+                val dirPath = unsandboxDir.toPath()
+                val filePath = challengeFile.toPath()
+                java.nio.file.Files.createDirectories(dirPath)
+                java.nio.file.Files.setPosixFilePermissions(dirPath,
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+                if (!java.nio.file.Files.exists(filePath)) {
+                    java.nio.file.Files.createFile(filePath,
+                        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(filePerms))
+                }
+                java.nio.file.Files.setPosixFilePermissions(filePath, filePerms)
+                java.nio.file.Files.write(filePath, challenge.toByteArray(Charsets.UTF_8))
+                println("One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE")
+                return
+            }
+        }
+    }
+
+    val (status, data) = resp
+    if (status != 200) {
+        if (status == 403 && data["error"] == "email_required") {
+            System.err.println("Error: this key has no email; add one or use POST /keys/recover")
+            exitProcess(3)
+        }
+        if (status == 401) {
+            System.err.println("Error: authentication failed")
+            exitProcess(3)
+        }
+        val msg = data["message"]?.toString() ?: data["error"]?.toString() ?: "HTTP $status"
+        System.err.println("Error: $msg")
+        exitProcess(4)
+    }
+    val newSecret = data["secret"]?.toString()
+    if (newSecret.isNullOrEmpty()) {
+        System.err.println("Error: API returned no secret")
+        exitProcess(4)
+    }
+    val csvPath = credentialsCsvPath(args)
+    if (csvPath != null && rewriteAccountsCsv(csvPath, publicKey, newSecret)) {
+        println("Secret rotated. Updated ${csvPath.path} (public key $publicKey).")
+    } else {
+        println("New secret (shown once, store it now): $newSecret")
+        println("Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.")
+    }
+}
+
 fun validateKey(publicKey: String?, secretKey: String): Map<String, Any> {
     val timestamp = System.currentTimeMillis() / 1000
     val method = "POST"
@@ -714,7 +883,7 @@ fun validateKey(publicKey: String?, secretKey: String): Map<String, Any> {
     val signatureData = "$timestamp:$method:$path:$body"
     val signature = hmacSha256(secretKey, signatureData)
 
-    val url = URL("$PORTAL_BASE$path")
+    val url = URL("$API_BASE$path")
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = method
@@ -744,9 +913,9 @@ fun loadAccountsCSV(path: String, index: Int): Pair<String, String>? {
         val stripped = line.trim()
         if (stripped.isEmpty() || stripped.startsWith("#")) continue
         if (row == index) {
-            val comma = stripped.indexOf(',')
-            if (comma < 0) return null
-            return Pair(stripped.substring(0, comma), stripped.substring(comma + 1))
+            val fields = stripped.split(",")
+            if (fields.size < 2) return null
+            return Pair(fields[0].trim(), fields[1].trim())
         }
         row++
     }
@@ -1307,6 +1476,8 @@ fun parseArgs(args: Array<String>): Args {
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
             "--extend" -> result.keyExtend = true
+            "--rotate" -> result.keyRotate = true
+            "--otp" -> result.keyOtp = args[++i]
             "--account" -> result.accountIndex = args[++i].toInt()
             "--env-file" -> result.envFile = args[++i]
             "--info" -> {
@@ -1635,6 +1806,7 @@ fun serviceEnvGet(serviceId: String, publicKey: String? = null, secretKey: Strin
     return apiRequest("/services/$serviceId/env", "GET", null, pk, sk)
 }
 
+@JvmName("serviceEnvSetLib")
 fun serviceEnvSet(serviceId: String, envContent: String, publicKey: String? = null, secretKey: String? = null): Boolean {
     val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
     val (success, _) = apiRequestText("/services/$serviceId/env", "PUT", envContent, pk, sk)
@@ -1646,6 +1818,7 @@ fun serviceEnvDelete(serviceId: String, publicKey: String? = null, secretKey: St
     return apiRequest("/services/$serviceId/env", "DELETE", null, pk, sk)
 }
 
+@JvmName("serviceEnvExportLib")
 fun serviceEnvExport(serviceId: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
     val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
     return apiRequest("/services/$serviceId/env/export", "POST", emptyMap<String, Any>(), pk, sk)
@@ -1868,6 +2041,8 @@ Service env commands:
 
 Key options:
   --extend          Open browser to extend key
+  --rotate          Rotate the key's secret (emailed one-time code)
+  --otp CODE        Finish a rotation started without a terminal
 
 Image options:
   --list            List all images

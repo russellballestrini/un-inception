@@ -76,7 +76,7 @@ class ApiException extends \Exception {
  * using the unsandbox.com API.
  */
 class Unsandbox {
-    private const API_BASE = 'https://api.unsandbox.com';
+    private const DEFAULT_API_BASE = 'https://api.unsandbox.com';
     private const LANGUAGES_CACHE_TTL = 3600; // 1 hour
     private const POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000];
 
@@ -139,6 +139,14 @@ class Unsandbox {
     private ?string $defaultSecretKey = null;
     private int $accountIndex = 0;
     private bool $accountIndexExplicit = false;
+
+    /**
+     * API base URL: UNSANDBOX_API_URL (staging / local) or the public API, no trailing slash.
+     */
+    private static function apiBase(): string {
+        $url = getenv('UNSANDBOX_API_URL');
+        return rtrim(($url !== false && $url !== '') ? $url : self::DEFAULT_API_BASE, '/');
+    }
 
     /**
      * Create a new Unsandbox client.
@@ -1530,7 +1538,7 @@ class Unsandbox {
         $timestamp = time();
         $signature = $this->signRequest($secretKey, $timestamp, 'GET', $path);
 
-        $ch = curl_init(self::API_BASE . $path);
+        $ch = curl_init(self::apiBase() . $path);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => false,
             CURLOPT_HTTPHEADER => [
@@ -1584,7 +1592,7 @@ class Unsandbox {
      * @return bool true if API is healthy, false otherwise
      */
     public static function healthCheck(): bool {
-        $ch = curl_init(self::API_BASE . '/health');
+        $ch = curl_init(self::apiBase() . '/health');
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 10,
@@ -1803,7 +1811,7 @@ class Unsandbox {
      * @throws ApiException On network errors or non-2xx response
      */
     private function makeRequest(string $method, string $path, string $publicKey, string $secretKey, ?array $data = null): array {
-        $url = self::API_BASE . $path;
+        $url = self::apiBase() . $path;
         $timestamp = time();
         $body = $data !== null ? json_encode($data) : '';
 
@@ -1884,7 +1892,7 @@ class Unsandbox {
      * @throws ApiException On network errors or non-2xx response
      */
     private function makeRequestWithSudo(string $method, string $path, string $publicKey, string $secretKey, ?array $data = null): array {
-        $url = self::API_BASE . $path;
+        $url = self::apiBase() . $path;
         $timestamp = time();
         $body = $data !== null ? json_encode($data) : '';
 
@@ -2031,7 +2039,7 @@ class Unsandbox {
      * @throws ApiException On network errors or non-2xx response
      */
     private function makeRequestRaw(string $method, string $path, string $publicKey, string $secretKey, string $body, string $contentType = 'text/plain'): array {
-        $url = self::API_BASE . $path;
+        $url = self::apiBase() . $path;
         $timestamp = time();
 
         $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $body);
@@ -2189,7 +2197,11 @@ class Unsandbox {
                     $this->cliHandleImage(array_slice($args, 1), $opts);
                     break;
                 case 'key':
-                    $this->cliHandleKey($opts);
+                    if ($opts['rotate']) {
+                        $this->cliHandleKeyRotate($opts);
+                    } else {
+                        $this->cliHandleKey($opts);
+                    }
                     break;
                 case 'languages':
                     $this->cliHandleLanguages(array_slice($args, 1), $opts);
@@ -2237,6 +2249,8 @@ class Unsandbox {
             'yes' => false,
             'help' => false,
             'account' => null,
+            'rotate' => false,
+            'otp' => null,
         ];
         $args = [];
 
@@ -2288,6 +2302,11 @@ class Unsandbox {
                 if (isset($argv[$i])) {
                     $opts['account'] = (int)$argv[$i];
                 }
+            } elseif ($arg === '--rotate') {
+                $opts['rotate'] = true;
+            } elseif ($arg === '--otp') {
+                $i++;
+                $opts['otp'] = $argv[$i] ?? null;
             } elseif (strpos($arg, '-') !== 0) {
                 $args[] = $arg;
             }
@@ -3322,6 +3341,194 @@ class Unsandbox {
     }
 
     /**
+     * The accounts.csv the CLI's credentials came from, or null (flags / env vars).
+     * Mirrors resolveCredentials' tiers.
+     */
+    private function credentialsCsvPath(): ?string {
+        if (!empty($this->defaultPublicKey) && !empty($this->defaultSecretKey)) {
+            return null;
+        }
+        $effectiveIndex = null;
+        if ($this->accountIndexExplicit) {
+            $effectiveIndex = $this->accountIndex;
+        } else {
+            $envAccount = getenv('UNSANDBOX_ACCOUNT');
+            if ($envAccount !== false && $envAccount !== '') {
+                $effectiveIndex = (int)$envAccount;
+            } elseif ($this->accountIndex !== 0) {
+                $effectiveIndex = $this->accountIndex;
+            }
+        }
+        $paths = [$this->getUnsandboxDir() . '/accounts.csv', './accounts.csv'];
+        if ($effectiveIndex !== null) {
+            foreach ($paths as $path) {
+                if ($this->loadCredentialsFromCsv($path, $effectiveIndex) !== null) {
+                    return $path;
+                }
+            }
+        }
+        if (!empty(getenv('UNSANDBOX_PUBLIC_KEY')) && !empty(getenv('UNSANDBOX_SECRET_KEY'))) {
+            return null;
+        }
+        foreach ($paths as $path) {
+            if ($this->loadCredentialsFromCsv($path, 0) !== null) {
+                return $path;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Replace the secret on the line whose first field is $publicKey. Every other
+     * line, field, comment and the order stay as they are. Temp file (0600) + rename.
+     */
+    private function rewriteAccountsCsv(string $path, string $publicKey, string $newSecret): bool {
+        $content = file_get_contents($path);
+        if ($content === false) {
+            return false;
+        }
+        $lines = explode("\n", $content);
+        $changed = false;
+        foreach ($lines as $i => $line) {
+            $trimmed = trim($line);
+            if ($trimmed === '' || $trimmed[0] === '#') {
+                continue;
+            }
+            $fields = explode(',', $line);
+            if (count($fields) >= 2 && trim($fields[0]) === $publicKey) {
+                $fields[1] = $newSecret;
+                $lines[$i] = implode(',', $fields);
+                $changed = true;
+                break;
+            }
+        }
+        if (!$changed) {
+            return false;
+        }
+        $tmp = dirname($path) . '/.' . basename($path) . '.' . getmypid() . '.tmp';
+        $oldUmask = umask(0077);
+        $ok = file_put_contents($tmp, implode("\n", $lines)) !== false;
+        umask($oldUmask);
+        if (!$ok) {
+            @unlink($tmp);
+            return false;
+        }
+        chmod($tmp, 0600);
+        return rename($tmp, $path);
+    }
+
+    /**
+     * POST /keys/self/rotate-secret with body {}, optionally with sudo headers.
+     *
+     * @return array [httpCode, decodedBody]
+     */
+    private function rotatePost(string $publicKey, string $secretKey, ?string $otp = null, ?string $challenge = null): array {
+        $path = '/keys/self/rotate-secret';
+        $body = '{}';
+        $timestamp = time();
+        $headers = [
+            'Authorization: Bearer ' . $publicKey,
+            'X-Timestamp: ' . $timestamp,
+            'X-Signature: ' . $this->signRequest($secretKey, $timestamp, 'POST', $path, $body),
+            'Content-Type: application/json',
+        ];
+        if ($otp !== null) {
+            $headers[] = 'X-Sudo-OTP: ' . $otp;
+            $headers[] = 'X-Sudo-Challenge: ' . ($challenge ?? '');
+        }
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, self::apiBase() . $path);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        $response = curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        if ($response === false) {
+            throw new ApiException("cURL error: {$error}");
+        }
+        $decoded = json_decode($response, true);
+        return [$httpCode, is_array($decoded) ? $decoded : []];
+    }
+
+    /**
+     * Handle key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
+     *
+     * @param array $opts Global options
+     */
+    private function cliHandleKeyRotate(array $opts): void {
+        [$pk, $sk] = $this->resolveCredentials(null, null);
+        $dir = $this->getUnsandboxDir();
+        $challengeFile = $dir . '/rotate-' . substr(hash('sha256', $pk), 0, 16) . '.challenge';
+
+        if ($opts['otp'] !== null) {
+            $challenge = @file_get_contents($challengeFile);
+            if ($challenge === false) {
+                fwrite(STDERR, "Error: no rotation in progress; run: un key --rotate\n");
+                exit(2);
+            }
+            [$status, $data] = $this->rotatePost($pk, $sk, trim($opts['otp']), trim($challenge));
+            @unlink($challengeFile);
+        } else {
+            [$status, $data] = $this->rotatePost($pk, $sk);
+            if ($status === 428) {
+                $challenge = (string)($data['challenge_id'] ?? '');
+                if (stream_isatty(STDIN)) {
+                    fwrite(STDERR, "One-time code emailed to the key owner.\n");
+                    fwrite(STDERR, "Code: ");
+                    $otp = trim((string)fgets(STDIN));
+                    if ($otp === '') {
+                        fwrite(STDERR, "Error: cancelled\n");
+                        exit(1);
+                    }
+                    [$status, $data] = $this->rotatePost($pk, $sk, $otp, $challenge);
+                } else {
+                    if (!is_dir($dir)) {
+                        mkdir($dir, 0700, true);
+                    }
+                    $oldUmask = umask(0077);
+                    file_put_contents($challengeFile, $challenge);
+                    umask($oldUmask);
+                    chmod($challengeFile, 0600);
+                    echo "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE\n";
+                    return;
+                }
+            }
+        }
+
+        if ($status !== 200) {
+            if ($status === 403 && ($data['error'] ?? null) === 'email_required') {
+                fwrite(STDERR, "Error: this key has no email; add one or use POST /keys/recover\n");
+                exit(3);
+            }
+            if ($status === 401) {
+                fwrite(STDERR, "Error: authentication failed\n");
+                exit(3);
+            }
+            $message = $data['message'] ?? $data['error'] ?? "HTTP {$status}";
+            fwrite(STDERR, "Error: {$message}\n");
+            exit(4);
+        }
+
+        $newSecret = $data['secret'] ?? '';
+        if ($newSecret === '') {
+            fwrite(STDERR, "Error: API returned no secret\n");
+            exit(4);
+        }
+
+        $csvPath = $this->credentialsCsvPath();
+        if ($csvPath !== null && $this->rewriteAccountsCsv($csvPath, $pk, $newSecret)) {
+            echo "Secret rotated. Updated {$csvPath} (public key {$pk}).\n";
+        } else {
+            echo "New secret (shown once, store it now): {$newSecret}\n";
+            echo "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.\n";
+        }
+    }
+
+    /**
      * Handle languages command.
      *
      * @param array $args Command arguments
@@ -3468,6 +3675,7 @@ USAGE:
     php un.php service [options]
     php un.php snapshot [options]
     php un.php key
+    php un.php key --rotate [--otp CODE]   Rotate key secret (sudo OTP)
     php un.php languages [--json]
 
 GLOBAL OPTIONS:

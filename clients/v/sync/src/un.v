@@ -44,8 +44,12 @@
 //   un_v service --name web --ports 8080
 
 import os
+import crypto.hmac
+import crypto.sha256
+import net.http
+import time
 
-const api_base = 'https://api.unsandbox.com'
+const api_base = resolve_api_base()
 const portal_base = 'https://unsandbox.com'
 const max_env_content_size = 65536
 const languages_cache_ttl = 3600  // 1 hour in seconds
@@ -54,6 +58,12 @@ const red = '\x1b[31m'
 const green = '\x1b[32m'
 const yellow = '\x1b[33m'
 const reset = '\x1b[0m'
+
+// API base URL: UNSANDBOX_API_URL (trailing slash stripped), default https://api.unsandbox.com
+fn resolve_api_base() string {
+	v := os.getenv('UNSANDBOX_API_URL').trim_right('/')
+	return if v != '' { v } else { 'https://api.unsandbox.com' }
+}
 
 fn detect_language(filename string) !string {
 	ext := os.file_ext(filename)
@@ -689,7 +699,7 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 
 // Load a row from an accounts.csv file (format: public_key,secret_key per line).
 // Lines starting with '#' and blank lines are skipped. Returns the Nth data row.
-fn load_accounts_csv(path string, index int) ?(string, string) {
+fn load_accounts_csv(path string, index int) ?[]string {
 	content := os.read_file(path) or { return none }
 	lines := content.split('\n')
 	mut row := 0
@@ -699,8 +709,12 @@ fn load_accounts_csv(path string, index int) ?(string, string) {
 			continue
 		}
 		if row == index {
-			idx := line.index(',') or { return none }
-			return line[..idx], line[idx + 1..]
+			fields := line.split(',')
+			if fields.len < 2 {
+				return none
+			}
+			// Extra columns (e.g. a label) follow the secret
+			return [fields[0].trim_space(), fields[1].trim_space()]
 		}
 		row++
 	}
@@ -732,7 +746,7 @@ fn get_secret_key() string {
 	return ''
 }
 
-fn cmd_snapshot(list bool, info string, session string, service string, restore string, delete string, lock string, unlock string, clone string, clone_type string, name string, ports string, hot bool, api_key string) {
+fn cmd_snapshot(list bool, info string, session string, service string, restore string, delete string, lock_id string, unlock_id string, clone string, clone_type string, name string, ports string, hot bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -806,18 +820,18 @@ fn cmd_snapshot(list bool, info string, session string, service string, restore 
 		return
 	}
 
-	if lock != '' {
-		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/snapshots/${lock}/lock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/snapshots/${lock}/lock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+	if lock_id != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/snapshots/${lock_id}/lock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/snapshots/${lock_id}/lock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
 		exec_curl(cmd)
-		println('${green}Snapshot locked: ${lock}${reset}')
+		println('${green}Snapshot locked: ${lock_id}${reset}')
 		return
 	}
 
-	if unlock != '' {
-		endpoint := '/snapshots/${unlock}/unlock'
+	if unlock_id != '' {
+		endpoint := '/snapshots/${unlock_id}/unlock'
 		status := exec_curl_post_with_sudo(endpoint, '{}', pub_key, secret_key)
 		if status >= 200 && status < 300 {
-			println('${green}Snapshot unlocked: ${unlock}${reset}')
+			println('${green}Snapshot unlocked: ${unlock_id}${reset}')
 		} else if status != 428 {
 			eprintln('${red}Error: Failed to unlock snapshot${reset}')
 			exit(1)
@@ -880,7 +894,7 @@ fn cmd_version() {
 	println('Portal: ${portal_base}')
 }
 
-fn cmd_image(list bool, info string, delete string, lock string, unlock string, publish string, source_type string, visibility_id string, visibility_mode string, spawn string, clone string, name string, ports string, grant string, revoke string, trusted string, trusted_key string, transfer string, to_key string, api_key string) {
+fn cmd_image(list bool, info string, delete string, lock_id string, unlock_id string, publish string, source_type string, visibility_id string, visibility_mode string, spawn_id string, clone string, name string, ports string, grant string, revoke string, trusted string, trusted_key string, transfer string, to_key string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -908,18 +922,18 @@ fn cmd_image(list bool, info string, delete string, lock string, unlock string, 
 		return
 	}
 
-	if lock != '' {
-		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${lock}/lock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${lock}/lock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+	if lock_id != '' {
+		cmd := "TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${lock_id}/lock:\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${lock_id}/lock' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
 		exec_curl(cmd)
-		println('${green}Image locked: ${lock}${reset}')
+		println('${green}Image locked: ${lock_id}${reset}')
 		return
 	}
 
-	if unlock != '' {
-		endpoint := '/images/${unlock}/unlock'
+	if unlock_id != '' {
+		endpoint := '/images/${unlock_id}/unlock'
 		status := exec_curl_post_with_sudo(endpoint, '{}', pub_key, secret_key)
 		if status >= 200 && status < 300 {
-			println('${green}Image unlocked: ${unlock}${reset}')
+			println('${green}Image unlocked: ${unlock_id}${reset}')
 		} else if status != 428 {
 			eprintln('${red}Error: Failed to unlock image${reset}')
 			exit(1)
@@ -955,13 +969,13 @@ fn cmd_image(list bool, info string, delete string, lock string, unlock string, 
 		return
 	}
 
-	if spawn != '' {
+	if spawn_id != '' {
 		mut json := '{"name":"${name}"'
 		if ports != '' {
 			json += ',"ports":[${ports}]'
 		}
 		json += '}'
-		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${spawn}/spawn:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${spawn}/spawn' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
+		cmd := "BODY='${json}'; TIMESTAMP=\$(date +%s); MESSAGE=\"\$TIMESTAMP:POST:/images/${spawn_id}/spawn:\$BODY\"; SIGNATURE=\$(echo -n \"\$MESSAGE\" | openssl dgst -sha256 -hmac '${secret_key}' -hex | sed 's/.*= //'); curl -s -X POST '${api_base}/images/${spawn_id}/spawn' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" -d \"\$BODY\""
 		result := exec_curl(cmd)
 		println(result)
 		return
@@ -1077,11 +1091,11 @@ fn get_cached_languages() ?[]string {
 
 	// Extract languages array
 	start_idx := content.index('"languages":[') or { return none }
-	arr_start := content.index_after('[', start_idx)
+	arr_start := content.index_after('[', start_idx) or { -1 }
 	if arr_start < 0 {
 		return none
 	}
-	arr_end := content.index_after(']', arr_start)
+	arr_end := content.index_after(']', arr_start) or { -1 }
 	if arr_end < 0 {
 		return none
 	}
@@ -1122,10 +1136,7 @@ fn save_languages_cache(languages []string) {
 
 fn cmd_languages(json_output bool, api_key string) {
 	// Check cache first
-	cached := get_cached_languages()
-
-	if cached != none {
-		languages := cached or { []string{} }
+	if languages := get_cached_languages() {
 		if json_output {
 			mut lang_json := '['
 			for i, lang in languages {
@@ -1156,12 +1167,12 @@ fn cmd_languages(json_output bool, api_key string) {
 		println(result)
 		return
 	}
-	arr_start := result.index_after('[', start_idx)
+	arr_start := result.index_after('[', start_idx) or { -1 }
 	if arr_start < 0 {
 		println(result)
 		return
 	}
-	arr_end := result.index_after(']', arr_start)
+	arr_end := result.index_after(']', arr_start) or { -1 }
 	if arr_end < 0 {
 		println(result)
 		return
@@ -1191,19 +1202,239 @@ fn cmd_languages(json_output bool, api_key string) {
 	}
 }
 
+// The accounts.csv the credentials came from, or '' (flags / env vars).
+// Mirrors resolve_credentials' tiers; call before main injects env vars.
+fn credentials_csv_path(account_index int, explicit_pub_key string) string {
+	home := os.getenv('HOME')
+	home_csv := (if home != '' { home } else { '.' }) + '/.unsandbox/accounts.csv'
+	mut row := account_index
+	if row < 0 {
+		if explicit_pub_key != '' || os.getenv('UNSANDBOX_PUBLIC_KEY') != ''
+			|| os.getenv('UNSANDBOX_API_KEY') != '' {
+			return ''
+		}
+		env_acct := os.getenv('UNSANDBOX_ACCOUNT')
+		row = if env_acct != '' && env_acct.int() >= 0 { env_acct.int() } else { 0 }
+	}
+	for path in [home_csv, 'accounts.csv'] {
+		if creds := load_accounts_csv(path, row) {
+			_ = creds
+			return path
+		}
+	}
+	return ''
+}
+
+// Replace the secret on the line whose first field is public_key. Every other
+// line, field, comment and the order stay as they are. Temp file (0600) + rename.
+fn rewrite_accounts_csv(path string, public_key string, new_secret string) bool {
+	content := os.read_file(path) or { return false }
+	mut lines := content.split('\n')
+	mut changed := false
+	for i, line in lines {
+		stripped := line.trim_space()
+		if stripped == '' || stripped.starts_with('#') {
+			continue
+		}
+		mut fields := line.split(',')
+		if fields.len >= 2 && fields[0].trim_space() == public_key {
+			fields[1] = new_secret
+			lines[i] = fields.join(',')
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return false
+	}
+	tmp := os.join_path(os.dir(path), '.${os.file_name(path)}.${os.getpid()}.tmp')
+	mut f := os.open_file(tmp, 'w', 0o600) or { return false }
+	f.write_string(lines.join('\n')) or {
+		f.close()
+		os.rm(tmp) or {}
+		return false
+	}
+	f.close()
+	os.chmod(tmp, 0o600) or {}
+	os.rename(tmp, path) or {
+		os.rm(tmp) or {}
+		return false
+	}
+	return true
+}
+
+struct RotateResponse {
+	secret       string
+	challenge_id string
+	err_code     string
+	message      string
+}
+
+// String value of "field" in a flat JSON object, tolerating whitespace around ':'.
+fn json_string_field(body string, field string) string {
+	key := '"${field}"'
+	mut pos := 0
+	for {
+		k := body.index_after(key, pos) or { return '' }
+		mut i := k + key.len
+		for i < body.len && body[i].is_space() {
+			i++
+		}
+		if i < body.len && body[i] == `:` {
+			i++
+			for i < body.len && body[i].is_space() {
+				i++
+			}
+			if i >= body.len || body[i] != `"` {
+				return ''
+			}
+			i++
+			mut value := []u8{}
+			for i < body.len && body[i] != `"` {
+				if body[i] == `\\` && i + 1 < body.len {
+					i++
+				}
+				value << body[i]
+				i++
+			}
+			return value.bytestr()
+		}
+		pos = k + 1
+	}
+	return ''
+}
+
+// POST /keys/self/rotate-secret, body {}; HMAC computed in-process, fresh per call.
+// Exits 4 on a transport failure.
+fn post_rotate_secret(pub_key string, secret_key string, otp string, challenge string) (int, RotateResponse) {
+	path := '/keys/self/rotate-secret'
+	body := '{}'
+	ts := time.now().unix()
+	message := '${ts}:POST:${path}:${body}'
+	signature := hmac.new(secret_key.bytes(), message.bytes(), sha256.sum, sha256.block_size).hex()
+	mut header := http.new_header()
+	header.add_custom('Authorization', 'Bearer ${pub_key}') or {}
+	header.add_custom('X-Timestamp', '${ts}') or {}
+	header.add_custom('X-Signature', signature) or {}
+	header.add_custom('Content-Type', 'application/json') or {}
+	if otp != '' {
+		header.add_custom('X-Sudo-OTP', otp) or {}
+		header.add_custom('X-Sudo-Challenge', challenge) or {}
+	}
+	resp := http.fetch(http.FetchConfig{
+		url:    '${api_base}${path}'
+		method: .post
+		header: header
+		data:   body
+	}) or {
+		eprintln('Error: ${err}')
+		exit(4)
+	}
+	parsed := RotateResponse{
+		secret:       json_string_field(resp.body, 'secret')
+		challenge_id: json_string_field(resp.body, 'challenge_id')
+		err_code:     json_string_field(resp.body, 'error')
+		message:      json_string_field(resp.body, 'message')
+	}
+	return resp.status_code, parsed
+}
+
+// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+fn cmd_key_rotate(otp_flag string, creds_csv string) {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+	home := os.getenv('HOME')
+	unsandbox_dir := (if home != '' { home } else { '.' }) + '/.unsandbox'
+	challenge_file := '${unsandbox_dir}/rotate-${sha256.hexhash(pub_key)[..16]}.challenge'
+
+	mut status := 0
+	mut data := RotateResponse{}
+	if otp_flag != '' {
+		saved := os.read_file(challenge_file) or {
+			eprintln('Error: no rotation in progress; run: un key --rotate')
+			exit(2)
+		}
+		status, data = post_rotate_secret(pub_key, secret_key, otp_flag.trim_space(), saved.trim_space())
+		os.rm(challenge_file) or {}
+	} else {
+		status, data = post_rotate_secret(pub_key, secret_key, '', '')
+		if status == 428 {
+			challenge := data.challenge_id
+			if os.is_atty(0) > 0 {
+				eprintln('One-time code emailed to the key owner.')
+				eprint('Code: ')
+				otp := os.get_line().trim_space()
+				if otp == '' {
+					eprintln('Error: cancelled')
+					exit(1)
+				}
+				status, data = post_rotate_secret(pub_key, secret_key, otp, challenge)
+			} else {
+				os.mkdir_all(unsandbox_dir, mode: 0o700) or {
+					eprintln('Error: ${err}')
+					exit(1)
+				}
+				mut f := os.open_file(challenge_file, 'w', 0o600) or {
+					eprintln('Error: ${err}')
+					exit(1)
+				}
+				f.write_string(challenge) or {
+					eprintln('Error: ${err}')
+					exit(1)
+				}
+				f.close()
+				os.chmod(challenge_file, 0o600) or {}
+				println('One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE')
+				return
+			}
+		}
+	}
+
+	if status != 200 {
+		if status == 403 && data.err_code == 'email_required' {
+			eprintln('Error: this key has no email; add one or use POST /keys/recover')
+			exit(3)
+		}
+		if status == 401 {
+			eprintln('Error: authentication failed')
+			exit(3)
+		}
+		msg := if data.message != '' {
+			data.message
+		} else if data.err_code != '' {
+			data.err_code
+		} else {
+			'HTTP ${status}'
+		}
+		eprintln('Error: ${msg}')
+		exit(4)
+	}
+	if data.secret == '' {
+		eprintln('Error: API returned no secret')
+		exit(4)
+	}
+
+	if creds_csv != '' && rewrite_accounts_csv(creds_csv, pub_key, data.secret) {
+		println('Secret rotated. Updated ${creds_csv} (public key ${pub_key}).')
+	} else {
+		println('New secret (shown once, store it now): ${data.secret}')
+		println('Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.')
+	}
+}
+
 fn resolve_credentials(account_index int, explicit_pub_key string) (string, string) {
 	if account_index >= 0 {
 		// --account N: load from ~/.unsandbox/accounts.csv, bypassing env vars
 		home := os.getenv('HOME')
 		csv_path := (if home != '' { home } else { '.' }) + '/.unsandbox/accounts.csv'
 		if creds := load_accounts_csv(csv_path, account_index) {
-			pk := if explicit_pub_key != '' { explicit_pub_key } else { creds.0 }
-			return pk, creds.1
+			pk := if explicit_pub_key != '' { explicit_pub_key } else { creds[0] }
+			return pk, creds[1]
 		}
 		// fall back to ./accounts.csv
 		if creds := load_accounts_csv('accounts.csv', account_index) {
-			pk := if explicit_pub_key != '' { explicit_pub_key } else { creds.0 }
-			return pk, creds.1
+			pk := if explicit_pub_key != '' { explicit_pub_key } else { creds[0] }
+			return pk, creds[1]
 		}
 		return explicit_pub_key, ''
 	}
@@ -1230,13 +1461,13 @@ fn resolve_credentials(account_index int, explicit_pub_key string) (string, stri
 		csv_path := (if home != '' { home } else { '.' }) + '/.unsandbox/accounts.csv'
 		row := if env_account >= 0 { env_account } else { 0 }
 		if creds := load_accounts_csv(csv_path, row) {
-			pub_key = creds.0
-			sec_key = creds.1
+			pub_key = creds[0]
+			sec_key = creds[1]
 		}
 		if pub_key == '' {
 			if creds2 := load_accounts_csv('accounts.csv', row) {
-				pub_key = creds2.0
-				sec_key = creds2.1
+				pub_key = creds2[0]
+				sec_key = creds2[1]
 			}
 		}
 	}
@@ -1262,6 +1493,7 @@ fn main() {
 		}
 	}
 
+	creds_csv := credentials_csv_path(account_index, explicit_pub_key)
 	pub_key, sec_key := resolve_credentials(account_index, explicit_pub_key)
 	// Inject resolved credentials into env so get_public_key/get_secret_key pick them up
 	os.setenv('UNSANDBOX_PUBLIC_KEY', pub_key, true)
@@ -1275,6 +1507,7 @@ fn main() {
 		eprintln('       ${os.args[0]} service env <action> <service_id> [options]')
 		eprintln('       ${os.args[0]} image [options]')
 		eprintln('       ${os.args[0]} key [--extend]')
+		eprintln('       ${os.args[0]} key --rotate [--otp CODE]')
 		eprintln('       ${os.args[0]} languages [--json]')
 		eprintln('')
 		eprintln('Vault commands:')
@@ -1520,11 +1753,20 @@ fn main() {
 
 	if os.args[1] == 'key' {
 		mut extend := false
+		mut rotate := false
+		mut otp_flag := ''
 
 		mut i := 2
 		for i < os.args.len {
 			match os.args[i] {
 				'--extend' { extend = true }
+				'--rotate' { rotate = true }
+				'--otp' {
+					i++
+					if i < os.args.len {
+						otp_flag = os.args[i]
+					}
+				}
 				'-k' {
 					i++
 					api_key = os.args[i]
@@ -1537,6 +1779,10 @@ fn main() {
 			i++
 		}
 
+		if rotate {
+			cmd_key_rotate(otp_flag, creds_csv)
+			return
+		}
 		cmd_key(extend, api_key)
 		return
 	}
@@ -1568,13 +1814,13 @@ fn main() {
 		mut list := false
 		mut info := ''
 		mut delete := ''
-		mut lock := ''
-		mut unlock := ''
+		mut lock_id := ''
+		mut unlock_id := ''
 		mut publish := ''
 		mut source_type := ''
 		mut visibility_id := ''
 		mut visibility_mode := ''
-		mut spawn := ''
+		mut spawn_id := ''
 		mut clone := ''
 		mut name := ''
 		mut ports := ''
@@ -1599,11 +1845,11 @@ fn main() {
 				}
 				'--lock' {
 					i++
-					lock = os.args[i]
+					lock_id = os.args[i]
 				}
 				'--unlock' {
 					i++
-					unlock = os.args[i]
+					unlock_id = os.args[i]
 				}
 				'--publish' {
 					i++
@@ -1623,7 +1869,7 @@ fn main() {
 				}
 				'--spawn' {
 					i++
-					spawn = os.args[i]
+					spawn_id = os.args[i]
 				}
 				'--clone' {
 					i++
@@ -1673,7 +1919,7 @@ fn main() {
 			i++
 		}
 
-		cmd_image(list, info, delete, lock, unlock, publish, source_type, visibility_id, visibility_mode, spawn, clone, name, ports, grant, revoke, trusted, trusted_key, transfer, to_key, api_key)
+		cmd_image(list, info, delete, lock_id, unlock_id, publish, source_type, visibility_id, visibility_mode, spawn_id, clone, name, ports, grant, revoke, trusted, trusted_key, transfer, to_key, api_key)
 		return
 	}
 
@@ -1684,8 +1930,8 @@ fn main() {
 		mut service := ''
 		mut restore := ''
 		mut delete := ''
-		mut lock := ''
-		mut unlock := ''
+		mut lock_id := ''
+		mut unlock_id := ''
 		mut clone := ''
 		mut clone_type := ''
 		mut name := ''
@@ -1701,8 +1947,8 @@ fn main() {
 				'--service' { i++; service = os.args[i] }
 				'--restore' { i++; restore = os.args[i] }
 				'--delete' { i++; delete = os.args[i] }
-				'--lock' { i++; lock = os.args[i] }
-				'--unlock' { i++; unlock = os.args[i] }
+				'--lock' { i++; lock_id = os.args[i] }
+				'--unlock' { i++; unlock_id = os.args[i] }
 				'--clone' { i++; clone = os.args[i] }
 				'--clone-type' { i++; clone_type = os.args[i] }
 				'--name' { i++; name = os.args[i] }
@@ -1715,7 +1961,7 @@ fn main() {
 			i++
 		}
 
-		cmd_snapshot(list, info, session, service, restore, delete, lock, unlock, clone, clone_type, name, ports, hot, api_key)
+		cmd_snapshot(list, info, session, service, restore, delete, lock_id, unlock_id, clone, clone_type, name, ports, hot, api_key)
 		return
 	}
 

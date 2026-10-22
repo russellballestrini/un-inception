@@ -63,7 +63,7 @@ require 'base64'
 # Unsandbox Ruby SDK module (synchronous)
 module Un
   # API base URL
-  API_BASE = 'https://api.unsandbox.com'
+  API_BASE = ENV.fetch('UNSANDBOX_API_URL', 'https://api.unsandbox.com').sub(%r{/+\z}, '')
 
   # Polling delays in milliseconds for exponential backoff
   POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000].freeze
@@ -1371,7 +1371,7 @@ module Un
       signature = sign_request(sk, timestamp, 'GET', path)
 
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
+      http.use_ssl = (uri.scheme == 'https')
       http.read_timeout = nil
 
       request = Net::HTTP::Get.new(uri)
@@ -1414,13 +1414,16 @@ module Un
     # Thread-local storage for last error
     @last_error = nil
 
-    class << self
-      attr_accessor :last_error_value
-      # CLI-set account index (-1 means not specified). When >= 0, takes
-      # priority over env vars in resolve_credentials.
-      attr_accessor :cli_account_index
+    # Already inside `class << self`, so these define Un.last_error_value and
+    # Un.cli_account_index directly (a nested `class << self` would not).
+    attr_accessor :last_error_value
+    # CLI-set account index (-1 means not specified). When >= 0, takes
+    # priority over env vars in resolve_credentials.
+    attr_writer :cli_account_index
+
+    def cli_account_index
+      @cli_account_index || -1
     end
-    @cli_account_index = -1
 
     # Get the SDK version string
     #
@@ -1650,7 +1653,7 @@ module Un
       signature = sign_request(secret_key, timestamp, method, path, data ? body : nil)
 
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
+      http.use_ssl = (uri.scheme == 'https')
       http.open_timeout = REQUEST_TIMEOUT
       http.read_timeout = REQUEST_TIMEOUT
 
@@ -1720,7 +1723,7 @@ module Un
       signature = sign_request(secret_key, timestamp, method, path, data ? body : nil)
 
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
+      http.use_ssl = (uri.scheme == 'https')
       http.open_timeout = REQUEST_TIMEOUT
       http.read_timeout = REQUEST_TIMEOUT
 
@@ -1830,7 +1833,7 @@ module Un
       signature = sign_request(secret_key, timestamp, method, path, body)
 
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
+      http.use_ssl = (uri.scheme == 'https')
       http.open_timeout = REQUEST_TIMEOUT
       http.read_timeout = REQUEST_TIMEOUT
 
@@ -2010,6 +2013,7 @@ module Un
           ruby un.rb service [options]            Manage services
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
+          ruby un.rb key --rotate [--otp CODE]    Rotate key secret (sudo OTP)
           ruby un.rb languages [--json]           List available languages
 
         Global Options:
@@ -3002,11 +3006,21 @@ module Un
     # Key command
     def cli_key(options)
       parser = parse_global_options(options) do
-        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY]'
+        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--rotate [--otp CODE]]'
         puts
         puts 'Check API key validity and show account info'
+        puts '  --rotate      Rotate this key\'s secret (sudo OTP); updates accounts.csv'
+        puts '  --otp CODE    Finish a rotation started without a terminal'
+      end
+      parser.on('--rotate', 'Rotate this key\'s secret') do
+        options[:rotate] = true
+      end
+      parser.on('--otp CODE', 'Finish a rotation started without a terminal') do |v|
+        options[:otp] = v
       end
       parser.parse!(ARGV)
+
+      return cli_key_rotate(options) if options[:rotate]
 
       creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
 
@@ -3024,6 +3038,141 @@ module Un
           exit(EXIT_AUTH_ERROR)
         end
         raise
+      end
+    end
+
+    # The accounts.csv the CLI's credentials came from, or nil (flags / env vars).
+    # Mirrors resolve_credentials' tiers.
+    def credentials_csv_path(options)
+      return nil if options[:public_key] && options[:secret_key]
+
+      account = options[:account_index]
+      has_account = account && account >= 0
+      return nil if !has_account && ENV['UNSANDBOX_PUBLIC_KEY'] && ENV['UNSANDBOX_SECRET_KEY']
+
+      index = has_account ? account : ENV.fetch('UNSANDBOX_ACCOUNT', '0').to_i
+      [File.join(unsandbox_dir, 'accounts.csv'), 'accounts.csv'].find do |path|
+        load_credentials_from_csv(path, index)
+      end
+    end
+
+    # Replace the secret on the line whose first field is public_key. Every other
+    # line, field, comment and the order stay as they are. Temp file (0600) + rename.
+    def rewrite_accounts_csv(path, public_key, new_secret)
+      lines = File.read(path).split("\n", -1)
+      idx = lines.index do |line|
+        stripped = line.strip
+        next false if stripped.empty? || stripped.start_with?('#')
+
+        fields = line.split(',', -1)
+        fields.length >= 2 && fields[0].strip == public_key
+      end
+      return false unless idx
+
+      fields = lines[idx].split(',', -1)
+      fields[1] = new_secret
+      lines[idx] = fields.join(',')
+      tmp = File.join(File.dirname(path), ".#{File.basename(path)}.#{Process.pid}.tmp")
+      File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |f| f.write(lines.join("\n")) }
+      File.chmod(0o600, tmp)
+      File.rename(tmp, path)
+      true
+    end
+
+    # POST /keys/self/rotate-secret with body {}, optionally with sudo headers.
+    # @return [Array] [status_code, parsed_body_hash]
+    def rotate_post(public_key, secret_key, otp = nil, challenge = nil)
+      path = '/keys/self/rotate-secret'
+      body = '{}'
+      uri = URI.parse("#{API_BASE}#{path}")
+      timestamp = Time.now.to_i
+      headers = {
+        'Authorization' => "Bearer #{public_key}",
+        'X-Timestamp' => timestamp.to_s,
+        'X-Signature' => sign_request(secret_key, timestamp, 'POST', path, body),
+        'Content-Type' => 'application/json'
+      }
+      if otp
+        headers['X-Sudo-OTP'] = otp
+        headers['X-Sudo-Challenge'] = challenge.to_s
+      end
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == 'https')
+      http.open_timeout = REQUEST_TIMEOUT
+      http.read_timeout = REQUEST_TIMEOUT
+      response = http.post(uri.request_uri, body, headers)
+      data = begin
+        JSON.parse(response.body.to_s)
+      rescue JSON::ParserError
+        {}
+      end
+      [response.code.to_i, data.is_a?(Hash) ? data : {}]
+    end
+
+    # key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
+    def cli_key_rotate(options)
+      pk, sk = resolve_credentials(options[:public_key], options[:secret_key])
+      dir = unsandbox_dir
+      challenge_file = File.join(dir, "rotate-#{OpenSSL::Digest::SHA256.hexdigest(pk)[0, 16]}.challenge")
+
+      if options[:otp]
+        challenge = begin
+          File.read(challenge_file).strip
+        rescue SystemCallError
+          $stderr.puts 'Error: no rotation in progress; run: un key --rotate'
+          exit(EXIT_INVALID_ARGS)
+        end
+        status, data = rotate_post(pk, sk, options[:otp].strip, challenge)
+        File.delete(challenge_file) if File.exist?(challenge_file)
+      else
+        status, data = rotate_post(pk, sk)
+        if status == 428
+          challenge = data['challenge_id'].to_s
+          if $stdin.tty?
+            $stderr.puts 'One-time code emailed to the key owner.'
+            $stderr.print 'Code: '
+            $stderr.flush
+            otp = $stdin.gets.to_s.strip
+            if otp.empty?
+              $stderr.puts 'Error: cancelled'
+              exit(EXIT_ERROR)
+            end
+            status, data = rotate_post(pk, sk, otp, challenge)
+          else
+            FileUtils.mkdir_p(dir, mode: 0o700)
+            File.open(challenge_file, File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |f| f.write(challenge) }
+            File.chmod(0o600, challenge_file)
+            puts 'One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE'
+            return
+          end
+        end
+      end
+
+      if status != 200
+        if status == 403 && data['error'] == 'email_required'
+          $stderr.puts 'Error: this key has no email; add one or use POST /keys/recover'
+          exit(EXIT_AUTH_ERROR)
+        end
+        if status == 401
+          $stderr.puts 'Error: authentication failed'
+          exit(EXIT_AUTH_ERROR)
+        end
+        $stderr.puts "Error: #{data['message'] || data['error'] || "HTTP #{status}"}"
+        exit(EXIT_API_ERROR)
+      end
+
+      new_secret = data['secret']
+      if new_secret.nil? || new_secret.empty?
+        $stderr.puts 'Error: API returned no secret'
+        exit(EXIT_API_ERROR)
+      end
+
+      csv_path = credentials_csv_path(options)
+      if csv_path && rewrite_accounts_csv(csv_path, pk, new_secret)
+        puts "Secret rotated. Updated #{csv_path} (public key #{pk})."
+      else
+        puts "New secret (shown once, store it now): #{new_secret}"
+        puts 'Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.'
       end
     end
 

@@ -280,7 +280,55 @@ rust
 
 ```bash
 un key                            # Check API key validity
+un key --rotate                   # Rotate this key's secret (sudo OTP), update accounts.csv
+un key --rotate --otp CODE        # Finish a rotation started without a terminal
 ```
+
+### `un key --rotate`
+
+Replaces the key's secret. Anyone holding the current secret may rotate it; if
+the key has an email, the API emails a one-time code (sudo OTP) and the rotation
+completes only with that code — the human in the loop.
+
+Flow (byte-identical across all implementations):
+
+1. `POST /keys/self/rotate-secret`, body `{}`, header `Content-Type: application/json`,
+   HMAC-signed as usual (`timestamp:POST:/keys/self/rotate-secret:{}`).
+2. Response handling:
+   - **428** `{"challenge_id": ...}`: an OTP was emailed.
+     - stdin is a terminal and no `--otp`: print
+       `One-time code emailed to the key owner.` and prompt `Code: ` on stderr; read one
+       line; go to step 3.
+     - otherwise: save the challenge id to
+       `~/.unsandbox/rotate-<first 16 hex of sha256(public_key)>.challenge` (dir 0700,
+       file 0600) and print `One-time code emailed to the key owner. Finish with: un key
+       --rotate --otp CODE`; exit 0.
+   - **403** `{"error":"email_required"}`: print `Error: this key has no email; add one
+     or use POST /keys/recover` to stderr; exit 3.
+   - **401**: `Error: authentication failed`, exit 3. Other non-2xx: `Error: <message>`, exit 4.
+3. With a code (prompted, or `--otp CODE` + the saved challenge file): repeat step 1 with
+   a fresh timestamp/signature plus headers `X-Sudo-OTP: CODE` and
+   `X-Sudo-Challenge: <challenge_id>`. Delete the challenge file after any final answer.
+4. **200** `{"secret": NEW}`:
+   - If the credentials came from an accounts.csv file (tiers 3/4): rewrite that file —
+     replace the secret (2nd field) on the line whose 1st field equals the public key;
+     keep every other line, field (labels), comment and the line order unchanged; write a
+     temp file in the same directory with mode 0600, then rename over the original.
+     Print `Secret rotated. Updated <path> (public key <pk>).` — **never print the new
+     secret.**
+   - If they came from flags or environment variables: there is nowhere to persist it;
+     print `New secret (shown once, store it now): <secret>` and
+     `Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret.`
+   Exit 0.
+
+The old secret stops working immediately. Finding and updating other places the key
+is used is the key owner's job, not the tool's.
+
+### API base URL
+
+Every implementation reads `UNSANDBOX_API_URL` (default `https://api.unsandbox.com`,
+no trailing slash) for all requests, so CLIs can be pointed at a staging or local
+endpoint.
 
 ## Output Formatting
 

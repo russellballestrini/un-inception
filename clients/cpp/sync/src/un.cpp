@@ -70,10 +70,20 @@
 #include <cstdint>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <cctype>
+#include <iterator>
 
 using namespace std;
 
-const string API_BASE = "https://api.unsandbox.com";
+// API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
+static string resolve_api_base() {
+    const char* env = getenv("UNSANDBOX_API_URL");
+    string base = (env && *env) ? env : "https://api.unsandbox.com";
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    return base;
+}
+const string API_BASE = resolve_api_base();
 const string PORTAL_BASE = "https://unsandbox.com";
 const int LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
 const string BLUE = "\033[34m";
@@ -1892,10 +1902,216 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
     }
 }
 
+// ---------------------------------------------------------------------------
+// un key --rotate [--otp CODE] — rotate this key's secret (see CLI_SPEC.md)
+// ---------------------------------------------------------------------------
+
+// Extract a JSON string value, tolerating whitespace around the colon.
+static string json_string_field(const string& json, const string& key) {
+    string needle = "\"" + key + "\"";
+    for (size_t p = json.find(needle); p != string::npos; p = json.find(needle, p + 1)) {
+        size_t q = p + needle.size();
+        while (q < json.size() && isspace(static_cast<unsigned char>(json[q]))) q++;
+        if (q >= json.size() || json[q] != ':') continue;
+        q++;
+        while (q < json.size() && isspace(static_cast<unsigned char>(json[q]))) q++;
+        if (q >= json.size() || json[q] != '"') continue;
+        string out;
+        for (size_t i = q + 1; i < json.size(); i++) {
+            if (json[i] == '\\' && i + 1 < json.size()) { out += json[++i]; continue; }
+            if (json[i] == '"') return out;
+            out += json[i];
+        }
+        return out;
+    }
+    return "";
+}
+
+// Header values go into a curl shell command: allow only a safe alphabet.
+static bool safe_header_token(const string& s) {
+    if (s.empty() || s.size() > 200) return false;
+    for (char c : s) {
+        if (!isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_' && c != '.') return false;
+    }
+    return true;
+}
+
+static string trim_ws(string s) {
+    while (!s.empty() && isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    size_t i = 0;
+    while (i < s.size() && isspace(static_cast<unsigned char>(s[i]))) i++;
+    return s.substr(i);
+}
+
+// POST /keys/self/rotate-secret, body {}, fresh signature each call.
+static pair<string, int> rotate_secret_post(const string& public_key, const string& secret_key,
+                                            const string& otp, const string& challenge) {
+    const string path = "/keys/self/rotate-secret";
+    const string body = "{}";
+    string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
+    if (!otp.empty()) {
+        auth_headers += " -H 'X-Sudo-OTP: " + otp + "'";
+        auth_headers += " -H 'X-Sudo-Challenge: " + challenge + "'";
+    }
+    string cmd = "curl -s --max-time 120 -X POST '" + API_BASE + path + "' "
+                 "-H 'Content-Type: application/json' "
+                 + auth_headers + " -d '" + body + "'";
+    return exec_curl_with_status(cmd);
+}
+
+// Replace the secret (2nd field) on the line whose 1st field equals public_key.
+// Every other line, field, comment and the order stay as they are.
+// Temp file (0600) in the same directory, then rename.
+static bool rewrite_accounts_csv(const string& path, const string& public_key, const string& new_secret) {
+    ifstream in(path, ios::binary);
+    if (!in) return false;
+    string content((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
+    in.close();
+
+    string out;
+    bool changed = false;
+    size_t pos = 0;
+    while (pos < content.size()) {
+        size_t nl = content.find('\n', pos);
+        size_t end = (nl == string::npos) ? content.size() : nl + 1;
+        string line = content.substr(pos, end - pos);
+        pos = end;
+        string t = trim_ws(line);
+        if (!changed && !t.empty() && t[0] != '#') {
+            size_t c1 = line.find(',');
+            if (c1 != string::npos && trim_ws(line.substr(0, c1)) == public_key) {
+                size_t c2 = line.find_first_of(",\r\n", c1 + 1);
+                string rest = (c2 == string::npos) ? "" : line.substr(c2);
+                line = line.substr(0, c1 + 1) + new_secret + rest;
+                changed = true;
+            }
+        }
+        out += line;
+    }
+    if (!changed) return false;
+
+    string tmp = path + "." + to_string(getpid()) + ".tmp";
+    int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    bool ok = write(fd, out.data(), out.size()) == static_cast<ssize_t>(out.size());
+    fchmod(fd, 0600);
+    if (close(fd) != 0) ok = false;
+    if (ok && rename(tmp.c_str(), path.c_str()) != 0) ok = false;
+    if (!ok) unlink(tmp.c_str());
+    return ok;
+}
+
+static int rotate_fail(int status, const string& response) {
+    string error = json_string_field(response, "error");
+    string message = json_string_field(response, "message");
+    if (status == 403 && error == "email_required") {
+        cerr << "Error: this key has no email; add one or use POST /keys/recover" << endl;
+        return 3;
+    }
+    if (status == 401) {
+        cerr << "Error: authentication failed" << endl;
+        return 3;
+    }
+    if (!message.empty()) cerr << "Error: " << message << endl;
+    else if (!error.empty()) cerr << "Error: " << error << endl;
+    else cerr << "Error: HTTP " << status << endl;
+    return 4;
+}
+
+// csv_path: the accounts.csv the credentials came from ("" for flags / env vars).
+int cmd_rotate_key(const string& public_key, const string& secret_key, const string& otp_arg,
+                   const string& csv_path) {
+    if (public_key.empty() || secret_key.empty()) {
+        cerr << "Error: API credentials required" << endl;
+        return 3;
+    }
+    const char* home = getenv("HOME");
+    string dir = string(home ? home : ".") + "/.unsandbox";
+    string digest = sha256_raw(public_key);
+    static const char hex_chars[] = "0123456789abcdef";
+    string prefix;
+    for (size_t i = 0; i < 8; i++) {
+        unsigned char c = static_cast<unsigned char>(digest[i]);
+        prefix.push_back(hex_chars[c >> 4]);
+        prefix.push_back(hex_chars[c & 0x0f]);
+    }
+    string challenge_file = dir + "/rotate-" + prefix + ".challenge";
+
+    pair<string, int> resp;
+    if (!otp_arg.empty()) {
+        ifstream cf(challenge_file);
+        if (!cf) {
+            cerr << "Error: no rotation in progress; run: un key --rotate" << endl;
+            return 2;
+        }
+        string challenge;
+        getline(cf, challenge);
+        cf.close();
+        challenge = trim_ws(challenge);
+        string otp = trim_ws(otp_arg);
+        if (!safe_header_token(otp) || !safe_header_token(challenge)) {
+            cerr << "Error: invalid code or challenge" << endl;
+            return 2;
+        }
+        resp = rotate_secret_post(public_key, secret_key, otp, challenge);
+        unlink(challenge_file.c_str());
+    } else {
+        resp = rotate_secret_post(public_key, secret_key, "", "");
+        if (resp.second == 428) {
+            string challenge = json_string_field(resp.first, "challenge_id");
+            if (isatty(STDIN_FILENO)) {
+                cerr << "One-time code emailed to the key owner." << endl;
+                cerr << "Code: " << flush;
+                string otp;
+                if (!getline(cin, otp)) otp = "";
+                otp = trim_ws(otp);
+                if (otp.empty()) {
+                    cerr << "Error: cancelled" << endl;
+                    return 1;
+                }
+                if (!safe_header_token(otp) || !safe_header_token(challenge)) {
+                    cerr << "Error: invalid code or challenge" << endl;
+                    return 2;
+                }
+                resp = rotate_secret_post(public_key, secret_key, otp, challenge);
+            } else {
+                mkdir(dir.c_str(), 0700);
+                int fd = open(challenge_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+                bool ok = fd >= 0 && write(fd, challenge.data(), challenge.size()) == static_cast<ssize_t>(challenge.size());
+                if (fd >= 0) {
+                    fchmod(fd, 0600);
+                    if (close(fd) != 0) ok = false;
+                }
+                if (!ok) {
+                    cerr << "Error: cannot save challenge to " << challenge_file << endl;
+                    return 1;
+                }
+                cout << "One-time code emailed to the key owner. Finish with: un key --rotate --otp CODE" << endl;
+                return 0;
+            }
+        }
+    }
+
+    if (resp.second != 200) return rotate_fail(resp.second, resp.first);
+    string new_secret = json_string_field(resp.first, "secret");
+    if (new_secret.empty()) {
+        cerr << "Error: API returned no secret" << endl;
+        return 4;
+    }
+    if (!csv_path.empty() && rewrite_accounts_csv(csv_path, public_key, new_secret)) {
+        cout << "Secret rotated. Updated " << csv_path << " (public key " << public_key << ")." << endl;
+    } else {
+        cout << "New secret (shown once, store it now): " << new_secret << endl;
+        cout << "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret." << endl;
+    }
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     string public_key;
     string secret_key;
     int account_index = -1;  // -1 = not set
+    string creds_csv_path;   // accounts.csv the credentials came from ("" = flags / env)
 
     // First pass: scan for --account N and -p/-k flags before full arg parsing
     for (int i = 1; i < argc; i++) {
@@ -1914,11 +2130,13 @@ int main(int argc, char* argv[]) {
         auto creds = loadAccountsCSV(csv_path, account_index);
         if (creds.first.empty()) {
             // fall back to ./accounts.csv
-            creds = loadAccountsCSV("accounts.csv", account_index);
+            csv_path = "accounts.csv";
+            creds = loadAccountsCSV(csv_path, account_index);
         }
         if (!creds.first.empty()) {
             if (public_key.empty()) public_key = creds.first;
             secret_key = creds.second;
+            creds_csv_path = csv_path;
         }
     } else {
         // Priority: env vars, then ~/.unsandbox/accounts.csv row 0, then ./accounts.csv row 0
@@ -1942,11 +2160,13 @@ int main(int argc, char* argv[]) {
             string csv_path = string(home ? home : ".") + "/.unsandbox/accounts.csv";
             auto creds = loadAccountsCSV(csv_path, env_account >= 0 ? env_account : 0);
             if (creds.first.empty()) {
-                creds = loadAccountsCSV("accounts.csv", env_account >= 0 ? env_account : 0);
+                csv_path = "accounts.csv";
+                creds = loadAccountsCSV(csv_path, env_account >= 0 ? env_account : 0);
             }
             if (!creds.first.empty()) {
                 public_key = creds.first;
                 secret_key = creds.second;
+                creds_csv_path = csv_path;
             }
         }
     }
@@ -2083,14 +2303,19 @@ int main(int argc, char* argv[]) {
 
     if (cmd_type == "key") {
         bool extend = false;
+        bool rotate = false;
+        string otp;
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
             if (arg == "--extend") extend = true;
-            else if (arg == "-k" && i+1 < argc) public_key = argv[++i];
+            else if (arg == "--rotate") rotate = true;
+            else if (arg == "--otp" && i+1 < argc) otp = argv[++i];
+            else if (arg == "-k" && i+1 < argc) { public_key = argv[++i]; creds_csv_path.clear(); }
             else if (arg == "--account" && i+1 < argc) i++;  // already handled in first pass
         }
 
+        if (rotate) return cmd_rotate_key(public_key, secret_key, otp, creds_csv_path);
         cmd_validate_key(extend, public_key, secret_key);
         return 0;
     }
