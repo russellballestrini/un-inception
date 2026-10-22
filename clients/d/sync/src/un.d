@@ -116,15 +116,18 @@ string buildInputFilesJson(string[] files) {
     return format(`,"input_files":[%s]`, fileJsons.join(","));
 }
 
+// HMAC-SHA256 computed in-process, returned as lowercase hex.
+// Never shell out for this: a subprocess would expose secretKey in argv (ps)
+// and interpolate message into a shell.
 string computeHmac(string secretKey, string message) {
-    import std.process : pipeShell, Redirect, wait;
-    import std.stdio : File;
+    import std.digest.hmac : hmac;
+    import std.digest.sha : SHA256;
+    import std.digest : toHexString, LetterCase;
 
-    auto cmd = format("echo -n '%s' | openssl dgst -sha256 -hmac '%s' -hex 2>/dev/null | sed 's/.*= //'", message, secretKey);
-    auto pipes = pipeShell(cmd, Redirect.stdout);
-    string result = pipes.stdout.readln().strip();
-    wait(pipes.pid);
-    return result;
+    auto mac = hmac!SHA256(cast(const(ubyte)[]) secretKey);
+    mac.put(cast(const(ubyte)[]) message);
+    auto digest = mac.finish();
+    return toHexString!(LetterCase.lower)(digest).idup;
 }
 
 string getTimestamp() {
@@ -1569,7 +1572,8 @@ Tuple!(string, string) loadAccountsCSV(string path, int index) {
         if (stripped.empty || stripped[0] == '#') continue;
         if (row == index) {
             auto parts = stripped.findSplit(",");
-            if (!parts[1].empty) return tuple(parts[0], parts[2]);
+            // Extra columns (e.g. a label) follow the secret; stop at the next comma.
+            if (!parts[1].empty) return tuple(parts[0], parts[2].findSplit(",")[0]);
             return tuple("", "");
         }
         row++;

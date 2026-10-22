@@ -67,6 +67,7 @@
 #include <map>
 #include <cstdlib>
 #include <ctime>
+#include <cstdint>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -117,7 +118,9 @@ pair<string,string> loadAccountsCSV(const string& path, int index) {
         if (row == index) {
             size_t comma = line.find(',');
             if (comma == string::npos) return {"", ""};
-            return {line.substr(0, comma), line.substr(comma + 1)};
+            // Extra columns (e.g. a label) follow the secret; stop at the next comma.
+            size_t end = line.find(',', comma + 1);
+            return {line.substr(0, comma), line.substr(comma + 1, end == string::npos ? string::npos : end - comma - 1)};
         }
         row++;
     }
@@ -182,6 +185,9 @@ string exec_curl(const string& cmd) {
 
     return result;
 }
+
+// Defined below; used by the sudo OTP retry helpers.
+string build_auth_headers(const string& method, const string& path, const string& body, const string& public_key, const string& secret_key);
 
 // Execute curl and get HTTP status code
 pair<string, int> exec_curl_with_status(const string& cmd) {
@@ -340,12 +346,97 @@ bool exec_destructive_curl(const string& method, const string& path, const strin
     return false;
 }
 
+// Self-contained SHA-256 (FIPS 180-4) for in-process HMAC. No external
+// dependency, so the documented single-file compile line still works.
+static const uint32_t SHA256_K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+static inline uint32_t sha256_rotr(uint32_t x, unsigned n) {
+    return (x >> n) | (x << (32 - n));
+}
+
+static string sha256_raw(const string& data) {
+    uint32_t h[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    };
+
+    string msg = data;
+    uint64_t bit_len = static_cast<uint64_t>(data.size()) * 8;
+    msg.push_back(static_cast<char>(0x80));
+    while (msg.size() % 64 != 56) msg.push_back('\0');
+    for (int i = 7; i >= 0; --i) msg.push_back(static_cast<char>((bit_len >> (i * 8)) & 0xff));
+
+    for (size_t off = 0; off < msg.size(); off += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; ++i) {
+            w[i] = (static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4])) << 24) |
+                   (static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4 + 1])) << 16) |
+                   (static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4 + 2])) << 8) |
+                   static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4 + 3]));
+        }
+        for (int i = 16; i < 64; ++i) {
+            uint32_t s0 = sha256_rotr(w[i - 15], 7) ^ sha256_rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint32_t s1 = sha256_rotr(w[i - 2], 17) ^ sha256_rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; ++i) {
+            uint32_t S1 = sha256_rotr(e, 6) ^ sha256_rotr(e, 11) ^ sha256_rotr(e, 25);
+            uint32_t ch = (e & f) ^ (~e & g);
+            uint32_t t1 = hh + S1 + ch + SHA256_K[i] + w[i];
+            uint32_t S0 = sha256_rotr(a, 2) ^ sha256_rotr(a, 13) ^ sha256_rotr(a, 22);
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t t2 = S0 + maj;
+            hh = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+
+    string out;
+    out.reserve(32);
+    for (int i = 0; i < 8; ++i) {
+        out.push_back(static_cast<char>((h[i] >> 24) & 0xff));
+        out.push_back(static_cast<char>((h[i] >> 16) & 0xff));
+        out.push_back(static_cast<char>((h[i] >> 8) & 0xff));
+        out.push_back(static_cast<char>(h[i] & 0xff));
+    }
+    return out;
+}
+
+// HMAC-SHA256 (RFC 2104) computed in-process, returned as lowercase hex.
+// Never shell out for this: a subprocess would expose secret_key in argv (ps)
+// and interpolate message into a shell.
 string compute_hmac(const string& secret_key, const string& message) {
-    string cmd = "echo -n '" + message + "' | openssl dgst -sha256 -hmac '" + secret_key + "' -hex | sed 's/.*= //'";
-    string result = exec_curl(cmd);
-    // Trim newline
-    while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
-        result.pop_back();
+    const size_t block_size = 64;
+    string key = secret_key.size() > block_size ? sha256_raw(secret_key) : secret_key;
+    key.resize(block_size, '\0');
+
+    string ipad(block_size, '\0'), opad(block_size, '\0');
+    for (size_t i = 0; i < block_size; ++i) {
+        ipad[i] = static_cast<char>(static_cast<unsigned char>(key[i]) ^ 0x36);
+        opad[i] = static_cast<char>(static_cast<unsigned char>(key[i]) ^ 0x5c);
+    }
+
+    string mac = sha256_raw(opad + sha256_raw(ipad + message));
+
+    static const char hex_chars[] = "0123456789abcdef";
+    string result;
+    result.reserve(mac.size() * 2);
+    for (unsigned char c : mac) {
+        result.push_back(hex_chars[c >> 4]);
+        result.push_back(hex_chars[c & 0x0f]);
     }
     return result;
 }

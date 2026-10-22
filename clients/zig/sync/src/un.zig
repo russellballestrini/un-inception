@@ -79,8 +79,21 @@ const RED = "\x1b[31m";
 const YELLOW = "\x1b[33m";
 const RESET = "\x1b[0m";
 
-fn computeHmacCmd(allocator: std.mem.Allocator, secret_key: []const u8, message: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(allocator, "echo -n '{s}' | openssl dgst -sha256 -hmac '{s}' -hex 2>/dev/null | sed 's/.*= //'", .{ message, secret_key });
+// HMAC-SHA256 computed in-process. Returns lowercase hex (caller frees).
+// Never shell out for this: a subprocess would expose secret_key in argv (ps)
+// and interpolate message into a shell.
+fn computeHmac(allocator: std.mem.Allocator, secret_key: []const u8, message: []const u8) ![]u8 {
+    const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    var mac: [HmacSha256.mac_length]u8 = undefined;
+    HmacSha256.create(&mac, message, secret_key);
+
+    const hex_chars = "0123456789abcdef";
+    const out = try allocator.alloc(u8, mac.len * 2);
+    for (mac, 0..) |b, i| {
+        out[i * 2] = hex_chars[b >> 4];
+        out[i * 2 + 1] = hex_chars[b & 0x0f];
+    }
+    return out;
 }
 
 fn getTimestamp(allocator: std.mem.Allocator) ![]const u8 {
@@ -101,26 +114,8 @@ fn buildAuthCmd(allocator: std.mem.Allocator, method: []const u8, path: []const 
     const message = try std.fmt.allocPrint(allocator, "{s}:{s}:{s}:{s}", .{ timestamp_str, method, path, body });
     defer allocator.free(message);
 
-    const hmac_cmd = try computeHmacCmd(allocator, secret_key, message);
-    defer allocator.free(hmac_cmd);
-
-    // Execute HMAC command to get signature
-    var signature_buf: [256]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&signature_buf);
-    const signature_len = blk: {
-        const result = try std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = &[_][]const u8{ "sh", "-c", hmac_cmd },
-        });
-        defer allocator.free(result.stdout);
-        defer allocator.free(result.stderr);
-
-        const trimmed = mem.trim(u8, result.stdout, &std.ascii.whitespace);
-        @memcpy(signature_buf[0..trimmed.len], trimmed);
-        break :blk trimmed.len;
-    };
-
-    const signature = signature_buf[0..signature_len];
+    const signature = try computeHmac(allocator, secret_key, message);
+    defer allocator.free(signature);
 
     return try std.fmt.allocPrint(allocator, "-H 'Authorization: Bearer {s}' -H 'X-Timestamp: {s}' -H 'X-Signature: {s}'", .{ public_key, timestamp_str, signature });
 }
@@ -670,19 +665,7 @@ pub fn validateKeys(allocator: std.mem.Allocator, public_key: []const u8, secret
 
 // Utility functions
 pub fn hmacSign(allocator: std.mem.Allocator, secret_key: []const u8, message: []const u8) ![]const u8 {
-    const hmac_cmd = try computeHmacCmd(allocator, secret_key, message);
-    defer allocator.free(hmac_cmd);
-
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "sh", "-c", hmac_cmd },
-    });
-    defer allocator.free(result.stderr);
-
-    const trimmed = mem.trim(u8, result.stdout, &std.ascii.whitespace);
-    const signature = try allocator.dupe(u8, trimmed);
-    allocator.free(result.stdout);
-    return signature;
+    return try computeHmac(allocator, secret_key, message);
 }
 
 pub fn healthCheck(allocator: std.mem.Allocator) !bool {
@@ -825,7 +808,10 @@ fn loadCsvRow(allocator: std.mem.Allocator, csv_path: []const u8, row_index: usi
         if (data_index == row_index) {
             if (std.mem.indexOfScalar(u8, trimmed, ',')) |comma_pos| {
                 const pk = std.mem.trim(u8, trimmed[0..comma_pos], " \t");
-                const sk = std.mem.trim(u8, trimmed[comma_pos + 1 ..], " \t");
+                // Extra columns (e.g. a label) follow the secret; stop at the next comma.
+                const rest = trimmed[comma_pos + 1 ..];
+                const sk_end = std.mem.indexOfScalar(u8, rest, ',') orelse rest.len;
+                const sk = std.mem.trim(u8, rest[0..sk_end], " \t");
                 if (pk.len > 0 and sk.len > 0) {
                     return .{ .pk = try allocator.dupe(u8, pk), .sk = try allocator.dupe(u8, sk) };
                 }
