@@ -371,6 +371,11 @@ Errors go to stderr, exit code 1.
 3. **Consistent output** - Same format across all languages
 4. **Error handling** - Proper exit codes, errors to stderr
 5. **Credential resolution** - 4-tier system (-p/-k flags > env > ~/.unsandbox > ./accounts.csv)
+6. **No secret on any command line** - `ps` and `/proc/<pid>/cmdline` show every process's
+   argv. Compute HMAC in-process, or feed the key to a child through a pipe or its environment
+   (never `openssl dgst -hmac KEY`, `jq --arg`, or `-e SECRET=...`). Never park a response
+   that may carry a secret (rotate-secret does) in a fixed `/tmp` path. Enforced by
+   `scripts/lint-secret-argv.sh` (`make lint-secrets`, CI job `lint-secret-argv`).
 
 ## Available Shells/REPLs
 

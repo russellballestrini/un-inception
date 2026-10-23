@@ -2881,6 +2881,10 @@ public class Un {
         }
     }
 
+    /** Subcommands whose own options follow them on the command line. */
+    private static final Set<String> SUBCOMMANDS = new HashSet<>(Arrays.asList(
+        "session", "service", "snapshot", "image", "languages"));
+
     /**
      * CLI main implementation.
      */
@@ -2909,6 +2913,19 @@ public class Un {
             String arg = args[i];
             if (arg.equals("-h") || arg.equals("--help")) {
                 showHelp = true;
+                i++;
+            } else if (!positionalArgs.isEmpty() && SUBCOMMANDS.contains(positionalArgs.get(0))) {
+                // After a subcommand, its options belong to its handler (CLI_SPEC.md);
+                // service also takes -f/--file, which feeds input_files.
+                if (positionalArgs.get(0).equals("service") && (arg.equals("-f") || arg.equals("--file"))) {
+                    if (i + 1 >= args.length) {
+                        System.err.println("Error: -f/--file requires an argument");
+                        System.exit(2);
+                    }
+                    files.add(args[++i]);
+                } else {
+                    positionalArgs.add(arg);
+                }
                 i++;
             } else if (arg.equals("--account")) {
                 if (i + 1 >= args.length) {

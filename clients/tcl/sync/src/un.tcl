@@ -219,7 +219,7 @@ namespace eval Un {
 
     # un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
     proc cmd_key_rotate {otp_given otp} {
-        variable RED RESET
+        variable RED; variable RESET
         if {[catch {get_credentials} creds]} {
             puts stderr "${RED}Error: no credentials found${RESET}"
             exit 3
@@ -405,7 +405,7 @@ namespace eval Un {
     }
 
     proc api_request_with_sudo {endpoint method body {public_key ""} {secret_key ""}} {
-        variable YELLOW RED GREEN RESET
+        variable YELLOW; variable RED; variable GREEN; variable RESET
 
         lassign [api_request $endpoint $method $body $public_key $secret_key] ncode response
 
@@ -501,7 +501,7 @@ namespace eval Un {
     }
 
     proc get_languages {{public_key ""} {secret_key ""}} {
-        variable LANGUAGES_CACHE_FILE LANGUAGES_CACHE_TTL
+        variable LANGUAGES_CACHE_FILE; variable LANGUAGES_CACHE_TTL
 
         # Check cache
         if {[file exists $LANGUAGES_CACHE_FILE]} {
@@ -860,7 +860,7 @@ namespace eval Un {
     # ============================================================================
 
     proc cmd_languages {args} {
-        variable BLUE RESET
+        variable BLUE; variable RESET
         set json_output 0
         foreach arg $args {
             if {$arg eq "--json"} { set json_output 1 }
@@ -878,7 +878,7 @@ namespace eval Un {
     }
 
     proc cmd_key {args} {
-        variable GREEN RED YELLOW PORTAL_BASE RESET
+        variable GREEN; variable RED; variable YELLOW; variable PORTAL_BASE; variable RESET
 
         set extend 0
         set rotate 0
@@ -930,7 +930,7 @@ namespace eval Un {
     }
 
     proc cmd_session {args} {
-        variable GREEN RESET
+        variable GREEN; variable RESET
         set action ""
         set target ""
 
@@ -975,7 +975,7 @@ namespace eval Un {
     }
 
     proc cmd_service {args} {
-        variable GREEN RESET
+        variable GREEN; variable RESET
         set action ""
         set target ""
         set name ""
@@ -1047,7 +1047,7 @@ namespace eval Un {
     }
 
     proc cmd_snapshot {args} {
-        variable GREEN RESET
+        variable GREEN; variable RESET
         set action ""
         set target ""
 
@@ -1097,7 +1097,7 @@ namespace eval Un {
     }
 
     proc cmd_image {args} {
-        variable GREEN RESET
+        variable GREEN; variable RESET
         set action ""
         set target ""
         set source_type ""
@@ -1182,7 +1182,7 @@ namespace eval Un {
     }
 
     proc run_file {file} {
-        variable BLUE RED RESET
+        variable BLUE; variable RED; variable RESET
 
         if {![file exists $file]} {
             puts stderr "${RED}Error: File not found: $file${RESET}"
@@ -1243,7 +1243,7 @@ Environment:
     }
 
     proc main {argv} {
-        variable BLUE RED RESET ACCOUNT_INDEX
+        variable BLUE; variable RED; variable RESET; variable ACCOUNT_INDEX
 
         # Pre-scan for --account N; strip it from argv before dispatch
         set filtered {}

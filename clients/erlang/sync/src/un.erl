@@ -594,7 +594,7 @@ logs_fetch(Opts) ->
     Lines = maps:get(lines, Opts, 100),
     Since = maps:get(since, Opts, "1h"),
     Grep = maps:get(grep, Opts, undefined),
-    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ http_uri:encode(G) end,
+    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ uri_string:quote(G) end,
     api_get("/logs?source=" ++ Source ++ "&lines=" ++ integer_to_list(Lines) ++ "&since=" ++ Since ++ GrepParam, Opts).
 
 %% @doc Stream logs (simplified polling implementation).
@@ -603,7 +603,7 @@ logs_stream(Callback, Opts) ->
     Source = maps:get(source, Opts, "all"),
     Grep = maps:get(grep, Opts, undefined),
     Interval = maps:get(interval, Opts, 5000),
-    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ http_uri:encode(G) end,
+    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ uri_string:quote(G) end,
     logs_stream_loop(Source, GrepParam, Callback, Interval, Opts).
 
 logs_stream_loop(Source, GrepParam, Callback, Interval, Opts) ->
@@ -974,7 +974,7 @@ service_command(["--dump-bootstrap", ServiceId, File | _]) ->
     file:delete(TmpFile),
     case extract_json_field(Response, "stdout") of
         "" ->
-            io:format(standard_error, "\033[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\033[0m~n"),
+            io:format(standard_error, "\033[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\033[0m~n", []),
             halt(1);
         Script ->
             file:write_file(File, Script),
@@ -991,7 +991,7 @@ service_command(["--dump-bootstrap", ServiceId | _]) ->
     file:delete(TmpFile),
     case extract_json_field(Response, "stdout") of
         "" ->
-            io:format(standard_error, "\033[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\033[0m~n"),
+            io:format(standard_error, "\033[31mError: Failed to fetch bootstrap (service not running or no bootstrap file)\033[0m~n", []),
             halt(1);
         Script ->
             io:format("~s", [Script])
@@ -1165,7 +1165,7 @@ get_clone_ports(["--ports", Ports | _]) -> Ports;
 get_clone_ports([_ | Rest]) -> get_clone_ports(Rest).
 
 build_clone_json(undefined, _, _, _) ->
-    io:format(standard_error, "\033[31mError: --type required (session or service)\033[0m~n"),
+    io:format(standard_error, "\033[31mError: --type required (session or service)\033[0m~n", []),
     halt(1);
 build_clone_json(Type, Name, Shell, Ports) ->
     TypeJson = "{\"type\":\"" ++ Type ++ "\"",
@@ -1915,8 +1915,8 @@ write_temp_file(Data) ->
 curl_post(ApiKey, Endpoint, TmpFile) ->
     {ok, Body} = file:read_file(TmpFile),
     BodyStr = binary_to_list(Body),
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, BodyStr),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, BodyStr),
     Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
@@ -1927,8 +1927,8 @@ curl_post(ApiKey, Endpoint, TmpFile) ->
 
 curl_post_portal(ApiKey, Endpoint, Data) ->
     TmpFile = write_temp_file(Data),
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Data),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, Data),
     Cmd = "curl -s -X POST https://unsandbox.com" ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
@@ -1939,8 +1939,8 @@ curl_post_portal(ApiKey, Endpoint, Data) ->
     Result.
 
 curl_get(ApiKey, Endpoint) ->
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "GET", Endpoint, ""),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "GET", Endpoint, ""),
     Cmd = "curl -s " ++ ?API_BASE ++ Endpoint ++
           AuthHeaders,
     Result = os:cmd(Cmd),
@@ -1948,8 +1948,8 @@ curl_get(ApiKey, Endpoint) ->
     Result.
 
 curl_delete(ApiKey, Endpoint) ->
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "DELETE", Endpoint, ""),
     Cmd = "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++
           AuthHeaders,
     Result = os:cmd(Cmd),
@@ -1972,31 +1972,50 @@ handle_sudo_challenge(Response, Method, Endpoint, Body) ->
                     io:format(standard_error, "Error: Operation cancelled~n", []),
                     {error, cancelled};
                 _ ->
-                    %% Retry the request with sudo headers
+                    %% Retry the same request: same body, fresh signature, sudo headers.
+                    %% Headers go through a 0600 file, never argv.
                     {PublicKey, SecretKey} = get_api_keys(),
-                    AuthHeaders = build_auth_headers(PublicKey, SecretKey, Method, Endpoint, Body),
-                    SudoHeaders = " -H 'X-Sudo-OTP: " ++ Otp ++ "'",
-                    ChallengeHeader = case ChallengeId of
-                        "" -> "";
-                        _ -> " -H 'X-Sudo-Challenge: " ++ ChallengeId ++ "'"
+                    AuthLines = case SecretKey of
+                        false -> ["Authorization: Bearer " ++ PublicKey];
+                        _ ->
+                            Timestamp = integer_to_list(erlang:system_time(second)),
+                            Signature = make_signature(SecretKey, Timestamp, Method, Endpoint, Body),
+                            ["Authorization: Bearer " ++ PublicKey,
+                             "X-Timestamp: " ++ Timestamp,
+                             "X-Signature: " ++ Signature]
+                    end,
+                    ChallengeLines = case ChallengeId of
+                        "" -> [];
+                        _ -> ["X-Sudo-Challenge: " ++ ChallengeId]
+                    end,
+                    %% Body file must outlive the curl run that reads it
+                    {BodyFile, BodyLines} = case Body of
+                        "" -> {undefined, []};
+                        _ -> {write_temp_file(Body), ["Content-Type: application/json"]}
+                    end,
+                    HdrFile = "/tmp/un_erl_sudo_" ++ os:getpid() ++ "_" ++ integer_to_list(rand:uniform(999999999)) ++ ".hdr",
+                    ok = file:write_file(HdrFile, <<>>, [exclusive]),
+                    ok = file:change_mode(HdrFile, 8#600),
+                    ok = file:write_file(HdrFile, string:join(AuthLines ++ ["X-Sudo-OTP: " ++ Otp] ++
+                                                              ChallengeLines ++ BodyLines, "\n") ++ "\n"),
+                    BodyArgs = case BodyFile of
+                        undefined -> "";
+                        _ -> " -d @" ++ BodyFile
                     end,
                     Cmd = case Method of
                         "DELETE" ->
-                            "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++
-                            AuthHeaders ++ SudoHeaders ++ ChallengeHeader;
+                            "curl -s -X DELETE -H @" ++ HdrFile ++ BodyArgs ++ " '" ++ ?API_BASE ++ Endpoint ++ "'";
                         "POST" ->
-                            TmpFile = write_temp_file(Body),
-                            Result = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
-                                " -H 'Content-Type: application/json'" ++
-                                AuthHeaders ++ SudoHeaders ++ ChallengeHeader ++
-                                " -d @" ++ TmpFile,
-                            file:delete(TmpFile),
-                            Result;
+                            "curl -s -X POST -H @" ++ HdrFile ++ BodyArgs ++ " '" ++ ?API_BASE ++ Endpoint ++ "'";
                         _ ->
-                            "curl -s " ++ ?API_BASE ++ Endpoint ++
-                            AuthHeaders ++ SudoHeaders ++ ChallengeHeader
+                            "curl -s -H @" ++ HdrFile ++ " '" ++ ?API_BASE ++ Endpoint ++ "'"
                     end,
                     RetryResult = os:cmd(Cmd),
+                    file:delete(HdrFile),
+                    case BodyFile of
+                        undefined -> ok;
+                        _ -> file:delete(BodyFile)
+                    end,
                     case string:str(RetryResult, "\"error\"") of
                         0 -> {ok, RetryResult};
                         _ -> {error, RetryResult}
@@ -2006,8 +2025,8 @@ handle_sudo_challenge(Response, Method, Endpoint, Body) ->
 
 %% Curl with 428 handling for destructive operations
 curl_delete_with_sudo(ApiKey, Endpoint) ->
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "DELETE", Endpoint, ""),
     Cmd = "curl -s -w '\\n%{http_code}' -X DELETE " ++ ?API_BASE ++ Endpoint ++
           AuthHeaders,
     Result = os:cmd(Cmd),
@@ -2028,8 +2047,8 @@ curl_delete_with_sudo(ApiKey, Endpoint) ->
 
 curl_post_with_sudo(ApiKey, Endpoint, Json) ->
     TmpFile = write_temp_file(Json),
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, Json),
     Cmd = "curl -s -w '\\n%{http_code}' -X POST " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
@@ -2054,8 +2073,8 @@ curl_post_with_sudo(ApiKey, Endpoint, Json) ->
 curl_patch(ApiKey, Endpoint, TmpFile) ->
     {ok, Body} = file:read_file(TmpFile),
     BodyStr = binary_to_list(Body),
-    {PublicKey, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PATCH", Endpoint, BodyStr),
+    {_, SecretKey} = get_api_keys(),
+    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "PATCH", Endpoint, BodyStr),
     Cmd = "curl -s -X PATCH " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++

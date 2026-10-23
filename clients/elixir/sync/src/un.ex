@@ -2522,45 +2522,55 @@ defmodule Un do
     IO.puts(:stderr, "#{@yellow}Confirmation required. Check your email for a one-time code.#{@reset}")
     IO.write(:stderr, "Enter OTP: ")
 
-    otp = IO.gets("") |> String.trim()
+    otp = case IO.gets("") do
+      line when is_binary(line) -> String.trim(line)
+      _ -> ""
+    end
 
     if otp == "" do
       IO.puts(:stderr, "#{@red}Error: Operation cancelled#{@reset}")
       {:error, :cancelled}
     else
-      # Retry the request with sudo headers
+      # Retry the same request: same body, fresh signature, sudo headers.
+      # Headers go through a 0600 file, never argv.
       {public_key, secret_key} = get_api_keys()
       body_str = body || ""
-      headers = build_auth_headers(public_key, secret_key, method, endpoint, body_str)
+      auth_lines =
+        build_auth_headers(public_key, secret_key, method, endpoint, body_str)
+        |> Enum.chunk_every(2)
+        |> Enum.map(fn [_, h] -> h end)
 
-      # Add sudo headers
-      sudo_headers = ["-H", "X-Sudo-OTP: #{otp}"]
-      sudo_headers = if challenge_id do
-        sudo_headers ++ ["-H", "X-Sudo-Challenge: #{challenge_id}"]
-      else
-        sudo_headers
+      sudo_lines = ["X-Sudo-OTP: #{otp}"] ++ if(challenge_id, do: ["X-Sudo-Challenge: #{challenge_id}"], else: [])
+
+      # Same body as the first attempt; the file must outlive the curl run that reads it
+      tmp_file = if body_str != "" do
+        path = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
+        File.write!(path, body_str)
+        path
       end
+      {body_lines, body_args} =
+        if tmp_file, do: {["Content-Type: application/json"], ["-d", "@#{tmp_file}"]}, else: {[], []}
+
+      hdr_file = Path.join(System.tmp_dir!(), "un_ex_sudo_#{System.pid()}_#{:rand.uniform(999_999_999)}.hdr")
+      File.write!(hdr_file, "", [:write, :exclusive])
+      File.chmod!(hdr_file, 0o600)
+      File.write!(hdr_file, Enum.join(auth_lines ++ sudo_lines ++ body_lines, "\n") <> "\n")
+      headers = ["-H", "@#{hdr_file}"]
 
       args = case method do
         "DELETE" ->
-          ["-s", "-X", "DELETE", "#{api_base()}#{endpoint}"] ++ headers ++ sudo_headers
+          ["-s", "-X", "DELETE", "#{api_base()}#{endpoint}"] ++ headers ++ body_args
         "POST" ->
-          tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-          File.write!(tmp_file, body_str)
-          result = ["-s", "-X", "POST", "#{api_base()}#{endpoint}",
-                   "-H", "Content-Type: application/json"] ++ headers ++ sudo_headers ++ ["-d", "@#{tmp_file}"]
-          result
+          ["-s", "-X", "POST", "#{api_base()}#{endpoint}"] ++ headers ++ body_args
         _ ->
-          ["-s", "#{api_base()}#{endpoint}"] ++ headers ++ sudo_headers
+          ["-s", "#{api_base()}#{endpoint}"] ++ headers
       end
 
       {output, exit_code} = System.cmd("curl", args, stderr_to_stdout: true)
 
-      # Clean up temp file for POST requests
-      if method == "POST" do
-        tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-        File.rm(tmp_file)
-      end
+      # Clean up only after curl has sent them
+      File.rm(hdr_file)
+      if tmp_file, do: File.rm(tmp_file)
 
       if exit_code == 0 and not String.contains?(output, "\"error\"") do
         {:ok, output}

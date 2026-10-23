@@ -68,8 +68,8 @@ X-Signature: HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
 | **Rust** | `hmac`, `sha2` | Crates (add to Cargo.toml) |
 | **PHP** | `hash_hmac()` | Built-in function |
 | **Perl** | `Digest::SHA` | Core module |
-| **Lua** | `openssl` CLI | Shells out to `openssl dgst` |
-| **Bash** | `openssl` CLI | Uses `openssl dgst -sha256 -hmac` |
+| **Lua** | `openssl` CLI | HMAC built from `openssl dgst -sha256` over a pipe |
+| **Bash** | `openssl` CLI | HMAC built from `openssl dgst -sha256` over a pipe; secret never in argv |
 | **C/C++** | OpenSSL | Link with `-lssl -lcrypto` |
 | **Java** | `javax.crypto` | Standard library |
 | **C#** | `System.Security.Cryptography` | .NET built-in |

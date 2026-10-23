@@ -47,7 +47,8 @@
 (use-modules (ice-9 popen)
              (ice-9 rdelim)
              (ice-9 regex)
-             (ice-9 format))
+             (ice-9 format)
+             (rnrs bytevectors))
 
 (define blue "\x1b[34m")
 (define red "\x1b[31m")
@@ -522,15 +523,79 @@
 (define (get-api-key)
   (car (get-api-keys)))
 
+;; SHA-256 in pure Scheme (FIPS 180-4). Signing stays in-process, so no
+;; subprocess ever sees the secret on its command line.
+(define sha256-k
+  #(#x428a2f98 #x71374491 #xb5c0fbcf #xe9b5dba5 #x3956c25b #x59f111f1 #x923f82a4 #xab1c5ed5
+    #xd807aa98 #x12835b01 #x243185be #x550c7dc3 #x72be5d74 #x80deb1fe #x9bdc06a7 #xc19bf174
+    #xe49b69c1 #xefbe4786 #x0fc19dc6 #x240ca1cc #x2de92c6f #x4a7484aa #x5cb0a9dc #x76f988da
+    #x983e5152 #xa831c66d #xb00327c8 #xbf597fc7 #xc6e00bf3 #xd5a79147 #x06ca6351 #x14292967
+    #x27b70a85 #x2e1b2138 #x4d2c6dfc #x53380d13 #x650a7354 #x766a0abb #x81c2c92e #x92722c85
+    #xa2bfe8a1 #xa81a664b #xc24b8b70 #xc76c51a3 #xd192e819 #xd6990624 #xf40e3585 #x106aa070
+    #x19a4c116 #x1e376c08 #x2748774c #x34b0bcb5 #x391c0cb3 #x4ed8aa4a #x5b9cca4f #x682e6ff3
+    #x748f82ee #x78a5636f #x84c87814 #x8cc70208 #x90befffa #xa4506ceb #xbef9a3f7 #xc67178f2))
+
+(define (sha256-bytes msg)
+  "SHA-256 of bytevector MSG; returns the 32-byte raw digest as a bytevector."
+  (define (u32 x) (logand x #xFFFFFFFF))
+  (define (rotr x n) (u32 (logior (ash x (- n)) (ash x (- 32 n)))))
+  (let* ((len (bytevector-length msg))
+         (r (modulo (+ len 9) 64))
+         (total (+ len 9 (if (= r 0) 0 (- 64 r))))
+         (buf (make-bytevector total 0))
+         (h (vector #x6a09e667 #xbb67ae85 #x3c6ef372 #xa54ff53a
+                    #x510e527f #x9b05688c #x1f83d9ab #x5be0cd19))
+         (w (make-vector 64 0)))
+    (bytevector-copy! msg 0 buf 0 len)
+    (bytevector-u8-set! buf len #x80)
+    (bytevector-u64-set! buf (- total 8) (* len 8) (endianness big))
+    (do ((off 0 (+ off 64))) ((>= off total))
+      (do ((t 0 (+ t 1))) ((= t 16))
+        (vector-set! w t (bytevector-u32-ref buf (+ off (* 4 t)) (endianness big))))
+      (do ((t 16 (+ t 1))) ((= t 64))
+        (let* ((x (vector-ref w (- t 15)))
+               (y (vector-ref w (- t 2)))
+               (s0 (logxor (rotr x 7) (rotr x 18) (ash x -3)))
+               (s1 (logxor (rotr y 17) (rotr y 19) (ash y -10))))
+          (vector-set! w t (u32 (+ (vector-ref w (- t 16)) s0 (vector-ref w (- t 7)) s1)))))
+      (let loop ((t 0)
+                 (a (vector-ref h 0)) (b (vector-ref h 1)) (c (vector-ref h 2)) (d (vector-ref h 3))
+                 (e (vector-ref h 4)) (f (vector-ref h 5)) (g (vector-ref h 6)) (hh (vector-ref h 7)))
+        (if (< t 64)
+            (let* ((s1 (logxor (rotr e 6) (rotr e 11) (rotr e 25)))
+                   (ch (logxor (logand e f) (logand (u32 (lognot e)) g)))
+                   (t1 (u32 (+ hh s1 ch (vector-ref sha256-k t) (vector-ref w t))))
+                   (s0 (logxor (rotr a 2) (rotr a 13) (rotr a 22)))
+                   (maj (logxor (logand a b) (logand a c) (logand b c)))
+                   (t2 (u32 (+ s0 maj))))
+              (loop (+ t 1) (u32 (+ t1 t2)) a b c (u32 (+ d t1)) e f g))
+            (for-each (lambda (i v) (vector-set! h i (u32 (+ (vector-ref h i) v))))
+                      '(0 1 2 3 4 5 6 7) (list a b c d e f g hh)))))
+    (let ((out (make-bytevector 32 0)))
+      (do ((i 0 (+ i 1))) ((= i 8) out)
+        (bytevector-u32-set! out (* 4 i) (vector-ref h i) (endianness big))))))
+
+(define (sha256-bv-append a b)
+  (let ((out (make-bytevector (+ (bytevector-length a) (bytevector-length b)))))
+    (bytevector-copy! a 0 out 0 (bytevector-length a))
+    (bytevector-copy! b 0 out (bytevector-length a) (bytevector-length b))
+    out))
+
 (define (hmac-sha256 secret message)
-  "Compute HMAC-SHA256 using openssl command"
-  (let* ((cmd (format #f "echo -n '~a' | openssl dgst -sha256 -hmac '~a' | awk '{print $2}'"
-                      (string-append (list->string (map (lambda (c) (if (char=? c #\') #\space c)) (string->list message))))
-                      (string-append (list->string (map (lambda (c) (if (char=? c #\') #\space c)) (string->list secret))))))
-         (port (open-input-pipe cmd))
-         (result (read-line port)))
-    (close-pipe port)
-    (string-trim-both result)))
+  "Compute HMAC-SHA256 (RFC 2104) in-process; returns lowercase hex."
+  (let* ((k0 (string->utf8 secret))
+         (k1 (if (> (bytevector-length k0) 64) (sha256-bytes k0) k0))
+         (key (make-bytevector 64 0))
+         (pad-key (lambda (pad)
+                    (let ((out (make-bytevector 64 0)))
+                      (do ((i 0 (+ i 1))) ((= i 64) out)
+                        (bytevector-u8-set! out i (logxor pad (bytevector-u8-ref key i))))))))
+    (bytevector-copy! k1 0 key 0 (bytevector-length k1))
+    (let* ((inner (sha256-bytes (sha256-bv-append (pad-key #x36) (string->utf8 message))))
+           (mac (sha256-bytes (sha256-bv-append (pad-key #x5c) inner))))
+      (apply string-append
+             (map (lambda (b) (string-pad (number->string b 16) 2 #\0))
+                  (bytevector->u8-list mac))))))
 
 (define (make-signature secret-key timestamp method path body)
   (let ((message (format #f "~a:~a:~a:~a" timestamp method path body)))

@@ -1,3 +1,4 @@
+#!/usr/bin/env swipl
 % PUBLIC DOMAIN - NO LICENSE, NO WARRANTY
 %
 % This is free public domain software for the public good of a permacomputer hosted
@@ -34,8 +35,6 @@
 % https://www.foxhop.net
 % https://www.unturf.com/software
 
-
-#!/usr/bin/env swipl
 
 :- initialization(main, main).
 
@@ -233,19 +232,42 @@ rotate_key(Args) :-
     process_wait(Pid, Status),
     (   Status = exit(Code) -> halt(Code) ; halt(1) ).
 
-rotate_script(Script) :-
+% bash prelude defining hmac KEY MSG -> hex HMAC-SHA256 (RFC 2104), built from
+% plain SHA-256 over stdin with bash builtins: our secret never reaches an argv
+% (openssl -hmac would put it there) and never touches a file.
+hmac_prelude(Prelude) :-
     atomic_list_concat([
-    'A=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ "${A%/}" != "$A" ]; do A=${A%/}; done',
-    'P=/keys/self/rotate-secret; D="$HOME/.unsandbox"',
     'if command -v sha256sum >/dev/null 2>&1; then S=sha256sum; else S="shasum -a 256"; fi',
-    'CF="$D/rotate-$(printf %s "$UN_PK" | $S | cut -c1-16).challenge"',
-    'RB=$(mktemp) || exit 1; trap \'rm -f "$RB"\' EXIT',
-    'hmac() { local k=$1 i c ip= op= ih= x',
-    '  for ((i=0;i<64;i++)); do if ((i<${#k})); then printf -v c %d "\'${k:i:1}"; else c=0; fi',
+    'hmac() { local k=$1 i c ip= op= ih= x= kh= kb=()',
+    '  if ((${#k}>64)); then kh=$(printf %s "$k" | $S | cut -c1-64); for ((i=0;i<32;i++)); do kb[i]=$((16#${kh:2*i:2})); done',
+    '  else for ((i=0;i<${#k};i++)); do printf -v c %d "\'${k:i:1}"; kb[i]=$c; done; fi',
+    '  for ((i=0;i<64;i++)); do c=${kb[i]:-0}',
     '    printf -v ip \'%s\\\\x%02x\' "$ip" $((c^54)); printf -v op \'%s\\\\x%02x\' "$op" $((c^92)); done',
     '  ih=$( { printf "$ip"; printf %s "$2"; } | $S | cut -c1-64)',
     '  for ((i=0;i<64;i+=2)); do x="$x\\\\x${ih:i:2}"; done',
-    '  { printf "$op"; printf "$x"; } | $S | cut -c1-64; }',
+    '  { printf "$op"; printf "$x"; } | $S | cut -c1-64; }'
+    ], '\n', Prelude).
+
+% Run a request command under bash with our hmac helper. Our secret reaches
+% it only through the UN_SK environment variable, never a command line.
+signed_shell(SecretKey, Cmd) :-
+    signed_shell(SecretKey, Cmd, 0).
+
+signed_shell(SecretKey, Cmd, Status) :-
+    setenv('UN_SK', SecretKey),
+    hmac_prelude(Prelude),
+    atomic_list_concat([Prelude, Cmd], '\n', Script),
+    process_create(path(bash), ['-c', Script],
+                   [stdin(std), stdout(std), stderr(std), process(Pid)]),
+    process_wait(Pid, exit(Status)).
+
+rotate_script(Script) :-
+    hmac_prelude(Prelude),
+    atomic_list_concat([
+    'A=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ "${A%/}" != "$A" ]; do A=${A%/}; done',
+    'P=/keys/self/rotate-secret; D="$HOME/.unsandbox"',
+    'CF="$D/rotate-$(printf %s "$UN_PK" | $S | cut -c1-16).challenge"',
+    'RB=$(mktemp) || exit 1; trap \'rm -f "$RB"\' EXIT',
     'post() { local ts sig; ts=$(date +%s); sig=$(hmac "$UN_SK" "$ts:POST:$P:{}")',
     '  { printf \'url = "%s"\\nrequest = "POST"\\n\' "$A$P"',
     '    printf \'header = "Content-Type: application/json"\\nheader = "Authorization: Bearer %s"\\n\' "$UN_PK"',
@@ -275,7 +297,8 @@ rotate_script(Script) :-
     '    && mv -f "$T" "$UN_CSV" && { echo "Secret rotated. Updated $UN_CSV (public key $UN_PK)."; exit 0; }; rm -f "$T"; fi',
     'echo "New secret (shown once, store it now): $NS"',
     'echo "Warning: UNSANDBOX_SECRET_KEY / -k still hold the old, now invalid, secret."'
-    ], '\n', Script).
+    ], '\n', Body),
+    atomic_list_concat([Prelude, Body], '\n', Script).
 
 % Execute command using curl
 execute_file(Filename) :-
@@ -300,27 +323,27 @@ execute_file(Filename) :-
 
     % Build and execute curl command with HMAC
     format(atom(Cmd),
-        'BODY=$(jq -Rs \'\'\''{language: "~w", code: .}\'\'\'\' < "~w"); TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); curl -s -X POST $UN_API/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_resp.json; RESP=$(cat /tmp/unsandbox_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_resp.json; exit 1; fi; jq -r ".stdout // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[34m/" | sed "s/$/\\x1b[0m/"; jq -r ".stderr // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[31m/" | sed "s/$/\\x1b[0m/" >&2; rm -f /tmp/unsandbox_resp.json',
-        [Language, Filename, SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'BODY=$(jq -Rs \'{language: "~w", code: .}\' < "~w"); TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/execute:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_resp.json; RESP=$(cat /tmp/unsandbox_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_resp.json; exit 1; fi; jq -r ".stdout // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[34m/" | sed "s/$/\\x1b[0m/"; jq -r ".stderr // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[31m/" | sed "s/$/\\x1b[0m/" >&2; rm -f /tmp/unsandbox_resp.json',
+        [Language, Filename, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Session list
 session_list :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/sessions:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/sessions -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.sessions[] | "\\(.id) \\(.shell) \\(.status) \\(.created_at)"\' 2>/dev/null || echo "No active sessions"',
-        [SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/sessions:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X GET $UN_API/sessions -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.sessions[] | "\\(.id) \\(.shell) \\(.status) \\(.created_at)"\' 2>/dev/null || echo "No active sessions"',
+        [PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Session kill
 session_kill(SessionId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/sessions/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE $UN_API/sessions/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mSession terminated: ~w\\x1b[0m"',
-        [SessionId, SecretKey, SessionId, PublicKey, SessionId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/sessions/~w:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X DELETE $UN_API/sessions/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mSession terminated: ~w\\x1b[0m"',
+        [SessionId, SessionId, PublicKey, SessionId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Session create with optional input files
 session_create(Shell, InputFiles) :-
@@ -333,9 +356,9 @@ session_create(Shell, InputFiles) :-
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
-        [ShellVal, FileArgs, SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
+        [ShellVal, FileArgs, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Build bash commands to base64 encode files
 build_file_args([], '').
@@ -353,54 +376,54 @@ service_list :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/services -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.services[] | "\\(.id) \\(.name) \\(.status)"\' 2>/dev/null || echo "No services"',
-        [SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X GET $UN_API/services -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; echo "$RESP" | jq -r \'.services[] | "\\(.id) \\(.name) \\(.status)"\' 2>/dev/null || echo "No services"',
+        [PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service info
 service_info(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
-        [ServiceId, SecretKey, ServiceId, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X GET $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [ServiceId, ServiceId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service logs
 service_logs(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/logs:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/services/~w/logs -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".logs"',
-        [ServiceId, SecretKey, ServiceId, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/logs:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X GET $UN_API/services/~w/logs -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".logs"',
+        [ServiceId, ServiceId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service sleep
 service_sleep(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/freeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/services/~w/freeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService frozen: ~w\\x1b[0m"',
-        [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/freeze:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/services/~w/freeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService frozen: ~w\\x1b[0m"',
+        [ServiceId, ServiceId, PublicKey, ServiceId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service wake
 service_wake(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/unfreeze:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/services/~w/unfreeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService unfreezing: ~w\\x1b[0m"',
-        [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/unfreeze:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/services/~w/unfreeze -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mService unfreezing: ~w\\x1b[0m"',
+        [ServiceId, ServiceId, PublicKey, ServiceId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service destroy
 service_destroy(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/services/~w:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
-        [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId, SecretKey, ServiceId, PublicKey, ServiceId, ServiceId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -w \'\\n%{http_code}\' -X DELETE $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'$d\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'.challenge_id // empty\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/services/~w:"; SIG2=$(hmac "$UN_SK" "$MSG2"); RESP2=$(curl -s -w \'\\n%{http_code}\' -X DELETE $UN_API/services/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$RESP2" | sed \'$d\' | jq . 2>/dev/null || echo "$RESP2" | sed \'$d\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mService destroyed: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
+        [ServiceId, ServiceId, PublicKey, ServiceId, ServiceId, PublicKey, ServiceId, ServiceId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service resize
 service_resize(ServiceId, Vcpu) :-
@@ -408,9 +431,9 @@ service_resize(ServiceId, Vcpu) :-
     get_secret_key(SecretKey),
     Ram is Vcpu * 2,
     format(atom(Cmd),
-        'BODY=\'\'{\"vcpu\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH $UN_API/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mService resized to ~w vCPU, ~w GB RAM\\x1b[0m"',
-        [Vcpu, ServiceId, SecretKey, ServiceId, PublicKey, Vcpu, Ram]),
-    shell(Cmd, 0).
+        'BODY=\'{\"vcpu\":~w}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X PATCH $UN_API/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mService resized to ~w vCPU, ~w GB RAM\\x1b[0m"',
+        [Vcpu, ServiceId, ServiceId, PublicKey, Vcpu, Ram]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service set unfreeze on demand
 service_set_unfreeze_on_demand(ServiceId, Enabled) :-
@@ -421,45 +444,45 @@ service_set_unfreeze_on_demand(ServiceId, Enabled) :-
     ;   EnabledStr = 'false', Msg = 'disabled'
     ),
     format(atom(Cmd),
-        'BODY=\'\'{\"unfreeze_on_demand\":~w}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PATCH $UN_API/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mUnfreeze-on-demand ~w for service: ~w\\x1b[0m"',
-        [EnabledStr, ServiceId, SecretKey, ServiceId, PublicKey, Msg, ServiceId]),
-    shell(Cmd, 0).
+        'BODY=\'{\"unfreeze_on_demand\":~w}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PATCH:/services/~w:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X PATCH $UN_API/services/~w -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mUnfreeze-on-demand ~w for service: ~w\\x1b[0m"',
+        [EnabledStr, ServiceId, ServiceId, PublicKey, Msg, ServiceId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service env status
 service_env_status(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
-        [ServiceId, SecretKey, ServiceId, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/services/~w/env:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X GET "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [ServiceId, ServiceId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service env set
 service_env_set(ServiceId, Envs, EnvFile) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -z "$ENV_CONTENT" ]; then echo -e "\\x1b[31mError: No environment variables to set\\x1b[0m" >&2; exit 1; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PUT:/services/~w/env:$ENV_CONTENT"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" | jq .',
-        [Envs, EnvFile, ServiceId, SecretKey, ServiceId, PublicKey]),
-    shell(Cmd, 0).
+        'ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -z "$ENV_CONTENT" ]; then echo -e "\\x1b[31mError: No environment variables to set\\x1b[0m" >&2; exit 1; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:PUT:/services/~w/env:$ENV_CONTENT"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X PUT "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" | jq .',
+        [Envs, EnvFile, ServiceId, ServiceId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service env export
 service_env_export(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/env/export:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST "$UN_API/services/~w/env/export" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".content // empty"',
-        [ServiceId, SecretKey, ServiceId, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/env/export:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST "$UN_API/services/~w/env/export" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq -r ".content // empty"',
+        [ServiceId, ServiceId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service env delete
 service_env_delete(ServiceId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w/env:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X DELETE "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mVault deleted for: ~w\\x1b[0m"',
-        [ServiceId, SecretKey, ServiceId, PublicKey, ServiceId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/services/~w/env:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X DELETE "$UN_API/services/~w/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mVault deleted for: ~w\\x1b[0m"',
+        [ServiceId, ServiceId, PublicKey, ServiceId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service dump bootstrap
 service_dump_bootstrap(ServiceId, DumpFile) :-
@@ -468,14 +491,14 @@ service_dump_bootstrap(ServiceId, DumpFile) :-
     (   DumpFile = ''
     ->  % No file specified, print to stdout
         format(atom(Cmd),
-            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); RESP=$(curl -s -X POST $UN_API/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
-            [ServiceId, ServiceId, SecretKey, ServiceId, PublicKey])
+            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'{"command":"cat /tmp/bootstrap.sh"}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
+            [ServiceId, ServiceId, ServiceId, PublicKey])
     ;   % File specified, save to file
         format(atom(Cmd),
-            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'\'\'\'{"command":"cat /tmp/bootstrap.sh"}\'\'\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'\'\'s/.*= //\'\'\'\'); RESP=$(curl -s -X POST $UN_API/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT" > "~w" && chmod 755 "~w" && echo "Bootstrap saved to ~w"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
-            [ServiceId, ServiceId, SecretKey, ServiceId, PublicKey, DumpFile, DumpFile, DumpFile])
+            'echo "Fetching bootstrap script from ~w..." >&2; BODY=\'{"command":"cat /tmp/bootstrap.sh"}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services/~w/execute:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/services/~w/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); STDOUT=$(echo "$RESP" | jq -r ".stdout // empty"); if [ -n "$STDOUT" ]; then echo "$STDOUT" > "~w" && chmod 755 "~w" && echo "Bootstrap saved to ~w"; else echo -e "\\x1b[31mError: Failed to fetch bootstrap\\x1b[0m" >&2; exit 1; fi',
+            [ServiceId, ServiceId, ServiceId, PublicKey, DumpFile, DumpFile, DumpFile])
     ),
-    shell(Cmd, 0).
+    signed_shell(SecretKey, Cmd, 0).
 
 % Service create with optional input files
 service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :-
@@ -506,9 +529,9 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
-        [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
+        [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Key validate
 validate_key(Extend) :-
@@ -518,14 +541,14 @@ validate_key(Extend) :-
     (   Extend = true
     ->  % Build command for --extend mode
         format(atom(Cmd),
-            'BODY=\'\'{}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; PUBLIC_KEY=$(echo "$RESP" | jq -r ".public_key // \\"N/A\\""); xdg-open "~w/keys/extend?pk=$PUBLIC_KEY" 2>/dev/null',
-            [SecretKey, PortalBase, PublicKey, PortalBase])
+            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; PUBLIC_KEY=$(echo "$RESP" | jq -r ".public_key // \\"N/A\\""); xdg-open "~w/keys/extend?pk=$PUBLIC_KEY" 2>/dev/null',
+            [PortalBase, PublicKey, PortalBase])
     ;   % Build command for normal validation
         format(atom(Cmd),
-            'BODY=\'\'{}\'\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_key_resp.json; STATUS=$?; if [ $STATUS -ne 0 ]; then echo -e "\\x1b[31mInvalid\\x1b[0m"; exit 1; fi; RESP=$(cat /tmp/unsandbox_key_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer'\''s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_key_resp.json; exit 1; fi; EXPIRED=$(jq -r ".expired // false" /tmp/unsandbox_key_resp.json); if [ "$EXPIRED" = "true" ]; then echo -e "\\x1b[31mExpired\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expired: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo -e "\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m"; rm -f /tmp/unsandbox_key_resp.json; exit 1; else echo -e "\\x1b[32mValid\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Status: $(jq -r ".status // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expires: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Time Remaining: $(jq -r ".time_remaining // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Rate Limit: $(jq -r ".rate_limit // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Burst: $(jq -r ".burst // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Concurrency: $(jq -r ".concurrency // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; fi; rm -f /tmp/unsandbox_key_resp.json',
-            [SecretKey, PortalBase, PublicKey])
+            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_key_resp.json; STATUS=$?; if [ $STATUS -ne 0 ]; then echo -e "\\x1b[31mInvalid\\x1b[0m"; exit 1; fi; RESP=$(cat /tmp/unsandbox_key_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_key_resp.json; exit 1; fi; EXPIRED=$(jq -r ".expired // false" /tmp/unsandbox_key_resp.json); if [ "$EXPIRED" = "true" ]; then echo -e "\\x1b[31mExpired\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expired: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo -e "\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m"; rm -f /tmp/unsandbox_key_resp.json; exit 1; else echo -e "\\x1b[32mValid\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Status: $(jq -r ".status // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expires: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Time Remaining: $(jq -r ".time_remaining // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Rate Limit: $(jq -r ".rate_limit // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Burst: $(jq -r ".burst // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Concurrency: $(jq -r ".concurrency // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; fi; rm -f /tmp/unsandbox_key_resp.json',
+            [PortalBase, PublicKey])
     ),
-    shell(Cmd, 0).
+    signed_shell(SecretKey, Cmd, 0).
 
 % Read languages cache
 read_languages_cache(Languages) :-
@@ -553,7 +576,7 @@ write_languages_cache(LanguagesJson) :-
     format(atom(MkdirCmd), 'mkdir -p "~w"', [CacheDir]),
     shell(MkdirCmd, 0),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); echo \'\'\'\'{"languages":~w,"timestamp":\'\'\'\'$TIMESTAMP\'\'\'\'}\'\'\'\'> "~w"',
+        'TIMESTAMP=$(date +%s); echo \'{"languages":~w,"timestamp":\'$TIMESTAMP\'}\'> "~w"',
         [LanguagesJson, CacheFile]),
     shell(Cmd, 0).
 
@@ -566,7 +589,7 @@ languages_command(JsonOutput) :-
         (   JsonOutput = true
         ->  format('~w~n', [CachedLangs])
         ;   % Parse and print one per line
-            format(atom(Cmd), 'echo \'\'~w\'\' | jq -r ".[]"', [CachedLangs]),
+            format(atom(Cmd), 'echo \'~w\' | jq -r ".[]"', [CachedLangs]),
             shell(Cmd, 0)
         )
     ;   % No valid cache, fetch from API
@@ -575,14 +598,14 @@ languages_command(JsonOutput) :-
         (   JsonOutput = true
         ->  % Output as JSON array and cache
             format(atom(Cmd),
-                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$LANGS"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
-                [SecretKey, PublicKey])
+                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X GET $UN_API/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$LANGS"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
+                [PublicKey])
         ;   % Output one language per line and cache
             format(atom(Cmd),
-                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X GET $UN_API/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$RESP" | jq -r ".languages[]"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
-                [SecretKey, PublicKey])
+                'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/languages:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X GET $UN_API/languages -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); LANGS=$(echo "$RESP" | jq -c ".languages // []"); echo "$RESP" | jq -r ".languages[]"; CACHE_DIR="$HOME/.unsandbox"; mkdir -p "$CACHE_DIR"; echo "{\\\"languages\\\":$LANGS,\\\"timestamp\\\":$(date +%s)}" > "$CACHE_DIR/languages.json"',
+                [PublicKey])
         ),
-        shell(Cmd, 0)
+        signed_shell(SecretKey, Cmd, 0)
     ).
 
 % Handle languages subcommand
@@ -599,45 +622,45 @@ image_list :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/images -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
-        [SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X GET $UN_API/images -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image info
 image_info(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X GET $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
-        [ImageId, SecretKey, ImageId, PublicKey]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:GET:/images/~w:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X GET $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" | jq .',
+        [ImageId, ImageId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image delete
 image_delete(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/images/~w:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/images/~w:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X DELETE $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
-        [ImageId, SecretKey, ImageId, PublicKey, ImageId, SecretKey, ImageId, PublicKey, ImageId, ImageId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:DELETE:/images/~w:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -w \'\\n%{http_code}\' -X DELETE $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'$d\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'.challenge_id // empty\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:DELETE:/images/~w:"; SIG2=$(hmac "$UN_SK" "$MSG2"); RESP2=$(curl -s -w \'\\n%{http_code}\' -X DELETE $UN_API/images/~w -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$RESP2" | sed \'$d\' | jq . 2>/dev/null || echo "$RESP2" | sed \'$d\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage deleted: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
+        [ImageId, ImageId, PublicKey, ImageId, ImageId, PublicKey, ImageId, ImageId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image lock
 image_lock(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/lock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/lock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage locked: ~w\\x1b[0m"',
-        [ImageId, SecretKey, ImageId, PublicKey, ImageId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/lock:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/images/~w/lock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" >/dev/null && echo -e "\\x1b[32mImage locked: ~w\\x1b[0m"',
+        [ImageId, ImageId, PublicKey, ImageId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image unlock
 image_unlock(ImageId) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/unlock:"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -w \'\'\\n%{http_code}\'\' -X POST $UN_API/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'\'$d\'\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'\'.challenge_id // empty\'\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:POST:/images/~w/unlock:"; SIG2=$(echo -n "$MSG2" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP2=$(curl -s -w \'\'\\n%{http_code}\'\' -X POST $UN_API/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$RESP2" | sed \'\'$d\'\' | jq . 2>/dev/null || echo "$RESP2" | sed \'\'$d\'\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
-        [ImageId, SecretKey, ImageId, PublicKey, ImageId, SecretKey, ImageId, PublicKey, ImageId, ImageId]),
-    shell(Cmd, 0).
+        'TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/unlock:"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -w \'\\n%{http_code}\' -X POST $UN_API/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE"); HTTP_CODE=$(echo "$RESP" | tail -n1); BODY=$(echo "$RESP" | sed \'$d\'); if [ "$HTTP_CODE" = "428" ]; then CHALLENGE_ID=$(echo "$BODY" | jq -r \'.challenge_id // empty\'); echo -e "\\x1b[33mConfirmation required. Check your email for a one-time code.\\x1b[0m" >&2; echo -n "Enter OTP: " >&2; read OTP; if [ -z "$OTP" ]; then echo -e "\\x1b[31mError: Operation cancelled\\x1b[0m" >&2; exit 1; fi; TS2=$(date +%s); MSG2="$TS2:POST:/images/~w/unlock:"; SIG2=$(hmac "$UN_SK" "$MSG2"); RESP2=$(curl -s -w \'\\n%{http_code}\' -X POST $UN_API/images/~w/unlock -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "X-Sudo-OTP: $OTP" -H "X-Sudo-Challenge: $CHALLENGE_ID"); HTTP2=$(echo "$RESP2" | tail -n1); if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$RESP2" | sed \'$d\' | jq . 2>/dev/null || echo "$RESP2" | sed \'$d\'; exit 1; fi; elif [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then echo -e "\\x1b[32mImage unlocked: ~w\\x1b[0m"; else echo "$BODY" | jq . 2>/dev/null || echo "$BODY"; exit 1; fi',
+        [ImageId, ImageId, PublicKey, ImageId, ImageId, PublicKey, ImageId, ImageId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image publish
 image_publish(SourceId, SourceType, Name) :-
@@ -648,18 +671,18 @@ image_publish(SourceId, SourceType, Name) :-
     ;   NameJson = ''
     ),
     format(atom(Cmd),
-        'BODY="{\\\"source_type\\\":\\\"~w\\\",\\\"source_id\\\":\\\"~w\\\"~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/publish:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/publish -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage published\\x1b[0m"',
-        [SourceType, SourceId, NameJson, SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'BODY="{\\\"source_type\\\":\\\"~w\\\",\\\"source_id\\\":\\\"~w\\\"~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/publish:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/images/publish -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage published\\x1b[0m"',
+        [SourceType, SourceId, NameJson, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image visibility
 image_visibility(ImageId, Mode) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
     format(atom(Cmd),
-        'BODY="{\\\"visibility\\\":\\\"~w\\\"}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/visibility:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/visibility -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mImage visibility set to ~w: ~w\\x1b[0m"',
-        [Mode, ImageId, SecretKey, ImageId, PublicKey, Mode, ImageId]),
-    shell(Cmd, 0).
+        'BODY="{\\\"visibility\\\":\\\"~w\\\"}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/visibility:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/images/~w/visibility -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" >/dev/null && echo -e "\\x1b[32mImage visibility set to ~w: ~w\\x1b[0m"',
+        [Mode, ImageId, ImageId, PublicKey, Mode, ImageId]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image spawn
 image_spawn(ImageId, Name, Ports) :-
@@ -677,9 +700,9 @@ image_spawn(ImageId, Name, Ports) :-
     ;   PortsJson = ''
     ),
     format(atom(Cmd),
-        'BODY="{~w~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/spawn:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/spawn -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService spawned from image\\x1b[0m"',
-        [NameJson, PortsJson, ImageId, SecretKey, ImageId, PublicKey]),
-    shell(Cmd, 0).
+        'BODY="{~w~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/spawn:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/images/~w/spawn -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService spawned from image\\x1b[0m"',
+        [NameJson, PortsJson, ImageId, ImageId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Image clone
 image_clone(ImageId, Name) :-
@@ -690,9 +713,9 @@ image_clone(ImageId, Name) :-
     ;   NameJson = ''
     ),
     format(atom(Cmd),
-        'BODY="{~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/clone:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X POST $UN_API/images/~w/clone -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage cloned\\x1b[0m"',
-        [NameJson, ImageId, SecretKey, ImageId, PublicKey]),
-    shell(Cmd, 0).
+        'BODY="{~w}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/images/~w/clone:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/images/~w/clone -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mImage cloned\\x1b[0m"',
+        [NameJson, ImageId, ImageId, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Handle image subcommand
 handle_image(['--list'|_]) :- !, image_list.
@@ -903,9 +926,9 @@ service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, In
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(echo -n "$MESSAGE" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); RESP=$(curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "~w" -hex | sed \'\'s/.*= //\'\'); curl -s -X PUT "$UN_API/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
-        [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, SecretKey, PublicKey, Envs, EnvFile, SecretKey, PublicKey]),
-    shell(Cmd, 0).
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(hmac "$UN_SK" "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT"); curl -s -X PUT "$UN_API/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
+        [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, PublicKey, Envs, EnvFile, PublicKey]),
+    signed_shell(SecretKey, Cmd, 0).
 
 % Main program
 main(Argv) :-
@@ -996,13 +1019,13 @@ handle_snapshot(Args) :-
 handle_snapshot_cmd(['--list'|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
-        'SIG=$(echo -n "$TS:GET:/snapshots:" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:GET:/snapshots:"); ',
         'curl -s -X GET "$UN_API/snapshots" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG" | jq .'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(['-l'|_], PublicKey, SecretKey) :- !,
     handle_snapshot_cmd(['--list'], PublicKey, SecretKey).
@@ -1010,18 +1033,18 @@ handle_snapshot_cmd(['-l'|_], PublicKey, SecretKey) :- !,
 handle_snapshot_cmd(['--info', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
-        'SIG=$(echo -n "$TS:GET:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:GET:/snapshots/', Id, ':"); ',
         'curl -s -X GET "$UN_API/snapshots/', Id, '" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG" | jq .'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(['--delete', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
-        'SIG=$(echo -n "$TS:DELETE:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:DELETE:/snapshots/', Id, ':"); ',
         'RESP=$(curl -s -w "\\n%{http_code}" -X DELETE "$UN_API/snapshots/', Id, '" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
@@ -1032,7 +1055,7 @@ handle_snapshot_cmd(['--delete', Id|_], PublicKey, SecretKey) :- !,
         'OTP=$(echo "$BODY" | jq -r ".otp // empty"); ',
         'if [ -n "$OTP" ]; then ',
         'TS2=$(date +%s); ',
-        'SIG2=$(echo -n "$TS2:DELETE:/snapshots/', Id, ':" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG2=$(hmac "$UN_SK" "$TS2:DELETE:/snapshots/', Id, ':"); ',
         'curl -s -X DELETE "$UN_API/snapshots/', Id, '" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS2" ',
@@ -1041,25 +1064,25 @@ handle_snapshot_cmd(['--delete', Id|_], PublicKey, SecretKey) :- !,
         'echo -e "\\x1b[32mSnapshot deleted\\x1b[0m"; fi; ',
         'else echo "$BODY" | jq .; fi'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(['--lock', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
-        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/lock:" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:POST:/snapshots/', Id, '/lock:"); ',
         'curl -s -X POST "$UN_API/snapshots/', Id, '/lock" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
         '-H "X-Timestamp: $TS" ',
         '-H "X-Signature: $SIG" | jq . && ',
         'echo -e "\\x1b[32mSnapshot locked\\x1b[0m"'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(['--unlock', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'BODY="{}"; ',
-        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/unlock:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:POST:/snapshots/', Id, '/unlock:$BODY"); ',
         'RESP=$(curl -s -w "\\n%{http_code}" -X POST "$UN_API/snapshots/', Id, '/unlock" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
@@ -1072,7 +1095,7 @@ handle_snapshot_cmd(['--unlock', Id|_], PublicKey, SecretKey) :- !,
         'OTP=$(echo "$BODY_RESP" | jq -r ".otp // empty"); ',
         'if [ -n "$OTP" ]; then ',
         'TS2=$(date +%s); ',
-        'SIG2=$(echo -n "$TS2:POST:/snapshots/', Id, '/unlock:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG2=$(hmac "$UN_SK" "$TS2:POST:/snapshots/', Id, '/unlock:$BODY"); ',
         'curl -s -X POST "$UN_API/snapshots/', Id, '/unlock" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
@@ -1083,13 +1106,13 @@ handle_snapshot_cmd(['--unlock', Id|_], PublicKey, SecretKey) :- !,
         'echo -e "\\x1b[32mSnapshot unlocked\\x1b[0m"; fi; ',
         'else echo "$BODY_RESP" | jq .; fi'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(['--restore', Id|_], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'BODY="{}"; ',
-        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/restore:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:POST:/snapshots/', Id, '/restore:$BODY"); ',
         'curl -s -X POST "$UN_API/snapshots/', Id, '/restore" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
@@ -1098,7 +1121,7 @@ handle_snapshot_cmd(['--restore', Id|_], PublicKey, SecretKey) :- !,
         '-d "$BODY" | jq . && ',
         'echo -e "\\x1b[32mSnapshot restored\\x1b[0m"'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(['--clone', Id|Rest], PublicKey, SecretKey) :- !,
     parse_snapshot_clone_args(Rest, Type, Name, Ports, Shell),
@@ -1111,7 +1134,7 @@ handle_snapshot_cmd(['--clone', Id|Rest], PublicKey, SecretKey) :- !,
     atomic_list_concat([
         'TS=$(date +%s); ',
         'BODY=''', Body, '''; ',
-        'SIG=$(echo -n "$TS:POST:/snapshots/', Id, '/clone:$BODY" | openssl dgst -sha256 -hmac "', SecretKey, '" | cut -d" " -f2); ',
+        'SIG=$(hmac "$UN_SK" "$TS:POST:/snapshots/', Id, '/clone:$BODY"); ',
         'curl -s -X POST "$UN_API/snapshots/', Id, '/clone" ',
         '-H "Content-Type: application/json" ',
         '-H "Authorization: Bearer ', PublicKey, '" ',
@@ -1120,7 +1143,7 @@ handle_snapshot_cmd(['--clone', Id|Rest], PublicKey, SecretKey) :- !,
         '-d "$BODY" | jq . && ',
         'echo -e "\\x1b[32mSnapshot cloned\\x1b[0m"'
     ], Cmd),
-    shell(Cmd).
+    signed_shell(SecretKey, Cmd).
 
 handle_snapshot_cmd(_, _, _) :-
     write(user_error, '\x1b[31mError: Use --list, --info, --delete, --lock, --unlock, --restore, or --clone\x1b[0m\n'),

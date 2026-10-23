@@ -205,15 +205,15 @@ function get_api_keys(    public_key, secret_key, cmd, default_index) {
     }
 
     # Priority 3: env vars UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY
-    cmd = "echo -n $UNSANDBOX_PUBLIC_KEY"; cmd | getline public_key; close(cmd)
-    cmd = "echo -n $UNSANDBOX_SECRET_KEY"; cmd | getline secret_key; close(cmd)
+    public_key = ENVIRON["UNSANDBOX_PUBLIC_KEY"]
+    secret_key = ENVIRON["UNSANDBOX_SECRET_KEY"]
     if (public_key != "" && secret_key != "") {
         GLOBAL_PUBLIC_KEY = public_key; GLOBAL_SECRET_KEY = secret_key; return
     }
 
     # Fallback to legacy UNSANDBOX_API_KEY for backwards compat
     if (public_key == "") {
-        cmd = "echo -n $UNSANDBOX_API_KEY"; cmd | getline public_key; close(cmd)
+        public_key = ENVIRON["UNSANDBOX_API_KEY"]
         secret_key = ""
     }
     if (public_key != "") {
@@ -221,7 +221,7 @@ function get_api_keys(    public_key, secret_key, cmd, default_index) {
     }
 
     # Priority 4/5: accounts.csv with UNSANDBOX_ACCOUNT env var or row 0
-    cmd = "echo -n $UNSANDBOX_ACCOUNT"; cmd | getline default_index; close(cmd)
+    default_index = ENVIRON["UNSANDBOX_ACCOUNT"]
     if (default_index == "") default_index = 0
     if (load_accounts_csv(default_index + 0)) {
         if (GLOBAL_PUBLIC_KEY != "") return
@@ -286,13 +286,7 @@ function execute(filename    , api_key) {
     if (GLOBAL_SECRET_KEY != "") {
         # HMAC signature: timestamp:METHOD:path:body
         sig_input = timestamp ":POST:/execute:" json
-        sig_tmp = "/tmp/un_awk_sig_" PROCINFO["pid"]
-        print sig_input > sig_tmp
-        close(sig_tmp)
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
-        system("rm -f " sig_tmp)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -355,9 +349,7 @@ function session_list(    timestamp, sig_headers, signature, sig_input, sig_cmd)
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:/sessions:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE "/sessions' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -372,9 +364,7 @@ function session_kill(id    , timestamp, sig_headers, signature, sig_input, sig_
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -394,9 +384,7 @@ function session_get(id    , timestamp, sig_headers, signature, sig_input, sig_c
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -411,9 +399,7 @@ function session_freeze(id    , timestamp, sig_headers, signature, sig_input, si
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -428,9 +414,7 @@ function session_unfreeze(id    , timestamp, sig_headers, signature, sig_input, 
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -447,9 +431,7 @@ function session_boost(id, vcpu    , timestamp, sig_headers, signature, sig_inpu
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '" json "'"
@@ -464,9 +446,7 @@ function session_unboost(id    , timestamp, sig_headers, signature, sig_input, s
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -482,9 +462,7 @@ function session_execute(id, command    , timestamp, sig_headers, signature, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
@@ -502,9 +480,7 @@ function service_list(    timestamp, sig_headers, signature, sig_input, sig_cmd)
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:/services:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE "/services' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -519,9 +495,7 @@ function service_get(id    , timestamp, sig_headers, signature, sig_input, sig_c
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -536,9 +510,7 @@ function service_freeze(id    , timestamp, sig_headers, signature, sig_input, si
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -553,9 +525,7 @@ function service_unfreeze(id    , timestamp, sig_headers, signature, sig_input, 
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -570,9 +540,7 @@ function service_lock(id    , timestamp, sig_headers, signature, sig_input, sig_
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -587,9 +555,7 @@ function service_unlock(id    , timestamp, sig_headers, signature, sig_input, si
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '{}'"
@@ -627,9 +593,7 @@ function service_redeploy(id, bootstrap    , timestamp, sig_headers, signature, 
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '" json "'"
@@ -647,9 +611,7 @@ function service_logs(id, lines    , timestamp, sig_headers, signature, sig_inpu
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -665,9 +627,7 @@ function service_execute(id, command    , timestamp, sig_headers, signature, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
@@ -708,9 +668,7 @@ function handle_sudo_challenge(response, method, endpoint, body    , otp, challe
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":" method ":" endpoint ":" (body != "" ? body : "")
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -756,9 +714,7 @@ function service_destroy(id    , timestamp, sig_headers, signature, sig_input, s
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -806,9 +762,7 @@ function service_resize(id, vcpu    , endpoint, json, tmp, timestamp, sig_header
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":PATCH:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -841,9 +795,7 @@ function set_unfreeze_on_demand(id, enabled    , endpoint, json, tmp, timestamp,
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":PATCH:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -870,9 +822,7 @@ function service_dump_bootstrap(id, dump_file    , endpoint, json_body, timestam
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json_body
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -971,9 +921,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:/sessions:" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -1066,9 +1014,7 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:/services:" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -1105,9 +1051,7 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:/keys/validate:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -1430,9 +1374,7 @@ function languages_list(json_output    , timestamp, sig_headers, signature, sig_
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:/languages:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE "/languages' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1488,9 +1430,7 @@ function snapshot_list(    timestamp, sig_headers, signature, sig_input, sig_cmd
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:/snapshots:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE "/snapshots' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1505,9 +1445,7 @@ function snapshot_info(id    , timestamp, sig_headers, signature, sig_input, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1522,9 +1460,7 @@ function snapshot_delete(id    , timestamp, sig_headers, signature, sig_input, s
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1569,9 +1505,7 @@ function snapshot_lock(id    , timestamp, sig_headers, signature, sig_input, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '{}'"
@@ -1586,9 +1520,7 @@ function snapshot_unlock(id    , timestamp, sig_headers, signature, sig_input, s
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":{}"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '{}'"
@@ -1627,9 +1559,7 @@ function snapshot_clone(id, clone_type, name    , timestamp, sig_headers, signat
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
@@ -1649,9 +1579,7 @@ function image_list(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:/images:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE "/images' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1666,9 +1594,7 @@ function image_info(id    , timestamp, sig_headers, signature, sig_input, sig_cm
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1683,9 +1609,7 @@ function image_delete(id    , timestamp, sig_headers, signature, sig_input, sig_
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1729,9 +1653,7 @@ function image_lock(id    , endpoint, json, tmp, timestamp, sig_headers, signatu
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' " \
@@ -1755,9 +1677,7 @@ function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signa
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE endpoint "' " \
@@ -1810,9 +1730,7 @@ function image_publish(source_id, source_type, name    , endpoint, json, tmp, ti
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' " \
@@ -1841,9 +1759,7 @@ function image_visibility(id, visibility    , endpoint, json, tmp, timestamp, si
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' " \
@@ -1875,9 +1791,7 @@ function image_spawn(id, name, ports    , endpoint, json, tmp, timestamp, sig_he
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' " \
@@ -1910,9 +1824,7 @@ function image_clone(id, name    , endpoint, json, tmp, timestamp, sig_headers, 
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' " \
@@ -1943,9 +1855,7 @@ function image_grant_access(image_id, trusted_key    , timestamp, sig_headers, s
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
@@ -1964,9 +1874,7 @@ function image_revoke_access(image_id, trusted_key    , timestamp, sig_headers, 
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1981,9 +1889,7 @@ function image_list_trusted(image_id    , timestamp, sig_headers, signature, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -1999,9 +1905,7 @@ function image_transfer(image_id, to_key    , timestamp, sig_headers, signature,
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
@@ -2028,9 +1932,7 @@ function execute_async(language, code, network_mode    , json, tmp, timestamp, s
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:/execute/async:" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE "/execute/async' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '@" tmp "'"
@@ -2050,9 +1952,7 @@ function get_job(job_id    , timestamp, sig_headers, signature, sig_input, sig_c
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -2067,9 +1967,7 @@ function cancel_job(job_id    , timestamp, sig_headers, signature, sig_input, si
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -2083,9 +1981,7 @@ function list_jobs(    timestamp, sig_headers, signature, sig_input, sig_cmd) {
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:/jobs:"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE "/jobs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -2106,9 +2002,7 @@ function wait_job(job_id    , delays, i, job_response, status, delay) {
         sig_headers = ""
         if (GLOBAL_SECRET_KEY != "") {
             sig_input = timestamp ":GET:" endpoint ":"
-            sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-            sig_cmd | getline signature
-            close(sig_cmd)
+            signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
             sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
         }
         cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -2171,9 +2065,7 @@ function logs_fetch(source, lines, since, grep_pattern    , timestamp, sig_heade
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:/paas/logs:" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
     cmd = "curl -s -X POST '" API_BASE "/paas/logs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '@" tmp "'"
@@ -2217,9 +2109,7 @@ function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -2260,9 +2150,7 @@ function session_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -2310,9 +2198,7 @@ function service_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -2353,9 +2239,7 @@ function service_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -2410,9 +2294,7 @@ function service_env_status(id    , endpoint, timestamp, sig_headers, signature,
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":GET:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers
@@ -2433,9 +2315,7 @@ function service_env_set(id, content    , endpoint, tmp, timestamp, sig_headers,
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":PUT:" endpoint ":" content
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -2467,9 +2347,7 @@ function service_env_export(id    , endpoint, json, tmp, timestamp, sig_headers,
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":POST:" endpoint ":" json
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
@@ -2503,9 +2381,7 @@ function service_env_delete(id    , endpoint, timestamp, sig_headers, signature,
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
         sig_input = timestamp ":DELETE:" endpoint ":"
-        sig_cmd = "echo -n '" sig_input "' | openssl dgst -sha256 -hmac '" GLOBAL_SECRET_KEY "' | sed 's/^.* //'"
-        sig_cmd | getline signature
-        close(sig_cmd)
+        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
     cmd = "curl -s -X DELETE '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " sig_headers

@@ -79,6 +79,13 @@ manual-burn-pool-trigger:
 # ============================================================================
 # STAGE 1: Detect Changes
 # ============================================================================
+# Fails the pipeline if any client or CI script puts an API secret on a
+# process command line (scripts/lint-secret-argv.sh).
+lint-secret-argv:
+  stage: pre
+  script:
+    - bash scripts/lint-secret-argv.sh
+
 detect-changes:
   stage: pre
   script:

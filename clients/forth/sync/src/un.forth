@@ -111,58 +111,88 @@ variable arg-shift
     arg-shift @ + arg
 ;
 
-\ Buffer for credentials loaded from CSV
+\ Buffer for the public key loaded from CSV
 256 constant MAX-KEY-LEN
 create csv-pk-buf MAX-KEY-LEN allot
 variable csv-pk-len
-create csv-sk-buf MAX-KEY-LEN allot
-variable csv-sk-len
+0 csv-pk-len !
 
-\ Load credentials from accounts.csv at given index (n)
-\ Writes PK/SK to /tmp/unsb_creds.txt; returns true if PK found
+\ Request scripts: assembled in memory, then handed to bash as a quoted
+\ heredoc through gforth's system (sh -c). No script file lands on disk and
+\ the text holds no secret: SECRET_KEY resolves inside bash (write-sk) from
+\ the environment or accounts.csv, and unsb_hmac signs with plain SHA-256
+\ over pipes, so the secret never reaches a command line (ps) or a file.
+\ HMAC: sha256((K^opad) || sha256((K^ipad) || msg)), K zero-padded to 64
+\ bytes, hashed first when longer.
+32768 constant SCR-MAX
+create scr-buf SCR-MAX allot
+variable scr-len
+create scr-cmd SCR-MAX 64 + allot
+variable scr-cmd-len
+-77 constant script-fid
+: scr+ ( addr len -- )
+    dup scr-len @ + SCR-MAX > abort" request script too long"
+    >r scr-buf scr-len @ + r@ move r> scr-len +!
+;
+\ write-file / write-line / close-file on script-fid append to scr-buf
+warnings @ warnings off
+: write-file ( addr len fid -- ior )
+    dup script-fid = if drop scr+ 0 else write-file then
+;
+: write-line ( addr len fid -- ior )
+    dup script-fid = if drop scr+ s\" \n" scr+ 0 else write-line then
+;
+: close-file ( fid -- ior )
+    dup script-fid = if drop 0 else close-file then
+;
+warnings !
+: script-begin ( -- fid )  0 scr-len !  script-fid ;
+: cmd+ ( addr len -- )
+    >r scr-cmd scr-cmd-len @ + r@ move r> scr-cmd-len +!
+;
+: script-cmd ( -- addr len )
+    0 scr-cmd-len !
+    s\" exec bash -c \"$(cat <<'UNSB_EOF'\n" cmd+
+    scr-buf scr-len @ cmd+
+    s\" \nUNSB_EOF\n)\"" cmd+
+    scr-cmd scr-cmd-len @
+;
+: script-run ( -- )  script-cmd system ;
+: idx-str ( -- addr len )
+    account-index @ dup 0< if drop s\" -1" else 0 <# #s #> then
+;
+\ bash: unsb_csv N prints accounts.csv row N (0-based, blank/# lines
+\ skipped), spaces removed
+: csv-fn ( -- addr len )
+    s\" unsb_csv() { local f n l; for f in \"$HOME/.unsandbox/accounts.csv\" ./accounts.csv; do [ -f \"$f\" ] || continue; n=-1; while IFS= read -r l || [ -n \"$l\" ]; do l=${l%$'\\r'}; l=${l// /}; case \"$l\" in '#'*|'') continue ;; esac; n=$((n+1)); [ \"$n\" = \"$1\" ] && { printf '%s\\n' \"$l\"; return 0; }; done < \"$f\"; done; return 1; }"
+;
+: write-csv-fn ( fid -- )  >r csv-fn r> write-line throw ;
+\ SECRET_KEY + unsb_hmac for a request script: --account N > env vars
+: write-sk ( fid -- )
+    >r r@ write-csv-fn
+    s\" if [ " r@ write-file throw  idx-str r@ write-file throw
+    s\"  -ge 0 ]; then R=$(unsb_csv " r@ write-file throw  idx-str r@ write-file throw
+    s\" ); R=${R#*,}; SECRET_KEY=${R%%,*}; else SECRET_KEY=${UNSANDBOX_SECRET_KEY:-$UNSANDBOX_API_KEY}; fi" r@ write-line throw
+    s\" unsb_hmac() { UNSB_SK=$SECRET_KEY; S=sha256sum; command -v sha256sum >/dev/null 2>&1 || S=\"openssl dgst -sha256 -r\"; if [ ${#UNSB_SK} -gt 64 ]; then kb=$(printf %s \"$UNSB_SK\" | $S | cut -c1-64 | sed \"s/../0x& /g\"); else kb=$(printf %s \"$UNSB_SK\" | od -An -v -tu1); fi; ip=; op=; n=0; for c in $kb; do v=$((c^54)); ip=\"$ip\\\\$((v>>6))$((v>>3&7))$((v&7))\"; v=$((c^92)); op=\"$op\\\\$((v>>6))$((v>>3&7))$((v&7))\"; n=$((n+1)); done; while [ $n -lt 64 ]; do ip=\"$ip\\\\066\"; op=\"$op\\\\134\"; n=$((n+1)); done; ih=$( { printf \"$ip\"; cat; } | $S | cut -c1-64 | sed \"s/../0x& /g\"); x=; for c in $ih; do x=\"$x\\\\$((c>>6))$((c>>3&7))$((c&7))\"; done; { printf \"$op\"; printf \"$x\"; } | $S | cut -c1-64; }" r@ write-line throw
+    r> drop
+;
+
+\ Load the public key from accounts.csv row n into csv-pk-buf (bash prints
+\ only the public key over a pipe; the secret stays in bash, see write-sk)
 : load-accounts-csv-index ( n -- flag )
     dup 0< if drop 0 exit then
-    \ Write a shell script with the index embedded
-    s\" /tmp/unsb_cred_resolve.sh" w/o create-file throw >r
-    s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
-    s\" IDX=" r@ write-file throw
-    dup 0 <# #s #> r@ write-file throw
-    s\" " r@ write-line throw
-    s\" CNT=-1; PK=''; SK=''" r@ write-line throw
-    s\" for CSV in \"$HOME/.unsandbox/accounts.csv\" \"./accounts.csv\"; do" r@ write-line throw
-    s\"   [ -f \"$CSV\" ] || continue" r@ write-line throw
-    s\"   while IFS= read -r line || [ -n \"$line\" ]; do" r@ write-line throw
-    s\"     case \"$line\" in '#'*|'') continue ;; esac" r@ write-line throw
-    s\"     CNT=$((CNT+1))" r@ write-line throw
-    s\"     if [ \"$CNT\" -eq \"$IDX\" ]; then" r@ write-line throw
-    s\"       PK=$(echo \"$line\" | cut -d',' -f1 | tr -d ' ')" r@ write-line throw
-    s\"       SK=$(echo \"$line\" | cut -d',' -f2 | tr -d ' ')" r@ write-line throw
-    s\"       break 2" r@ write-line throw
-    s\"     fi" r@ write-line throw
-    s\"   done < \"$CSV\"" r@ write-line throw
-    s\" done" r@ write-line throw
-    s\" printf '%s\\n%s\\n' \"$PK\" \"$SK\" > /tmp/unsb_creds.txt" r@ write-line throw
-    s\" [ -n \"$PK\" ]" r@ write-line throw
-    r> close-file throw
-    drop  \ drop index
-    s\" bash /tmp/unsb_cred_resolve.sh" system
-    0= if
-        \ Script exited 0: PK was found; read results
-        s\" /tmp/unsb_creds.txt" r/o open-file
-        0= if
-            >r
-            csv-pk-buf MAX-KEY-LEN r@ read-line throw
-            drop csv-pk-len !
-            csv-sk-buf MAX-KEY-LEN r@ read-line throw
-            drop csv-sk-len !
-            r> close-file throw
-            -1
-        else
-            drop 0
-        then
-    else
-        0
-    then
+    csv-pk-len @ 0> if drop -1 exit then
+    \ Built straight into scr-cmd: a request script may be mid-assembly in scr-buf
+    0 scr-cmd-len !
+    s\" exec bash -c \"$(cat <<'UNSB_EOF'\n" cmd+
+    csv-fn cmd+
+    s\" \nR=$(unsb_csv " cmd+
+    0 <# #s #> cmd+
+    s\" ) && printf '%s\\n' \"${R%%,*}\"\nUNSB_EOF\n)\"" cmd+
+    scr-cmd scr-cmd-len @ r/o open-pipe throw >r
+    csv-pk-buf MAX-KEY-LEN r@ read-line throw drop csv-pk-len !
+    r> close-pipe throw drop
+    csv-pk-len @ 0>
 ;
 
 \ Get API keys from environment (HMAC or legacy)
@@ -186,26 +216,6 @@ variable csv-sk-len
     then
 ;
 
-: get-secret-key ( -- addr len )
-    account-index @ dup 0>= if
-        \ CSV already loaded if pk-buf is non-empty
-        csv-pk-len @ 0> if
-            drop csv-sk-buf csv-sk-len @ exit
-        then
-        \ Load it now
-        load-accounts-csv-index if
-            csv-sk-buf csv-sk-len @ exit
-        then
-        \ Index not found - error was printed by get-public-key; return empty
-        s\" " exit
-    else
-        drop
-    then
-    s\" UNSANDBOX_SECRET_KEY" getenv
-    dup 0= if
-        2drop s\" UNSANDBOX_API_KEY" getenv
-    then
-;
 
 \ Get API key (legacy compatibility)
 : get-api-key ( -- addr len )
@@ -234,15 +244,13 @@ variable csv-sk-len
 
     \ Build curl command (simplified - stores filename and language in temp vars)
     \ In a real implementation, would construct full command string
-    s\" /tmp/unsandbox_script.sh" w/o create-file throw
+    script-begin
     >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" LANG='" r@ write-file throw
     2swap 2drop \ drop language, keep filename on stack
     2dup r@ write-file throw
@@ -253,7 +261,7 @@ variable csv-sk-len
     s\" BODY=$(jq -Rs '{language: \"'$LANG'\", code: .}' < \"$FILE\")" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/execute:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/execute -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" -o /tmp/unsandbox_resp.json" r@ write-line throw
     s\" RESP=$(cat /tmp/unsandbox_resp.json)" r@ write-line throw
     s\" if echo \"$RESP\" | grep -q \"timestamp\" && (echo \"$RESP\" | grep -Eq \"(401|expired|invalid)\"); then" r@ write-line throw
@@ -271,33 +279,31 @@ variable csv-sk-len
     s\" rm -f /tmp/unsandbox_resp.json" r@ write-line throw
     r> close-file throw
 
-    s\" chmod +x /tmp/unsandbox_script.sh && /tmp/unsandbox_script.sh && rm -f /tmp/unsandbox_script.sh" system
+    script-run
     (bye)
 ;
 
 \ Session list
 : session-list ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/sessions:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/sessions -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.sessions[] | \"\\(.id) \\(.shell) \\(.status) \\(.created_at)\"' 2>/dev/null || echo 'No active sessions'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Session kill
 : session-kill ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SESSION_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -305,42 +311,38 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:DELETE:/sessions/$SESSION_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X DELETE $UN_API/sessions/$SESSION_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mSession terminated: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service list
 : service-list ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/services:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/services -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.services[] | \"\\(.id) \\(.name) \\(.status)\"' 2>/dev/null || echo 'No services'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service info
 : service-info ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -348,21 +350,19 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/services/$SERVICE_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/services/$SERVICE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service logs
 : service-logs ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -370,21 +370,19 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/services/$SERVICE_ID/logs:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/services/$SERVICE_ID/logs -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.logs'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service sleep
 : service-sleep ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -392,23 +390,21 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/freeze:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/services/$SERVICE_ID/freeze -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService frozen: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service wake
 : service-wake ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -416,23 +412,21 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/unfreeze:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/services/$SERVICE_ID/unfreeze -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mService unfreezing: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service destroy
 : service-destroy ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -440,12 +434,10 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:DELETE:/services/$SERVICE_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -w '\\n%{http_code}' -X DELETE $UN_API/services/$SERVICE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
     s\" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
@@ -457,7 +449,7 @@ variable csv-sk-len
     s\"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
     s\"   TIMESTAMP=$(date +%s)" r@ write-line throw
     s\"   MESSAGE=\"$TIMESTAMP:DELETE:/services/$SERVICE_ID:\"" r@ write-line throw
-    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\"   RESP=$(curl -s -w '\\n%{http_code}' -X DELETE $UN_API/services/$SERVICE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\")" r@ write-line throw
     s\"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" fi" r@ write-line throw
@@ -471,13 +463,13 @@ variable csv-sk-len
     s\"   exit 1" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service resize
 : service-resize ( service-id-addr service-id-len vcpu-addr vcpu-len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2over r@ write-file throw
@@ -488,9 +480,7 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" if [ \"$VCPU\" -lt 1 ] || [ \"$VCPU\" -gt 8 ]; then" r@ write-line throw
     s\"   echo -e '\\x1b[31mError: --vcpu must be between 1 and 8\\x1b[0m' >&2" r@ write-line throw
     s\"   exit 1" r@ write-line throw
@@ -499,17 +489,17 @@ variable csv-sk-len
     s\" BODY='{\"vcpu\":'$VCPU'}'" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:PATCH:/services/$SERVICE_ID:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X PATCH $UN_API/services/$SERVICE_ID -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mService resized to $VCPU vCPU, $RAM GB RAM\\x1b[0m\"" r@ write-line throw
     r> close-file throw
     2drop 2drop \ clean up the stack
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service env status
 : service-env-status ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -517,28 +507,24 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/services/$SERVICE_ID/env:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET \"$UN_API/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service env set (with -e and --env-file support via shell script)
 : service-env-set ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" SERVICE_ID=''; ENV_CONTENT=''; ENV_FILE=''" r@ write-line throw
     s\" i=4" r@ write-line throw
     s\" SERVICE_ID=$3" r@ write-line throw
@@ -560,16 +546,16 @@ variable csv-sk-len
     s\" if [ -z \"$ENV_CONTENT\" ]; then echo -e '\\x1b[31mError: No environment variables to set\\x1b[0m' >&2; exit 1; fi" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:PUT:/services/$SERVICE_ID/env:$ENV_CONTENT\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" echo -e \"$ENV_CONTENT\" | curl -s -X PUT \"$UN_API/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: text/plain' --data-binary @- | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service env export
 : service-env-export ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -577,21 +563,19 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/env/export:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST \"$UN_API/services/$SERVICE_ID/env/export\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq -r '.content // empty'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service env delete
 : service-env-delete ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -599,23 +583,21 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:DELETE:/services/$SERVICE_ID/env:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X DELETE \"$UN_API/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mVault deleted for: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service dump bootstrap
 : service-dump-bootstrap ( service-id-addr service-id-len file-addr file-len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SERVICE_ID='" r@ write-file throw
     2over r@ write-file throw
@@ -623,14 +605,12 @@ variable csv-sk-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" echo 'Fetching bootstrap script from $SERVICE_ID...' >&2" r@ write-line throw
     s\" BODY='{\"command\":\"cat /tmp/bootstrap.sh\"}'" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/services/$SERVICE_ID/execute:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -X POST $UN_API/services/$SERVICE_ID/execute -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\")" r@ write-line throw
     s\" STDOUT=$(echo \"$RESP\" | jq -r '.stdout // empty')" r@ write-line throw
     s\" if [ -n \"$STDOUT\" ]; then" r@ write-line throw
@@ -653,7 +633,7 @@ variable csv-sk-len
     s\"   exit 1" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Service create (requires --name, optional --ports, --domains, --type, --bootstrap, -f, -e, --env-file)
@@ -661,14 +641,12 @@ variable csv-sk-len
     get-api-key
     \ Parse arguments (simplified - in real implementation would iterate through args)
     \ For now, just create the curl command that will be constructed by bash
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" NAME=''; PORTS=''; DOMAINS=''; TYPE=''; BOOTSTRAP=''; BOOTSTRAP_FILE=''; INPUT_FILES=''" r@ write-line throw
     s\" ENV_CONTENT=''; ENV_FILE=''" r@ write-line throw
     s\" i=3" r@ write-line throw
@@ -722,7 +700,7 @@ variable csv-sk-len
     s\" fi" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/services:$PAYLOAD\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -X POST $UN_API/services -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$PAYLOAD\")" r@ write-line throw
     s\" echo \"$RESP\" | jq ." r@ write-line throw
     s\" # Auto-set vault if env vars were provided" r@ write-line throw
@@ -732,32 +710,30 @@ variable csv-sk-len
     s\"     echo -e '\\x1b[33mSetting vault for service...\\x1b[0m'" r@ write-line throw
     s\"     TIMESTAMP=$(date +%s)" r@ write-line throw
     s\"     MESSAGE=\"$TIMESTAMP:PUT:/services/$SERVICE_ID/env:$ENV_CONTENT\"" r@ write-line throw
-    s\"     SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\"     SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\"     echo -e \"$ENV_CONTENT\" | curl -s -X PUT \"$UN_API/services/$SERVICE_ID/env\" -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: text/plain' --data-binary @- | jq ." r@ write-line throw
     s\"   fi" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Key validate
 : validate-key ( extend-flag -- )
     get-api-key
-    s\" /tmp/unsandbox_key_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" PORTAL_BASE='" r@ write-file throw
     portal-base r@ write-file throw
     s\" '" r@ write-line throw
     s\" BODY='{}'" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/keys/validate:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
 
     \ Check if extend flag is set
     0= if
@@ -797,7 +773,7 @@ variable csv-sk-len
     then
 
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_key_cmd.sh && /tmp/unsandbox_key_cmd.sh && rm -f /tmp/unsandbox_key_cmd.sh" system
+    script-run
 ;
 
 \ Handle key subcommand
@@ -918,14 +894,12 @@ variable rot-len
 \ Session create with input_files support
 : session-create ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" SHELL='bash'" r@ write-line throw
     s\" INPUT_FILES=''" r@ write-line throw
     s\" for ((i=2; i<$#; i++)); do" r@ write-line throw
@@ -953,11 +927,11 @@ variable rot-len
     s\" fi" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/sessions:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" echo -e '\\x1b[33mCreating session...\\x1b[0m'" r@ write-line throw
     s\" curl -s -X POST $UN_API/sessions -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\"" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Handle session subcommand
@@ -1204,7 +1178,7 @@ variable rot-len
 \ Languages list with caching
 : languages-list ( json-flag -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" CACHE_TTL=3600" r@ write-line throw
     s\" CACHE_FILE=\"$HOME/.unsandbox/languages.json\"" r@ write-line throw
@@ -1217,9 +1191,7 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     \ Check cache first
     s\" if [ -f \"$CACHE_FILE\" ]; then" r@ write-line throw
     s\"     CACHE_TS=$(jq -r '.timestamp // 0' \"$CACHE_FILE\" 2>/dev/null)" r@ write-line throw
@@ -1237,7 +1209,7 @@ variable rot-len
     \ Fetch from API
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/languages:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -X GET $UN_API/languages -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
     s\" LANGS=$(echo \"$RESP\" | jq -c '.languages // []')" r@ write-line throw
     \ Save to cache
@@ -1250,7 +1222,7 @@ variable rot-len
     s\"     echo \"$LANGS\" | jq -r '.[]'" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Handle languages subcommand
@@ -1274,26 +1246,24 @@ variable rot-len
 \ Image list
 : image-list ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/images:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/images -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image info
 : image-info ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1301,21 +1271,19 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/images/$IMAGE_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image delete
 : image-delete ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1323,12 +1291,10 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:DELETE:/images/$IMAGE_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -w '\\n%{http_code}' -X DELETE $UN_API/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
     s\" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
@@ -1340,7 +1306,7 @@ variable rot-len
     s\"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
     s\"   TIMESTAMP=$(date +%s)" r@ write-line throw
     s\"   MESSAGE=\"$TIMESTAMP:DELETE:/images/$IMAGE_ID:\"" r@ write-line throw
-    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\"   RESP=$(curl -s -w '\\n%{http_code}' -X DELETE $UN_API/images/$IMAGE_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\")" r@ write-line throw
     s\"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" fi" r@ write-line throw
@@ -1354,13 +1320,13 @@ variable rot-len
     s\"   exit 1" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image lock
 : image-lock ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1368,23 +1334,21 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/lock:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/$IMAGE_ID/lock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mImage locked: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image unlock
 : image-unlock ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1392,12 +1356,10 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/unlock:{}\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -w '\\n%{http_code}' -X POST $UN_API/images/$IMAGE_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -d '{}')" r@ write-line throw
     s\" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
@@ -1409,7 +1371,7 @@ variable rot-len
     s\"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
     s\"   TIMESTAMP=$(date +%s)" r@ write-line throw
     s\"   MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/unlock:{}\"" r@ write-line throw
-    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\"   RESP=$(curl -s -w '\\n%{http_code}' -X POST $UN_API/images/$IMAGE_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\" -d '{}')" r@ write-line throw
     s\"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" fi" r@ write-line throw
@@ -1423,13 +1385,13 @@ variable rot-len
     s\"   exit 1" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image visibility
 : image-visibility ( image-id-addr image-id-len mode-addr mode-len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2over r@ write-file throw
@@ -1440,23 +1402,21 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" BODY='{\"visibility\":\"'$MODE'\"}'" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/visibility:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/$IMAGE_ID/visibility -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mImage visibility set to $MODE\\x1b[0m\"" r@ write-line throw
     r> close-file throw
     2drop 2drop \ clean up the stack
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image spawn
 : image-spawn ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1464,9 +1424,7 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" NAME=''; PORTS=''" r@ write-line throw
     s\" i=4" r@ write-line throw
     s\" while [ $i -le $# ]; do" r@ write-line throw
@@ -1482,17 +1440,17 @@ variable rot-len
     s\" [ -n \"$PORTS\" ] && BODY=$(echo $BODY | jq --arg p \"$PORTS\" '. + {ports: ($p | split(\",\") | map(tonumber))}')" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/spawn:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/$IMAGE_ID/spawn -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
     s\" echo -e '\\x1b[32mService spawned from image\\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image clone
 : image-clone ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1500,9 +1458,7 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" NAME=''" r@ write-line throw
     s\" i=4" r@ write-line throw
     s\" while [ $i -le $# ]; do" r@ write-line throw
@@ -1516,24 +1472,22 @@ variable rot-len
     s\" [ -n \"$NAME\" ] && BODY=$(echo $BODY | jq --arg n \"$NAME\" '. + {name: $n}')" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/clone:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/$IMAGE_ID/clone -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
     s\" echo -e '\\x1b[32mImage cloned\\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image publish
 : image-publish ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" SOURCE_ID=''; SOURCE_TYPE=''; NAME=''" r@ write-line throw
     s\" i=3" r@ write-line throw
     s\" while [ $i -le $# ]; do" r@ write-line throw
@@ -1550,17 +1504,17 @@ variable rot-len
     s\" [ -n \"$NAME\" ] && BODY=$(echo $BODY | jq --arg n \"$NAME\" '. + {name: $n}')" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/publish:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/publish -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
     s\" echo -e '\\x1b[32mImage published\\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image grant access
 : image-grant-access ( image-id-addr image-id-len key-addr key-len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2over r@ write-file throw
@@ -1571,23 +1525,21 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" BODY='{\"trusted_api_key\":\"'$TRUSTED_KEY'\"}'" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/grant-access:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/$IMAGE_ID/grant-access -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mAccess granted to $TRUSTED_KEY\\x1b[0m\"" r@ write-line throw
     r> close-file throw
     2drop 2drop \ clean up the stack
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image revoke access
 : image-revoke-access ( image-id-addr image-id-len key-addr key-len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2over r@ write-file throw
@@ -1598,23 +1550,21 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" BODY='{\"trusted_api_key\":\"'$TRUSTED_KEY'\"}'" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/images/$IMAGE_ID/revoke-access:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/images/$IMAGE_ID/revoke-access -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" >/dev/null && echo -e \"\\x1b[32mAccess revoked from $TRUSTED_KEY\\x1b[0m\"" r@ write-line throw
     r> close-file throw
     2drop 2drop \ clean up the stack
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Image list trusted
 : image-list-trusted ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" IMAGE_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1622,40 +1572,36 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/images/$IMAGE_ID/trusted:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/images/$IMAGE_ID/trusted -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot list
 : snapshot-list ( -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/snapshots:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/snapshots -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot info
 : snapshot-info ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SNAPSHOT_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1663,21 +1609,19 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:GET:/snapshots/$SNAPSHOT_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X GET $UN_API/snapshots/$SNAPSHOT_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" | jq ." r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot restore
 : snapshot-restore ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SNAPSHOT_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1685,23 +1629,21 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/restore:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/snapshots/$SNAPSHOT_ID/restore -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mSnapshot restored: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot delete
 : snapshot-delete ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SNAPSHOT_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1709,12 +1651,10 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:DELETE:/snapshots/$SNAPSHOT_ID:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -w '\\n%{http_code}' -X DELETE $UN_API/snapshots/$SNAPSHOT_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\")" r@ write-line throw
     s\" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
@@ -1726,7 +1666,7 @@ variable rot-len
     s\"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
     s\"   TIMESTAMP=$(date +%s)" r@ write-line throw
     s\"   MESSAGE=\"$TIMESTAMP:DELETE:/snapshots/$SNAPSHOT_ID:\"" r@ write-line throw
-    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\"   RESP=$(curl -s -w '\\n%{http_code}' -X DELETE $UN_API/snapshots/$SNAPSHOT_ID -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\")" r@ write-line throw
     s\"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" fi" r@ write-line throw
@@ -1740,13 +1680,13 @@ variable rot-len
     s\"   exit 1" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot lock
 : snapshot-lock ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SNAPSHOT_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1754,23 +1694,21 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/lock:\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/snapshots/$SNAPSHOT_ID/lock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" >/dev/null && echo -e '\\x1b[32mSnapshot locked: " r@ write-file throw
     r@ write-file throw
     s\" \\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot unlock
 : snapshot-unlock ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SNAPSHOT_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1778,12 +1716,10 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/unlock:{}\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" RESP=$(curl -s -w '\\n%{http_code}' -X POST $UN_API/snapshots/$SNAPSHOT_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -d '{}')" r@ write-line throw
     s\" HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" BODY=$(echo \"$RESP\" | sed '$d')" r@ write-line throw
@@ -1795,7 +1731,7 @@ variable rot-len
     s\"   if [ -z \"$OTP\" ]; then echo 'Error: Operation cancelled' >&2; exit 1; fi" r@ write-line throw
     s\"   TIMESTAMP=$(date +%s)" r@ write-line throw
     s\"   MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/unlock:{}\"" r@ write-line throw
-    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\"   SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\"   RESP=$(curl -s -w '\\n%{http_code}' -X POST $UN_API/snapshots/$SNAPSHOT_ID/unlock -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -H 'Content-Type: application/json' -H \"X-Sudo-OTP: $OTP\" -H \"X-Sudo-Challenge: $CHALLENGE_ID\" -d '{}')" r@ write-line throw
     s\"   HTTP_CODE=$(echo \"$RESP\" | tail -1)" r@ write-line throw
     s\" fi" r@ write-line throw
@@ -1809,13 +1745,13 @@ variable rot-len
     s\"   exit 1" r@ write-line throw
     s\" fi" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && /tmp/unsandbox_cmd.sh && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Snapshot clone
 : snapshot-clone ( addr len -- )
     get-api-key
-    s\" /tmp/unsandbox_cmd.sh" w/o create-file throw >r
+    script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" SNAPSHOT_ID='" r@ write-file throw
     2dup r@ write-file throw
@@ -1823,9 +1759,7 @@ variable rot-len
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
-    s\" SECRET_KEY='" r@ write-file throw
-    get-secret-key r@ write-file throw
-    s\" '" r@ write-line throw
+    r@ write-sk
     s\" CLONE_TYPE='session'; NAME=''; PORTS=''; SHELL=''" r@ write-line throw
     s\" i=4" r@ write-line throw
     s\" while [ $i -le $# ]; do" r@ write-line throw
@@ -1844,11 +1778,11 @@ variable rot-len
     s\" [ -n \"$SHELL\" ] && BODY=$(echo $BODY | jq --arg s \"$SHELL\" '. + {shell: $s}')" r@ write-line throw
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/snapshots/$SNAPSHOT_ID/clone:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" -hex | sed 's/.*= //')" r@ write-line throw
+    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
     s\" curl -s -X POST $UN_API/snapshots/$SNAPSHOT_ID/clone -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" | jq ." r@ write-line throw
     s\" echo -e '\\x1b[32mSnapshot cloned\\x1b[0m'" r@ write-line throw
     r> close-file throw
-    s\" chmod +x /tmp/unsandbox_cmd.sh && bash /tmp/unsandbox_cmd.sh \"$@\" && rm -f /tmp/unsandbox_cmd.sh" system
+    script-run
 ;
 
 \ Handle snapshot subcommand

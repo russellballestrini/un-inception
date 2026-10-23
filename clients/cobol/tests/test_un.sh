@@ -81,7 +81,7 @@ test_that "Image unlock implemented" "grep -q 'IMAGE-UNLOCK' '$SOURCE'"
 
 echo ""
 echo "=== HMAC Authentication ==="
-test_that "Uses openssl for HMAC" "grep -q 'openssl dgst -sha256 -hmac' '$SOURCE'"
+test_that "Keeps secret off argv (no openssl -hmac)" "! grep -qE 'dgst[^|]*-hmac' '$SOURCE'"
 test_that "Has X-Signature header" "grep -q 'X-Signature' '$SOURCE'"
 test_that "Has X-Timestamp header" "grep -q 'X-Timestamp' '$SOURCE'"
 

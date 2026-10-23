@@ -46,7 +46,7 @@
            SELECT SOURCE-FILE ASSIGN TO WS-FILENAME
                ORGANIZATION IS LINE SEQUENTIAL
                FILE STATUS IS WS-FILE-STATUS.
-           SELECT CRED-FILE ASSIGN TO "/tmp/unsb_creds.txt"
+           SELECT CRED-FILE ASSIGN TO WS-CRED-PATH
                ORGANIZATION IS LINE SEQUENTIAL
                FILE STATUS IS WS-CRED-STATUS.
 
@@ -113,6 +113,27 @@
        01  WS-ROTATE-FLAG      PIC X(8).
        01  WS-OTP              PIC X(64).
        01  WS-ROT-CMD          PIC X(8192).
+       01  WS-CRED-PATH        PIC X(512).
+      *> Request signing helper (POSIX sh). Every request command pipes
+      *> "ts:METHOD:path:body" into sh -c "$UNSB_HMAC", which prints the hex
+      *> HMAC-SHA256 keyed by $UNSB_SK. GET-CREDENTIALS exports both: the
+      *> environment reaches only our own user, argv reaches everyone (ps).
+      *> HMAC from plain SHA-256, K zero-padded to 64 bytes (hashed if >64):
+      *> sha256((K xor opad) || sha256((K xor ipad) || msg))
+       01  WS-HMAC-SH          PIC X(1024)
+           VALUE "S=sha256sum; "
+           & "command -v sha256sum >/dev/null 2>&1 || S=""openssl dgst -sha256 -r""; "
+           & "if [ ${#UNSB_SK} -gt 64 ]; "
+           & "then kb=$(printf %s ""$UNSB_SK"" | $S | cut -c1-64 | sed ""s/../0x& /g""); "
+           & "else kb=$(printf %s ""$UNSB_SK"" | od -An -v -tu1); fi; ip=; "
+           & "op=; n=0; for c in $kb; do v=$((c^54)); "
+           & "ip=""$ip\\$((v>>6))$((v>>3&7))$((v&7))""; v=$((c^92)); "
+           & "op=""$op\\$((v>>6))$((v>>3&7))$((v&7))""; n=$((n+1)); done; "
+           & "while [ $n -lt 64 ]; do ip=""$ip\\066""; op=""$op\\134""; "
+           & "n=$((n+1)); done; ih=$( { printf ""$ip""; cat; "
+           & "} | $S | cut -c1-64 | sed ""s/../0x& /g""); x=; "
+           & "for c in $ih; do x=""$x\\$((c>>6))$((c>>3&7))$((c&7))""; "
+           & "done; { printf ""$op""; printf ""$x""; } | $S | cut -c1-64".
 
        PROCEDURE DIVISION.
        MAIN-PROCEDURE.
@@ -193,10 +214,23 @@
                EXIT PARAGRAPH
            END-IF.
 
+      *> Resolved keys pass back through a file in our private 0700
+      *> ~/.unsandbox (never a shared /tmp name), deleted right after reading
+           ACCEPT WS-CRED-PATH FROM ENVIRONMENT "HOME".
+           IF WS-CRED-PATH = SPACES
+               MOVE "." TO WS-CRED-PATH
+           END-IF.
+           STRING FUNCTION TRIM(WS-CRED-PATH) "/.unsandbox/.creds.tmp"
+               DELIMITED BY SIZE INTO WS-ROT-CMD
+           END-STRING.
+           MOVE WS-ROT-CMD TO WS-CRED-PATH.
+           MOVE SPACES TO WS-ROT-CMD.
+
       *> Build shell script to resolve credentials with full priority
            IF WS-ACCOUNT-INDEX >= 0
                MOVE WS-ACCOUNT-INDEX TO WS-ACCOUNT-STR
-               STRING "umask 077; rm -f /tmp/unsb_creds.txt; SRC=''; "
+               STRING "umask 077; F='" FUNCTION TRIM(WS-CRED-PATH) "'; "
+                   "mkdir -p ""${F%/*}"" && rm -f ""$F"" || exit 1; SRC=''; "
                    "IDX=" FUNCTION TRIM(WS-ACCOUNT-STR) "; "
                    "PK=''; SK=''; CNT=-1; "
                    "for CSV in ""$HOME/.unsandbox/accounts.csv"" "
@@ -215,11 +249,12 @@
                    FUNCTION TRIM(WS-ACCOUNT-STR)
                    " not found in accounts.csv\\x1b[0m' >&2; exit 1; fi; "
                    "printf '%s\n%s\n%s\n' ""$PK"" ""$SK"" ""$SRC"" "
-                   "> /tmp/unsb_creds.txt"
+                   "> ""$F"""
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            ELSE
-               STRING "umask 077; rm -f /tmp/unsb_creds.txt; SRC=''; "
+               STRING "umask 077; F='" FUNCTION TRIM(WS-CRED-PATH) "'; "
+                   "mkdir -p ""${F%/*}"" && rm -f ""$F"" || exit 1; SRC=''; "
                    "PK=""$UNSANDBOX_PUBLIC_KEY""; "
                    "SK=""$UNSANDBOX_SECRET_KEY""; "
                    "if [ -z ""$PK"" ]; then PK=""$UNSANDBOX_API_KEY""; SK=''; fi; "
@@ -241,7 +276,7 @@
                    "echo -e '\\x1b[31mError: No credentials found\\x1b[0m' "
                    ">&2; exit 1; fi; "
                    "printf '%s\n%s\n%s\n' ""$PK"" ""$SK"" ""$SRC"" "
-                   "> /tmp/unsb_creds.txt"
+                   "> ""$F"""
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.
@@ -269,7 +304,13 @@
                END-READ
                CLOSE CRED-FILE
            END-IF.
-           CALL "CBL_DELETE_FILE" USING "/tmp/unsb_creds.txt".
+           CALL "CBL_DELETE_FILE" USING WS-CRED-PATH.
+
+      *> Secret and signing helper reach child shells via the environment
+           DISPLAY "UNSB_SK" UPON ENVIRONMENT-NAME.
+           DISPLAY WS-SECRET-KEY UPON ENVIRONMENT-VALUE.
+           DISPLAY "UNSB_HMAC" UPON ENVIRONMENT-NAME.
+           DISPLAY WS-HMAC-SH UPON ENVIRONMENT-VALUE.
 
            IF WS-PUBLIC-KEY = SPACES
                DISPLAY "Error: Could not resolve credentials"
@@ -448,10 +489,8 @@
                """, code: .}' < '"
                FUNCTION TRIM(WS-FILENAME)
                "'); "
-               "SIG=$(echo -n ""$TS:POST:/execute:$BODY"" | "
-               "openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "SIG=$(printf %s ""$TS:POST:/execute:$BODY"" | "
+               "sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -w '\n%{http_code}' -X POST "
                "$UN_API/execute "
                "-H 'Content-Type: application/json' "
@@ -639,11 +678,9 @@
 
        SERVICE-DESTROY.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:DELETE:/services/"
+               "SIG=$(printf %s ""$TS:DELETE:/services/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -w '\\n%{http_code}' -X DELETE "
                """$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
@@ -664,11 +701,9 @@
                "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
                "exit 1; fi; "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n ""$TS2:DELETE:/services/"
+               "SIG2=$(printf %s ""$TS2:DELETE:/services/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "RESP2=$(curl -s -w '\\n%{http_code}' -X DELETE "
                """$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
@@ -828,11 +863,9 @@
 
        SERVICE-ENV-STATUS.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:GET:/services/"
+               "SIG=$(printf %s ""$TS:GET:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env:"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/env:"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X GET ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env' "
@@ -869,11 +902,9 @@
                "echo -e '\x1b[31mError: No environment variables "
                "to set\x1b[0m' >&2; exit 1; fi; "
                "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:PUT:/services/"
+               "SIG=$(printf %s ""$TS:PUT:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env:$ENV_CONTENT"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/env:$ENV_CONTENT"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X PUT ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env' "
@@ -891,11 +922,9 @@
 
        SERVICE-ENV-EXPORT.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:POST:/services/"
+               "SIG=$(printf %s ""$TS:POST:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env/export:"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/env/export:"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env/export' "
@@ -911,11 +940,9 @@
 
        SERVICE-ENV-DELETE.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:DELETE:/services/"
+               "SIG=$(printf %s ""$TS:DELETE:/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
-               "/env:"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/env:"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X DELETE ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ENV-TARGET)
                "/env' "
@@ -982,10 +1009,8 @@
       *> Close JSON body
            STRING FUNCTION TRIM(WS-CURL-CMD) "}'; "
                "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:POST:/services:$BODY"" | "
-               "openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "SIG=$(printf %s ""$TS:POST:/services:$BODY"" | "
+               "sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -X POST $UN_API/services "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
@@ -1013,10 +1038,8 @@
                "done < ""$ENV_FILE""; fi; "
                "if [ -n ""$ENV_CONTENT"" ]; then "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n ""$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT"" | "
-               "openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "SIG2=$(printf %s ""$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT"" | "
+               "sh -c ""$UNSB_HMAC""); "
                "curl -s -X PUT ""$UN_API/services/$SVC_ID/env"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-PUBLIC-KEY) "' "
                "-H 'X-Timestamp: '$TS2 "
@@ -1294,11 +1317,9 @@
       *> Build and execute resize request with HMAC auth
            STRING "TS=$(date +%s); "
                "BODY='{""vcpu"":" WS-VCPU "}'; "
-               "SIG=$(echo -n ""$TS:PATCH:/services/"
+               "SIG=$(printf %s ""$TS:PATCH:/services/"
                FUNCTION TRIM(WS-ID)
-               ":$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X PATCH ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
                "' "
@@ -1338,11 +1359,9 @@
            STRING "TS=$(date +%s); "
                "BODY='{""unfreeze_on_demand"":"
                FUNCTION TRIM(WS-UOD-ENABLED) "}'; "
-               "SIG=$(echo -n ""$TS:PATCH:/services/"
+               "SIG=$(printf %s ""$TS:PATCH:/services/"
                FUNCTION TRIM(WS-ID)
-               ":$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X PATCH ""$UN_API""'/services/"
                FUNCTION TRIM(WS-ID)
                "' "
@@ -1385,10 +1404,8 @@
                    "if [ $AGE -lt $CACHE_TTL ]; then "
                    "jq -c '.languages' ""$CACHE_FILE""; exit 0; fi; fi; "
                    "TS=$(date +%s); "
-                   "SIG=$(echo -n ""$TS:GET:/languages:"" | "
-                   "openssl dgst -sha256 -hmac '"
-                   FUNCTION TRIM(WS-SECRET-KEY)
-                   "' | cut -d' ' -f2); "
+                   "SIG=$(printf %s ""$TS:GET:/languages:"" | "
+                   "sh -c ""$UNSB_HMAC""); "
                    "RESP=$(curl -s -X GET ""$UN_API""'/languages' "
                    "-H 'Authorization: Bearer "
                    FUNCTION TRIM(WS-PUBLIC-KEY)
@@ -1413,10 +1430,8 @@
                    "if [ $AGE -lt $CACHE_TTL ]; then "
                    "jq -r '.languages[]' ""$CACHE_FILE""; exit 0; fi; fi; "
                    "TS=$(date +%s); "
-                   "SIG=$(echo -n ""$TS:GET:/languages:"" | "
-                   "openssl dgst -sha256 -hmac '"
-                   FUNCTION TRIM(WS-SECRET-KEY)
-                   "' | cut -d' ' -f2); "
+                   "SIG=$(printf %s ""$TS:GET:/languages:"" | "
+                   "sh -c ""$UNSB_HMAC""); "
                    "RESP=$(curl -s -X GET ""$UN_API""'/languages' "
                    "-H 'Authorization: Bearer "
                    FUNCTION TRIM(WS-PUBLIC-KEY)
@@ -1487,10 +1502,8 @@
 
        IMAGE-LIST.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:GET:/images:"" | "
-               "openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "SIG=$(printf %s ""$TS:GET:/images:"" | "
+               "sh -c ""$UNSB_HMAC""); "
                "curl -s -X GET ""$UN_API""'/images' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
@@ -1504,11 +1517,9 @@
 
        IMAGE-INFO.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:GET:/images/"
+               "SIG=$(printf %s ""$TS:GET:/images/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X GET ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "' "
@@ -1524,11 +1535,9 @@
 
        IMAGE-DELETE.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:DELETE:/images/"
+               "SIG=$(printf %s ""$TS:DELETE:/images/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -w '\\n%{http_code}' -X DELETE "
                """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
@@ -1549,11 +1558,9 @@
                "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
                "exit 1; fi; "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n ""$TS2:DELETE:/images/"
+               "SIG2=$(printf %s ""$TS2:DELETE:/images/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "RESP2=$(curl -s -w '\\n%{http_code}' -X DELETE "
                """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
@@ -1586,11 +1593,9 @@
        IMAGE-LOCK.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n ""$TS:POST:/images/"
+               "SIG=$(printf %s ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/lock:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/lock:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/lock' "
@@ -1611,11 +1616,9 @@
        IMAGE-UNLOCK.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n ""$TS:POST:/images/"
+               "SIG=$(printf %s ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/unlock:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -w '\\n%{http_code}' -X POST "
                """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
@@ -1638,11 +1641,9 @@
                "echo -e '\\x1b[31mError: Operation cancelled\\x1b[0m' >&2; "
                "exit 1; fi; "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n ""$TS2:POST:/images/"
+               "SIG2=$(printf %s ""$TS2:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/unlock:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "RESP2=$(curl -s -w '\\n%{http_code}' -X POST "
                """$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
@@ -1715,10 +1716,8 @@
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n ""$TS:POST:/images/publish:$BODY"" | "
-               "openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "SIG=$(printf %s ""$TS:POST:/images/publish:$BODY"" | "
+               "sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/images/publish' "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer "
@@ -1738,11 +1737,9 @@
                "BODY='{""visibility"":"""
                FUNCTION TRIM(WS-IMAGE-VISIBILITY)
                """}'; "
-               "SIG=$(echo -n ""$TS:POST:/images/"
+               "SIG=$(printf %s ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/visibility:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/visibility:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/visibility' "
@@ -1802,11 +1799,9 @@
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n ""$TS:POST:/images/"
+               "SIG=$(printf %s ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/spawn:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/spawn:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/spawn' "
@@ -1850,11 +1845,9 @@
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n ""$TS:POST:/images/"
+               "SIG=$(printf %s ""$TS:POST:/images/"
                FUNCTION TRIM(WS-ID)
-               "/clone:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/clone:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/images/"
                FUNCTION TRIM(WS-ID)
                "/clone' "
@@ -1919,10 +1912,8 @@
 
        SNAPSHOT-LIST.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:GET:/snapshots:"" | "
-               "openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "SIG=$(printf %s ""$TS:GET:/snapshots:"" | "
+               "sh -c ""$UNSB_HMAC""); "
                "curl -s -X GET ""$UN_API""'/snapshots' "
                "-H 'Authorization: Bearer "
                FUNCTION TRIM(WS-PUBLIC-KEY)
@@ -1936,11 +1927,9 @@
 
        SNAPSHOT-INFO.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:GET:/snapshots/"
+               "SIG=$(printf %s ""$TS:GET:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X GET ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "' "
@@ -1956,11 +1945,9 @@
 
        SNAPSHOT-DELETE.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:DELETE:/snapshots/"
+               "SIG=$(printf %s ""$TS:DELETE:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -w '\n%{http_code}' -X DELETE "
                """$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
@@ -1976,11 +1963,9 @@
                "OTP=$(echo ""$BODY"" | jq -r '.otp // empty'); "
                "if [ -n ""$OTP"" ]; then "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n ""$TS2:DELETE:/snapshots/"
+               "SIG2=$(printf %s ""$TS2:DELETE:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               ":"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               ":"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X DELETE ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "' "
@@ -1999,11 +1984,9 @@
 
        SNAPSHOT-LOCK.
            STRING "TS=$(date +%s); "
-               "SIG=$(echo -n ""$TS:POST:/snapshots/"
+               "SIG=$(printf %s ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/lock:"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/lock:"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/lock' "
@@ -2021,11 +2004,9 @@
        SNAPSHOT-UNLOCK.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n ""$TS:POST:/snapshots/"
+               "SIG=$(printf %s ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/unlock:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -w '\n%{http_code}' -X POST "
                """$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
@@ -2043,11 +2024,9 @@
                "OTP=$(echo ""$BODY_RESP"" | jq -r '.otp // empty'); "
                "if [ -n ""$OTP"" ]; then "
                "TS2=$(date +%s); "
-               "SIG2=$(echo -n ""$TS2:POST:/snapshots/"
+               "SIG2=$(printf %s ""$TS2:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/unlock:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/unlock:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/unlock' "
@@ -2069,11 +2048,9 @@
        SNAPSHOT-RESTORE.
            STRING "TS=$(date +%s); "
                "BODY='{}'; "
-               "SIG=$(echo -n ""$TS:POST:/snapshots/"
+               "SIG=$(printf %s ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/restore:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/restore:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/restore' "
@@ -2147,11 +2124,9 @@
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "}'; "
-               "SIG=$(echo -n ""$TS:POST:/snapshots/"
+               "SIG=$(printf %s ""$TS:POST:/snapshots/"
                FUNCTION TRIM(WS-ID)
-               "/clone:$BODY"" | openssl dgst -sha256 -hmac '"
-               FUNCTION TRIM(WS-SECRET-KEY)
-               "' | cut -d' ' -f2); "
+               "/clone:$BODY"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST ""$UN_API""'/snapshots/"
                FUNCTION TRIM(WS-ID)
                "/clone' "

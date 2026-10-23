@@ -215,33 +215,34 @@ fn execCurlWithStatus(allocator: std.mem.Allocator, method: []const u8, endpoint
     const auth_headers = try buildAuthCmd(allocator, method, endpoint, body, public_key, secret_key);
     defer allocator.free(auth_headers);
 
-    const response_file = "/tmp/unsandbox_curl_response.txt";
-    const status_file = "/tmp/unsandbox_curl_status.txt";
-
-    // Build curl command with status code output
+    // Response body + status come back on curl's stdout, never via a file:
+    // a rotate-secret response carries the new secret, and a fixed /tmp path
+    // would hold it world-readable (and symlink-redirectable) until deleted.
+    const body_file = "/tmp/unsandbox_curl_body.txt";
     const cmd = if (body.len > 0) blk: {
-        const body_file = "/tmp/unsandbox_curl_body.txt";
         const file = try fs.cwd().createFile(body_file, .{});
         try file.writeAll(body);
         file.close();
 
-        break :blk try std.fmt.allocPrint(allocator, "curl -s -X {s} '{s}' -H 'Content-Type: application/json' {s} {s} --data-binary @{s} -o {s} -w '%{{http_code}}' > {s}", .{ method, url, auth_headers, extra_headers, body_file, response_file, status_file });
+        break :blk try std.fmt.allocPrint(allocator, "curl -s -X {s} '{s}' -H 'Content-Type: application/json' {s} {s} --data-binary @{s} -w '\\n%{{http_code}}'", .{ method, url, auth_headers, extra_headers, body_file });
     } else blk: {
-        break :blk try std.fmt.allocPrint(allocator, "curl -s -X {s} '{s}' {s} {s} -o {s} -w '%{{http_code}}' > {s}", .{ method, url, auth_headers, extra_headers, response_file, status_file });
+        break :blk try std.fmt.allocPrint(allocator, "curl -s -X {s} '{s}' {s} {s} -w '\\n%{{http_code}}'", .{ method, url, auth_headers, extra_headers });
     };
     defer allocator.free(cmd);
+    defer if (body.len > 0) fs.cwd().deleteFile(body_file) catch {};
 
-    _ = runShell(cmd);
+    const run = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", cmd },
+        .max_output_bytes = 1024 * 1024 + 16,
+    }) catch return CurlResult{ .body = try allocator.dupe(u8, ""), .status = 0 };
+    defer allocator.free(run.stdout);
+    defer allocator.free(run.stderr);
 
-    // Read response body
-    const response_body = fs.cwd().readFileAlloc(allocator, response_file, 1024 * 1024) catch try allocator.dupe(u8, "");
-    fs.cwd().deleteFile(response_file) catch {};
-
-    // Read status code
-    const status_str = fs.cwd().readFileAlloc(allocator, status_file, 16) catch try allocator.dupe(u8, "0");
-    defer allocator.free(status_str);
-    fs.cwd().deleteFile(status_file) catch {};
-
+    // Last line holds the status code (from -w); everything before it is the body.
+    const split = mem.lastIndexOfScalar(u8, run.stdout, '\n');
+    const response_body = try allocator.dupe(u8, if (split) |i| run.stdout[0..i] else "");
+    const status_str = if (split) |i| run.stdout[i + 1 ..] else run.stdout;
     const trimmed_status = mem.trim(u8, status_str, &std.ascii.whitespace);
     const status = std.fmt.parseInt(i32, trimmed_status, 10) catch 0;
 

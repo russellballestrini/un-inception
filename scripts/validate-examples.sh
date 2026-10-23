@@ -77,7 +77,23 @@ generate_hmac_signature() {
     local timestamp=$4
 
     local message="${timestamp}:${method}:${path}:${body}"
-    echo -n "$message" | openssl dgst -sha256 -hmac "$UNSANDBOX_SECRET_KEY" | awk '{print $2}'
+    # HMAC-SHA256 from plain SHA-256 (same as clients/bash): our secret travels
+    # through printf (a builtin) and pipes only, never any process's argv.
+    local LC_ALL=C keyhex ipad="" opad="" inner i b
+    if [ "${#UNSANDBOX_SECRET_KEY}" -gt 64 ]; then
+        keyhex=$(printf '%s' "$UNSANDBOX_SECRET_KEY" | openssl dgst -sha256 2>/dev/null | sed 's/^.* //')
+    else
+        keyhex=$(printf '%s' "$UNSANDBOX_SECRET_KEY" | od -An -tx1 -v | tr -d ' \n')
+    fi
+    for ((i = 0; i < 64; i++)); do
+        b=0
+        [ -n "${keyhex:$((i * 2)):2}" ] && b=$((16#${keyhex:$((i * 2)):2}))
+        printf -v ipad '%s\\x%02x' "$ipad" $((b ^ 0x36))
+        printf -v opad '%s\\x%02x' "$opad" $((b ^ 0x5c))
+    done
+    inner=$({ printf "$ipad"; printf '%s' "$message"; } | openssl dgst -sha256 2>/dev/null | sed 's/^.* //')
+    { printf "$opad"; printf "$(printf '%s' "$inner" | sed 's/../\\x&/g')"; } \
+        | openssl dgst -sha256 2>/dev/null | sed 's/^.* //'
 }
 declare -A LANGUAGE_STATS
 declare -A EXECUTION_TIMES
@@ -388,23 +404,22 @@ validate_example() {
             debug "Built input_files with $(echo "$input_files_json" | jq 'length' 2>/dev/null || echo '?') files"
         fi
 
-        # Build JSON body with credentials and optional input_files
+        # Build JSON body with credentials and optional input_files. Our secret
+        # reaches jq through its environment, never its argv.
         local body
         if [[ -n "$input_files_json" && "$input_files_json" != "[]" ]]; then
-            body=$(jq -n \
+            body=$(UNSB_SK="$UNSANDBOX_SECRET_KEY" jq -n \
                 --arg lang "$api_lang" \
                 --arg code "$code" \
                 --arg pk "$UNSANDBOX_PUBLIC_KEY" \
-                --arg sk "$UNSANDBOX_SECRET_KEY" \
                 --argjson input_files "$input_files_json" \
-                '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}, input_files: $input_files}')
+                '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: env.UNSB_SK}, input_files: $input_files}')
         else
-            body=$(jq -n \
+            body=$(UNSB_SK="$UNSANDBOX_SECRET_KEY" jq -n \
                 --arg lang "$api_lang" \
                 --arg code "$code" \
                 --arg pk "$UNSANDBOX_PUBLIC_KEY" \
-                --arg sk "$UNSANDBOX_SECRET_KEY" \
-                '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: $sk}}')
+                '{language: $lang, code: $code, env: {UNSANDBOX_PUBLIC_KEY: $pk, UNSANDBOX_SECRET_KEY: env.UNSB_SK}}')
         fi
 
         local timestamp=$(date +%s)

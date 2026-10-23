@@ -31,6 +31,7 @@ help:
 	@echo "Utility:"
 	@echo "  make test-ci-locally          # Simulate CI pipeline"
 	@echo "  make lint                     # Lint all clients"
+	@echo "  make lint-secrets             # Reject secrets on process command lines"
 	@echo "  make clean                    # Clean build artifacts"
 	@echo "  make set-version VERSION=X.Y.Z  # Set version in all files"
 	@echo "  make perf-report TAG=X.Y.Z     # Generate performance report for release"
@@ -282,14 +283,17 @@ test-ci-locally:
 	@bash scripts/build-clients.sh || true
 	@echo "Ready to run tests from test-matrix.yml"
 
-.PHONY: lint
-lint:
+.PHONY: lint lint-secrets
+lint: lint-secrets
 	@echo "Linting all clients (where applicable)..."
 	@command -v shellcheck >/dev/null 2>&1 && bash -n un.sh && shellcheck un.sh || echo "Skipping shellcheck"
 	@command -v python3 >/dev/null 2>&1 && python3 -m pylint un.py 2>/dev/null || echo "Skipping pylint"
 	@command -v eslint >/dev/null 2>&1 && npx eslint un.js 2>/dev/null || echo "Skipping eslint"
 	@command -v rubocop >/dev/null 2>&1 && rubocop un.rb 2>/dev/null || echo "Skipping rubocop"
 	@echo "Linting complete"
+
+lint-secrets:
+	@bash scripts/lint-secret-argv.sh
 
 .PHONY: clean
 clean:

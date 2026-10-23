@@ -119,6 +119,23 @@ module unsandbox_sdk
     ! API configuration
     ! Default API base; override with UNSANDBOX_API_URL (see api_base_url())
     character(len=*), parameter, public :: API_BASE = 'https://api.unsandbox.com'
+
+    ! Request signing helper (POSIX sh). Every request command pipes
+    ! "ts:METHOD:path:body" into `sh -c "$UNSB_HMAC"`, which prints the hex
+    ! HMAC-SHA256 keyed by $UNSB_SK. Key and helper reach the shell through the
+    ! environment (export_signing_env), never a command line: ps shows argv to
+    ! every user, the environment only to the owner. HMAC from plain SHA-256:
+    ! sha256((K^opad) || sha256((K^ipad) || msg)), K zero-padded to 64 bytes.
+    character(len=*), parameter :: HMAC_SH = &
+        'S=sha256sum; command -v sha256sum >/dev/null 2>&1 || S="openssl dgst -sha256 -r"; ' // &
+        'if [ ${#UNSB_SK} -gt 64 ]; then kb=$(printf %s "$UNSB_SK" | $S | cut -c1-64 | sed "s/../0x& /g"); ' // &
+        'else kb=$(printf %s "$UNSB_SK" | od -An -v -tu1); fi; ip=; op=; n=0; ' // &
+        'for c in $kb; do v=$((c^54)); ip="$ip\\$((v>>6))$((v>>3&7))$((v&7))"; ' // &
+        'v=$((c^92)); op="$op\\$((v>>6))$((v>>3&7))$((v&7))"; n=$((n+1)); done; ' // &
+        'while [ $n -lt 64 ]; do ip="$ip\\066"; op="$op\\134"; n=$((n+1)); done; ' // &
+        'ih=$( { printf "$ip"; cat; } | $S | cut -c1-64 | sed "s/../0x& /g"); ' // &
+        'x=; for c in $ih; do x="$x\\$((c>>6))$((c>>3&7))$((c&7))"; done; ' // &
+        '{ printf "$op"; printf "$x"; } | $S | cut -c1-64'
     character(len=*), parameter, public :: PORTAL_BASE = 'https://unsandbox.com'
     integer, parameter, public :: DEFAULT_TTL = 60
     integer, parameter, public :: DEFAULT_TIMEOUT = 300
@@ -301,6 +318,32 @@ contains
         character(len=*), intent(out) :: public_key, secret_key
         integer, intent(out) :: status
         integer, intent(in), optional :: account_index
+        character(len=*), intent(out), optional :: source_csv
+
+        call resolve_credentials(public_key, secret_key, status, account_index, source_csv)
+        if (status == 0) call export_signing_env(secret_key)
+    end subroutine get_credentials
+
+    !--------------------------------------------------------------------------
+    ! Subroutine: export_signing_env
+    ! Description: Hand the secret and the signing helper to child shells via
+    !              the environment (UNSB_SK, UNSB_HMAC). See HMAC_SH.
+    !--------------------------------------------------------------------------
+    subroutine export_signing_env(secret_key)
+        character(len=*), intent(in) :: secret_key
+
+        call set_env('UNSB_SK', trim(secret_key))
+        call set_env('UNSB_HMAC', HMAC_SH)
+    end subroutine export_signing_env
+
+    !--------------------------------------------------------------------------
+    ! Subroutine: resolve_credentials
+    ! Description: Credential lookup behind get_credentials (priority above)
+    !--------------------------------------------------------------------------
+    subroutine resolve_credentials(public_key, secret_key, status, account_index, source_csv)
+        character(len=*), intent(out) :: public_key, secret_key
+        integer, intent(out) :: status
+        integer, intent(in), optional :: account_index
         character(len=*), intent(out), optional :: source_csv   ! accounts.csv used, or ''
         character(len=1024) :: home_dir, accounts_path, api_key, acct_env
         integer :: ios, acct_idx, default_index
@@ -378,7 +421,7 @@ contains
 
         ! No credentials found
         status = 1
-    end subroutine get_credentials
+    end subroutine resolve_credentials
 
     !--------------------------------------------------------------------------
     ! Subroutine: parse_csv_line
@@ -407,7 +450,7 @@ contains
     !
     ! Signature format: HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
     !
-    ! Note: Uses openssl via shell command due to Fortran limitations
+    ! Note: Signs in a child shell (HMAC_SH) due to Fortran limitations
     !
     ! Arguments:
     !   secret_key  - API secret key
@@ -425,8 +468,8 @@ contains
 
         ! Use shell to compute HMAC (Fortran lacks native crypto)
         write(cmd, '(10A)') &
-            'echo -n "', trim(timestamp), ':', trim(method), ':', trim(path), ':', trim(body), &
-            '" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2'
+            'printf %s "', trim(timestamp), ':', trim(method), ':', trim(path), ':', trim(body), &
+            '" | sh -c "$UNSB_HMAC"'
 
         ! This would need to capture output - simplified for module use
         signature = ''
@@ -620,8 +663,7 @@ contains
             'network_mode: "', trim(net_mode), '", ttl: ', char(48+mod(exec_ttl/10,10)), char(48+mod(exec_ttl,10)), &
             '}'' < "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:POST:/execute:$BODY" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:POST:/execute:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'RESP=$(curl -s -X POST ', trim(api_base_url()), '/execute ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
@@ -669,8 +711,7 @@ contains
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
             'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .}'' < "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:POST:/execute/async:$BODY" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:POST:/execute/async:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST ', trim(api_base_url()), '/execute/async ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
@@ -704,8 +745,7 @@ contains
 
         write(cmd, '(15A)') &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:GET:/jobs/', trim(job_id), ':" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:GET:/jobs/', trim(job_id), ':" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X GET ', trim(api_base_url()), '/jobs/', trim(job_id), ' ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -745,8 +785,7 @@ contains
             'for i in $(seq 1 ', polls, '); do ', &
             'sleep $(echo "scale=3; ${DELAYS[$(( (i-1) % 7 ))]}/1000" | bc); ', &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:GET:/jobs/', trim(job_id), ':" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:GET:/jobs/', trim(job_id), ':" | sh -c "$UNSB_HMAC"); ', &
             'RESP=$(curl -s -X GET ', trim(api_base_url()), '/jobs/', trim(job_id), ' ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -783,8 +822,7 @@ contains
 
         write(cmd, '(15A)') &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:DELETE:/jobs/', trim(job_id), ':" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:DELETE:/jobs/', trim(job_id), ':" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X DELETE ', trim(api_base_url()), '/jobs/', trim(job_id), ' ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -808,8 +846,7 @@ contains
 
         write(cmd, '(15A)') &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:GET:/jobs:" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:GET:/jobs:" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X GET ', trim(api_base_url()), '/jobs ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -842,8 +879,7 @@ contains
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
             'BODY=$(cat "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:POST:/run:$BODY" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:POST:/run:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST ', trim(api_base_url()), '/run ', &
             '-H "Content-Type: text/plain" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
@@ -881,8 +917,7 @@ contains
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
             'BODY=$(cat "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:POST:/run/async:$BODY" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:POST:/run/async:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST ', trim(api_base_url()), '/run/async ', &
             '-H "Content-Type: text/plain" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
@@ -912,8 +947,7 @@ contains
         write(cmd, '(15A)') &
             'BODY=''{"prompt":"', trim(prompt), '","size":"1024x1024"}''; ', &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:POST:/image:$BODY" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:POST:/image:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST ', trim(api_base_url()), '/image ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
@@ -939,8 +973,7 @@ contains
 
         write(cmd, '(15A)') &
             'TS=$(date +%s); ', &
-            'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', &
-            trim(self%secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:GET:/languages:" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X GET ', trim(api_base_url()), '/languages ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
@@ -1150,7 +1183,7 @@ contains
         write(full_cmd, '(30A)') &
             'TS=$(date +%s); ', &
             'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .}'' < "', trim(fname), '"); ', &
-            'SIG=$(echo -n "$TS:POST:/execute:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+            'SIG=$(printf %s "$TS:POST:/execute:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST $UN_API/execute ', &
             '-H "Content-Type: application/json" ', &
             '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1234,7 +1267,7 @@ contains
         if (list_mode) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/sessions:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/sessions:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/sessions ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1245,7 +1278,7 @@ contains
         else if (kill_mode .and. len_trim(session_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:DELETE:/sessions/', trim(session_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:DELETE:/sessions/', trim(session_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X DELETE $UN_API/sessions/', &
                 trim(session_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1266,7 +1299,7 @@ contains
                     'done; ', &
                     'BODY=''{"shell":"bash","input_files":[''"$INPUT_FILES"'']}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/sessions:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/sessions:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/sessions ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1278,7 +1311,7 @@ contains
                 write(full_cmd, '(20A)') &
                     'BODY=''{"shell":"bash"}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/sessions:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/sessions:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/sessions ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1439,8 +1472,8 @@ contains
             if (trim(env_action) == 'status') then
                 write(full_cmd, '(20A)') &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:GET:/services/', trim(env_target), '/env:" | ', &
-                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:GET:/services/', trim(env_target), '/env:" | ', &
+                    'sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X GET "$UN_API/services/', trim(env_target), '/env" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
@@ -1464,8 +1497,8 @@ contains
                     'if [ -z "$ENV_CONTENT" ]; then ', &
                     'echo -e "\x1b[31mError: No environment variables to set\x1b[0m" >&2; exit 1; fi; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:PUT:/services/', trim(env_target), '/env:$ENV_CONTENT" | ', &
-                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:PUT:/services/', trim(env_target), '/env:$ENV_CONTENT" | ', &
+                    'sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X PUT "$UN_API/services/', trim(env_target), '/env" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
@@ -1477,8 +1510,8 @@ contains
             else if (trim(env_action) == 'export') then
                 write(full_cmd, '(20A)') &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/services/', trim(env_target), '/env/export:" | ', &
-                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/services/', trim(env_target), '/env/export:" | ', &
+                    'sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST "$UN_API/services/', trim(env_target), '/env/export" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
@@ -1488,8 +1521,8 @@ contains
             else if (trim(env_action) == 'delete') then
                 write(full_cmd, '(20A)') &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:DELETE:/services/', trim(env_target), '/env:" | ', &
-                    'openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:DELETE:/services/', trim(env_target), '/env:" | ', &
+                    'sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X DELETE "$UN_API/services/', trim(env_target), '/env" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
                     '-H "X-Timestamp: $TS" ', &
@@ -1507,7 +1540,7 @@ contains
         if (list_mode) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/services:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/services:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/services ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1518,7 +1551,7 @@ contains
         else if (trim(operation) == 'info' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/services/', trim(service_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1528,7 +1561,7 @@ contains
         else if (trim(operation) == 'logs' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/services/', trim(service_id), '/logs:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/services/', trim(service_id), '/logs:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/services/', &
                 trim(service_id), '/logs ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1538,7 +1571,7 @@ contains
         else if (trim(operation) == 'sleep' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/freeze:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/services/', trim(service_id), '/freeze:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/services/', &
                 trim(service_id), '/freeze ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1549,7 +1582,7 @@ contains
         else if (trim(operation) == 'wake' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/unfreeze:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/services/', trim(service_id), '/unfreeze:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/services/', &
                 trim(service_id), '/unfreeze ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1560,7 +1593,7 @@ contains
         else if (trim(operation) == 'destroy' .and. len_trim(service_id) > 0) then
             write(full_cmd, '(50A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:DELETE:/services/', trim(service_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -w "\n%{http_code}" -X DELETE $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1574,7 +1607,7 @@ contains
                 'echo -n "Enter OTP: " >&2; read OTP; ', &
                 'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
                 'TS2=$(date +%s); ', &
-                'SIG2=$(echo -n "$TS2:DELETE:/services/', trim(service_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG2=$(printf %s "$TS2:DELETE:/services/', trim(service_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X DELETE $UN_API/services/', trim(service_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
@@ -1596,7 +1629,7 @@ contains
                 'RAM=$((VCPU * 2)); ', &
                 'BODY=''{"vcpu":''$VCPU''}''; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:PATCH:/services/', trim(service_id), ':$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:PATCH:/services/', trim(service_id), ':$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X PATCH $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Content-Type: application/json" ', &
@@ -1613,7 +1646,7 @@ contains
                 'case "$ENABLED_STR" in true|1|yes|on) ENABLED=true;; *) ENABLED=false;; esac; ', &
                 'BODY="{\"unfreeze_on_demand\":$ENABLED}"; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:PATCH:/services/', trim(service_id), ':$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:PATCH:/services/', trim(service_id), ':$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X PATCH $UN_API/services/', &
                 trim(service_id), ' ', &
                 '-H "Content-Type: application/json" ', &
@@ -1628,7 +1661,7 @@ contains
                 'echo "Fetching bootstrap script from ', trim(service_id), '..." >&2; ', &
                 'BODY=''{"command":"cat /tmp/bootstrap.sh"}''; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/services/', trim(service_id), '/execute:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/services/', trim(service_id), '/execute:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -X POST $UN_API/services/', &
                 trim(service_id), '/execute ', &
                 '-H "Content-Type: application/json" ', &
@@ -1648,7 +1681,7 @@ contains
             write(full_cmd, '(60A)') &
                 'BODY=''{"name":"', trim(service_name), '"}''; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/services:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/services:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -X POST $UN_API/services ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -1670,7 +1703,7 @@ contains
                 'done < "$ENV_FILE"; fi; ', &
                 'if [ -n "$ENV_CONTENT" ]; then ', &
                 'TS2=$(date +%s); ', &
-                'SIG2=$(echo -n "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG2=$(printf %s "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X PUT "$UN_API/services/$SVC_ID/env" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
@@ -1766,7 +1799,7 @@ contains
             ! List snapshots
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/snapshots:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/snapshots:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/snapshots ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1776,7 +1809,7 @@ contains
             ! Get snapshot info
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/snapshots/', trim(snapshot_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/snapshots/', trim(snapshot_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1786,7 +1819,7 @@ contains
             ! Delete snapshot (with sudo)
             write(full_cmd, '(30A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:DELETE:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:DELETE:/snapshots/', trim(snapshot_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -w "\n%{http_code}" -X DELETE $UN_API/snapshots/', trim(snapshot_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1797,7 +1830,7 @@ contains
                 'OTP=$(echo "$BODY" | jq -r ".otp // empty"); ', &
                 'if [ -n "$OTP" ]; then ', &
                 'TS2=$(date +%s); ', &
-                'SIG2=$(echo -n "$TS2:DELETE:/snapshots/', trim(snapshot_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG2=$(printf %s "$TS2:DELETE:/snapshots/', trim(snapshot_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X DELETE $UN_API/snapshots/', trim(snapshot_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
@@ -1810,7 +1843,7 @@ contains
             ! Lock snapshot
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/lock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/snapshots/', trim(snapshot_id), '/lock:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/lock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1822,7 +1855,7 @@ contains
             write(full_cmd, '(30A)') &
                 'TS=$(date +%s); ', &
                 'BODY="{}"; ', &
-                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -w "\n%{http_code}" -X POST $UN_API/snapshots/', trim(snapshot_id), '/unlock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1835,7 +1868,7 @@ contains
                 'OTP=$(echo "$BODY_RESP" | jq -r ".otp // empty"); ', &
                 'if [ -n "$OTP" ]; then ', &
                 'TS2=$(date +%s); ', &
-                'SIG2=$(echo -n "$TS2:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG2=$(printf %s "$TS2:POST:/snapshots/', trim(snapshot_id), '/unlock:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/unlock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" ', &
@@ -1851,7 +1884,7 @@ contains
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
                 'BODY="{}"; ', &
-                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/restore:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/snapshots/', trim(snapshot_id), '/restore:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/restore ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1879,7 +1912,7 @@ contains
                 write(full_cmd, '(A,A)') trim(full_cmd), ',"shell":"' // trim(shell) // '"'
             end if
             write(full_cmd, '(A,20A)') trim(full_cmd), '}''; ', &
-                'SIG=$(echo -n "$TS:POST:/snapshots/', trim(snapshot_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/snapshots/', trim(snapshot_id), '/clone:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/snapshots/', trim(snapshot_id), '/clone ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -1983,7 +2016,7 @@ contains
         if (trim(operation) == 'list') then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/images:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/images:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/images ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
@@ -1991,7 +2024,7 @@ contains
         else if (trim(operation) == 'info' .and. len_trim(image_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/images/', trim(image_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X GET $UN_API/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" | jq .'
@@ -1999,7 +2032,7 @@ contains
         else if (trim(operation) == 'delete' .and. len_trim(image_id) > 0) then
             write(full_cmd, '(50A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:DELETE:/images/', trim(image_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -w "\n%{http_code}" -X DELETE $UN_API/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG"); ', &
@@ -2011,7 +2044,7 @@ contains
                 'echo -n "Enter OTP: " >&2; read OTP; ', &
                 'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
                 'TS2=$(date +%s); ', &
-                'SIG2=$(echo -n "$TS2:DELETE:/images/', trim(image_id), ':" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG2=$(printf %s "$TS2:DELETE:/images/', trim(image_id), ':" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X DELETE $UN_API/images/', trim(image_id), ' ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" ', &
@@ -2024,7 +2057,7 @@ contains
         else if (trim(operation) == 'lock' .and. len_trim(image_id) > 0) then
             write(full_cmd, '(20A)') &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/lock:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/lock:" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/images/', trim(image_id), '/lock ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" -H "X-Signature: $SIG" >/dev/null; ', &
@@ -2033,7 +2066,7 @@ contains
         else if (trim(operation) == 'unlock' .and. len_trim(image_id) > 0) then
             write(full_cmd, '(50A)') &
                 'TS=$(date +%s); BODY="{}"; ', &
-                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/unlock:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -w "\n%{http_code}" -X POST $UN_API/images/', trim(image_id), '/unlock ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2046,7 +2079,7 @@ contains
                 'echo -n "Enter OTP: " >&2; read OTP; ', &
                 'if [ -z "$OTP" ]; then echo -e "\x1b[31mError: Operation cancelled\x1b[0m" >&2; exit 1; fi; ', &
                 'TS2=$(date +%s); ', &
-                'SIG2=$(echo -n "$TS2:POST:/images/', trim(image_id), '/unlock:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG2=$(printf %s "$TS2:POST:/images/', trim(image_id), '/unlock:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/images/', trim(image_id), '/unlock ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2066,7 +2099,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{"source_type":"', trim(source_type), '","source_id":"', trim(image_id), '","name":"', trim(name), '"}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/publish:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/publish:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/publish ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2077,7 +2110,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{"source_type":"', trim(source_type), '","source_id":"', trim(image_id), '"}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/publish:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/publish:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/publish ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2090,7 +2123,7 @@ contains
             write(full_cmd, '(25A)') &
                 'BODY=''{"visibility":"', trim(visibility_mode), '"}''; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/visibility:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/visibility:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'curl -s -X POST $UN_API/images/', trim(image_id), '/visibility ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2103,7 +2136,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{"name":"', trim(name), '","ports":[', trim(ports), ']}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/', trim(image_id), '/spawn ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2114,7 +2147,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{"name":"', trim(name), '"}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/', trim(image_id), '/spawn ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2125,7 +2158,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/spawn:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/', trim(image_id), '/spawn ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2139,7 +2172,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{"name":"', trim(name), '"}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/', trim(image_id), '/clone ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2150,7 +2183,7 @@ contains
                 write(full_cmd, '(25A)') &
                     'BODY=''{}''; ', &
                     'TS=$(date +%s); ', &
-                    'SIG=$(echo -n "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                    'SIG=$(printf %s "$TS:POST:/images/', trim(image_id), '/clone:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/images/', trim(image_id), '/clone ', &
                     '-H "Content-Type: application/json" ', &
                     '-H "Authorization: Bearer ', trim(public_key), '" ', &
@@ -2395,7 +2428,7 @@ contains
                 'if [ $AGE -lt $CACHE_TTL ]; then ', &
                 'jq -c ".languages" "$CACHE_FILE"; exit 0; fi; fi; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/languages:" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -X GET $UN_API/languages ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
@@ -2416,7 +2449,7 @@ contains
                 'if [ $AGE -lt $CACHE_TTL ]; then ', &
                 'jq -r ".languages[]" "$CACHE_FILE"; exit 0; fi; fi; ', &
                 'TS=$(date +%s); ', &
-                'SIG=$(echo -n "$TS:GET:/languages:" | openssl dgst -sha256 -hmac "', trim(secret_key), '" | cut -d" " -f2); ', &
+                'SIG=$(printf %s "$TS:GET:/languages:" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -X GET $UN_API/languages ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-H "X-Timestamp: $TS" ', &
