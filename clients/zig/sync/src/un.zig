@@ -1954,7 +1954,7 @@ pub fn main() !u8 {
             const json_file = "/tmp/unsandbox_key_validate.json";
             const auth_headers = try buildAuthCmd(allocator, "POST", "/keys/validate", "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd_validate = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ PORTAL_BASE, auth_headers, json_file });
+            const cmd_validate = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ apiBase(), auth_headers, json_file });
             defer allocator.free(cmd_validate);
             _ = runShell(cmd_validate);
 
@@ -2008,7 +2008,7 @@ pub fn main() !u8 {
             const json_file = "/tmp/unsandbox_key_validate.json";
             const auth_headers = try buildAuthCmd(allocator, "POST", "/keys/validate", "", public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ PORTAL_BASE, auth_headers, json_file });
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ apiBase(), auth_headers, json_file });
             defer allocator.free(cmd);
             _ = runShell(cmd);
 

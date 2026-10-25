@@ -851,7 +851,7 @@ imageClone imageId name description = do
 validateKeys :: IO String
 validateKeys = do
   apiKey <- getApiKey
-  (_, stdout, _) <- curlPostPortal apiKey (portalBase ++ "/keys/validate") "{}"
+  (_, stdout, _) <- curlPost apiKey (apiBase ++ "/keys/validate") "{}"
   return stdout
 
 -- Helper for threadDelay (microseconds)
@@ -1817,8 +1817,8 @@ keyCommand opts = do
 -- Validate API key and show status
 validateKey :: String -> IO ()
 validateKey apiKey = do
-  let url = portalBase ++ "/keys/validate"
-  (exitCode, stdout, stderr) <- curlPostPortal apiKey url "{}"
+  let url = apiBase ++ "/keys/validate"
+  (exitCode, stdout, stderr) <- curlPost apiKey url "{}"
 
   -- Check if valid:false appears in response
   let isInvalid = "\"valid\":false" `isPrefixOf` dropWhile (/= 'v') stdout
@@ -1902,8 +1902,8 @@ validateKey apiKey = do
 -- Extend key (open browser to extend page)
 extendKey :: String -> IO ()
 extendKey apiKey = do
-  let url = portalBase ++ "/keys/validate"
-  (exitCode, stdout, _) <- curlPostPortal apiKey url "{}"
+  let url = apiBase ++ "/keys/validate"
+  (exitCode, stdout, _) <- curlPost apiKey url "{}"
 
   case extractJsonString stdout "public_key" of
     Nothing -> do
@@ -1919,21 +1919,6 @@ extendKey apiKey = do
         ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]
         ""
       return ()
-
--- HTTP helper for portal API
-curlPostPortal :: String -> String -> String -> IO (ExitCode, String, String)
-curlPostPortal apiKey url body = do
-  (publicKey, secretKey) <- getApiKeys
-  let path = drop (length portalBase) url
-  authHeaders <- buildAuthHeaders publicKey secretKey "POST" path body
-  (exitCode, stdout, stderr) <- readProcessWithExitCode "curl"
-    ([ "-s", "-X", "POST"
-     , url
-     , "-H", "Content-Type: application/json"
-     ] ++ authHeaders ++ ["-d", body]) ""
-  -- Check for clock drift error
-  checkClockDriftError stdout
-  return (exitCode, stdout, stderr)
 
 -- ============================================================================
 -- un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)

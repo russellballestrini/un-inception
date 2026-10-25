@@ -826,7 +826,7 @@ function Un.validate_keys(opts)
 
     local resp_body = {}
     local resp, status = transport_request({
-        url = Un.PORTAL_BASE .. "/keys/validate",
+        url = Un.API_BASE .. "/keys/validate",
         method = "POST",
         headers = headers,
         sink = ltn12.sink.table(resp_body)

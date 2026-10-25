@@ -797,7 +797,7 @@ function Invoke-Key {
     $extend = $Args -contains "--extend"
 
     try {
-        $result = Invoke-Api -Endpoint "/keys/validate" -Method "POST" -BaseUrl $PORTAL_BASE
+        $result = Invoke-Api -Endpoint "/keys/validate" -Method "POST"
 
         # Handle --extend flag
         if ($extend) {

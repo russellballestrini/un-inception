@@ -619,7 +619,7 @@ logs_stream_loop(Source, GrepParam, Callback, Interval, Opts) ->
 %% @doc Validate API keys.
 validate_keys() -> validate_keys(#{}).
 validate_keys(Opts) ->
-    Response = portal_post("/keys/validate", "{}", Opts),
+    Response = api_post("/keys/validate", "{}", Opts),
     #{
         valid => extract_json_field(Response, "status") == "valid",
         tier => extract_json_field(Response, "tier"),
@@ -677,16 +677,6 @@ api_put_text(Endpoint, Body, Opts) ->
     file:delete(TmpFile),
     StatusCode = list_to_integer(string:trim(Result)),
     StatusCode >= 200 andalso StatusCode < 300.
-
-portal_post(Endpoint, Json, Opts) ->
-    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
-    TmpFile = write_temp_file(Json),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
-    Cmd = "curl -s -X POST " ++ ?PORTAL_BASE ++ Endpoint ++ " -H 'Content-Type: application/json'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
-    check_clock_drift_error(Result),
-    Result.
 
 %% Generic signed request used by the image CLI commands.
 api_request(Endpoint, Method, Body, PublicKey, SecretKey) ->
@@ -1431,11 +1421,11 @@ key_command_validate(Args) ->
     end.
 
 validate_key(ApiKey) ->
-    Response = curl_post_portal(ApiKey, "/keys/validate", "{}"),
+    Response = curl_post_data(ApiKey, "/keys/validate", "{}"),
     parse_and_display_key_status(Response, false).
 
 validate_and_extend_key(ApiKey) ->
-    Response = curl_post_portal(ApiKey, "/keys/validate", "{}"),
+    Response = curl_post_data(ApiKey, "/keys/validate", "{}"),
     parse_and_display_key_status(Response, true).
 
 parse_and_display_key_status(Response, ShouldExtend) ->
@@ -1925,11 +1915,11 @@ curl_post(ApiKey, Endpoint, TmpFile) ->
     check_clock_drift_error(Result),
     Result.
 
-curl_post_portal(ApiKey, Endpoint, Data) ->
+curl_post_data(ApiKey, Endpoint, Data) ->
     TmpFile = write_temp_file(Data),
     {_, SecretKey} = get_api_keys(),
     AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, Data),
-    Cmd = "curl -s -X POST https://unsandbox.com" ++ Endpoint ++
+    Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
           " -H 'Content-Type: application/json'" ++
           AuthHeaders ++
           " -d @" ++ TmpFile,

@@ -881,7 +881,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
 
 proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
   let authHeaders = buildAuthHeaders("POST", "/keys/validate", "", publicKey, secretKey)
-  let cmd = fmt"""curl -s -X POST '{PORTAL_BASE}/keys/validate' {authHeaders}"""
+  let cmd = fmt"""curl -s -X POST '{API_BASE}/keys/validate' {authHeaders}"""
   let response = execCurl(cmd)
 
   # Parse JSON response manually (simple approach)

@@ -467,21 +467,6 @@
         (println "Usage: un.clj service env <status|set|export|delete> <service_id>"))
       (System/exit 1))))
 
-(defn curl-portal-post [api-key endpoint json-data]
-  (let [tmp-file (str "/tmp/un_clj_portal_" (rand-int 999999) ".json")
-        [public-key secret-key] (get-api-keys)
-        auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data)]
-    (spit tmp-file json-data)
-    (let [args (concat ["curl" "-s" "-X" "POST"
-                        (str portal-base endpoint)
-                        "-H" "Content-Type: application/json"]
-                       auth-headers
-                       ["-d" (str "@" tmp-file)])
-          {:keys [out]} (apply sh args)]
-      (io/delete-file tmp-file true)
-      (check-clock-drift-error out)
-      out)))
-
 (defn execute-command [file env-vars artifacts out-dir network vcpu]
   (let [api-key (get-api-key)
         ext (get-extension file)
@@ -612,7 +597,7 @@
                           (println (str yellow "Warning: Failed to set vault" reset)))))))))))
 
 (defn validate-key [api-key extend?]
-  (let [response (curl-portal-post api-key "/keys/validate" "{}")
+  (let [response (curl-post api-key "/keys/validate" "{}")
         status (extract-field "status" response)
         public-key (extract-field "public_key" response)
         tier (extract-field "tier" response)

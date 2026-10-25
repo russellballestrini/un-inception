@@ -2235,9 +2235,13 @@ contains
             return
         end if
 
+        ! Key validation: signed POST $UN_API/keys/validate (get_credentials
+        ! already exported UNSB_SK/UNSB_HMAC for the shell)
+
         if (extend_mode) then
-            write(full_cmd, '(30A)') &
-                'resp=$(curl -s -X POST ', trim(portal_base), '/keys/validate ', &
+            write(full_cmd, '(*(A))') &
+                'TS=$(date +%s); SIG=$(printf %s "$TS:POST:/keys/validate:{}" | sh -c "$UNSB_HMAC"); ' // &
+                'resp=$(curl -s -X POST "$UN_API/keys/validate" -H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-d "{}"); ', &
@@ -2273,8 +2277,9 @@ contains
                 'sensible-browser "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null &; ', &
                 'else echo -e "\x1b[31mInvalid\x1b[0m"; fi'
         else
-            write(full_cmd, '(30A)') &
-                'resp=$(curl -s -X POST ', trim(portal_base), '/keys/validate ', &
+            write(full_cmd, '(*(A))') &
+                'TS=$(date +%s); SIG=$(printf %s "$TS:POST:/keys/validate:{}" | sh -c "$UNSB_HMAC"); ' // &
+                'resp=$(curl -s -X POST "$UN_API/keys/validate" -H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
                 '-H "Content-Type: application/json" ', &
                 '-H "Authorization: Bearer ', trim(public_key), '" ', &
                 '-d "{}"); ', &

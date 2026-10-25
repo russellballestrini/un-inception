@@ -738,7 +738,7 @@ warnings !
     \ Check if extend flag is set
     0= if
         \ Normal validation
-        s\" curl -s -X POST $PORTAL_BASE/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" -o /tmp/unsandbox_key_resp.json" r@ write-line throw
+        s\" curl -s -X POST $UN_API/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" -o /tmp/unsandbox_key_resp.json" r@ write-line throw
         s\" STATUS=$?" r@ write-line throw
         s\" if [ $STATUS -ne 0 ]; then" r@ write-line throw
         s\"   echo -e '\\x1b[31mInvalid\\x1b[0m'" r@ write-line throw
@@ -767,7 +767,7 @@ warnings !
         s\" rm -f /tmp/unsandbox_key_resp.json" r@ write-line throw
     else
         \ Extend mode
-        s\" RESP=$(curl -s -X POST $PORTAL_BASE/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\")" r@ write-line throw
+        s\" RESP=$(curl -s -X POST $UN_API/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\")" r@ write-line throw
         s\" FETCHED_PUBLIC_KEY=$(echo \"$RESP\" | jq -r '.public_key // \"N/A\"')" r@ write-line throw
         s\" xdg-open \"$PORTAL_BASE/keys/extend?pk=$FETCHED_PUBLIC_KEY\" 2>/dev/null" r@ write-line throw
     then

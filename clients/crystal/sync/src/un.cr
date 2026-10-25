@@ -916,7 +916,7 @@ def cmd_key(args)
   public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
 
   # Validate key
-  url = URI.parse(PORTAL_BASE + "/keys/validate")
+  url = URI.parse(API_BASE + "/keys/validate")
   headers = HTTP::Headers{
     "Content-Type" => "application/json"
   }

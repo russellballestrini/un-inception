@@ -111,6 +111,52 @@ function shq(s) {
     return "'" s "'"
 }
 
+# Write a request body to a 0600 file inside a fresh 0700 mktemp dir and return
+# its path. curl reads it with --data-binary @file, so the body never passes
+# through shell quoting (quotes, backslashes, newlines, $ all survive) and never
+# reaches an argv. body_rm() removes the file and its dir.
+function body_file(data    , cmd, dir, f) {
+    cmd = "umask 077 && mktemp -d \"${TMPDIR:-/tmp}/un_awk.XXXXXXXX\""
+    dir = ""
+    cmd | getline dir
+    close(cmd)
+    if (dir == "") {
+        print RED "Error: cannot create temp dir" RESET > "/dev/stderr"
+        exit 1
+    }
+    f = dir "/body"
+    system("umask 077 && : > " shq(f))
+    printf "%s", data > f
+    close(f)
+    return f
+}
+
+function body_rm(f    , dir) {
+    dir = f
+    sub(/\/[^\/]*$/, "", dir)
+    system("rm -rf " shq(dir))
+}
+
+# Decode a JSON string body (the text between the quotes).
+function json_unescape(s    , out, c, i, n) {
+    out = ""; n = length(s)
+    for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c != "\\" || i == n) { out = out c; continue }
+        c = substr(s, ++i, 1)
+        if (c == "n") out = out "\n"
+        else if (c == "t") out = out "\t"
+        else if (c == "r") out = out "\r"
+        else if (c == "b") out = out "\b"
+        else if (c == "f") out = out "\f"
+        else if (c == "u" && i + 4 <= n) {
+            out = out sprintf("%c", strtonum("0x" substr(s, i + 1, 4))); i += 4
+        }
+        else out = out c
+    }
+    return out
+}
+
 # SHA-256 hex of (printf escapes in prefix_esc) followed by data's raw bytes.
 # Bytes travel through a coprocess's stdin only; nothing reaches an argv.
 function sh_sha256(prefix_esc, data    , cmd, out) {
@@ -276,9 +322,7 @@ function execute(filename    , api_key) {
     json = "{\"language\":\"" language "\",\"code\":\"" escaped_code "\"}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -295,7 +339,7 @@ function execute(filename    , api_key) {
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " api_key "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -304,7 +348,7 @@ function execute(filename    , api_key) {
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     # Check for timestamp authentication errors
     if (match(response, /timestamp/) && (match(response, /401/) || match(response, /expired/) || match(response, /invalid/))) {
@@ -318,22 +362,14 @@ function execute(filename    , api_key) {
     }
 
     # Parse stdout from response (simple regex)
-    if (match(response, /"stdout":"([^"]*)"/, arr)) {
-        stdout = arr[1]
-        gsub(/\\n/, "\n", stdout)
-        gsub(/\\t/, "\t", stdout)
-        gsub(/\\"/, "\"", stdout)
-        gsub(/\\\\/, "\\", stdout)
+    if (match(response, /"stdout":"(([^"\\]|\\.)*)"/, arr)) {
+        stdout = json_unescape(arr[1])
         printf "%s%s%s", BLUE, stdout, RESET
     }
 
     # Parse stderr
-    if (match(response, /"stderr":"([^"]*)"/, arr)) {
-        stderr = arr[1]
-        gsub(/\\n/, "\n", stderr)
-        gsub(/\\t/, "\t", stderr)
-        gsub(/\\"/, "\"", stderr)
-        gsub(/\\\\/, "\\", stderr)
+    if (match(response, /"stderr":"(([^"\\]|\\.)*)"/, arr)) {
+        stderr = json_unescape(arr[1])
         printf "%s%s%s", RED, stderr, RESET > "/dev/stderr"
     }
 
@@ -434,8 +470,10 @@ function session_boost(id, vcpu    , timestamp, sig_headers, signature, sig_inpu
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " --data-binary @" shq(body_tmp)
     system(cmd " > /dev/null")
+    if (body_tmp != "") body_rm(body_tmp)
     print GREEN "Session boosted: " id RESET
 }
 
@@ -465,12 +503,14 @@ function session_execute(id, command    , timestamp, sig_headers, signature, sig
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(body_tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
     print response
 }
 
@@ -596,8 +636,10 @@ function service_redeploy(id, bootstrap    , timestamp, sig_headers, signature, 
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " -d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers " --data-binary @" shq(body_tmp)
     system(cmd " > /dev/null")
+    if (body_tmp != "") body_rm(body_tmp)
     print GREEN "Service redeployed: " id RESET
 }
 
@@ -630,12 +672,14 @@ function service_execute(id, command    , timestamp, sig_headers, signature, sig
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(body_tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
     print response
 }
 
@@ -677,6 +721,7 @@ function handle_sudo_challenge(response, method, endpoint, body    , otp, challe
         sudo_headers = sudo_headers "-H 'X-Sudo-Challenge: " challenge_id "' "
     }
 
+    body_tmp = (body != "" ? body_file(body) : "")
     if (method == "DELETE") {
         cmd = "curl -s -w '\\n%{http_code}' -X DELETE '" API_BASE endpoint "' " \
               "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
@@ -686,7 +731,7 @@ function handle_sudo_challenge(response, method, endpoint, body    , otp, challe
               "-H 'Content-Type: application/json' " \
               "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
               sig_headers sudo_headers \
-              (body != "" ? "-d '" body "'" : "")
+              (body_tmp != "" ? "--data-binary @" shq(body_tmp) : "")
     }
 
     retry_response = ""
@@ -694,6 +739,7 @@ function handle_sudo_challenge(response, method, endpoint, body    , otp, challe
         retry_response = retry_response line "\n"
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
 
     # Check if successful (last line is HTTP code)
     if (match(retry_response, /\n([0-9]+)\n?$/, arr)) {
@@ -754,9 +800,7 @@ function service_resize(id, vcpu    , endpoint, json, tmp, timestamp, sig_header
     json = "{\"vcpu\":" vcpu "}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_resize_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     timestamp = systime()
     sig_headers = ""
@@ -770,11 +814,11 @@ function service_resize(id, vcpu    , endpoint, json, tmp, timestamp, sig_header
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     system(cmd " > /dev/null")
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     ram = vcpu * 2
     print GREEN "Service resized to " vcpu " vCPU, " ram " GB RAM" RESET
@@ -787,9 +831,7 @@ function set_unfreeze_on_demand(id, enabled    , endpoint, json, tmp, timestamp,
     json = "{\"unfreeze_on_demand\":" enabled_str "}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_unfreeze_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     timestamp = systime()
     sig_headers = ""
@@ -803,11 +845,11 @@ function set_unfreeze_on_demand(id, enabled    , endpoint, json, tmp, timestamp,
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     system(cmd " > /dev/null")
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     print GREEN "Service unfreeze_on_demand set to " enabled_str RESET
 }
@@ -827,17 +869,19 @@ function service_dump_bootstrap(id, dump_file    , endpoint, json_body, timestam
     }
 
     # Build the curl command to execute on the service
+          body_tmp = body_file(json_body)
     cmd = "curl -s -X POST '" API_BASE endpoint "' " \
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '" json_body "'"
+          "--data-binary @" shq(body_tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
 
     # Parse stdout from response
     if (match(response, /"stdout":"([^"]*)"/, arr)) {
@@ -912,9 +956,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
     json = json "}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_sess_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -930,7 +972,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -939,7 +981,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     print YELLOW "Session created (WebSocket required)" RESET
     print response
@@ -1005,9 +1047,7 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     json = json "}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_svc_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -1023,7 +1063,7 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -1032,7 +1072,7 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     # Extract service ID for auto-vault
     LAST_SERVICE_ID = ""
@@ -1056,7 +1096,7 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
     }
 
     # Call curl to validate key
-    cmd = "curl -s -X POST '" PORTAL_BASE "/keys/validate' " \
+    cmd = "curl -s -X POST '" API_BASE "/keys/validate' " \
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers
@@ -1562,12 +1602,14 @@ function snapshot_clone(id, clone_type, name    , timestamp, sig_headers, signat
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(body_tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
     print GREEN "Snapshot cloned" RESET
     print response
 }
@@ -1646,9 +1688,7 @@ function image_lock(id    , endpoint, json, tmp, timestamp, sig_headers, signatu
     get_api_keys()
     endpoint = "/images/" id "/lock"
     json = "{}"
-    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1660,9 +1700,9 @@ function image_lock(id    , endpoint, json, tmp, timestamp, sig_headers, signatu
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     system(cmd " > /dev/null")
-    system("rm -f " tmp)
+    body_rm(tmp)
     print GREEN "Image locked: " id RESET
 }
 
@@ -1670,9 +1710,7 @@ function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signa
     get_api_keys()
     endpoint = "/images/" id "/unlock"
     json = "{}"
-    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1684,14 +1722,14 @@ function image_unlock(id    , endpoint, json, tmp, timestamp, sig_headers, signa
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line "\n"
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     # Extract HTTP code from last line
     http_code = 0
@@ -1723,9 +1761,7 @@ function image_publish(source_id, source_type, name    , endpoint, json, tmp, ti
         json = json ",\"name\":\"" escape_json(name) "\""
     }
     json = json "}"
-    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1737,13 +1773,13 @@ function image_publish(source_id, source_type, name    , endpoint, json, tmp, ti
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
     print GREEN "Image published" RESET
     print response
 }
@@ -1752,9 +1788,7 @@ function image_visibility(id, visibility    , endpoint, json, tmp, timestamp, si
     get_api_keys()
     endpoint = "/images/" id "/visibility"
     json = "{\"visibility\":\"" visibility "\"}"
-    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1766,9 +1800,9 @@ function image_visibility(id, visibility    , endpoint, json, tmp, timestamp, si
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     system(cmd " > /dev/null")
-    system("rm -f " tmp)
+    body_rm(tmp)
     print GREEN "Image visibility set to: " visibility RESET
 }
 
@@ -1784,9 +1818,7 @@ function image_spawn(id, name, ports    , endpoint, json, tmp, timestamp, sig_he
         json = json "\"ports\":[" ports "]"
     }
     json = json "}"
-    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1798,13 +1830,13 @@ function image_spawn(id, name, ports    , endpoint, json, tmp, timestamp, sig_he
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
     print GREEN "Service spawned from image" RESET
     print response
 }
@@ -1817,9 +1849,7 @@ function image_clone(id, name    , endpoint, json, tmp, timestamp, sig_headers, 
         json = json "\"name\":\"" escape_json(name) "\""
     }
     json = json "}"
-    tmp = "/tmp/un_awk_img_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1831,13 +1861,13 @@ function image_clone(id, name    , endpoint, json, tmp, timestamp, sig_headers, 
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
     print GREEN "Image cloned" RESET
     print response
 }
@@ -1858,12 +1888,14 @@ function image_grant_access(image_id, trusted_key    , timestamp, sig_headers, s
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(body_tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
     print GREEN "Access granted to " trusted_key RESET
 }
 
@@ -1908,12 +1940,14 @@ function image_transfer(image_id, to_key    , timestamp, sig_headers, signature,
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '" json "'"
+    body_tmp = body_file(json)
+    cmd = "curl -s -X POST '" API_BASE endpoint "' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(body_tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
+    if (body_tmp != "") body_rm(body_tmp)
     print GREEN "Image transferred to " to_key RESET
 }
 
@@ -1925,9 +1959,7 @@ function execute_async(language, code, network_mode    , json, tmp, timestamp, s
     get_api_keys()
     if (network_mode == "") network_mode = "zerotrust"
     json = "{\"language\":\"" language "\",\"code\":\"" escape_json(code) "\",\"network_mode\":\"" network_mode "\",\"ttl\":300}"
-    tmp = "/tmp/un_awk_async_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
@@ -1935,13 +1967,13 @@ function execute_async(language, code, network_mode    , json, tmp, timestamp, s
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE "/execute/async' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '@" tmp "'"
+    cmd = "curl -s -X POST '" API_BASE "/execute/async' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
     print response
 }
 
@@ -2057,9 +2089,7 @@ function logs_fetch(source, lines, since, grep_pattern    , timestamp, sig_heade
     }
     json = json "}"
 
-    tmp = "/tmp/un_awk_logs_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     timestamp = systime()
     sig_headers = ""
@@ -2068,13 +2098,13 @@ function logs_fetch(source, lines, since, grep_pattern    , timestamp, sig_heade
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
-    cmd = "curl -s -X POST '" API_BASE "/paas/logs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "-d '@" tmp "'"
+    cmd = "curl -s -X POST '" API_BASE "/paas/logs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(tmp)
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
     print response
 }
 
@@ -2100,9 +2130,7 @@ function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
     json = json "}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_snap_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -2118,7 +2146,7 @@ function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -2127,7 +2155,7 @@ function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     print GREEN "Snapshot created" RESET
     print response
@@ -2141,9 +2169,7 @@ function session_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     json = "{}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_restore_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -2159,7 +2185,7 @@ function session_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -2168,7 +2194,7 @@ function session_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     print GREEN "Session restored from snapshot" RESET
 }
@@ -2189,9 +2215,7 @@ function service_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
     json = json "}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_snap_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -2207,7 +2231,7 @@ function service_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -2216,7 +2240,7 @@ function service_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     print GREEN "Snapshot created" RESET
     print response
@@ -2230,9 +2254,7 @@ function service_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     json = "{}"
 
     # Write to temp file
-    tmp = "/tmp/un_awk_restore_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     # Build HMAC signature if secret key exists
     timestamp = systime()
@@ -2248,7 +2270,7 @@ function service_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
@@ -2257,7 +2279,7 @@ function service_restore(snapshot_id    , endpoint, json, tmp, timestamp, sig_he
     close(cmd)
 
     # Clean up
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     print GREEN "Service restored from snapshot" RESET
 }
@@ -2307,9 +2329,7 @@ function service_env_set(id, content    , endpoint, tmp, timestamp, sig_headers,
     endpoint = "/services/" id "/env"
 
     # Write content to temp file
-    tmp = "/tmp/un_awk_env_" PROCINFO["pid"] ".txt"
-    print content > tmp
-    close(tmp)
+    tmp = body_file(content)
 
     timestamp = systime()
     sig_headers = ""
@@ -2323,14 +2343,14 @@ function service_env_set(id, content    , endpoint, tmp, timestamp, sig_headers,
           "-H 'Content-Type: text/plain' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "--data-binary '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
     print response
 }
 
@@ -2339,9 +2359,7 @@ function service_env_export(id    , endpoint, json, tmp, timestamp, sig_headers,
     endpoint = "/services/" id "/env/export"
     json = "{}"
 
-    tmp = "/tmp/un_awk_envexp_" PROCINFO["pid"] ".json"
-    print json > tmp
-    close(tmp)
+    tmp = body_file(json)
 
     timestamp = systime()
     sig_headers = ""
@@ -2355,14 +2373,14 @@ function service_env_export(id    , endpoint, json, tmp, timestamp, sig_headers,
           "-H 'Content-Type: application/json' " \
           "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
           sig_headers \
-          "-d '@" tmp "'"
+          "--data-binary @" shq(tmp)
 
     response = ""
     while ((cmd | getline line) > 0) {
         response = response line
     }
     close(cmd)
-    system("rm -f " tmp)
+    body_rm(tmp)
 
     # Extract content field from response
     if (match(response, /"content":"([^"]*)"/, arr)) {

@@ -275,19 +275,6 @@
                  (list (and (>= http-code 200) (< http-code 300)) body))))
       (delete-file tmp-file))))
 
-(defun curl-post-portal (api-key endpoint json-data)
-  (let ((tmp-file (write-temp-file json-data)))
-    (unwind-protect
-         (destructuring-bind (public-key secret-key) (get-api-keys)
-           (let* ((auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
-                  (base-args (list "curl" "-s" "-X" "POST"
-                                  (format nil "~a~a" *portal-base* endpoint)
-                                  "-H" "Content-Type: application/json"))
-                  (response (run-curl (append base-args auth-headers (list "-d" (format nil "@~a" tmp-file))))))
-             (check-clock-drift response)
-             response))
-      (delete-file tmp-file))))
-
 (defun curl-patch (api-key endpoint json-data)
   (let ((tmp-file (write-temp-file json-data)))
     (unwind-protect
@@ -663,7 +650,7 @@
 
 (defun validate-key (extend-flag)
   (let* ((api-key (get-api-key))
-         (response (curl-post-portal api-key "/keys/validate" "{}"))
+         (response (curl-post api-key "/keys/validate" "{}"))
          (status (parse-json-field response "status"))
          (public-key (parse-json-field response "public_key"))
          (tier (parse-json-field response "tier"))
