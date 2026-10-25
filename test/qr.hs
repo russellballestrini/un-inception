@@ -3,7 +3,7 @@ import Codec.QRCode.JuicyPixels
 
 main :: IO ()
 main = do
-  let mqr = encodeText defaultQRCodeOptions Iso8859_1OrUtf8WithoutECI "unsandbox-qr-ok"
+  let mqr = encodeText (defaultQRCodeOptions M) Iso8859_1OrUtf8WithoutECI "unsandbox-qr-ok"
   case mqr of
     Nothing  -> putStrLn "QR encode failed"
     Just img -> do

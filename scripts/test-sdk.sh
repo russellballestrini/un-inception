@@ -108,7 +108,10 @@ get_hello_code() {
         commonlisp|lisp)  echo '(format t "test-ok~%")' ;;
         clojure)          echo '(println "test-ok")' ;;
         elixir)           echo 'IO.puts "test-ok"' ;;
-        erlang)           echo '-module(main). -export([start/0]). start() -> io:format("test-ok~n"), halt().' ;;
+        # escript runs main/1; leading comment line: escript reads line 1 as a
+        # header, and un would take a leading "-module" for an option.
+        erlang)           echo '%% hello
+main(_) -> io:format("test-ok~n").' ;;
         groovy)           echo 'println "test-ok"' ;;
         julia)            echo 'println("test-ok")' ;;
         prolog)           echo ':- write("test-ok"), nl, halt.' ;;
@@ -382,10 +385,12 @@ run_test "exec_network" \
 
 # Test 1.5: Execute SDK file in sandbox (inception)
 # Runs the SDK file inside unsandbox - tests that the interpreter can load/parse the SDK
-# Expected: help/usage output, or interpreter errors (all acceptable)
+# Expected: help/usage output, or interpreter errors (all acceptable).
+# Same command as sdk_runs below, so the same pattern (a missing-module error
+# from an SDK whose deps the image lacks counts as an attempted run in both).
 run_test "exec_sdk_inception" \
     "build/un -n semitrusted '$SDK_FILE' 2>&1 || echo 'attempted'" \
-    "usage|help|unsandbox|Usage|error|Error|attempted"
+    "usage|help|unsandbox|un |version|error|Error|compile|undefined|attempted|unexpected|syntax|import|require|module|WARNING|domain|license"
 
 echo ""
 

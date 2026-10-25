@@ -18,5 +18,5 @@
        ;; QRcode struct: { int version, int width, unsigned char *data }
        (version (bytevector-sint-ref (pointer->bytevector qr-ptr 4) 0 (native-endianness) 4))
        (width   (bytevector-sint-ref (pointer->bytevector (make-pointer (+ (pointer-address qr-ptr) 4)) 4) 0 (native-endianness) 4)))
-  (format #t "QR:unsandbox-qr-ok:ROWS:~d~%" width)
+  (format #t "QR:unsandbox-qr-ok:ROWS:~a~%" width)
   (qr-free qr-ptr))

@@ -15,6 +15,5 @@
 # Code is seeds to sprout on any abandoned technology.
 
 qr = EQRCode.encode("unsandbox-qr-ok")
-matrix = qr.matrix
-rows = length(matrix)
+rows = tuple_size(qr.matrix)
 IO.puts("QR:unsandbox-qr-ok:ROWS:#{rows}")

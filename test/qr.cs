@@ -1,3 +1,4 @@
+using System;
 using QRCoder;
 
 class Program {

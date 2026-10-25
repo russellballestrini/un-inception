@@ -1662,7 +1662,11 @@ let printHelp () =
     printfn "Languages options:"
     printfn "  --json            Output as JSON array"
 
+// Script mode (dotnet fsi / fsharpi un.fs) never calls an [<EntryPoint>]
+// and rejects one that is not last; the block at the end calls main there.
+#if !INTERACTIVE
 [<EntryPoint>]
+#endif
 let main argv =
     try
         let args = parseArgs argv
@@ -1681,3 +1685,7 @@ let main argv =
     with ex ->
         eprintfn "%sError: %s%s" red ex.Message reset
         1
+
+#if INTERACTIVE
+exit (main (fsi.CommandLineArgs |> Array.skip 1))
+#endif

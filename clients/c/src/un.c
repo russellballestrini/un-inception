@@ -705,6 +705,7 @@ const char* detect_language_from_shebang(const char *code) {
     if (strstr(code, "/clisp") || strstr(code, "/sbcl")) return "commonlisp";
     if (strstr(code, "/ocaml")) return "ocaml";
     if (strstr(code, "/elixir")) return "elixir";
+    if (strstr(code, "/awk") || strstr(code, "/gawk")) return "awk";
 
     return NULL;
 }
@@ -751,6 +752,7 @@ const char* detect_language_from_extension(const char *filename) {
     if (strcmp(ext, "lisp") == 0 || strcmp(ext, "lsp") == 0) return "commonlisp";
     if (strcmp(ext, "cob") == 0) return "cobol";
     if (strcmp(ext, "tcl") == 0) return "tcl";
+    if (strcmp(ext, "awk") == 0) return "awk";
     if (strcmp(ext, "raku") == 0) return "raku";
     if (strcmp(ext, "pro") == 0 || strcmp(ext, "p") == 0) return "prolog";
     if (strcmp(ext, "4th") == 0 || strcmp(ext, "forth") == 0 || strcmp(ext, "fth") == 0) return "forth";
