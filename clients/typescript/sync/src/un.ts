@@ -307,7 +307,8 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
     const url = new URL(API_BASE + endpoint);
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const body = data ? JSON.stringify(data) : '';
-    const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
+    // Sign the path without its query string: the server verifies against conn.request_path.
+    const message = `${timestamp}:${method}:${url.pathname}:${body}`;
     const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
 
     const options: https.RequestOptions = {
@@ -371,7 +372,8 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
     const url = new URL(API_BASE + endpoint);
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const body = data ? JSON.stringify(data) : '';
-    const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
+    // Sign the path without its query string: the server verifies against conn.request_path.
+    const message = `${timestamp}:${method}:${url.pathname}:${body}`;
     const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
 
     const options: https.RequestOptions = {
@@ -421,7 +423,8 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
 
             // Retry with sudo headers
             const retryTimestamp = Math.floor(Date.now() / 1000).toString();
-            const retryMessage = `${retryTimestamp}:${method}:${url.pathname}${url.search}:${body}`;
+            // Sign the path without its query string: the server verifies against conn.request_path.
+            const retryMessage = `${retryTimestamp}:${method}:${url.pathname}:${body}`;
             const retrySignature = crypto.createHmac('sha256', keys.secretKey).update(retryMessage).digest('hex');
 
             const retryOptions: https.RequestOptions = {
@@ -510,7 +513,8 @@ function apiRequestSoft(endpoint: string, method: string = "GET", data: any = nu
     const url = new URL(API_BASE + endpoint);
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const body = data ? JSON.stringify(data) : '';
-    const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
+    // Sign the path without its query string: the server verifies against conn.request_path.
+    const message = `${timestamp}:${method}:${url.pathname}:${body}`;
     const signature = crypto.createHmac('sha256', keys.secretKey).update(message).digest('hex');
 
     const options: https.RequestOptions = {

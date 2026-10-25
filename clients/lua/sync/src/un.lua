@@ -309,7 +309,9 @@ function Un.api_request(method, endpoint, body, opts, extra_headers)
     local content_type = opts.content_type or "application/json"
     local signature = ""
     if sk and sk ~= "" then
-        signature = Un.hmac_sign(sk, timestamp .. ":" .. method .. ":" .. endpoint .. ":" .. body_str)
+        -- The server verifies against the request path without the query string
+        -- (conn.request_path), so sign only the part before '?'.
+        signature = Un.hmac_sign(sk, timestamp .. ":" .. method .. ":" .. endpoint:match("^[^?]*") .. ":" .. body_str)
     end
 
     local headers = {
@@ -358,7 +360,9 @@ function Un.api_request_with_sudo(method, endpoint, body, opts)
 
     local signature = ""
     if sk and sk ~= "" then
-        signature = Un.hmac_sign(sk, timestamp .. ":" .. method .. ":" .. endpoint .. ":" .. body_str)
+        -- The server verifies against the request path without the query string
+        -- (conn.request_path), so sign only the part before '?'.
+        signature = Un.hmac_sign(sk, timestamp .. ":" .. method .. ":" .. endpoint:match("^[^?]*") .. ":" .. body_str)
     end
 
     local headers = {

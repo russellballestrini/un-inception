@@ -364,7 +364,10 @@ namespace eval Un {
         # Add HMAC signature if secret key exists
         if {$sk ne ""} {
             set timestamp [clock seconds]
-            set sig_input "${timestamp}:${method}:${endpoint}:${body}"
+            # The server verifies against the path without its query string
+            # (conn.request_path), so sign only the part before '?'.
+            set sign_path [lindex [split $endpoint ?] 0]
+            set sig_input "${timestamp}:${method}:${sign_path}:${body}"
             set signature [hmac_sign $sk $sig_input]
             lappend headers X-Timestamp $timestamp
             lappend headers X-Signature $signature

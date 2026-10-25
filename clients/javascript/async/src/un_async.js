@@ -395,7 +395,9 @@ function resolveCredentials(publicKey, secretKey, accountIndex) {
  */
 async function signRequest(secretKey, timestamp, method, urlPath, body) {
   const bodyStr = body || '';
-  const message = `${timestamp}:${method}:${urlPath}:${bodyStr}`;
+  // Server verifies against the request path without its query string (conn.request_path)
+  const signPath = urlPath.split('?')[0];
+  const message = `${timestamp}:${method}:${signPath}:${bodyStr}`;
 
   if (IS_NODE && crypto) {
     // Node.js: synchronous HMAC

@@ -645,7 +645,7 @@ function service_redeploy(id, bootstrap    , timestamp, sig_headers, signature, 
     print GREEN "Service redeployed: " id RESET
 }
 
-function service_logs(id, lines    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint) {
+function service_logs(id, lines    , timestamp, sig_headers, signature, sig_input, sig_cmd, endpoint, sign_path) {
     get_api_keys()
     endpoint = "/services/" id "/logs"
     if (lines != "") {
@@ -654,7 +654,10 @@ function service_logs(id, lines    , timestamp, sig_headers, signature, sig_inpu
     timestamp = systime()
     sig_headers = ""
     if (GLOBAL_SECRET_KEY != "") {
-        sig_input = timestamp ":GET:" endpoint ":"
+        # Server verifies HMAC against our path without its query string
+        sign_path = endpoint
+        sub(/\?.*/, "", sign_path)
+        sig_input = timestamp ":GET:" sign_path ":"
         signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "'"
     }

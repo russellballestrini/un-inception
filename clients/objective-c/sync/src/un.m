@@ -239,7 +239,10 @@ NSString* UNHmacSha256Hex(NSString* key, NSString* message) {
  * @return Hex-encoded signature
  */
 NSString* UNComputeSignature(NSString* secretKey, long timestamp, NSString* method, NSString* path, NSString* body) {
-    NSString* message = [NSString stringWithFormat:@"%ld:%@:%@:%@", timestamp, method, path, body ?: @""];
+    // The server verifies against the request path without the query string
+    // (conn.request_path), so sign only the part before '?'.
+    NSString* signPath = [[path componentsSeparatedByString:@"?"] firstObject];
+    NSString* message = [NSString stringWithFormat:@"%ld:%@:%@:%@", timestamp, method, signPath, body ?: @""];
     return UNHmacSha256Hex(secretKey, message);
 }
 

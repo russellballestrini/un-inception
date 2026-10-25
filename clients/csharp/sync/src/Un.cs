@@ -981,7 +981,8 @@ class Un
         if (!string.IsNullOrEmpty(secretKey))
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+            // Server verifies HMAC against our path without its query string
+            string message = $"{timestamp}:{method}:{endpoint.Split('?')[0]}:{body}";
 
             using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
             {
@@ -1123,7 +1124,8 @@ class Un
         if (!string.IsNullOrEmpty(secretKey))
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+            // Server verifies HMAC against our path without its query string
+            string message = $"{timestamp}:{method}:{endpoint.Split('?')[0]}:{body}";
 
             using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
             {
@@ -2651,7 +2653,8 @@ public static class Unsandbox
         if (!string.IsNullOrEmpty(secretKey))
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+            // Server verifies HMAC against our path without its query string
+            string message = $"{timestamp}:{method}:{endpoint.Split('?')[0]}:{body}";
             using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
             {
                 byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));
@@ -2694,7 +2697,8 @@ public static class Unsandbox
         if (!string.IsNullOrEmpty(secretKey))
         {
             long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string message = $"{timestamp}:{method}:{endpoint}:{body}";
+            // Server verifies HMAC against our path without its query string
+            string message = $"{timestamp}:{method}:{endpoint.Split('?')[0]}:{body}";
             using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey)))
             {
                 byte[] hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message));

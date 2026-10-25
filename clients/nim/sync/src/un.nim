@@ -258,7 +258,10 @@ proc buildAuthHeaders(meth: string, path: string, body: string, publicKey: strin
 
   # HMAC mode
   let timestamp = getTimestamp()
-  let message = fmt"{timestamp}:{meth}:{path}:{body}"
+  # The server verifies against the request path without the query string
+  # (conn.request_path), so sign only the part before '?'.
+  let signPath = path.split('?', 1)[0]
+  let message = fmt"{timestamp}:{meth}:{signPath}:{body}"
   let signature = computeHmac(secretKey, message)
 
   return fmt"-H 'Authorization: Bearer {publicKey}' -H 'X-Timestamp: {timestamp}' -H 'X-Signature: {signature}'"

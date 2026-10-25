@@ -136,7 +136,10 @@ fn build_input_files_json(files []string) string {
 // never reaches a command line (openssl -hmac would put it in argv).
 fn sign_request(method string, path string, body string, secret_key string) (i64, string) {
 	ts := time.now().unix()
-	message := '${ts}:${method}:${path}:${body}'
+	// The server verifies against the path without its query string
+	// (conn.request_path), so sign only the part before '?'.
+	sign_path := path.all_before('?')
+	message := '${ts}:${method}:${sign_path}:${body}'
 	return ts, hmac.new(secret_key.bytes(), message.bytes(), sha256.sum, sha256.block_size).hex()
 }
 

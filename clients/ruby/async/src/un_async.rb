@@ -1402,7 +1402,10 @@ module UnAsync
     # @return [String] 64-character lowercase hex signature
     def sign_request(secret_key, timestamp, method, path, body = nil)
       body_str = body || ''
-      message = "#{timestamp}:#{method}:#{path}:#{body_str}"
+      # The server verifies against the path without its query string
+      # (conn.request_path), so sign only the part before '?'.
+      sign_path = path.split('?', 2).first
+      message = "#{timestamp}:#{method}:#{sign_path}:#{body_str}"
       OpenSSL::HMAC.hexdigest('SHA256', secret_key, message)
     end
 

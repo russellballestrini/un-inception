@@ -569,7 +569,10 @@
                   (bytevector->u8-list mac))))))
 
 (define (make-signature secret-key timestamp method path body)
-  (let ((message (format #f "~a:~a:~a:~a" timestamp method path body)))
+  ;; The server verifies against the path without its query string
+  ;; (conn.request_path), so sign only the part before '?'.
+  (let ((message (format #f "~a:~a:~a:~a" timestamp method
+                         (car (string-split path #\?)) body)))
     (hmac-sha256 secret-key message)))
 
 (define (build-auth-headers public-key secret-key method path body)

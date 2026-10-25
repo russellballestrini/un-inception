@@ -344,7 +344,9 @@ let apiRequestWithHeaders (endpoint: string) (method: string) (data: (string * o
     // Add HMAC authentication headers if secretKey is provided
     if not (String.IsNullOrEmpty(secretKey)) then
         let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-        let message = sprintf "%d:%s:%s:%s" timestamp method endpoint body
+        // Server verifies against the request path without its query string (conn.request_path)
+        let signPath = endpoint.Split([|'?'|], 2).[0]
+        let message = sprintf "%d:%s:%s:%s" timestamp method signPath body
 
         use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
         let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(message))

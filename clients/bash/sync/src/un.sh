@@ -215,7 +215,7 @@ api_request() {
 
     local signature=""
     if [ -n "$sk" ]; then
-        signature=$(hmac_sign "$sk" "$timestamp:$method:$endpoint:$body_str")
+        signature=$(hmac_sign "$sk" "$timestamp:$method:${endpoint%%\?*}:$body_str")  # server verifies HMAC over path without query
     fi
 
     local curl_args=(-s -X "$method" "$API_BASE$endpoint"
@@ -253,7 +253,7 @@ api_request_with_sudo() {
 
     local signature=""
     if [ -n "$sk" ]; then
-        signature=$(hmac_sign "$sk" "$timestamp:$method:$endpoint:$body_str")
+        signature=$(hmac_sign "$sk" "$timestamp:$method:${endpoint%%\?*}:$body_str")  # server verifies HMAC over path without query
     fi
 
     local result
@@ -285,7 +285,7 @@ api_request_with_sudo() {
         # Retry with sudo headers
         timestamp=$(date +%s)
         if [ -n "$sk" ]; then
-            signature=$(hmac_sign "$sk" "$timestamp:$method:$endpoint:$body_str")
+            signature=$(hmac_sign "$sk" "$timestamp:$method:${endpoint%%\?*}:$body_str")  # server verifies HMAC over path without query
         fi
 
         result=$(curl -s -w '\n%{http_code}' -X "$method" "$API_BASE$endpoint" \

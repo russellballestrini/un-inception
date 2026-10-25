@@ -165,6 +165,9 @@ function hmac_sha256_hex(key::String, message::String)::String
 end
 
 function compute_signature(secret_key::String, timestamp::Int64, method::String, path::String, body::String)::String
+    # The server verifies against the request path without the query string
+    # (conn.request_path), so sign only the part before '?'.
+    path = String(split(path, '?'; limit=2)[1])
     message = "$(timestamp):$(method):$(path):$(body)"
     return hmac_sha256_hex(secret_key, message)
 end

@@ -1565,7 +1565,9 @@ hmacSha256 secret message =
 
 makeSignature :: String -> String -> String -> String -> String -> String
 makeSignature secretKey timestamp method path body =
-  let message = timestamp ++ ":" ++ method ++ ":" ++ path ++ ":" ++ body
+  -- Server verifies against the request path without its query string (conn.request_path)
+  let signPath = takeWhile (/= '?') path
+      message = timestamp ++ ":" ++ method ++ ":" ++ signPath ++ ":" ++ body
   in hmacSha256 secretKey message
 
 buildAuthHeaders :: String -> Maybe String -> String -> String -> String -> IO [String]

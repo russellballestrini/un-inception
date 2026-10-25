@@ -783,6 +783,9 @@ pub async fn resolve_credentials_async(
 ///
 /// Message format: "timestamp:METHOD:path:body"
 fn sign_request(secret_key: &str, timestamp: u64, method: &str, path: &str, body: &str) -> String {
+    // The server verifies against the path without its query string
+    // (conn.request_path), so sign only the part before '?'.
+    let path = path.split('?').next().unwrap_or(path);
     let message = format!("{}:{}:{}:{}", timestamp, method, path, body);
     let mut mac = HmacSha256::new_from_slice(secret_key.as_bytes())
         .expect("HMAC can take key of any size");

@@ -276,7 +276,10 @@ public class Un {
     private static String signRequest(String secretKey, long timestamp, String method, String path, String body) {
         try {
             String bodyStr = (body != null) ? body : "";
-            String message = timestamp + ":" + method + ":" + path + ":" + bodyStr;
+            // Server verifies against the request path without its query string (conn.request_path)
+            int q = path.indexOf('?');
+            String signPath = (q >= 0) ? path.substring(0, q) : path;
+            String message = timestamp + ":" + method + ":" + signPath + ":" + bodyStr;
 
             Mac mac = Mac.getInstance("HmacSHA256");
             SecretKeySpec secretKeySpec = new SecretKeySpec(

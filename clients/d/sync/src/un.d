@@ -291,7 +291,8 @@ string buildAuthHeaders(string method, string path, string body, string publicKe
 
     // HMAC mode
     string timestamp = getTimestamp();
-    string message = format("%s:%s:%s:%s", timestamp, method, path, body);
+    // Server verifies HMAC against our path without its query string
+    string message = format("%s:%s:%s:%s", timestamp, method, path.findSplitBefore("?")[0], body);
     string signature = computeHmac(secretKey, message);
 
     return format("-H 'Authorization: Bearer %s' -H 'X-Timestamp: %s' -H 'X-Signature: %s'",
