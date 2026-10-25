@@ -32,14 +32,14 @@ jobs:
     outputs:
       changes_json: ${{ steps.detect.outputs.changes_json }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: detect
         run: |
           bash scripts/detect-changes.sh > changes.json
           cat changes.json
           # Re-export to GITHUB_OUTPUT for downstream jobs
           echo "changes_json=$(jq -c . changes.json)" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: changes
           path: changes.json
@@ -56,13 +56,13 @@ jobs:
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: changes
       - id: gen
         run: bash scripts/generate-matrix.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-matrix
           path: test-matrix.yml
@@ -74,9 +74,9 @@ jobs:
     needs: generate-matrix
     runs-on: [self-hosted, build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash scripts/build-clients.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build
           path: |
@@ -91,8 +91,8 @@ jobs:
     runs-on: [self-hosted, build]
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: build
           path: .
@@ -111,8 +111,8 @@ jobs:
         include: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
     continue-on-error: true        # gitlab's `allow_failure: true`
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: build
           path: .
@@ -121,7 +121,7 @@ jobs:
           SDK_LANG: ${{ matrix.SDK_LANG }}
           UNSANDBOX_PUBLIC_KEY: ${{ secrets.UNSANDBOX_PUBLIC_KEY }}
           UNSANDBOX_SECRET_KEY: ${{ secrets.UNSANDBOX_SECRET_KEY }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: test-results-${{ matrix.SDK_LANG }}
@@ -136,7 +136,7 @@ jobs:
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: |
           echo "=== MANUAL POOL BURN ==="
           echo '{"test_all": true, "changed_langs": []}' > changes.json
@@ -144,7 +144,7 @@ jobs:
         env:
           FORCE_FULL_MATRIX: 'true'
         run: bash scripts/generate-matrix.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-matrix-burn
           path: test-matrix.yml
@@ -158,7 +158,7 @@ jobs:
         include: ${{ fromJson(needs.manual-burn-pool.outputs.matrix) }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash scripts/build-clients.sh
       - run: bash scripts/test-sdk.sh "${{ matrix.SDK_LANG }}"
         env:
@@ -173,11 +173,12 @@ jobs:
     runs-on: [self-hosted, build]
     container: python:3.11
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: |
           python3 -m venv .venv
           source .venv/bin/activate
-          pip install --quiet requests aiohttp
+          pip install --quiet --require-hashes -r requirements-pip.lock
+          pip install --quiet --require-hashes -r requirements-ci.lock
           bash scripts/validate-examples.sh
         env:
           UNSANDBOX_PUBLIC_KEY: ${{ secrets.UNSANDBOX_PUBLIC_KEY }}
@@ -189,7 +190,7 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash scripts/collect-pool-metrics.sh
 
   perf-report:
@@ -198,9 +199,9 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash scripts/generate-perf-report.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: perf-report

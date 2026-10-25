@@ -468,3 +468,16 @@ endif
 	@echo ""
 	@echo "Local key still at: $(DEPLOY_KEY_PATH)"
 	@echo "To remove: rm $(DEPLOY_KEY_PATH) $(DEPLOY_KEY_PATH).pub"
+
+# ============================================================================
+# Supply chain (ticket #121): CI pip installs run from hash-locked files
+# (--require-hashes). *.txt holds loose specs; `make lock` regenerates *.lock.
+# ============================================================================
+
+PY_MIN ?= 3.10
+UV_COMPILE = UV_SYSTEM_CERTS=true uv pip compile --universal --generate-hashes --upgrade --python-version $(PY_MIN)
+
+.PHONY: lock
+lock:
+	$(UV_COMPILE) -o requirements-pip.lock requirements-pip.txt
+	$(UV_COMPILE) -o requirements-ci.lock requirements-ci.txt

@@ -167,7 +167,8 @@ science-validate-examples:
     # Set up Python venv with dependencies for example validation
     - python3 -m venv .venv
     - source .venv/bin/activate
-    - pip install --quiet requests aiohttp
+    - pip install --quiet --require-hashes -r requirements-pip.lock
+    - pip install --quiet --require-hashes -r requirements-ci.lock
     - bash scripts/validate-examples.sh
   artifacts:
     reports:

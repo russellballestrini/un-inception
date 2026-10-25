@@ -1,0 +1,3 @@
+# CI science-validate-examples deps, hash-locked in requirements-ci.lock (make lock).
+requests
+aiohttp
