@@ -510,7 +510,15 @@ static struct curl_slist* add_hmac_auth_headers(struct curl_slist *headers,
     if (!creds || !creds->public_key || !creds->secret_key) return headers;
 
     long timestamp = (long)time(NULL);
-    char *signature = sign_request(creds->secret_key, timestamp, method, path, body);
+    // The server verifies against the request path without the query string
+    // (conn.request_path), so sign only the part before '?'. Signing the query
+    // made every request with one fail as "Invalid HMAC signature" (e.g.
+    // `un service --logs`, which asks for ?all=true).
+    char sign_path[1024];
+    snprintf(sign_path, sizeof(sign_path), "%s", path);
+    char *q = strchr(sign_path, '?');
+    if (q) *q = '\0';
+    char *signature = sign_request(creds->secret_key, timestamp, method, sign_path, body);
     if (!signature) return headers;
 
     char auth_header[256];
