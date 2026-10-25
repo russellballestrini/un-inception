@@ -470,7 +470,10 @@
         (format nil "~(~{~2,'0x~}~)" (coerce mac 'list))))))
 
 (defun make-signature (secret-key timestamp method path body)
-  (let ((message (format nil "~a:~a:~a:~a" timestamp method path body)))
+  ;; The server verifies against the request path without the query string
+  ;; (conn.request_path), so sign only the part before '?'.
+  (let ((message (format nil "~a:~a:~a:~a" timestamp method
+                         (subseq path 0 (or (position #\? path) (length path))) body)))
     (hmac-sha256 secret-key message)))
 
 (defun build-auth-headers (public-key secret-key method path body)

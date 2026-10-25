@@ -149,6 +149,9 @@ def _sign_request(
     Returns: 64-character hex string
     """
     body_str = body or ""
+    # The server verifies against the path without its query string
+    # (conn.request_path), so sign only the part before '?'.
+    path = path.split("?", 1)[0]
     message = f"{timestamp}:{method}:{path}:{body_str}"
     signature = hmac.new(
         secret_key.encode(),

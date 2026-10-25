@@ -477,6 +477,11 @@ let hmac_sha256 secret message =
    Signature = HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
 *)
 let make_signature secret_key timestamp method_ path body =
+  (* The server verifies against the request path without the query string
+     (conn.request_path), so sign only the part before '?'. *)
+  let path = match String.index_opt path '?' with
+    | Some i -> String.sub path 0 i
+    | None -> path in
   let message = Printf.sprintf "%s:%s:%s:%s" timestamp method_ path body in
   hmac_sha256 secret_key message
 

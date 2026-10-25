@@ -234,7 +234,8 @@ def handle_sudo_challenge(response_body : String, public_key : String, secret_ke
   # Add HMAC authentication headers
   if secret_key && !secret_key.empty?
     timestamp = Time.utc.to_unix.to_s
-    message = "#{timestamp}:#{method}:#{endpoint}:#{request_body}"
+    # Server verifies HMAC against our path without its query string
+    message = "#{timestamp}:#{method}:#{endpoint.split('?', 2).first}:#{request_body}"
     signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
 
     headers["Authorization"] = "Bearer #{public_key}"
@@ -299,7 +300,8 @@ def api_request_with_sudo(endpoint : String, public_key : String, secret_key : S
   # Add HMAC authentication headers if secret_key is provided
   if secret_key && !secret_key.empty?
     timestamp = Time.utc.to_unix.to_s
-    message = "#{timestamp}:#{method}:#{endpoint}:#{body}"
+    # Server verifies HMAC against our path without its query string
+    message = "#{timestamp}:#{method}:#{endpoint.split('?', 2).first}:#{body}"
 
     signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
 
@@ -354,7 +356,8 @@ def api_request(endpoint : String, public_key : String, secret_key : String?, me
   # Add HMAC authentication headers if secret_key is provided
   if secret_key && !secret_key.empty?
     timestamp = Time.utc.to_unix.to_s
-    message = "#{timestamp}:#{method}:#{endpoint}:#{body}"
+    # Server verifies HMAC against our path without its query string
+    message = "#{timestamp}:#{method}:#{endpoint.split('?', 2).first}:#{body}"
 
     signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
 
@@ -407,7 +410,8 @@ def api_request_text(endpoint : String, public_key : String, secret_key : String
   # Add HMAC authentication headers if secret_key is provided
   if secret_key && !secret_key.empty?
     timestamp = Time.utc.to_unix.to_s
-    message = "#{timestamp}:PUT:#{endpoint}:#{body}"
+    # Server verifies HMAC against our path without its query string
+    message = "#{timestamp}:PUT:#{endpoint.split('?', 2).first}:#{body}"
     signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
     headers["Authorization"] = "Bearer #{public_key}"
     headers["X-Timestamp"] = timestamp
@@ -1331,7 +1335,8 @@ def cmd_logs(args)
     # Add HMAC authentication headers
     if secret_key && !secret_key.empty?
       timestamp = Time.utc.to_unix.to_s
-      message = "#{timestamp}:GET:#{stream_endpoint}:"
+      # Server verifies HMAC against our path without its query string
+      message = "#{timestamp}:GET:#{stream_endpoint.split('?', 2).first}:"
       signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
       headers["Authorization"] = "Bearer #{public_key}"
       headers["X-Timestamp"] = timestamp

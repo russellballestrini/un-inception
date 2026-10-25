@@ -1795,6 +1795,9 @@ class Unsandbox {
      */
     private function signRequest(string $secretKey, int $timestamp, string $method, string $path, ?string $body = null): string {
         $bodyStr = $body ?? '';
+        // The server verifies against the request path without the query string
+        // (conn.request_path), so sign only the part before '?'.
+        $path = explode('?', $path, 2)[0];
         $message = "{$timestamp}:{$method}:{$path}:{$bodyStr}";
         return hash_hmac('sha256', $message, $secretKey);
     }

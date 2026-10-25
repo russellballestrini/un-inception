@@ -744,7 +744,8 @@ async Task<Dictionary<string, object>> ApiRequestAsync(string endpoint, HttpMeth
     if (!string.IsNullOrEmpty(secretKey))
     {
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var message = $"{timestamp}:{method.Method}:{endpoint}:{body}";
+        // Server verifies HMAC against our path without its query string
+        var message = $"{timestamp}:{method.Method}:{endpoint.Split('?')[0]}:{body}";
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey));
         var signature = Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(message))).ToLowerInvariant();
         request.Headers.Add("Authorization", $"Bearer {publicKey}");

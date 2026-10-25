@@ -463,7 +463,8 @@ string build_auth_headers(const string& method, const string& path, const string
 
     // HMAC mode
     string timestamp = get_timestamp();
-    string message = timestamp + ":" + method + ":" + path + ":" + body;
+    // Server verifies against our path without its query string (conn.request_path)
+    string message = timestamp + ":" + method + ":" + path.substr(0, path.find('?')) + ":" + body;
     string signature = compute_hmac(secret_key, message);
 
     return "-H 'Authorization: Bearer " + public_key + "' "

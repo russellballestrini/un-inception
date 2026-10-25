@@ -194,7 +194,10 @@ sub api_request {
 
     # HMAC signature
     if ($sk) {
-        my $sig_input = "$timestamp:$method:$endpoint:$body_str";
+        # The server verifies against the request path without the query string
+        # (conn.request_path), so sign only the part before '?'.
+        (my $sign_path = $endpoint) =~ s/\?.*//s;
+        my $sig_input = "$timestamp:$method:$sign_path:$body_str";
         my $signature = hmac_sign($sk, $sig_input);
         $req->header('X-Timestamp' => $timestamp);
         $req->header('X-Signature' => $signature);
@@ -236,7 +239,10 @@ sub api_request_with_sudo {
     $req->header('Content-Type' => 'application/json');
 
     if ($sk) {
-        my $sig_input = "$timestamp:$method:$endpoint:$body_str";
+        # The server verifies against the request path without the query string
+        # (conn.request_path), so sign only the part before '?'.
+        (my $sign_path = $endpoint) =~ s/\?.*//s;
+        my $sig_input = "$timestamp:$method:$sign_path:$body_str";
         my $signature = hmac_sign($sk, $sig_input);
         $req->header('X-Timestamp' => $timestamp);
         $req->header('X-Signature' => $signature);

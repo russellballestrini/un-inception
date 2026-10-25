@@ -1043,6 +1043,10 @@ fun hmacSha256(secretKey: String, data: String): String {
     return hash.joinToString("") { "%02x".format(it) }
 }
 
+// The server verifies against the request path without the query string
+// (conn.request_path), so sign only the part before '?'.
+fun signingPath(path: String): String = path.substringBefore('?')
+
 fun detectLanguage(filename: String): String {
     val ext = filename.substringAfterLast('.', "")
     if (ext.isEmpty()) {
@@ -1057,7 +1061,7 @@ class SudoChallengeException(val challengeId: String?, val responseBody: String)
 fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, publicKey: String?, secretKey: String): Map<String, Any> {
     val timestamp = System.currentTimeMillis() / 1000
     val body = if (data != null) toJson(data) else ""
-    val signatureData = "$timestamp:$method:$endpoint:$body"
+    val signatureData = "$timestamp:$method:${signingPath(endpoint)}:$body"
     val signature = hmacSha256(secretKey, signatureData)
 
     val url = URL(API_BASE + endpoint)
@@ -1108,7 +1112,7 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
 fun apiRequestWithSudo(endpoint: String, method: String, data: Map<String, Any>?, publicKey: String?, secretKey: String, otp: String, challengeId: String?): Map<String, Any> {
     val timestamp = System.currentTimeMillis() / 1000
     val body = if (data != null) toJson(data) else ""
-    val signatureData = "$timestamp:$method:$endpoint:$body"
+    val signatureData = "$timestamp:$method:${signingPath(endpoint)}:$body"
     val signature = hmacSha256(secretKey, signatureData)
 
     val url = URL(API_BASE + endpoint)
@@ -1166,7 +1170,7 @@ fun apiRequestDestructive(endpoint: String, method: String, data: Map<String, An
 fun apiRequestPatch(endpoint: String, data: Map<String, Any>, publicKey: String?, secretKey: String): Map<String, Any> {
     val timestamp = System.currentTimeMillis() / 1000
     val body = toJson(data)
-    val signatureData = "$timestamp:PATCH:$endpoint:$body"
+    val signatureData = "$timestamp:PATCH:${signingPath(endpoint)}:$body"
     val signature = hmacSha256(secretKey, signatureData)
 
     val url = URL(API_BASE + endpoint)
@@ -1203,7 +1207,7 @@ fun apiRequestPatch(endpoint: String, data: Map<String, Any>, publicKey: String?
 
 fun apiRequestText(endpoint: String, method: String, body: String, publicKey: String?, secretKey: String): Pair<Boolean, String> {
     val timestamp = System.currentTimeMillis() / 1000
-    val signatureData = "$timestamp:$method:$endpoint:$body"
+    val signatureData = "$timestamp:$method:${signingPath(endpoint)}:$body"
     val signature = hmacSha256(secretKey, signatureData)
 
     val url = URL(API_BASE + endpoint)

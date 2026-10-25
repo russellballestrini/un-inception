@@ -228,7 +228,10 @@ NSString* UNHmacSha256Hex(NSString* key, NSString* message) {
  * @return Hex-encoded signature
  */
 NSString* UNComputeSignature(NSString* secretKey, long timestamp, NSString* method, NSString* path, NSString* body) {
-    NSString* message = [NSString stringWithFormat:@"%ld:%@:%@:%@", timestamp, method, path, body ?: @""];
+    // The server verifies against the request path without the query string
+    // (conn.request_path), so sign only the part before '?'.
+    NSString* signPath = [[path componentsSeparatedByString:@"?"] firstObject];
+    NSString* message = [NSString stringWithFormat:@"%ld:%@:%@:%@", timestamp, method, signPath, body ?: @""];
     return UNHmacSha256Hex(secretKey, message);
 }
 
@@ -2499,7 +2502,8 @@ void cmdLogs(NSArray* args) {
         // Add HMAC authentication headers
         if (secretKey && [secretKey length] > 0) {
             NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
-            NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
+            // Sign the path without its query string (server uses conn.request_path).
+            NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, [[endpoint componentsSeparatedByString:@"?"] firstObject]];
             NSString* signature = UNHmacSha256Hex(secretKey, message);
             [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
             [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
@@ -2550,7 +2554,8 @@ void cmdLogs(NSArray* args) {
     // Add HMAC authentication headers
     if (secretKey && [secretKey length] > 0) {
         NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
-        NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
+        // Sign the path without its query string (server uses conn.request_path).
+        NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, [[endpoint componentsSeparatedByString:@"?"] firstObject]];
         NSString* signature = UNHmacSha256Hex(secretKey, message);
         [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
         [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];

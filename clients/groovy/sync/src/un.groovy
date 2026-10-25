@@ -200,7 +200,9 @@ class TimeoutError extends UnsandboxError {
  * @return Hex-encoded signature
  */
 def signRequest(String secretKey, long timestamp, String method, String path, String body = "") {
-    def message = "${timestamp}:${method}:${path}:${body}"
+    // Server verifies against the request path without its query string (conn.request_path)
+    def signPath = path.split(/\?/, 2)[0]
+    def message = "${timestamp}:${method}:${signPath}:${body}"
     def mac = Mac.getInstance("HmacSHA256")
     mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
     return mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()

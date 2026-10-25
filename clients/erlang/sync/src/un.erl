@@ -1837,7 +1837,9 @@ hmac_sha256(Secret, Message) ->
     ).
 
 make_signature(SecretKey, Timestamp, Method, Path, Body) ->
-    Message = Timestamp ++ ":" ++ Method ++ ":" ++ Path ++ ":" ++ Body,
+    %% Server verifies against the request path without its query string (conn.request_path)
+    SignPath = lists:takewhile(fun(C) -> C =/= $? end, Path),
+    Message = Timestamp ++ ":" ++ Method ++ ":" ++ SignPath ++ ":" ++ Body,
     hmac_sha256(SecretKey, Message).
 
 check_clock_drift_error(Response) ->

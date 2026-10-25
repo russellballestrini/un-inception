@@ -180,7 +180,8 @@
       (apply str (map #(format "%02x" %) bytes)))))
 
 (defn make-signature [secret-key timestamp method path body]
-  (let [message (str timestamp ":" method ":" path ":" body)]
+  ;; Server verifies HMAC against our path without its query string
+  (let [message (str timestamp ":" method ":" (first (str/split path #"\?" 2)) ":" body)]
     (hmac-sha256 secret-key message)))
 
 (defn check-clock-drift-error [response]

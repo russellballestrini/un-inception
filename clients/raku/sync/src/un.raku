@@ -137,7 +137,10 @@ class TimeoutError is UnsandboxError is export { }
 #| Generate HMAC-SHA256 signature for API request
 #| Signature = HMAC-SHA256(secret_key, "timestamp:METHOD:path:body")
 sub sign-request(Str $secret-key, Int $timestamp, Str $method, Str $path, Str $body = "") returns Str is export {
-    my $message = "{$timestamp}:{$method}:{$path}:{$body}";
+    # The server verifies against the path without its query string
+    # (conn.request_path), so sign only the part before '?'.
+    my $sign-path = $path.split('?', 2)[0];
+    my $message = "{$timestamp}:{$method}:{$sign-path}:{$body}";
     return hmac-hex($secret-key, $message, &sha256);
 }
 

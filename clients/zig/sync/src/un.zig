@@ -128,7 +128,10 @@ fn buildAuthCmd(allocator: std.mem.Allocator, method: []const u8, path: []const 
     const timestamp_str = try getTimestamp(allocator);
     defer allocator.free(timestamp_str);
 
-    const message = try std.fmt.allocPrint(allocator, "{s}:{s}:{s}:{s}", .{ timestamp_str, method, path, body });
+    // The server verifies against the path without its query string
+    // (conn.request_path), so sign only the part before '?'.
+    const sign_path = if (mem.indexOfScalar(u8, path, '?')) |q| path[0..q] else path;
+    const message = try std.fmt.allocPrint(allocator, "{s}:{s}:{s}:{s}", .{ timestamp_str, method, sign_path, body });
     defer allocator.free(message);
 
     const signature = try computeHmac(allocator, secret_key, message);

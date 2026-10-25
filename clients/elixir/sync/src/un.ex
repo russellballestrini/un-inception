@@ -2237,7 +2237,9 @@ defmodule Un do
   end
 
   defp make_signature(secret_key, timestamp, method, path, body) do
-    message = "#{timestamp}:#{method}:#{path}:#{body}"
+    # Server verifies against the request path without its query string (conn.request_path)
+    [sign_path | _] = String.split(path, "?", parts: 2)
+    message = "#{timestamp}:#{method}:#{sign_path}:#{body}"
     hmac_sha256(secret_key, message)
   end
 

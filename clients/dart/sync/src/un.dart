@@ -376,7 +376,8 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
     // Add HMAC authentication headers if secretKey is provided
     if (secretKey != null && secretKey.isNotEmpty) {
       final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
-      final message = '$timestamp:$method:$endpoint:$body';
+      // Server verifies HMAC against our path without its query string
+      final message = '$timestamp:$method:${endpoint.split('?').first}:$body';
 
       final signature = hmacSha256Hex(utf8.encode(secretKey), utf8.encode(message));
 
@@ -435,7 +436,8 @@ Future<(int, String)> apiRequestCurlWithStatus(String endpoint, String method, S
     // Add HMAC authentication headers if secretKey is provided
     if (secretKey != null && secretKey.isNotEmpty) {
       final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
-      final message = '$timestamp:$method:$endpoint:$body';
+      // Server verifies HMAC against our path without its query string
+      final message = '$timestamp:$method:${endpoint.split('?').first}:$body';
 
       final signature = hmacSha256Hex(utf8.encode(secretKey), utf8.encode(message));
 
@@ -533,7 +535,8 @@ Future<Map<String, dynamic>?> apiRequestTextCurl(String endpoint, String method,
 
     if (secretKey != null && secretKey.isNotEmpty) {
       final timestamp = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
-      final message = '$timestamp:$method:$endpoint:$body';
+      // Server verifies HMAC against our path without its query string
+      final message = '$timestamp:$method:${endpoint.split('?').first}:$body';
 
       final signature = hmacSha256Hex(utf8.encode(secretKey), utf8.encode(message));
 

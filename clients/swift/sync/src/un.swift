@@ -280,7 +280,10 @@ func hmacSHA256(key: [UInt8], message: [UInt8]) -> [UInt8] {
 /// Sign a request using HMAC-SHA256
 func signRequest(secretKey: String, timestamp: Int, method: String, path: String, body: String?) -> String {
     let bodyStr = body ?? ""
-    let message = "\(timestamp):\(method):\(path):\(bodyStr)"
+    // The server verifies against the path without its query string
+    // (conn.request_path), so sign only the part before '?'.
+    let signPath = path.components(separatedBy: "?")[0]
+    let message = "\(timestamp):\(method):\(signPath):\(bodyStr)"
 
     guard let keyData = secretKey.data(using: .utf8),
           let messageData = message.data(using: .utf8) else {

@@ -254,6 +254,10 @@ func signRequest(secretKey string, timestamp int64, method, path string, body []
 	if body != nil {
 		bodyStr = string(body)
 	}
+	// Server verifies against the request path without its query string (conn.request_path)
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
 	message := fmt.Sprintf("%d:%s:%s:%s", timestamp, method, path, bodyStr)
 
 	h := hmac.New(sha256.New, []byte(secretKey))
@@ -1558,10 +1562,7 @@ func LogsStream(creds *Credentials, source, grep string, callback LogCallback) e
 
 	url := APIBase + path
 	timestamp := time.Now().Unix()
-	message := fmt.Sprintf("%d:GET:%s:", timestamp, path)
-	mac := hmac.New(sha256.New, []byte(creds.SecretKey))
-	mac.Write([]byte(message))
-	signature := hex.EncodeToString(mac.Sum(nil))
+	signature := signRequest(creds.SecretKey, timestamp, "GET", path, nil)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {

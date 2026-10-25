@@ -265,7 +265,10 @@ compute_signature <- function(secret_key, message) {
 build_auth_headers <- function(method, endpoint, body, public_key, secret_key) {
     if (secret_key != "") {
         timestamp <- as.integer(Sys.time())
-        sig_input <- paste0(timestamp, ":", method, ":", endpoint, ":", body)
+        # The server verifies against the path without its query string
+        # (conn.request_path), so sign only the part before '?'.
+        sig_path <- sub("\\?.*$", "", endpoint)
+        sig_input <- paste0(timestamp, ":", method, ":", sig_path, ":", body)
         signature <- compute_signature(secret_key, sig_input)
         return(add_headers(
             `Content-Type` = "application/json",
