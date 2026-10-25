@@ -61,7 +61,10 @@
   (let ((url (or (getenv "UNSANDBOX_API_URL") "https://api.unsandbox.com")))
     (string-trim-right url #\/)))
 
-(define portal-base "https://unsandbox.com")
+(define portal-base
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /keys/extend
+  (let ((url (getenv "UNSANDBOX_PORTAL_URL")))
+    (string-trim-right (if (and url (> (string-length url) 0)) url "https://unsandbox.com") #\/)))
 
 (define languages-cache-ttl 3600) ;; 1 hour in seconds
 
@@ -1059,16 +1062,267 @@
     (curl-post api-key (format #f "/services/~a/redeploy" id) json)
     (format #t "~aService redeploying: ~a~a\n" green id reset)))
 
-;; PaaS logs functions
-(define (logs-fetch source lines since grep-pattern)
-  (let* ((api-key (get-api-key))
-         (params (format #f "?source=~a&lines=~a~a~a"
-                         (or source "all")
-                         (or lines 100)
-                         (if since (format #f "&since=~a" since) "")
-                         (if grep-pattern (format #f "&grep=~a" grep-pattern) ""))))
-    (display (curl-get api-key (format #f "/logs~a" params)))
-    (newline)))
+;; PaaS logs: GET {portal}/logs/{source}[/stream], HMAC over the path only.
+;; Partner keys with log access; anything else answers 401/403.
+(define (url-encode str)
+  (apply string-append
+         (map (lambda (b)
+                (let ((c (integer->char b)))
+                  (if (and (< b 128) (or (char-alphabetic? c) (char-numeric? c) (memv c '(#\- #\_ #\. #\~))))
+                      (string c)
+                      (string-upcase (format #f "%~2,'0x" b)))))
+              (bytevector->u8-list (string->utf8 str)))))
+
+(define (logs-query base params)
+  ;; params: list of (key . value); empty/#f values are skipped
+  (let loop ((ps params) (url base) (sep "?"))
+    (cond ((null? ps) url)
+          ((and (cdar ps) (> (string-length (cdar ps)) 0))
+           (loop (cdr ps) (string-append url sep (caar ps) "=" (url-encode (cdar ps))) "&"))
+          (else (loop (cdr ps) url sep)))))
+
+;; Minimal JSON reader: objects -> (obj (key . val) ...), arrays -> vector,
+;; strings, numbers, #t/#f/'null.
+(define (json-parse str)
+  (define pos 0)
+  (define len (string-length str))
+  (define (peek) (if (< pos len) (string-ref str pos) #\nul))
+  (define (skip-ws) (let loop () (when (and (< pos len) (char-whitespace? (peek))) (set! pos (+ pos 1)) (loop))))
+  (define (parse-string)
+    (set! pos (+ pos 1))
+    (let loop ((acc '()))
+      (let ((c (peek)))
+        (set! pos (+ pos 1))
+        (cond ((>= (- pos 1) len) (list->string (reverse acc)))
+              ((char=? c #\") (list->string (reverse acc)))
+              ((char=? c #\\)
+               (let ((e (peek)))
+                 (set! pos (+ pos 1))
+                 (case e
+                   ((#\n) (loop (cons #\newline acc)))
+                   ((#\t) (loop (cons #\tab acc)))
+                   ((#\r) (loop (cons #\return acc)))
+                   ((#\b) (loop (cons #\backspace acc)))
+                   ((#\f) (loop (cons #\page acc)))
+                   ((#\u) (let ((n (string->number (substring str pos (min len (+ pos 4))) 16)))
+                            (set! pos (+ pos 4))
+                            (loop (cons (integer->char (or n 63)) acc))))
+                   (else (loop (cons e acc))))))
+              (else (loop (cons c acc)))))))
+  (define (parse-value)
+    (skip-ws)
+    (let ((c (peek)))
+      (cond
+        ((char=? c #\{)
+         (set! pos (+ pos 1))
+         (let loop ((acc '()))
+           (skip-ws)
+           (cond ((char=? (peek) #\}) (set! pos (+ pos 1)) (cons 'obj (reverse acc)))
+                 ((char=? (peek) #\,) (set! pos (+ pos 1)) (loop acc))
+                 ((char=? (peek) #\")
+                  (let ((k (parse-string)))
+                    (skip-ws) (set! pos (+ pos 1)) ; colon
+                    (loop (cons (cons k (parse-value)) acc))))
+                 (else (set! pos len) (cons 'obj (reverse acc))))))
+        ((char=? c #\[)
+         (set! pos (+ pos 1))
+         (let loop ((acc '()))
+           (skip-ws)
+           (cond ((char=? (peek) #\]) (set! pos (+ pos 1)) (list->vector (reverse acc)))
+                 ((char=? (peek) #\,) (set! pos (+ pos 1)) (loop acc))
+                 ((>= pos len) (list->vector (reverse acc)))
+                 (else (loop (cons (parse-value) acc))))))
+        ((char=? c #\") (parse-string))
+        (else
+         (let loop ((end pos))
+           (if (and (< end len) (not (memv (string-ref str end) '(#\, #\} #\] #\space #\newline))))
+               (loop (+ end 1))
+               (let ((tok (substring str pos end)))
+                 (set! pos end)
+                 (cond ((string=? tok "true") #t) ((string=? tok "false") #f)
+                       ((string=? tok "null") 'null) (else (or (string->number tok) tok))))))))))
+  (catch #t (lambda () (parse-value)) (lambda args #f)))
+
+(define (json-get obj key)
+  (and (pair? obj) (eq? (car obj) 'obj)
+       (let ((p (assoc key (cdr obj)))) (and p (cdr p)))))
+
+(define (log-cursor-path)
+  (string-append (or (getenv "HOME") ".") "/.unsandbox/paas_log_cursor"))
+
+(define (read-log-cursor)
+  ;; seconds since our last successful fetch as "Ns" (min 5), or #f
+  (catch #t
+    (lambda ()
+      (let* ((line (call-with-input-file (log-cursor-path) read-line))
+             (ts (and (string? line) (string->number (string-trim-both line)))))
+        (and ts (> ts 0) (format #f "~as" (max 5 (- (current-time) ts))))))
+    (lambda args #f)))
+
+(define (write-log-cursor)
+  (catch #t
+    (lambda ()
+      (let ((dir (string-append (or (getenv "HOME") ".") "/.unsandbox")))
+        (unless (file-exists? dir) (mkdir dir #o700))
+        (call-with-output-file (log-cursor-path)
+          (lambda (port) (format port "~a\n" (current-time))))))
+    (lambda args #f)))
+
+(define (logs-curl-args public-key secret-key path url stream?)
+  ;; argv for curl (no shell); the secret only signs, it never reaches argv
+  (append (list "curl" "-s" "-A" "un-cli/2.0")
+          (if stream? (list "-N" "--http1.1" "-H" "Accept: text/event-stream") '())
+          (list "-w" "\n__UN_HTTP__%{http_code}\n")
+          (map (lambda (h) (string-trim-both h #\')) (build-auth-headers public-key secret-key "GET" path ""))
+          (list url)))
+
+(define (logs-print-line source line)
+  (if (and (string? source) (> (string-length source) 0))
+      (format #t "~12a ~a\n" source line)
+      (format #t "~a\n" line))
+  (force-output (current-output-port)))
+
+(define (logs-error-text body)
+  (let* ((j (json-parse body)) (e (json-get j "error")))
+    (if (string? e) (string-append " — " e) "")))
+
+(define (paas-logs-fetch public-key secret-key source lines since grep-pattern level json-output)
+  "Batch fetch; prints lines (or raw JSON). Returns 0 or 1."
+  (let* ((path (string-append "/logs/" source))
+         (url (logs-query (string-append portal-base path)
+                          (list (cons "lines" (number->string lines)) (cons "since" since)
+                                (cons "grep" grep-pattern) (cons "level" level))))
+         (port (apply open-pipe* OPEN_READ (logs-curl-args public-key secret-key path url #f)))
+         (out (read-file-port port))
+         (st (close-pipe port))
+         (mark (string-contains out "\n__UN_HTTP__"))
+         (body (if mark (substring out 0 mark) out))
+         (code (if mark (or (string->number (string-trim-both (substring out (+ mark 12)))) 0) 0)))
+    (cond
+      ((= code 0)
+       (format (current-error-port) "Error: Network error fetching logs (curl exit ~a)\n" (status:exit-val st)) 1)
+      ((not (= code 200))
+       (format (current-error-port) "Error: HTTP ~a~a\n" code (logs-error-text body)) 1)
+      (else
+       (write-log-cursor)
+       (if json-output
+           (begin (display body) (newline) 0)
+           (let* ((j (json-parse body)) (ls (json-get j "lines")))
+             (if (not (vector? ls))
+                 (begin (display "Error: Invalid response format\n" (current-error-port)) 1)
+                 (let ((all? (json-get j "sources")))
+                   (for-each (lambda (e)
+                               (cond ((string? e) (logs-print-line #f e))
+                                     ((json-get e "line")
+                                      => (lambda (l) (logs-print-line (and all? (json-get e "source")) l)))))
+                             (vector->list ls))
+                   0))))))))
+
+(define (paas-logs-stream public-key secret-key source grep-pattern level)
+  "Follow via SSE; reconnects with backoff, re-signing each time. Returns exit code."
+  (let ((path (string-append "/logs/" source "/stream")))
+    (format (current-error-port) "Streaming ~a logs... (Ctrl+C to stop)\n" source)
+    (let loop ((delay 2) (last-recv 0) (reconnect? #f))
+      (let* ((since (and reconnect? (> last-recv 0)
+                         (format #f "~as" (max 10 (+ (- (current-time) last-recv) 5)))))
+             (url (logs-query (string-append portal-base path)
+                              (list (cons "grep" grep-pattern) (cons "level" level) (cons "since" since))))
+             (started (current-time))
+             (port (apply open-pipe* OPEN_READ (logs-curl-args public-key secret-key path url #t)))
+             (code 0))
+        (let read-loop ()
+          (let ((line (read-line port)))
+            (unless (eof-object? line)
+              (cond
+                ((string-prefix? "__UN_HTTP__" line)
+                 (set! code (or (string->number (string-trim-both (substring line 11))) 0)))
+                ((string-prefix? "data: " line)
+                 (let* ((payload (substring line 6)) (j (json-parse payload)) (l (json-get j "line")))
+                   (cond ((string=? payload ":keepalive") #f)
+                         ((string? l) (logs-print-line (json-get j "source") l) (set! last-recv (current-time)))
+                         ((json-get j "event") #f)
+                         (else (logs-print-line #f payload) (set! last-recv (current-time)))))))
+              (read-loop))))
+        (close-pipe port)
+        (cond
+          ((memv code '(401 403))
+           (format (current-error-port) "Error: HTTP ~a (auth failed)\n" code) 1)
+          ((or (= code 0) (= code 200) (>= code 500))
+           (let ((delay (if (> (- (current-time) started) 30) 2 delay)))
+             (sleep delay)
+             (loop (min 30 (* delay 2)) last-recv #t)))
+          (else (format (current-error-port) "Error: HTTP ~a\n" code) 1))))))
+
+(define (paas-logs-help)
+  (for-each (lambda (l) (display l (current-error-port)) (newline (current-error-port)))
+            '("Usage: un.scm paas logs [options]" ""
+              "Fetch or stream PaaS production logs." ""
+              "Sources:"
+              "  --all              All sources (default)"
+              "  --api              API server logs"
+              "  --portal           Portal server logs"
+              "  --pool NODE        Pool node logs (e.g., cammy, ai)"
+              "  --source SOURCE    Source string (api, portal, pool/cammy, all)" ""
+              "Options:"
+              "  --lines N, -n N    Number of lines (default: 100, max: 10000)"
+              "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)"
+              "  --grep PATTERN     Filter log lines by pattern"
+              "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit"
+              "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)"
+              "  --json             Output raw JSON response"
+              "  -p KEY             Public key"
+              "  -k KEY             Secret key"
+              "  -h                 Show this help" ""
+              "Requires a partner API key with log access enabled.")))
+
+(define (paas-cmd args)
+  (set-port-encoding! (current-output-port) "UTF-8")
+  (set-port-encoding! (current-error-port) "UTF-8")
+  (cond
+    ((null? args)
+     (display "Usage: un.scm paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n" (current-error-port))
+     (exit 1))
+    ((not (equal? (car args) "logs"))
+     (format (current-error-port) "Error: Unknown paas command '~a'\n" (car args))
+     (exit 1))
+    (else
+     (let ((source "all") (lines 100) (since #f) (grep-pattern #f) (level #f)
+           (follow #f) (json-output #f) (pk #f) (sk #f))
+       (let loop ((a (cdr args)))
+         (unless (null? a)
+           (let ((opt (car a)) (val (and (pair? (cdr a)) (cadr a))))
+             (cond
+               ((member opt '("-h" "--help")) (paas-logs-help) (exit 0))
+               ((equal? opt "--all") (set! source "all") (loop (cdr a)))
+               ((equal? opt "--api") (set! source "api") (loop (cdr a)))
+               ((equal? opt "--portal") (set! source "portal") (loop (cdr a)))
+               ((member opt '("--follow" "-f")) (set! follow #t) (loop (cdr a)))
+               ((equal? opt "--json") (set! json-output #t) (loop (cdr a)))
+               ((not val) (loop (cdr a)))
+               ((equal? opt "--pool") (set! source (string-append "pool/" val)) (loop (cddr a)))
+               ((equal? opt "--source") (set! source val) (loop (cddr a)))
+               ((member opt '("--lines" "-n"))
+                (set! lines (max 1 (min 10000 (let ((n (string->number val))) (if (integer? n) n 1)))))
+                (loop (cddr a)))
+               ((equal? opt "--since") (set! since val) (loop (cddr a)))
+               ((equal? opt "--grep") (set! grep-pattern val) (loop (cddr a)))
+               ((member opt '("--level" "-l")) (set! level val) (loop (cddr a)))
+               ((equal? opt "-p") (set! pk val) (loop (cddr a)))
+               ((equal? opt "-k") (set! sk val) (loop (cddr a)))
+               (else (loop (cdr a)))))))
+       (let* ((keys (if (and pk sk) (list pk sk) (get-api-keys)))
+              (public-key (car keys)) (secret-key (cadr keys)))
+         (exit (if follow
+                   (paas-logs-stream public-key secret-key source grep-pattern level)
+                   (paas-logs-fetch public-key secret-key source lines
+                                    (or since (read-log-cursor) "5m")
+                                    grep-pattern level json-output))))))))
+
+;; Library form kept for callers: prints the raw JSON response.
+(define* (logs-fetch source lines since grep-pattern #:optional level)
+  (let ((keys (get-api-keys)))
+    (paas-logs-fetch (car keys) (cadr keys) (or source "all") (or lines 100)
+                     (or since "5m") grep-pattern level #t)))
 
 ;; Utility functions
 (define (health-check)
@@ -1362,6 +1616,7 @@
         (display "       un.scm key [--extend]\n")
         (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
+        (display "       un.scm paas logs [options]\n")
         (display "\nLanguages options:\n")
         (display "  --json              Output as JSON array\n")
         (display "\nImage options:\n")
@@ -1379,6 +1634,8 @@
         (display "  --ports PORTS       Ports for spawned service\n")
         (exit 1))
       (cond
+        ((equal? (car args) "paas")
+         (paas-cmd (cdr args)))
         ((equal? (car args) "languages")
          (let ((json-output (and (> (length args) 1) (equal? (cadr args) "--json"))))
            (languages-cmd json-output)))

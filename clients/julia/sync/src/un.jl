@@ -74,7 +74,11 @@ const RESET = "\033[0m"
 const API_BASE = let u = get(ENV, "UNSANDBOX_API_URL", "")
     isempty(u) ? "https://api.unsandbox.com" : String(rstrip(u, '/'))
 end
-const PORTAL_BASE = "https://unsandbox.com"
+# Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
+# Serves /logs/{source} (partner log access) and /keys/extend.
+const PORTAL_BASE = let u = get(ENV, "UNSANDBOX_PORTAL_URL", "")
+    isempty(u) ? "https://unsandbox.com" : String(rstrip(u, '/'))
+end
 const LANGUAGES_CACHE_TTL = 3600
 
 function detect_language(filename::String)::String
@@ -1183,6 +1187,9 @@ function first_positional(argv)
 end
 
 function main()
+    if !isempty(ARGS) && ARGS[1] == "paas"
+        exit(cmd_paas(ARGS[2:end]))
+    end
     s = ArgParseSettings(description="Unsandbox CLI - Execute code in secure sandboxes")
 
     # ArgParse binds an optional positional before any command, so `un.jl key`
@@ -2786,15 +2793,260 @@ function image_clone(image_id::String;
     return get(result, "id", "")
 end
 
+# PaaS logs: GET {PORTAL_BASE}/logs/{source}[/stream], HMAC over the path only.
+# Partner keys with log access; anything else answers 401/403.
+function logs_url_encode(v::AbstractString)::String
+    io = IOBuffer()
+    for b in codeunits(v)
+        c = Char(b)
+        if b < 0x80 && (isletter(c) || isdigit(c) || c in ('-', '_', '.', '~'))
+            write(io, c)
+        else
+            write(io, "%" * uppercase(string(b, base=16, pad=2)))
+        end
+    end
+    return String(take!(io))
+end
+
+function logs_query(base::String, params)::String
+    parts = String[]
+    for (k, v) in params
+        (v === nothing || isempty(v)) && continue
+        push!(parts, "$k=$(logs_url_encode(v))")
+    end
+    return isempty(parts) ? base : base * "?" * join(parts, "&")
+end
+
+logs_cursor_path() = joinpath(homedir(), ".unsandbox", "paas_log_cursor")
+
+function read_log_cursor()
+    try
+        ts = parse(Int64, strip(read(logs_cursor_path(), String)))
+        ts > 0 || return nothing
+        return "$(max(5, Int64(floor(time())) - ts))s"
+    catch
+        return nothing
+    end
+end
+
+function write_log_cursor()
+    try
+        d = joinpath(homedir(), ".unsandbox")
+        isdir(d) || mkpath(d; mode=0o700)
+        write(logs_cursor_path(), "$(Int64(floor(time())))\n")
+    catch
+    end
+end
+
+function logs_headers(public_key::String, secret_key, path::String)
+    headers = ["Authorization" => "Bearer $public_key", "User-Agent" => "un-cli/2.0"]
+    if secret_key !== nothing && !isempty(secret_key)
+        ts = Int64(floor(time()))
+        push!(headers, "X-Timestamp" => string(ts))
+        push!(headers, "X-Signature" => compute_signature(secret_key, ts, "GET", path, ""))
+    end
+    return headers
+end
+
+function logs_print_line(source, line)
+    if source isa AbstractString && !isempty(source)
+        println(rpad(source, 12), " ", line)
+    else
+        println(line)
+    end
+    flush(stdout)
+end
+
+function logs_error_text(body::String)
+    try
+        e = get(JSON.parse(body), "error", nothing)
+        return e isa AbstractString ? " — $e" : ""
+    catch
+        return ""
+    end
+end
+
+"""
+    paas_logs_fetch(public_key, secret_key, source, lines, since, grep, level, json_output) -> Int
+
+Batch fetch from the portal; prints lines (or raw JSON). Returns an exit code.
+"""
+function paas_logs_fetch(public_key::String, secret_key, source::String, lines::Int, since, grep, level, json_output::Bool)
+    path = "/logs/$source"
+    url = logs_query(PORTAL_BASE * path, [("lines", string(lines)), ("since", since), ("grep", grep), ("level", level)])
+    local resp
+    try
+        resp = HTTP.get(url, logs_headers(public_key, secret_key, path); status_exception=false, retry=false)
+    catch e
+        println(stderr, "Error: Network error fetching logs: $(sprint(showerror, e))")
+        return 1
+    end
+    body = String(resp.body)
+    if resp.status != 200
+        println(stderr, "Error: HTTP $(resp.status)$(logs_error_text(body))")
+        return 1
+    end
+    write_log_cursor()
+    if json_output
+        println(body)
+        return 0
+    end
+    j = try JSON.parse(body) catch; nothing end
+    ls = j isa AbstractDict ? get(j, "lines", nothing) : nothing
+    if !(ls isa AbstractVector)
+        println(stderr, "Error: Invalid response format")
+        return 1
+    end
+    is_all = haskey(j, "sources")
+    for e in ls
+        if e isa AbstractString
+            logs_print_line(nothing, e)
+        elseif e isa AbstractDict && get(e, "line", nothing) isa AbstractString
+            logs_print_line(is_all ? get(e, "source", nothing) : nothing, e["line"])
+        end
+    end
+    return 0
+end
+
+"""
+    paas_logs_stream(public_key, secret_key, source, grep, level) -> Int
+
+Follow via SSE; reconnects with backoff (2 s doubling to 30 s), re-signing each time.
+"""
+function paas_logs_stream(public_key::String, secret_key, source::String, grep, level)
+    path = "/logs/$source/stream"
+    println(stderr, "Streaming $source logs... (Ctrl+C to stop)")
+    delay = 2
+    last_recv = 0
+    reconnect = false
+    while true
+        since = (reconnect && last_recv > 0) ? "$(max(10, Int64(floor(time())) - last_recv + 5))s" : nothing
+        url = logs_query(PORTAL_BASE * path, [("grep", grep), ("level", level), ("since", since)])
+        started = time()
+        code = 0
+        try
+            HTTP.open("GET", url, vcat(logs_headers(public_key, secret_key, path), ["Accept" => "text/event-stream"]);
+                      status_exception=false, retry=false) do http
+                r = HTTP.startread(http)
+                code = r.status
+                if code == 200
+                    while !eof(http)
+                        line = readline(http)
+                        startswith(line, "data: ") || continue
+                        payload = line[7:end]
+                        payload == ":keepalive" && continue
+                        j = try JSON.parse(payload) catch; nothing end
+                        if j isa AbstractDict && get(j, "line", nothing) isa AbstractString
+                            logs_print_line(get(j, "source", nothing), j["line"])
+                            last_recv = Int64(floor(time()))
+                        elseif j isa AbstractDict && haskey(j, "event")
+                        else
+                            logs_print_line(nothing, payload)
+                            last_recv = Int64(floor(time()))
+                        end
+                    end
+                else
+                    read(http)
+                end
+            end
+        catch e
+            e isa InterruptException && return 0
+        end
+        if code == 401 || code == 403
+            println(stderr, "Error: HTTP $code (auth failed)")
+            return 1
+        elseif code == 0 || code == 200 || code >= 500
+            time() - started > 30 && (delay = 2)
+            sleep(delay)
+            delay = min(30, delay * 2)
+            reconnect = true
+        else
+            println(stderr, "Error: HTTP $code")
+            return 1
+        end
+    end
+end
+
+const PAAS_LOGS_HELP = """Usage: un.jl paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  --account N        Account index in ~/.unsandbox/accounts.csv
+  -h                 Show this help
+
+Requires a partner API key with log access enabled."""
+
+function cmd_paas(argv)::Int
+    if isempty(argv)
+        println(stderr, "Usage: un.jl paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs")
+        return 1
+    end
+    if argv[1] != "logs"
+        println(stderr, "Error: Unknown paas command '$(argv[1])'")
+        return 1
+    end
+    source = "all"; lines = 100; since = nothing; grep = nothing; level = nothing
+    follow = false; json_output = false; pk = nothing; sk = nothing; account = -1
+    i = 2
+    while i <= length(argv)
+        opt = argv[i]
+        val = i < length(argv) ? argv[i + 1] : nothing
+        if opt in ("-h", "--help")
+            println(stderr, PAAS_LOGS_HELP)
+            return 0
+        elseif opt == "--all"; source = "all"
+        elseif opt == "--api"; source = "api"
+        elseif opt == "--portal"; source = "portal"
+        elseif opt in ("--follow", "-f"); follow = true
+        elseif opt == "--json"; json_output = true
+        elseif val === nothing
+        elseif opt == "--pool"; source = "pool/$val"; i += 1
+        elseif opt == "--source"; source = val; i += 1
+        elseif opt in ("--lines", "-n")
+            lines = clamp(something(tryparse(Int, val), 1), 1, 10000); i += 1
+        elseif opt == "--since"; since = val; i += 1
+        elseif opt == "--grep"; grep = val; i += 1
+        elseif opt in ("--level", "-l"); level = val; i += 1
+        elseif opt == "-p"; pk = val; i += 1
+        elseif opt == "-k"; sk = val; i += 1
+        elseif opt == "--account"; account = something(tryparse(Int, val), -1); i += 1
+        end
+        i += 1
+    end
+    (public_key, secret_key) = (pk !== nothing && sk !== nothing) ? (pk, sk) : get_credentials(account_index=account)
+    if follow
+        return paas_logs_stream(public_key, secret_key, source, grep, level)
+    end
+    return paas_logs_fetch(public_key, secret_key, source, lines, something(since, read_log_cursor(), "5m"), grep, level, json_output)
+end
+
 """
     logs_fetch(source::String; kwargs...) -> String
 
-Fetch PaaS logs.
+Fetch PaaS logs from the portal (`GET {PORTAL_BASE}/logs/{source}`); returns the
+log lines joined by newlines ("source line" for `all`).
 """
 function logs_fetch(source::String;
                     lines::Int=100,
-                    since::String="1h",
+                    since::String="5m",
                     grep::Union{String, Nothing}=nothing,
+                    level::Union{String, Nothing}=nothing,
                     public_key::Union{String,Nothing}=nothing,
                     secret_key::Union{String,Nothing}=nothing)
     (pk, sk) = if public_key !== nothing && secret_key !== nothing
@@ -2802,14 +3054,15 @@ function logs_fetch(source::String;
     else
         get_api_keys(nothing)
     end
-
-    endpoint = "/logs?source=$source&lines=$lines&since=$since"
-    if grep !== nothing
-        endpoint *= "&grep=$grep"
+    path = "/logs/$source"
+    url = logs_query(PORTAL_BASE * path, [("lines", string(lines)), ("since", since), ("grep", grep), ("level", level)])
+    resp = HTTP.get(url, logs_headers(pk, sk, path); status_exception=false, retry=false)
+    if resp.status != 200
+        set_last_error("HTTP $(resp.status)$(logs_error_text(String(resp.body)))")
+        return ""
     end
-
-    result = api_request(endpoint, pk, sk)
-    return get(result, "logs", "")
+    ls = get(JSON.parse(String(resp.body)), "lines", [])
+    return join([e isa AbstractDict ? "$(get(e, "source", "")) $(get(e, "line", ""))" : string(e) for e in ls], "\n")
 end
 
 """

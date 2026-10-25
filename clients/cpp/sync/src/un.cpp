@@ -84,7 +84,14 @@ static string resolve_api_base() {
     return base;
 }
 const string API_BASE = resolve_api_base();
-const string PORTAL_BASE = "https://unsandbox.com";
+// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)
+static string resolve_portal_base() {
+    const char* env = getenv("UNSANDBOX_PORTAL_URL");
+    string base = (env && *env) ? env : "https://unsandbox.com";
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    return base;
+}
+const string PORTAL_BASE = resolve_portal_base();
 const int LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
 const string BLUE = "\033[34m";
 const string RED = "\033[31m";
@@ -1094,17 +1101,330 @@ string image_clone(const string& image_id, const string& name, const string& des
     return exec_curl(cmd);
 }
 
-// PaaS Logs functions
+static string json_string_field(const string& json, const string& key);
+
+// PaaS Logs functions: GET {PORTAL_BASE}/logs/{source}[/stream] (partner log access)
+
+// Percent-encode everything outside the unreserved set (keep '/' when keep_slash),
+// so the value is safe inside a single-quoted shell word and a URL.
+static string pct_encode(const string& s, bool keep_slash = false) {
+    static const char* hex = "0123456789ABCDEF";
+    string out;
+    for (unsigned char c : s) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || (keep_slash && c == '/')) out += (char)c;
+        else { out += '%'; out += hex[c >> 4]; out += hex[c & 15]; }
+    }
+    return out;
+}
+
+static string logs_path(const string& source, bool stream) {
+    return "/logs/" + pct_encode(source.empty() ? "all" : source, true) + (stream ? "/stream" : "");
+}
+
+static string logs_query(const vector<pair<string, string>>& kv) {
+    string q;
+    for (const auto& p : kv) {
+        if (p.second.empty()) continue;
+        q += (q.empty() ? "?" : "&") + p.first + "=" + pct_encode(p.second);
+    }
+    return q;
+}
+
+// HMAC covers the path only (the server verifies conn.request_path, no query string).
+// Only the public key, timestamp and signature reach curl's argv; the secret stays here.
+static string portal_curl_cmd(const string& path, const string& query, const string& public_key, const string& secret_key, bool stream) {
+    string ts = get_timestamp();
+    string sig = compute_hmac(secret_key, ts + ":GET:" + path + ":");
+    string pk = public_key;
+    for (char c : pk) if (!isalnum((unsigned char)c) && c != '-' && c != '_') { pk = "invalid-public-key"; break; }
+    string base = PORTAL_BASE;
+    for (char c : base) if (c == '\'') { base = "https://unsandbox.com"; break; }
+    return string("curl -s ") + (stream ? "-N --http1.1 -H 'Accept: text/event-stream' " : "") +
+           "-H 'Authorization: Bearer " + pk + "' -H 'X-Timestamp: " + ts + "' -H 'X-Signature: " + sig + "' "
+           "-H 'User-Agent: un-cpp/2.0' -w '\\n__UN_HTTP__%{http_code}\\n' '" + base + path + query + "' 2>/dev/null";
+}
+
+// GET {portal}/logs/{source}; returns (body, http status; 0 = network error).
+static pair<string, int> logs_fetch_raw(const string& source, int lines, const string& since, const string& grep, const string& level,
+                                        const string& public_key, const string& secret_key) {
+    string q = logs_query({{"lines", to_string(lines > 0 ? lines : 100)}, {"since", since}, {"grep", grep}, {"level", level}});
+    FILE* pipe = popen(portal_curl_cmd(logs_path(source, false), q, public_key, secret_key, false).c_str(), "r");
+    if (!pipe) return {"", 0};
+    string out; char buf[4096]; size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), pipe)) > 0) out.append(buf, n);
+    pclose(pipe);
+    size_t m = out.rfind("\n__UN_HTTP__");
+    if (m == string::npos) return {out, 0};
+    int code = atoi(out.c_str() + m + 12);
+    return {out.substr(0, m), code};
+}
+
+// Fetch batch logs from the portal (GET {portal}/logs/{source}); returns the JSON body.
 string logs_fetch(const string& source, int lines, const string& since, const string& grep, const string& public_key, const string& secret_key) {
-    string path = "/paas/logs?";
-    if (!source.empty()) path += "source=" + source + "&";
-    if (lines > 0) path += "lines=" + to_string(lines) + "&";
-    if (!since.empty()) path += "since=" + since + "&";
-    if (!grep.empty()) path += "grep=" + grep + "&";
-    if (path.back() == '&' || path.back() == '?') path.pop_back();
-    string auth_headers = build_auth_headers("GET", path, "", public_key, secret_key);
-    string cmd = "curl -s -X GET '" + API_BASE + path + "' " + auth_headers;
-    return exec_curl(cmd);
+    return logs_fetch_raw(source, lines, since, grep, "", public_key, secret_key).first;
+}
+
+// Minimal JSON helpers for the logs response shapes.
+static size_t json_skip_ws(const string& s, size_t i) { while (i < s.size() && isspace((unsigned char)s[i])) i++; return i; }
+
+static string json_parse_string(const string& s, size_t& i) {  // s[i] == '"'
+    string out;
+    for (i++; i < s.size(); i++) {
+        char c = s[i];
+        if (c == '"') { i++; return out; }
+        if (c == '\\' && i + 1 < s.size()) {
+            char e = s[++i];
+            switch (e) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case 'u':
+                    if (i + 4 < s.size()) {
+                        unsigned cp = (unsigned)strtoul(s.substr(i + 1, 4).c_str(), nullptr, 16);
+                        i += 4;
+                        if (cp < 0x80) out += (char)cp;
+                        else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
+                        else { out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F)); }
+                    }
+                    break;
+                default: out += e;
+            }
+        } else out += c;
+    }
+    return out;
+}
+
+// Skip any JSON value starting at s[i].
+static void json_skip_value(const string& s, size_t& i) {
+    i = json_skip_ws(s, i);
+    if (i >= s.size()) return;
+    if (s[i] == '"') { json_parse_string(s, i); return; }
+    if (s[i] == '{' || s[i] == '[') {
+        int depth = 0;
+        while (i < s.size()) {
+            if (s[i] == '"') { json_parse_string(s, i); continue; }
+            if (s[i] == '{' || s[i] == '[') depth++;
+            else if (s[i] == '}' || s[i] == ']') { depth--; if (depth == 0) { i++; return; } }
+            i++;
+        }
+        return;
+    }
+    while (i < s.size() && s[i] != ',' && s[i] != '}' && s[i] != ']') i++;
+}
+
+// Object at s[i] == '{': string-valued fields.
+static map<string, string> json_parse_flat_object(const string& s, size_t& i) {
+    map<string, string> m;
+    i++;
+    while (i < s.size()) {
+        i = json_skip_ws(s, i);
+        if (i < s.size() && s[i] == '}') { i++; break; }
+        if (i >= s.size() || s[i] != '"') { i++; continue; }
+        string key = json_parse_string(s, i);
+        i = json_skip_ws(s, i);
+        if (i < s.size() && s[i] == ':') i++;
+        i = json_skip_ws(s, i);
+        if (i < s.size() && s[i] == '"') m[key] = json_parse_string(s, i);
+        else json_skip_value(s, i);
+        i = json_skip_ws(s, i);
+        if (i < s.size() && s[i] == ',') i++;
+    }
+    return m;
+}
+
+static void print_source_line(const string& source, const string& line) {
+    printf("\033[36m%-12s\033[0m %s\n", source.c_str(), line.c_str());
+}
+
+// Print a /logs response: string lines as is, {source,line} entries as "%-12s %s".
+static bool print_logs_body(const string& body) {
+    size_t p = body.find("\"lines\"");
+    if (p == string::npos) return false;
+    p = json_skip_ws(body, p + 7);
+    if (p >= body.size() || body[p] != ':') return false;
+    p = json_skip_ws(body, p + 1);
+    if (p >= body.size() || body[p] != '[') return false;
+    p++;
+    while (p < body.size()) {
+        p = json_skip_ws(body, p);
+        if (p >= body.size() || body[p] == ']') break;
+        if (body[p] == '"') printf("%s\n", json_parse_string(body, p).c_str());
+        else if (body[p] == '{') { auto m = json_parse_flat_object(body, p); print_source_line(m["source"], m["line"]); }
+        else json_skip_value(body, p);
+        p = json_skip_ws(body, p);
+        if (p < body.size() && body[p] == ',') p++;
+    }
+    return true;
+}
+
+// One SSE connection; returns HTTP status (0 = network error / dropped before a status).
+static int logs_stream_once(const string& source, const string& grep, const string& level, const string& since,
+                            const string& public_key, const string& secret_key, time_t& last_recv) {
+    string q = logs_query({{"grep", grep}, {"level", level}, {"since", since}});
+    FILE* pipe = popen(portal_curl_cmd(logs_path(source, true), q, public_key, secret_key, true).c_str(), "r");
+    if (!pipe) return 0;
+    int code = 0;
+    string line; char buf[8192];
+    while (fgets(buf, sizeof(buf), pipe)) {
+        line += buf;
+        if (line.empty() || line.back() != '\n') continue;
+        line.pop_back();
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("__UN_HTTP__", 0) == 0) code = atoi(line.c_str() + 11);
+        else if (line.rfind("data:", 0) == 0) {
+            string data = line.substr(5);
+            size_t a = data.find_first_not_of(' ');
+            data = a == string::npos ? "" : data.substr(a);
+            if (!data.empty() && data != ":keepalive") {
+                if (data[0] == '{') {
+                    size_t i = 0;
+                    auto m = json_parse_flat_object(data, i);
+                    if (m.count("line")) {
+                        if (m["source"].empty()) printf("%s\n", m["line"].c_str());
+                        else print_source_line(m["source"], m["line"]);
+                        last_recv = time(nullptr);
+                    }
+                } else { printf("%s\n", data.c_str()); last_recv = time(nullptr); }
+                fflush(stdout);
+            }
+        }
+        line.clear();
+    }
+    pclose(pipe);
+    return code;
+}
+
+// Stream until a 4xx, reconnecting on drops (2 s backoff doubling to 30 s, since= overlap).
+static int logs_follow(const string& source, const string& grep, const string& level, const string& public_key, const string& secret_key) {
+    int delay = 2;
+    time_t last_recv = 0;
+    string since;
+    for (;;) {
+        time_t start = time(nullptr);
+        int code = logs_stream_once(source, grep, level, since, public_key, secret_key, last_recv);
+        if (time(nullptr) - start > 30) delay = 2;
+        if (code >= 400 && code < 500) return code;
+        sleep(delay);
+        delay = delay * 2 > 30 ? 30 : delay * 2;
+        if (last_recv > 0) {
+            long gap = (long)(time(nullptr) - last_recv) + 5;
+            since = to_string(gap < 10 ? 10 : gap) + "s";
+        }
+    }
+}
+
+static string log_cursor_path() {
+    const char* home = getenv("HOME");
+    return home ? string(home) + "/.unsandbox/paas_log_cursor" : "";
+}
+
+static string read_log_cursor() {
+    string p = log_cursor_path();
+    if (p.empty()) return "";
+    ifstream f(p);
+    long ts = 0;
+    if (!(f >> ts) || ts <= 0) return "";
+    long ago = (long)time(nullptr) - ts;
+    return to_string(ago < 5 ? 5 : ago) + "s";
+}
+
+static void write_log_cursor() {
+    string p = log_cursor_path();
+    if (p.empty()) return;
+    mkdir((string(getenv("HOME")) + "/.unsandbox").c_str(), 0700);
+    ofstream f(p);
+    f << (long)time(nullptr) << "\n";
+}
+
+static void print_paas_logs_help() {
+    cerr << "Usage: un paas logs [options]\n\n"
+            "Fetch or stream PaaS production logs.\n\n"
+            "Sources:\n"
+            "  --all              All sources (default)\n"
+            "  --api              API server logs\n"
+            "  --portal           Portal server logs\n"
+            "  --pool NODE        Pool node logs (e.g., cammy, ai)\n"
+            "  --source SOURCE    Source string (api, portal, pool/cammy, all)\n\n"
+            "Options:\n"
+            "  --lines N, -n N    Number of lines (default: 100, max: 10000)\n"
+            "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)\n"
+            "  --grep PATTERN     Filter log lines by pattern\n"
+            "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit\n"
+            "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)\n"
+            "  --json             Output raw JSON response\n"
+            "  -p KEY             Public key\n"
+            "  -k KEY             Secret key\n"
+            "  -h                 Show this help\n\n"
+            "Requires a partner API key with log access enabled.\n";
+}
+
+// `un paas <command>`: currently `logs`. Credentials arrive resolved (env / csv / --account / -p).
+static int cmd_paas(int argc, char* argv[], string public_key, string secret_key) {
+    if (argc < 3) {
+        cerr << "Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\n"
+                "Run 'un paas <command> -h' for help on a specific command.\n";
+        return 1;
+    }
+    if (string(argv[2]) != "logs") {
+        cerr << "Error: Unknown paas command '" << argv[2] << "'\nRun 'un paas' for available commands.\n";
+        return 1;
+    }
+    string source = "all", since, grep, level;
+    int lines = 100;
+    bool follow = false, json = false;
+    for (int i = 3; i < argc; i++) {
+        string a = argv[i];
+        bool more = i + 1 < argc;
+        if (a == "-p" && more) public_key = argv[++i];
+        else if (a == "-k" && more) secret_key = argv[++i];
+        else if (a == "--account" && more) i++;  // handled in the first pass
+        else if (a == "--source" && more) source = argv[++i];
+        else if (a == "--all") source = "all";
+        else if (a == "--api") source = "api";
+        else if (a == "--portal") source = "portal";
+        else if (a == "--pool" && more) source = string("pool/") + argv[++i];
+        else if ((a == "--lines" || a == "-n") && more) { lines = atoi(argv[++i]); if (lines < 1) lines = 1; if (lines > 10000) lines = 10000; }
+        else if (a == "--since" && more) since = argv[++i];
+        else if (a == "--grep" && more) grep = argv[++i];
+        else if ((a == "--level" || a == "-l") && more) level = argv[++i];
+        else if (a == "--follow" || a == "-f") follow = true;
+        else if (a == "--json") json = true;
+        else if (a == "-h" || a == "--help") { print_paas_logs_help(); return 0; }
+    }
+    if (public_key.empty() || secret_key.empty()) {
+        cerr << "Error: API credentials required.\n"
+                "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n"
+                "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n"
+                "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n";
+        return 1;
+    }
+    if (follow) {
+        cerr << "Streaming " << source << " logs... (Ctrl+C to stop)" << endl;
+        int code = logs_follow(source, grep, level, public_key, secret_key);
+        if (code == 401 || code == 403) cerr << "Error: HTTP " << code << " (auth failed)" << endl;
+        else cerr << "Error: HTTP " << code << endl;
+        return 1;
+    }
+    if (since.empty()) { since = read_log_cursor(); if (since.empty()) since = "5m"; }
+    auto res = logs_fetch_raw(source, lines, since, grep, level, public_key, secret_key);
+    if (res.second == 0) {
+        cerr << "Error: Network error fetching logs" << endl;
+        return 1;
+    }
+    if (res.second != 200) {
+        string msg = json_string_field(res.first, "error");
+        cerr << "Error: HTTP " << res.second << (msg.empty() ? "" : " — " + msg) << endl;
+        return 1;
+    }
+    write_log_cursor();
+    if (json) { printf("%s\n", res.first.c_str()); return 0; }
+    if (!print_logs_body(res.first)) {
+        cerr << "Error: Invalid response format" << endl;
+        return 1;
+    }
+    return 0;
 }
 
 // Key validation
@@ -2209,6 +2529,9 @@ int main(int argc, char* argv[]) {
     }
 
     string cmd_type = argv[1];
+
+    // paas has its own flags (-n, -l, -f mean lines/level/follow there)
+    if (cmd_type == "paas") return cmd_paas(argc, argv, public_key, secret_key);
 
     if (cmd_type == "image") {
         bool list = false;

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -1480,18 +1481,88 @@ func CloneImage(creds *Credentials, imageID string, opts *CloneImageOptions) (ma
 // PaaS Logs API
 // ============================================================================
 
+// PortalBase is the portal endpoint (/logs, /keys/extend), overridable via
+// UNSANDBOX_PORTAL_URL (trailing slash stripped).
+var PortalBase = func() string {
+	if v := os.Getenv("UNSANDBOX_PORTAL_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "https://unsandbox.com"
+}()
+
 // LogsFetchOptions contains options for fetching logs.
 type LogsFetchOptions struct {
 	Lines int    // Number of lines (1-10000)
 	Since string // Time window ("1m", "5m", "1h", "1d")
 	Grep  string // Optional filter pattern
+	Level string // Optional minimum level (debug, info, notice, warning, err, crit)
 }
 
-// LogsFetch fetches batch logs from the portal.
+// logsPath returns the portal path for a source: /logs/{source}[/stream].
+func logsPath(source string, stream bool) string {
+	if source == "" {
+		source = "all"
+	}
+	p := "/logs/" + source
+	if stream {
+		p += "/stream"
+	}
+	return p
+}
+
+// logsQuery builds "?k=v&..." from ordered pairs, skipping empty values.
+func logsQuery(pairs ...string) string {
+	q := []string{}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		if pairs[i+1] != "" {
+			q = append(q, pairs[i]+"="+url.QueryEscape(pairs[i+1]))
+		}
+	}
+	if len(q) == 0 {
+		return ""
+	}
+	return "?" + strings.ReplaceAll(strings.Join(q, "&"), "+", "%20")
+}
+
+// portalGet signs path only (the server verifies conn.request_path, no query)
+// and sends GET {PortalBase}{path}{query}.
+func portalGet(creds *Credentials, path, query string, client *http.Client) (*http.Response, error) {
+	timestamp := time.Now().Unix()
+	req, err := http.NewRequest("GET", PortalBase+path+query, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+creds.PublicKey)
+	req.Header.Set("X-Timestamp", fmt.Sprintf("%d", timestamp))
+	req.Header.Set("X-Signature", signRequest(creds.SecretKey, timestamp, "GET", path, nil))
+	req.Header.Set("User-Agent", "un-go/2.0")
+	return client.Do(req)
+}
+
+// logsFetchRaw fetches {PortalBase}/logs/{source}; returns status and body.
+func logsFetchRaw(creds *Credentials, source string, opts *LogsFetchOptions) (int, []byte, error) {
+	if opts == nil {
+		opts = &LogsFetchOptions{}
+	}
+	lines := opts.Lines
+	if lines <= 0 {
+		lines = 100
+	}
+	q := logsQuery("lines", strconv.Itoa(lines), "since", opts.Since, "grep", opts.Grep, "level", opts.Level)
+	resp, err := portalGet(creds, logsPath(source, false), q, &http.Client{Timeout: 120 * time.Second})
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, err
+}
+
+// LogsFetch fetches batch logs from the portal (GET {portal}/logs/{source}).
 //
 // Args:
 //
-//	creds: API credentials
+//	creds: API credentials (partner key with log access)
 //	source: Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
 //	opts: Fetch options (can be nil for defaults)
 //
@@ -1499,120 +1570,313 @@ type LogsFetchOptions struct {
 //
 //	JSON response with log entries
 func LogsFetch(creds *Credentials, source string, opts *LogsFetchOptions) (map[string]interface{}, error) {
-	path := "/paas/logs"
-	params := []string{}
-
-	if source != "" {
-		params = append(params, fmt.Sprintf("source=%s", source))
+	status, body, err := logsFetchRaw(creds, source, opts)
+	if err != nil {
+		return nil, err
 	}
-
-	if opts != nil {
-		if opts.Lines > 0 {
-			params = append(params, fmt.Sprintf("lines=%d", opts.Lines))
-		}
-		if opts.Since != "" {
-			params = append(params, fmt.Sprintf("since=%s", opts.Since))
-		}
-		if opts.Grep != "" {
-			params = append(params, fmt.Sprintf("grep=%s", opts.Grep))
-		}
+	if status != 200 {
+		return nil, fmt.Errorf("HTTP %d: %s", status, string(body))
 	}
-
-	if len(params) > 0 {
-		path = path + "?" + strings.Join(params, "&")
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-
-	return makeRequest("GET", path, creds, nil)
+	return result, nil
 }
 
 // LogCallback is called for each log line received during streaming.
 type LogCallback func(source, line string)
 
-// LogsStream streams logs via Server-Sent Events.
-// This function blocks until the stream is closed or an error occurs.
-//
-// Args:
-//
-//	creds: API credentials
-//	source: Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
-//	grep: Optional filter pattern (empty string for no filter)
-//	callback: Function called for each log line
-//
-// Returns:
-//
-//	nil on clean shutdown, error on failure
-func LogsStream(creds *Credentials, source, grep string, callback LogCallback) error {
-	path := "/paas/logs/stream"
-	params := []string{}
-
-	if source != "" {
-		params = append(params, fmt.Sprintf("source=%s", source))
-	}
-	if grep != "" {
-		params = append(params, fmt.Sprintf("grep=%s", grep))
-	}
-
-	if len(params) > 0 {
-		path = path + "?" + strings.Join(params, "&")
-	}
-
-	url := APIBase + path
-	timestamp := time.Now().Unix()
-	message := fmt.Sprintf("%d:GET:%s:", timestamp, path)
-	mac := hmac.New(sha256.New, []byte(creds.SecretKey))
-	mac.Write([]byte(message))
-	signature := hex.EncodeToString(mac.Sum(nil))
-
-	req, err := http.NewRequest("GET", url, nil)
+// logsStreamOnce opens one SSE connection; returns HTTP status (0 on network error).
+func logsStreamOnce(creds *Credentials, source, grep, level, since string, callback LogCallback) (int, error) {
+	q := logsQuery("grep", grep, "level", level, "since", since)
+	resp, err := portalGet(creds, logsPath(source, true), q, &http.Client{Timeout: 0})
 	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Authorization", "Bearer "+creds.PublicKey)
-	req.Header.Set("X-Timestamp", fmt.Sprintf("%d", timestamp))
-	req.Header.Set("X-Signature", signature)
-	req.Header.Set("Accept", "text/event-stream")
-
-	client := &http.Client{Timeout: 0} // No timeout for streaming
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("stream error (HTTP %d): %s", resp.StatusCode, string(body))
+		io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, nil
 	}
-
 	reader := bufio.NewReader(resp.Body)
-	currentSource := source
-
 	for {
 		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				return nil // Clean shutdown
-			}
-			return err
-		}
-
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// Parse SSE format
-		if strings.HasPrefix(line, "event:") {
-			// New source from event type
-			currentSource = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
+		line = strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(line, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if callback != nil && data != "" {
-				callback(currentSource, data)
+			if data != "" && data != ":keepalive" && callback != nil {
+				var ev map[string]interface{}
+				if json.Unmarshal([]byte(data), &ev) == nil {
+					src, _ := ev["source"].(string)
+					if l, ok := ev["line"].(string); ok {
+						callback(src, l)
+					}
+				} else {
+					callback("", data)
+				}
 			}
+		}
+		if err != nil {
+			return 200, nil
 		}
 	}
+}
+
+// LogsStream streams logs via Server-Sent Events from {portal}/logs/{source}/stream.
+// Blocks; reconnects on drops (2s backoff doubling to 30s, since= overlap).
+// Returns an error on 401/403.
+func LogsStream(creds *Credentials, source, grep string, callback LogCallback) error {
+	return LogsStreamLevel(creds, source, grep, "", callback)
+}
+
+// LogsStreamLevel is LogsStream with a minimum log level.
+func LogsStreamLevel(creds *Credentials, source, grep, level string, callback LogCallback) error {
+	delay := 2
+	var lastRecv time.Time
+	since := ""
+	for {
+		cb := func(src, l string) {
+			lastRecv = time.Now()
+			if callback != nil {
+				callback(src, l)
+			}
+		}
+		start := time.Now()
+		status, _ := logsStreamOnce(creds, source, grep, level, since, cb)
+		if time.Since(start) > 30*time.Second {
+			delay = 2
+		}
+		if status == 401 || status == 403 {
+			return fmt.Errorf("HTTP %d (auth failed)", status)
+		}
+		if status != 0 && status != 200 && status < 500 {
+			return fmt.Errorf("HTTP %d", status)
+		}
+		time.Sleep(time.Duration(delay) * time.Second)
+		delay *= 2
+		if delay > 30 {
+			delay = 30
+		}
+		if !lastRecv.IsZero() {
+			gap := int(time.Since(lastRecv).Seconds()) + 5
+			if gap < 10 {
+				gap = 10
+			}
+			since = fmt.Sprintf("%ds", gap)
+		}
+	}
+}
+
+// logCursorPath is ~/.unsandbox/paas_log_cursor (last fetch, Unix seconds).
+func logCursorPath() string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".unsandbox", "paas_log_cursor")
+}
+
+func readLogCursor() string {
+	p := logCursorPath()
+	if p == "" {
+		return ""
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil || ts <= 0 {
+		return ""
+	}
+	ago := time.Now().Unix() - ts
+	if ago < 5 {
+		ago = 5
+	}
+	return fmt.Sprintf("%ds", ago)
+}
+
+func writeLogCursor() {
+	p := logCursorPath()
+	if p == "" {
+		return
+	}
+	os.MkdirAll(filepath.Dir(p), 0700)
+	os.WriteFile(p, []byte(fmt.Sprintf("%d\n", time.Now().Unix())), 0600)
+}
+
+func paasLogsUsage() {
+	fmt.Fprint(os.Stderr, `Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.
+`)
+}
+
+// runPaas handles `un paas <command>` (currently: logs).
+func runPaas(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, "Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.\n")
+		return 1
+	}
+	if args[0] != "logs" {
+		fmt.Fprintf(os.Stderr, "Error: Unknown paas command '%s'\nRun 'un paas' for available commands.\n", args[0])
+		return 1
+	}
+	return runPaasLogs(args[1:])
+}
+
+func runPaasLogs(args []string) int {
+	source, lines := "all", 100
+	since, grep, level, pk, sk := "", "", "", "", ""
+	account := -1
+	follow, jsonOut := false, false
+	clamp := func(v string) int {
+		n, _ := strconv.Atoi(v)
+		if n < 1 {
+			n = 1
+		}
+		if n > 10000 {
+			n = 10000
+		}
+		return n
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, bool) {
+			if i+1 < len(args) {
+				i++
+				return args[i], true
+			}
+			return "", false
+		}
+		switch a {
+		case "-p":
+			pk, _ = next()
+		case "-k":
+			sk, _ = next()
+		case "--account":
+			if v, ok := next(); ok {
+				account, _ = strconv.Atoi(v)
+			}
+		case "--source":
+			if v, ok := next(); ok {
+				source = v
+			}
+		case "--all":
+			source = "all"
+		case "--api":
+			source = "api"
+		case "--portal":
+			source = "portal"
+		case "--pool":
+			if v, ok := next(); ok {
+				source = "pool/" + v
+			}
+		case "--lines", "-n":
+			if v, ok := next(); ok {
+				lines = clamp(v)
+			}
+		case "--since":
+			since, _ = next()
+		case "--grep":
+			grep, _ = next()
+		case "--level", "-l":
+			level, _ = next()
+		case "--follow", "-f":
+			follow = true
+		case "--json":
+			jsonOut = true
+		case "-h", "--help":
+			paasLogsUsage()
+			return 0
+		}
+	}
+	creds, err := ResolveCredentials(pk, sk, account)
+	if err != nil || creds == nil || creds.PublicKey == "" {
+		fmt.Fprint(os.Stderr, "Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n")
+		return 1
+	}
+	if follow {
+		fmt.Fprintf(os.Stderr, "Streaming %s logs... (Ctrl+C to stop)\n", source)
+		err := LogsStreamLevel(creds, source, grep, level, func(src, l string) {
+			if src != "" {
+				fmt.Printf("\033[36m%-12s\033[0m %s\n", src, l)
+			} else {
+				fmt.Println(l)
+			}
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+			return 1
+		}
+		return 0
+	}
+	if since == "" {
+		if since = readLogCursor(); since == "" {
+			since = "5m"
+		}
+	}
+	status, body, err := logsFetchRaw(creds, source, &LogsFetchOptions{Lines: lines, Since: since, Grep: grep, Level: level})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Network error fetching logs: %s\n", err)
+		return 1
+	}
+	if status != 200 {
+		var eb map[string]interface{}
+		msg := ""
+		if json.Unmarshal(body, &eb) == nil {
+			msg, _ = eb["error"].(string)
+		}
+		if msg != "" {
+			fmt.Fprintf(os.Stderr, "Error: HTTP %d — %s\n", status, msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: HTTP %d\n", status)
+		}
+		return 1
+	}
+	writeLogCursor()
+	if jsonOut {
+		fmt.Println(string(body))
+		return 0
+	}
+	var res map[string]interface{}
+	if json.Unmarshal(body, &res) != nil {
+		fmt.Fprintln(os.Stderr, "Error: Invalid response format")
+		return 1
+	}
+	arr, _ := res["lines"].([]interface{})
+	for _, e := range arr {
+		switch v := e.(type) {
+		case string:
+			fmt.Println(v)
+		case map[string]interface{}:
+			src, _ := v["source"].(string)
+			l, _ := v["line"].(string)
+			fmt.Printf("\033[36m%-12s\033[0m %s\n", src, l)
+		}
+	}
+	return 0
 }
 
 // ============================================================================
@@ -3194,7 +3458,7 @@ func runKey(creds *Credentials) int {
 	case "expired":
 		fmt.Println("Expired")
 		fmt.Printf("Public Key: %s\n", pk)
-		fmt.Println("To renew: Visit https://unsandbox.com/keys/extend")
+		fmt.Println("To renew: Visit " + PortalBase + "/keys/extend")
 		return ExitAuthError
 	case "suspended":
 		fmt.Println("Suspended")
@@ -3550,6 +3814,11 @@ func CliMain() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(ExitInvalidArgs)
+	}
+
+	// paas has its own flags (-n, -l, -f mean lines/level/follow there)
+	if os.Args[1] == "paas" {
+		os.Exit(runPaas(os.Args[2:]))
 	}
 
 	opts, remaining := parseGlobalFlags(os.Args[1:])

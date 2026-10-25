@@ -78,7 +78,15 @@ fn apiBase() []const u8 {
     const trimmed = mem.trimRight(u8, v, "/");
     return if (trimmed.len == 0) DEFAULT_API_BASE else trimmed;
 }
-const PORTAL_BASE = "https://unsandbox.com";
+const DEFAULT_PORTAL_BASE = "https://unsandbox.com";
+
+// Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
+// Serves /logs/{source} (partner log access) and /keys/extend.
+fn portalBase() []const u8 {
+    const v = std.posix.getenv("UNSANDBOX_PORTAL_URL") orelse return DEFAULT_PORTAL_BASE;
+    const trimmed = mem.trimRight(u8, v, "/");
+    return if (trimmed.len == 0) DEFAULT_PORTAL_BASE else trimmed;
+}
 const MAX_ENV_CONTENT_SIZE: usize = 65536;
 const LANGUAGES_CACHE_TTL: i64 = 3600; // 1 hour in seconds
 const GREEN = "\x1b[32m";
@@ -647,33 +655,365 @@ pub fn imageUnlock(allocator: std.mem.Allocator, image_id: []const u8, public_ke
     return try makeApiRequest(allocator, "POST", path, "", public_key, secret_key);
 }
 
+// PaaS Logs (CLI_SPEC.md "PaaS Logs Command"): GET {portal}/logs/{source}[/stream],
+// query percent-encoded, HMAC over "ts:GET:/logs/{source}:" (path only).
+
+fn pctAppend(list: *std.ArrayList(u8), v: []const u8) !void {
+    for (v) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
+            try list.append(c);
+        } else {
+            try list.writer().print("%{X:0>2}", .{c});
+        }
+    }
+}
+
+fn addQuery(list: *std.ArrayList(u8), key: []const u8, val: ?[]const u8) !void {
+    const v = val orelse return;
+    if (v.len == 0) return;
+    try list.append(if (mem.indexOfScalar(u8, list.items, '?') != null) '&' else '?');
+    try list.appendSlice(key);
+    try list.append('=');
+    try pctAppend(list, v);
+}
+
+fn logsPath(allocator: std.mem.Allocator, source: []const u8, stream: bool) ![]u8 {
+    const src = if (source.len == 0) "all" else source;
+    return if (stream) try std.fmt.allocPrint(allocator, "/logs/{s}/stream", .{src}) else try std.fmt.allocPrint(allocator, "/logs/{s}", .{src});
+}
+
+const PortalAuth = struct {
+    auth: []u8,
+    ts: []u8,
+    sig: []u8,
+    fn deinit(self: PortalAuth, allocator: std.mem.Allocator) void {
+        allocator.free(self.auth);
+        allocator.free(self.ts);
+        allocator.free(self.sig);
+    }
+};
+
+// Headers for curl argv (no shell). Secret key stays in-process; only the signature leaves.
+fn portalAuth(allocator: std.mem.Allocator, path: []const u8, public_key: []const u8, secret_key: []const u8) !PortalAuth {
+    const ts = try getTimestamp(allocator);
+    defer allocator.free(ts);
+    const message = try std.fmt.allocPrint(allocator, "{s}:GET:{s}:", .{ ts, path });
+    defer allocator.free(message);
+    const sig = try computeHmac(allocator, secret_key, message);
+    defer allocator.free(sig);
+    return .{
+        .auth = try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}", .{public_key}),
+        .ts = try std.fmt.allocPrint(allocator, "X-Timestamp: {s}", .{ts}),
+        .sig = try std.fmt.allocPrint(allocator, "X-Signature: {s}", .{sig}),
+    };
+}
+
+/// Raw portal logs fetch. Caller frees .body.
+fn logsFetchRaw(allocator: std.mem.Allocator, source: []const u8, lines: u32, since: ?[]const u8, grep: ?[]const u8, level: ?[]const u8, public_key: []const u8, secret_key: []const u8) !CurlResult {
+    const path = try logsPath(allocator, source, false);
+    defer allocator.free(path);
+    var url = std.ArrayList(u8).init(allocator);
+    defer url.deinit();
+    try url.writer().print("{s}{s}?lines={d}", .{ portalBase(), path, lines });
+    try addQuery(&url, "since", since);
+    try addQuery(&url, "grep", grep);
+    try addQuery(&url, "level", level);
+    const h = try portalAuth(allocator, path, public_key, secret_key);
+    defer h.deinit(allocator);
+    const run = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "curl", "-s", "-X", "GET", url.items, "-H", h.auth, "-H", h.ts, "-H", h.sig, "-A", "un-cli/2.0", "-w", "\n%{http_code}" },
+        .max_output_bytes = 64 * 1024 * 1024,
+    }) catch return CurlResult{ .body = try allocator.dupe(u8, ""), .status = 0 };
+    defer allocator.free(run.stdout);
+    defer allocator.free(run.stderr);
+    const split = mem.lastIndexOfScalar(u8, run.stdout, '\n');
+    const status_str = mem.trim(u8, if (split) |i| run.stdout[i + 1 ..] else run.stdout, &std.ascii.whitespace);
+    return CurlResult{
+        .body = try allocator.dupe(u8, if (split) |i| run.stdout[0..i] else ""),
+        .status = std.fmt.parseInt(i32, status_str, 10) catch 0,
+    };
+}
+
 // PaaS Logs functions
 pub fn logsFetch(allocator: std.mem.Allocator, source: ?[]const u8, lines: ?u32, since: ?[]const u8, grep: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
-    var path_buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&path_buf);
-    const writer = stream.writer();
-    try writer.writeAll("/paas/logs?");
-    var has_param = false;
-    if (source) |s| {
-        try writer.print("source={s}", .{s});
-        has_param = true;
+    const r = try logsFetchRaw(allocator, source orelse "all", std.math.clamp(lines orelse 100, 1, 10000), since, grep, null, public_key, secret_key);
+    return r.body;
+}
+
+fn paasCursorPath(allocator: std.mem.Allocator) !?[]u8 {
+    const home = std.posix.getenv("HOME") orelse return null;
+    if (home.len == 0) return null;
+    return try std.fmt.allocPrint(allocator, "{s}/.unsandbox/paas_log_cursor", .{home});
+}
+
+// Seconds since the last successful fetch as "Ns" (min 5), or null. Caller frees.
+fn readPaasCursor(allocator: std.mem.Allocator) !?[]u8 {
+    const p = (try paasCursorPath(allocator)) orelse return null;
+    defer allocator.free(p);
+    const data = fs.cwd().readFileAlloc(allocator, p, 64) catch return null;
+    defer allocator.free(data);
+    const ts = std.fmt.parseInt(i64, mem.trim(u8, data, &std.ascii.whitespace), 10) catch return null;
+    if (ts <= 0) return null;
+    var ago = std.time.timestamp() - ts;
+    if (ago < 5) ago = 5;
+    return try std.fmt.allocPrint(allocator, "{d}s", .{ago});
+}
+
+fn writePaasCursor(allocator: std.mem.Allocator) void {
+    const p = (paasCursorPath(allocator) catch return) orelse return;
+    defer allocator.free(p);
+    if (fs.path.dirname(p)) |d| fs.cwd().makePath(d) catch {};
+    const f = fs.cwd().createFile(p, .{}) catch return;
+    defer f.close();
+    f.writer().print("{d}\n", .{std.time.timestamp()}) catch {};
+}
+
+fn jsonStr(v: std.json.Value, key: []const u8) ?[]const u8 {
+    if (v != .object) return null;
+    const x = v.object.get(key) orelse return null;
+    return if (x == .string) x.string else null;
+}
+
+fn printPaasError(allocator: std.mem.Allocator, status: i32, body: []const u8) void {
+    const stderr = std.io.getStdErr().writer();
+    if (std.json.parseFromSlice(std.json.Value, allocator, body, .{})) |parsed| {
+        defer parsed.deinit();
+        if (jsonStr(parsed.value, "error")) |e| {
+            stderr.print("Error: HTTP {d} \u{2014} {s}\n", .{ status, e }) catch {};
+            return;
+        }
+    } else |_| {}
+    stderr.print("Error: HTTP {d}\n", .{status}) catch {};
+}
+
+fn paasLogsHelp() void {
+    std.debug.print(
+        \\Usage: un paas logs [options]
+        \\
+        \\Fetch or stream PaaS production logs.
+        \\
+        \\Sources:
+        \\  --all              All sources (default)
+        \\  --api              API server logs
+        \\  --portal           Portal server logs
+        \\  --pool NODE        Pool node logs (e.g., cammy, ai)
+        \\  --source SOURCE    Source string (api, portal, pool/cammy, all)
+        \\
+        \\Options:
+        \\  --lines N, -n N    Number of lines (default: 100, max: 10000)
+        \\  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+        \\  --grep PATTERN     Filter log lines by pattern
+        \\  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+        \\  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+        \\  --json             Output raw JSON response
+        \\  -p KEY             Public key
+        \\  -k KEY             Secret key
+        \\  -h                 Show this help
+        \\
+        \\Examples:
+        \\  un paas logs                             # last 100 lines from all sources
+        \\  un paas logs --api --lines 500           # last 500 API log lines
+        \\  un paas logs --portal --grep error       # portal logs matching 'error'
+        \\  un paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+        \\  un paas logs -l warning                  # warnings and above from all sources
+        \\  un paas logs --follow                    # follow all logs in real-time
+        \\  un paas logs --follow -l warning         # follow warnings+ in real-time
+        \\
+        \\Requires a partner API key with log access enabled.
+        \\
+    , .{});
+}
+
+/// `un paas ...`; args[0] is the program, args[1] == "paas".
+fn cmdPaas(allocator: std.mem.Allocator, args: []const [:0]u8, public_key: []const u8, secret_key: []const u8) !u8 {
+    if (args.len < 3) {
+        std.debug.print("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.\n", .{});
+        return 1;
     }
-    if (lines) |l| {
-        if (has_param) try writer.writeAll("&");
-        try writer.print("lines={d}", .{l});
-        has_param = true;
+    if (!mem.eql(u8, args[2], "logs")) {
+        std.debug.print("Error: Unknown paas command '{s}'\nRun 'un paas' for available commands.\n", .{args[2]});
+        return 1;
     }
-    if (since) |s| {
-        if (has_param) try writer.writeAll("&");
-        try writer.print("since={s}", .{s});
-        has_param = true;
+    var source: []const u8 = "all";
+    var pool_buf: [256]u8 = undefined;
+    var lines: u32 = 100;
+    var since: ?[]const u8 = null;
+    var grep: ?[]const u8 = null;
+    var level: ?[]const u8 = null;
+    var follow = false;
+    var json_out = false;
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        const has_next = i + 1 < args.len;
+        if ((mem.eql(u8, a, "-p") or mem.eql(u8, a, "-k") or mem.eql(u8, a, "--account")) and has_next) {
+            i += 1; // resolved by main's pre-scan
+        } else if (mem.eql(u8, a, "--source") and has_next) {
+            i += 1;
+            source = args[i];
+        } else if (mem.eql(u8, a, "--all")) {
+            source = "all";
+        } else if (mem.eql(u8, a, "--api")) {
+            source = "api";
+        } else if (mem.eql(u8, a, "--portal")) {
+            source = "portal";
+        } else if (mem.eql(u8, a, "--pool") and has_next) {
+            i += 1;
+            source = std.fmt.bufPrint(&pool_buf, "pool/{s}", .{args[i]}) catch "all";
+        } else if ((mem.eql(u8, a, "--lines") or mem.eql(u8, a, "-n")) and has_next) {
+            i += 1;
+            const n = std.fmt.parseInt(i64, args[i], 10) catch 0;
+            lines = @intCast(std.math.clamp(n, 1, 10000));
+        } else if (mem.eql(u8, a, "--since") and has_next) {
+            i += 1;
+            since = args[i];
+        } else if (mem.eql(u8, a, "--grep") and has_next) {
+            i += 1;
+            grep = args[i];
+        } else if ((mem.eql(u8, a, "--level") or mem.eql(u8, a, "-l")) and has_next) {
+            i += 1;
+            level = args[i];
+        } else if (mem.eql(u8, a, "--follow") or mem.eql(u8, a, "-f")) {
+            follow = true;
+        } else if (mem.eql(u8, a, "--json")) {
+            json_out = true;
+        } else if (mem.eql(u8, a, "-h") or mem.eql(u8, a, "--help")) {
+            paasLogsHelp();
+            return 0;
+        }
     }
-    if (grep) |g| {
-        if (has_param) try writer.writeAll("&");
-        try writer.print("grep={s}", .{g});
+    if (public_key.len == 0) {
+        std.debug.print("Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n", .{});
+        return 1;
     }
-    const path = stream.getWritten();
-    return try makeApiRequest(allocator, "GET", path, "", public_key, secret_key);
+    if (follow) return try streamPaasLogs(allocator, source, grep, level, public_key, secret_key);
+
+    const cursor = if (since == null) try readPaasCursor(allocator) else null;
+    defer if (cursor) |c| allocator.free(c);
+    const eff_since: []const u8 = since orelse (cursor orelse "5m");
+    const r = try logsFetchRaw(allocator, source, lines, eff_since, grep, level, public_key, secret_key);
+    defer allocator.free(r.body);
+    if (r.status == 0) {
+        std.debug.print("Error: Network error fetching logs\n", .{});
+        return 1;
+    }
+    if (r.status != 200) {
+        printPaasError(allocator, r.status, r.body);
+        return 1;
+    }
+    writePaasCursor(allocator);
+    const stdout = std.io.getStdOut().writer();
+    if (json_out) {
+        try stdout.print("{s}\n", .{r.body});
+        return 0;
+    }
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, r.body, .{}) catch {
+        std.debug.print("Error: Invalid response format\n", .{});
+        return 1;
+    };
+    defer parsed.deinit();
+    const root = parsed.value;
+    const arr = if (root == .object) root.object.get("lines") else null;
+    if (arr == null or arr.? != .array) {
+        std.debug.print("Error: Invalid response format\n", .{});
+        return 1;
+    }
+    const is_all = root.object.get("sources") != null;
+    for (arr.?.array.items) |item| {
+        if (item == .string) {
+            try stdout.print("{s}\n", .{item.string});
+        } else if (jsonStr(item, "line")) |ln| {
+            if (is_all) {
+                if (jsonStr(item, "source")) |src| {
+                    try stdout.print("\x1b[36m{s: <12}\x1b[0m {s}\n", .{ src, ln });
+                    continue;
+                }
+            }
+            try stdout.print("{s}\n", .{ln});
+        }
+    }
+    return 0;
+}
+
+const STATUS_MARK = "__UNSB_HTTP_STATUS__";
+
+// Follow {portal}/logs/{source}/stream via curl -N; reconnects (2s doubling to 30s)
+// with since= covering the gap and a fresh signature. 401/403 is fatal.
+fn streamPaasLogs(allocator: std.mem.Allocator, source: []const u8, grep: ?[]const u8, level: ?[]const u8, public_key: []const u8, secret_key: []const u8) !u8 {
+    const path = try logsPath(allocator, source, true);
+    defer allocator.free(path);
+    var base = std.ArrayList(u8).init(allocator);
+    defer base.deinit();
+    try base.writer().print("{s}{s}", .{ portalBase(), path });
+    try addQuery(&base, "grep", grep);
+    try addQuery(&base, "level", level);
+    std.debug.print("Streaming {s} logs... (Ctrl+C to stop)\n", .{source});
+    const stdout = std.io.getStdOut().writer();
+    var delay: u64 = 2;
+    var last_recv: i64 = 0;
+    var reconnect = false;
+    while (true) {
+        var url = std.ArrayList(u8).init(allocator);
+        defer url.deinit();
+        try url.appendSlice(base.items);
+        if (reconnect and last_recv > 0) {
+            var gap = std.time.timestamp() - last_recv + 5;
+            if (gap < 10) gap = 10;
+            try url.writer().print("{c}since={d}s", .{ @as(u8, if (mem.indexOfScalar(u8, url.items, '?') != null) '&' else '?'), gap });
+        }
+        const h = try portalAuth(allocator, path, public_key, secret_key);
+        defer h.deinit(allocator);
+        const connected_at = std.time.timestamp();
+        var child = std.process.Child.init(&[_][]const u8{ "curl", "-s", "-N", "--http1.1", "-H", "Accept: text/event-stream", "-H", h.auth, "-H", h.ts, "-H", h.sig, "-A", "un-cli/2.0", "-w", "\n" ++ STATUS_MARK ++ "%{http_code}\n", url.items }, allocator);
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Ignore;
+        try child.spawn();
+        var status: i32 = 0;
+        var br = std.io.bufferedReader(child.stdout.?.reader());
+        const reader = br.reader();
+        var line_buf = std.ArrayList(u8).init(allocator);
+        defer line_buf.deinit();
+        while (true) {
+            line_buf.clearRetainingCapacity();
+            reader.streamUntilDelimiter(line_buf.writer(), '\n', null) catch break;
+            const line = line_buf.items;
+            if (mem.startsWith(u8, line, STATUS_MARK)) {
+                status = std.fmt.parseInt(i32, mem.trim(u8, line[STATUS_MARK.len..], &std.ascii.whitespace), 10) catch 0;
+                continue;
+            }
+            if (!mem.startsWith(u8, line, "data:")) continue;
+            const data = mem.trimLeft(u8, line[5..], " ");
+            if (data.len == 0 or mem.eql(u8, data, ":keepalive")) continue;
+            if (std.json.parseFromSlice(std.json.Value, allocator, data, .{})) |parsed| {
+                defer parsed.deinit();
+                if (jsonStr(parsed.value, "line")) |ln| {
+                    try stdout.print("\x1b[36m{s: <12}\x1b[0m {s}\n", .{ jsonStr(parsed.value, "source") orelse source, ln });
+                    last_recv = std.time.timestamp();
+                }
+            } else |_| {
+                try stdout.print("{s}\n", .{data});
+                last_recv = std.time.timestamp();
+            }
+        }
+        _ = child.wait() catch {};
+        if (status == 401 or status == 403) {
+            std.debug.print("Error: HTTP {d} (auth failed)\n", .{status});
+            return 1;
+        }
+        if (status != 0 and status != 200 and status < 500) {
+            std.debug.print("Error: HTTP {d}\n", .{status});
+            return 1;
+        }
+        if (status == 0 and !reconnect and last_recv == 0) {
+            std.debug.print("Error: Stream error: could not connect\n", .{});
+            return 1;
+        }
+        if (std.time.timestamp() - connected_at > 30) delay = 2;
+        std.time.sleep(delay * std.time.ns_per_s);
+        delay = @min(delay * 2, 30);
+        reconnect = true;
+    }
 }
 
 // Key validation
@@ -1109,7 +1449,7 @@ fn cmdKeyValidate(allocator: std.mem.Allocator, public_key: []const u8, secret_k
     }
 
     if (mem.eql(u8, state, "expired")) {
-        try stdout.print("{s}Expired{s}\nPublic Key: {s}\n{s}To renew: Visit {s}/keys/extend{s}\n", .{ RED, RESET, public_key, YELLOW, PORTAL_BASE, RESET });
+        try stdout.print("{s}Expired{s}\nPublic Key: {s}\n{s}To renew: Visit {s}/keys/extend{s}\n", .{ RED, RESET, public_key, YELLOW, portalBase(), RESET });
         return 3;
     } else if (mem.eql(u8, state, "suspended")) {
         try stdout.print("{s}Suspended{s}\nPublic Key: {s}\n", .{ RED, RESET, public_key });
@@ -1310,6 +1650,11 @@ pub fn main() !u8 {
     defer allocator.free(public_key);
     const secret_key = creds.sk;
     defer allocator.free(secret_key);
+
+    // Handle paas command (portal platform logs)
+    if (mem.eql(u8, args[1], "paas")) {
+        return try cmdPaas(allocator, args, public_key, secret_key);
+    }
 
     // Handle session command
     if (mem.eql(u8, args[1], "session")) {
@@ -2045,7 +2390,7 @@ pub fn main() !u8 {
         }
 
         if (extend) {
-            const url = try std.fmt.allocPrint(allocator, "{s}/keys/extend?pk={s}", .{ PORTAL_BASE, public_key });
+            const url = try std.fmt.allocPrint(allocator, "{s}/keys/extend?pk={s}", .{ portalBase(), public_key });
             defer allocator.free(url);
             std.debug.print("\x1b[33mOpening browser to extend key...\x1b[0m\n", .{});
             const open_cmd = try std.fmt.allocPrint(allocator, "xdg-open '{s}' 2>/dev/null || open '{s}' 2>/dev/null || start '{s}' 2>/dev/null", .{ url, url, url });

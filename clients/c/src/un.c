@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <time.h>
@@ -51,6 +52,33 @@ static const char* api_base(void) {
         while (n > 0 && base[n - 1] == '/') base[--n] = '\0';
     }
     return base;
+}
+
+// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
+// Serves /logs/{source} (partner log access) and /keys/extend.
+static const char* portal_base(void) {
+    static char *base = NULL;
+    if (!base) {
+        const char *env = getenv("UNSANDBOX_PORTAL_URL");
+        base = strdup((env && *env) ? env : "https://unsandbox.com");
+        if (!base) return "https://unsandbox.com";
+        size_t n = strlen(base);
+        while (n > 0 && base[n - 1] == '/') base[--n] = '\0';
+    }
+    return base;
+}
+
+// Append "&key=<percent-encoded value>" (or '?' when first) to url at *off.
+static void append_query_param(char *url, size_t cap, int *off, const char *key, const char *val) {
+    if (!val || !val[0] || *off < 0 || (size_t)*off >= cap) return;
+    *off += snprintf(url + *off, cap - *off, "%c%s=", strchr(url, '?') ? '&' : '?', key);
+    for (const unsigned char *c = (const unsigned char *)val; *c && (size_t)*off + 4 < cap; c++) {
+        if (isalnum(*c) || *c == '-' || *c == '_' || *c == '.' || *c == '~')
+            url[(*off)++] = (char)*c;
+        else
+            *off += snprintf(url + *off, cap - *off, "%%%02X", *c);
+    }
+    url[*off] = '\0';
 }
 
 static const char* api_execute_url(void) {
@@ -85,7 +113,7 @@ static const char* api_ws_host(int *port, int *use_ssl) {
 
 #define API_URL api_execute_url()
 #define API_BASE api_base()
-#define PORTAL_BASE "https://unsandbox.com"
+#define PORTAL_BASE portal_base()
 #define MAX_FILE_SIZE (100 * 1024 * 1024) // 100MB max single file
 #define MAX_INPUT_FILES 1000
 #define MAX_TOTAL_INPUT_SIZE (4096L * 1024 * 1024) // 4GB total across all input files
@@ -2950,12 +2978,9 @@ static int fetch_paas_logs(const UnsandboxCredentials *creds,
     // Build full URL with query params
     char url[1024];
     int off = snprintf(url, sizeof(url), "%s%s?lines=%d", PORTAL_BASE, path, lines);
-    if (since && since[0])
-        off += snprintf(url + off, sizeof(url) - off, "&since=%s", since);
-    if (grep && grep[0])
-        off += snprintf(url + off, sizeof(url) - off, "&grep=%s", grep);
-    if (level && level[0])
-        off += snprintf(url + off, sizeof(url) - off, "&level=%s", level);
+    append_query_param(url, sizeof(url), &off, "since", since);
+    append_query_param(url, sizeof(url), &off, "grep", grep);
+    append_query_param(url, sizeof(url), &off, "level", level);
 
     // HMAC signs path only (no query string) — matches server conn.request_path
     struct curl_slist *headers = NULL;
@@ -3094,16 +3119,8 @@ static int stream_paas_logs(const UnsandboxCredentials *creds,
     // Build URL with optional query params
     char url[1024];
     int off = snprintf(url, sizeof(url), "%s%s", PORTAL_BASE, path);
-    char sep = '?';
-    if (grep && grep[0]) {
-        off += snprintf(url + off, sizeof(url) - off, "%cgrep=%s", sep, grep);
-        sep = '&';
-    }
-    if (level && level[0]) {
-        off += snprintf(url + off, sizeof(url) - off, "%clevel=%s", sep, level);
-        sep = '&';
-    }
-    (void)sep;
+    append_query_param(url, sizeof(url), &off, "grep", grep);
+    append_query_param(url, sizeof(url), &off, "level", level);
 
     // Install SIGINT handler for clean shutdown
     stream_interrupted = 0;
@@ -7551,10 +7568,8 @@ char *unsandbox_logs_fetch(
 
     char url[1024];
     int off = snprintf(url, sizeof(url), "%s%s?lines=%d", PORTAL_BASE, path, lines > 0 ? lines : 100);
-    if (since && since[0])
-        off += snprintf(url + off, sizeof(url) - off, "&since=%s", since);
-    if (grep && grep[0])
-        off += snprintf(url + off, sizeof(url) - off, "&grep=%s", grep);
+    append_query_param(url, sizeof(url), &off, "since", since);
+    append_query_param(url, sizeof(url), &off, "grep", grep);
 
     struct curl_slist *headers = NULL;
     headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);
@@ -7655,10 +7670,8 @@ int unsandbox_logs_stream(
         snprintf(path, sizeof(path), "/logs/%s/stream", source);
 
     char url[1024];
-    if (grep && grep[0])
-        snprintf(url, sizeof(url), "%s%s?grep=%s", PORTAL_BASE, path, grep);
-    else
-        snprintf(url, sizeof(url), "%s%s", PORTAL_BASE, path);
+    int off = snprintf(url, sizeof(url), "%s%s", PORTAL_BASE, path);
+    append_query_param(url, sizeof(url), &off, "grep", grep);
 
     struct curl_slist *headers = NULL;
     headers = add_hmac_auth_headers(headers, creds, "GET", path, NULL);

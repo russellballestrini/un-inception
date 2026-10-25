@@ -63,7 +63,9 @@
 (def yellow "\u001b[33m")
 (def reset "\u001b[0m")
 
-(def portal-base "https://unsandbox.com")
+(def portal-base
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /keys/extend
+  (str/replace (let [u (System/getenv "UNSANDBOX_PORTAL_URL")] (if (str/blank? u) "https://unsandbox.com" u)) #"/+$" ""))
 
 ;; API base URL: UNSANDBOX_API_URL overrides (staging / local), no trailing slash
 (def api-base
@@ -1105,14 +1107,240 @@
     (curl-post api-key (str "/services/" id "/redeploy") json)
     (println (str green "Service redeploying: " id reset))))
 
-;; PaaS logs functions
-(defn logs-fetch [source lines since grep-pattern]
-  (let [api-key (get-api-key)
-        params (str "?source=" (or source "all")
-                    "&lines=" (or lines 100)
-                    (if since (str "&since=" since) "")
-                    (if grep-pattern (str "&grep=" (java.net.URLEncoder/encode grep-pattern "UTF-8")) ""))]
-    (println (curl-get api-key (str "/logs" params)))))
+;; PaaS logs: GET {portal}/logs/{source}[/stream], HMAC over the path only.
+;; Partner keys with log access; anything else answers 401/403. In-process HTTP.
+(defn- unix-now [] (quot (System/currentTimeMillis) 1000))
+
+(defn- url-encode [^String v]
+  (-> (java.net.URLEncoder/encode v "UTF-8") (str/replace "+" "%20") (str/replace "*" "%2A") (str/replace "%7E" "~")))
+
+(defn- logs-query [base params]
+  (let [ps (keep (fn [[k v]] (when-not (str/blank? v) (str k "=" (url-encode v)))) params)]
+    (if (seq ps) (str base "?" (str/join "&" ps)) base)))
+
+(defn- json-parse
+  "Minimal JSON reader: maps with string keys, vectors, strings, numbers, true/false/nil."
+  [^String s]
+  (let [pos (volatile! 0) n (count s)
+        peek (fn [] (if (< @pos n) (.charAt s @pos) \u0000))
+        skip-ws (fn [] (while (and (< @pos n) (Character/isWhitespace (.charAt s @pos))) (vswap! pos inc)))
+        pstr (fn []
+               (vswap! pos inc)
+               (let [sb (StringBuilder.)]
+                 (loop []
+                   (when (< @pos n)
+                     (let [c (.charAt s @pos)]
+                       (vswap! pos inc)
+                       (cond
+                         (= c \") nil
+                         (= c \\) (let [e (peek)]
+                                    (vswap! pos inc)
+                                    (case e
+                                      \n (.append sb \newline) \t (.append sb \tab) \r (.append sb \return)
+                                      \b (.append sb \backspace) \f (.append sb \formfeed)
+                                      \u (let [h (subs s @pos (min n (+ @pos 4)))]
+                                           (vswap! pos + 4)
+                                           (.append sb (char (try (Integer/parseInt h 16) (catch Exception _ 63)))))
+                                      (.append sb e))
+                                    (recur))
+                         :else (do (.append sb c) (recur))))))
+                 (str sb)))]
+    (letfn [(pval []
+              (skip-ws)
+              (let [c (peek)]
+                (cond
+                  (= c \{) (do (vswap! pos inc)
+                               (loop [m {}]
+                                 (skip-ws)
+                                 (case (peek)
+                                   \} (do (vswap! pos inc) m)
+                                   \, (do (vswap! pos inc) (recur m))
+                                   \" (let [k (pstr)] (skip-ws) (vswap! pos inc) (recur (assoc m k (pval))))
+                                   (do (vreset! pos n) m))))
+                  (= c \[) (do (vswap! pos inc)
+                               (loop [v []]
+                                 (skip-ws)
+                                 (cond
+                                   (= (peek) \]) (do (vswap! pos inc) v)
+                                   (= (peek) \,) (do (vswap! pos inc) (recur v))
+                                   (>= @pos n) v
+                                   :else (recur (conj v (pval))))))
+                  (= c \") (pstr)
+                  :else (let [start @pos]
+                          (while (and (< @pos n) (not (#{\, \} \] \space \newline} (.charAt s @pos)))) (vswap! pos inc))
+                          (let [tok (subs s start @pos)]
+                            (case tok "true" true "false" false "null" nil
+                                  (or (try (Long/parseLong tok) (catch Exception _ nil)) tok)))))))]
+      (try (pval) (catch Exception _ nil)))))
+
+(defn- log-cursor-file [] (io/file (str (System/getenv "HOME") "/.unsandbox/paas_log_cursor")))
+
+(defn- read-log-cursor
+  "Seconds since our last successful fetch as \"Ns\" (min 5), or nil."
+  []
+  (try
+    (let [ts (Long/parseLong (str/trim (slurp (log-cursor-file))))]
+      (when (pos? ts) (str (max 5 (- (unix-now) ts)) "s")))
+    (catch Exception _ nil)))
+
+(defn- write-log-cursor []
+  (try
+    (let [f (log-cursor-file) d (.getParentFile f)]
+      (when-not (.exists d)
+        (.mkdirs d)
+        (.setReadable d false false) (.setReadable d true true)
+        (.setWritable d false false) (.setWritable d true true)
+        (.setExecutable d false false) (.setExecutable d true true))
+      (spit f (str (unix-now) "\n")))
+    (catch Exception _ nil)))
+
+(defn- logs-open
+  "Signed GET; the secret only signs in-process. Returns [code conn]."
+  [public-key secret-key path url stream?]
+  (let [timestamp (str (unix-now))
+        conn (doto ^java.net.HttpURLConnection (.openConnection (java.net.URL. url))
+               (.setRequestMethod "GET")
+               (.setConnectTimeout 30000)
+               (.setReadTimeout (if stream? 120000 300000))
+               (.setRequestProperty "User-Agent" "un-cli/2.0")
+               (.setRequestProperty "Authorization" (str "Bearer " public-key)))]
+    (when stream? (.setRequestProperty conn "Accept" "text/event-stream"))
+    (when secret-key
+      (.setRequestProperty conn "X-Timestamp" timestamp)
+      (.setRequestProperty conn "X-Signature" (make-signature secret-key timestamp "GET" path "")))
+    [(.getResponseCode conn) conn]))
+
+(defn- conn-body [^java.net.HttpURLConnection conn code]
+  (let [st (if (< 199 code 300) (.getInputStream conn) (.getErrorStream conn))]
+    (if st (slurp st :encoding "UTF-8") "")))
+
+(defn- logs-print-line [source line]
+  (if (str/blank? source)
+    (println line)
+    (println (format "%-12s %s" source line)))
+  (flush))
+
+(defn- logs-error-text [body]
+  (let [e (get (json-parse body) "error")]
+    (if (string? e) (str " — " e) "")))
+
+(defn paas-logs-fetch
+  "Batch fetch; prints lines (or raw JSON). Returns 0 or 1."
+  [public-key secret-key source lines since grep-pattern level json-output]
+  (let [path (str "/logs/" source)
+        url (logs-query (str portal-base path) [["lines" (str lines)] ["since" since] ["grep" grep-pattern] ["level" level]])
+        res (try (let [[code conn] (logs-open public-key secret-key path url false)] [code (conn-body conn code)])
+                 (catch Exception e (binding [*out* *err*] (println (str "Error: Network error fetching logs: " (.getMessage e)))) nil))]
+    (if-not res
+      1
+      (let [[code body] res]
+        (if (not= code 200)
+          (do (binding [*out* *err*] (println (str "Error: HTTP " code (logs-error-text body)))) 1)
+          (do
+            (write-log-cursor)
+            (if json-output
+              (do (println body) 0)
+              (let [j (json-parse body) ls (get j "lines")]
+                (if-not (vector? ls)
+                  (do (binding [*out* *err*] (println "Error: Invalid response format")) 1)
+                  (do (doseq [e ls]
+                        (cond (string? e) (logs-print-line nil e)
+                              (string? (get e "line")) (logs-print-line (when (get j "sources") (get e "source")) (get e "line"))))
+                      0))))))))))
+
+(defn paas-logs-stream
+  "Follow via SSE; reconnects with backoff, re-signing each time. Returns exit code."
+  [public-key secret-key source grep-pattern level]
+  (let [path (str "/logs/" source "/stream")]
+    (binding [*out* *err*] (println (str "Streaming " source " logs... (Ctrl+C to stop)")))
+    (loop [delay 2 last-recv 0 reconnect? false]
+      (let [since (when (and reconnect? (pos? last-recv)) (str (max 10 (+ (- (unix-now) last-recv) 5)) "s"))
+            url (logs-query (str portal-base path) [["grep" grep-pattern] ["level" level] ["since" since]])
+            started (unix-now)
+            last (volatile! last-recv)
+            code (try
+                   (let [[code ^java.net.HttpURLConnection conn] (logs-open public-key secret-key path url true)]
+                     (when (= code 200)
+                       (try
+                         (with-open [rdr (io/reader (.getInputStream conn) :encoding "UTF-8")]
+                           (doseq [line (line-seq rdr)]
+                             (when (str/starts-with? line "data: ")
+                               (let [payload (subs line 6) j (json-parse payload) l (when (map? j) (get j "line"))]
+                                 (cond (= payload ":keepalive") nil
+                                       (string? l) (do (logs-print-line (get j "source") l) (vreset! last (unix-now)))
+                                       (and (map? j) (contains? j "event")) nil
+                                       :else (do (logs-print-line nil payload) (vreset! last (unix-now))))))))
+                         (catch java.io.IOException _ nil)))
+                     code)
+                   (catch java.io.IOException _ 0))]
+        (cond
+          (#{401 403} code) (do (binding [*out* *err*] (println (str "Error: HTTP " code " (auth failed)"))) 1)
+          (or (= code 0) (= code 200) (>= code 500))
+          (let [delay (if (> (- (unix-now) started) 30) 2 delay)]
+            (Thread/sleep (* 1000 delay))
+            (recur (min 30 (* 2 delay)) @last true))
+          :else (do (binding [*out* *err*] (println (str "Error: HTTP " code))) 1))))))
+
+(def ^:private paas-logs-help-text
+  ["Usage: un.clj paas logs [options]" ""
+   "Fetch or stream PaaS production logs." ""
+   "Sources:"
+   "  --all              All sources (default)"
+   "  --api              API server logs"
+   "  --portal           Portal server logs"
+   "  --pool NODE        Pool node logs (e.g., cammy, ai)"
+   "  --source SOURCE    Source string (api, portal, pool/cammy, all)" ""
+   "Options:"
+   "  --lines N, -n N    Number of lines (default: 100, max: 10000)"
+   "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)"
+   "  --grep PATTERN     Filter log lines by pattern"
+   "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit"
+   "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)"
+   "  --json             Output raw JSON response"
+   "  -p KEY             Public key"
+   "  -k KEY             Secret key"
+   "  -h                 Show this help" ""
+   "Requires a partner API key with log access enabled."])
+
+(defn paas-command [args]
+  (cond
+    (empty? args)
+    (do (binding [*out* *err*] (println "Usage: un.clj paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs")) 1)
+    (not= (first args) "logs")
+    (do (binding [*out* *err*] (println (str "Error: Unknown paas command '" (first args) "'"))) 1)
+    :else
+    (loop [a (rest args) o {:source "all" :lines 100}]
+      (if (empty? a)
+        (let [[public-key secret-key] (if (and (:pk o) (:sk o)) [(:pk o) (:sk o)] (get-api-keys))]
+          (if (:follow o)
+            (paas-logs-stream public-key secret-key (:source o) (:grep o) (:level o))
+            (paas-logs-fetch public-key secret-key (:source o) (:lines o)
+                             (or (:since o) (read-log-cursor) "5m") (:grep o) (:level o) (:json o))))
+        (let [[opt val] a has-val (some? val)]
+          (cond
+            (#{"-h" "--help"} opt) (do (binding [*out* *err*] (doseq [l paas-logs-help-text] (println l))) 0)
+            (= opt "--all") (recur (rest a) (assoc o :source "all"))
+            (= opt "--api") (recur (rest a) (assoc o :source "api"))
+            (= opt "--portal") (recur (rest a) (assoc o :source "portal"))
+            (#{"--follow" "-f"} opt) (recur (rest a) (assoc o :follow true))
+            (= opt "--json") (recur (rest a) (assoc o :json true))
+            (not has-val) (recur (rest a) o)
+            (= opt "--pool") (recur (drop 2 a) (assoc o :source (str "pool/" val)))
+            (= opt "--source") (recur (drop 2 a) (assoc o :source val))
+            (#{"--lines" "-n"} opt) (recur (drop 2 a) (assoc o :lines (max 1 (min 10000 (try (Integer/parseInt val) (catch Exception _ 1))))))
+            (= opt "--since") (recur (drop 2 a) (assoc o :since val))
+            (= opt "--grep") (recur (drop 2 a) (assoc o :grep val))
+            (#{"--level" "-l"} opt) (recur (drop 2 a) (assoc o :level val))
+            (= opt "-p") (recur (drop 2 a) (assoc o :pk val))
+            (= opt "-k") (recur (drop 2 a) (assoc o :sk val))
+            :else (recur (rest a) o)))))))
+
+;; Library form kept for callers: prints the raw JSON response.
+(defn logs-fetch
+  ([source lines since grep-pattern] (logs-fetch source lines since grep-pattern nil))
+  ([source lines since grep-pattern level]
+   (let [[public-key secret-key] (get-api-keys)]
+     (paas-logs-fetch public-key secret-key (or source "all") (or lines 100) (or since "5m") grep-pattern level true))))
 
 ;; Utility functions
 (defn health-check []
@@ -1195,6 +1423,7 @@
                        (println "       un.clj service env <action> <service_id>")
                        (println "       un.clj image [options]")
                        (println "       un.clj key [options]")
+                       (println "       un.clj paas logs [options]")
                        (System/exit 1))))
 
       (= (first args) "session")
@@ -1447,8 +1676,13 @@
                         (= (first in) "--account") (recur (drop 2 in) out)
                         :else (recur (rest in) (conj out (first in)))))]
   (binding [*account-index* account-idx]
-    (if (and (= (first filtered-args) "key") (some #{"--rotate"} filtered-args))
+    (cond
+      (= (first filtered-args) "paas")
+      (let [rc (paas-command (rest filtered-args))]
+        (shutdown-agents)
+        (System/exit rc))
+      (and (= (first filtered-args) "key") (some #{"--rotate"} filtered-args))
       (do
         (key-rotate-command (second (drop-while #(not= % "--otp") filtered-args)))
         (shutdown-agents))
-      (parse-args filtered-args))))
+      :else (parse-args filtered-args))))

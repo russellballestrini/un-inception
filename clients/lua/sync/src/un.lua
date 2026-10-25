@@ -27,7 +27,9 @@ local Un = {}
 local _api_url = os.getenv("UNSANDBOX_API_URL")
 if not _api_url or _api_url == "" then _api_url = "https://api.unsandbox.com" end
 Un.API_BASE = (_api_url:gsub("/+$", ""))
-Un.PORTAL_BASE = "https://unsandbox.com"
+local _portal_url = os.getenv("UNSANDBOX_PORTAL_URL")
+if not _portal_url or _portal_url == "" then _portal_url = "https://unsandbox.com" end
+Un.PORTAL_BASE = (_portal_url:gsub("/+$", ""))
 Un.VERSION = "4.3.4"
 Un.LAST_ERROR = ""
 Un.ACCOUNT_INDEX = -1  -- -1 means not set; set to N to use accounts.csv row N
@@ -780,24 +782,265 @@ function Un.image_clone(image_id, opts)
 end
 
 -- ============================================================================
--- PaaS Logs Functions (2)
+-- PaaS Logs Functions (2) — portal: GET {PORTAL}/logs/{source}[/stream]
 -- ============================================================================
 
-function Un.logs_fetch(opts)
-    opts = opts or {}
-    local body = {
-        source = opts.source or "all",
-        lines = opts.lines or 100,
-        since = opts.since or "1h"
-    }
-    if opts.grep then body.grep = opts.grep end
-    return Un.api_request("POST", "/paas/logs", body, opts)
+local function pct_encode(s)
+    return (tostring(s):gsub("[^%w%-_%.~]", function(c) return string.format("%%%02X", c:byte()) end))
 end
 
-function Un.logs_stream(opts)
-    -- SSE streaming not easily supported in sync Lua
-    Un.set_error("logs_stream requires async support")
-    return nil
+local function logs_query(pairs_list)
+    local parts = {}
+    for _, kv in ipairs(pairs_list) do
+        if kv[2] ~= nil and kv[2] ~= "" then parts[#parts + 1] = kv[1] .. "=" .. pct_encode(kv[2]) end
+    end
+    if #parts == 0 then return "" end
+    return "?" .. table.concat(parts, "&")
+end
+
+-- Signed headers for a portal GET. HMAC covers "ts:GET:<path>:" (path only, no
+-- query) — the portal verifies conn.request_path.
+local function portal_headers(path, opts)
+    local pk, sk = Un.get_credentials(opts)
+    if not pk then return nil end
+    local h = { ["Authorization"] = "Bearer " .. pk, ["User-Agent"] = "un-cli/2.0" }
+    if sk and sk ~= "" then
+        local ts = tostring(os.time())
+        h["X-Timestamp"] = ts
+        h["X-Signature"] = Un.hmac_sign(sk, ts .. ":GET:" .. path .. ":")
+    end
+    return h
+end
+
+-- Batch fetch: returns body, http status (status nil on network failure).
+function Un.portal_logs_get(source, lines, since, grep, level, opts)
+    local path = "/logs/" .. source
+    local url = Un.PORTAL_BASE .. path .. logs_query({{"lines", tostring(lines)}, {"since", since}, {"grep", grep}, {"level", level}})
+    local headers = portal_headers(path, opts)
+    if not headers then return nil, nil end
+    local resp_body = {}
+    local _, status = transport_request({ url = url, method = "GET", headers = headers, sink = ltn12.sink.table(resp_body) })
+    if type(status) ~= "number" then
+        Un.set_error("Network error fetching logs: " .. tostring(status))
+        return nil, nil
+    end
+    return table.concat(resp_body), status
+end
+
+-- Fetch batch logs from the portal. Returns the decoded JSON table (and status).
+-- opts: source ("all"|"api"|"portal"|"pool/NODE"), lines, since, grep, level.
+function Un.logs_fetch(opts)
+    opts = opts or {}
+    local body, status = Un.portal_logs_get(opts.source or "all", opts.lines or 100, opts.since or "5m",
+                                            opts.grep, opts.level, opts)
+    if status ~= 200 then
+        Un.set_error("API error (" .. tostring(status) .. ")")
+        return nil, status
+    end
+    local ok, result = pcall(json.decode, body or "")
+    if ok then return result, status end
+    return nil, status
+end
+
+-- One SSE connection; on_line(source, line) per log line. Returns status, last_recv.
+local function stream_once(source, grep, level, since_arg, on_line, opts, last_recv)
+    local path = "/logs/" .. source .. "/stream"
+    local url = Un.PORTAL_BASE .. path .. logs_query({{"grep", grep}, {"level", level}, {"since", since_arg}})
+    local headers = portal_headers(path, opts)
+    if not headers then return nil, last_recv end
+    headers["Accept"] = "text/event-stream"
+    local buf, errbuf, status_seen = "", {}, nil
+    local sink = function(chunk)
+        if not chunk then return 1 end
+        errbuf[#errbuf + 1] = chunk
+        if #errbuf > 64 then errbuf = { table.concat(errbuf) } end
+        buf = buf .. chunk
+        while true do
+            local s, e = buf:find("\n\n", 1, true)
+            if not s then break end
+            local event = buf:sub(1, s - 1)
+            buf = buf:sub(e + 1)
+            for line in (event .. "\n"):gmatch("(.-)\n") do
+                local payload = line:match("^data: (.*)$")
+                if payload and payload ~= ":keepalive" then
+                    local ok, obj = pcall(json.decode, payload)
+                    if ok and type(obj) == "table" then
+                        if obj.line then on_line(obj.source, obj.line); last_recv = os.time() end
+                    else
+                        on_line(nil, payload); last_recv = os.time()
+                    end
+                end
+            end
+        end
+        return 1
+    end
+    local _, status = transport_request({ url = url, method = "GET", headers = headers, sink = sink })
+    if type(status) ~= "number" then status = 0 end
+    return status, last_recv
+end
+
+-- Stream logs over SSE, reconnecting with backoff (2s doubling to 30s) and
+-- since=<gap>s. Returns false, status on 401/403 (or another 4xx).
+function Un.logs_stream(opts, on_line)
+    opts = opts or {}
+    on_line = on_line or opts.callback or function(src, line) print((src or "") .. " " .. line) end
+    local source = opts.source or "all"
+    local delay, reconnect, last_recv = 2, false, 0
+    local socket = require("socket")
+    while true do
+        local since_arg = nil
+        if reconnect and last_recv > 0 then
+            since_arg = tostring(math.max(10, os.time() - last_recv + 5)) .. "s"
+        end
+        local t0 = os.time()
+        local status
+        status, last_recv = stream_once(source, opts.grep, opts.level, since_arg, on_line, opts, last_recv)
+        if status == nil then return false, nil end
+        if os.time() - t0 > 30 then delay = 2 end
+        if status == 401 or status == 403 then return false, status end
+        if not (status == 200 or status == 0 or status >= 500) then return false, status end
+        if opts.reconnect == false then return true end
+        socket.sleep(delay)
+        delay = math.min(30, delay * 2)
+        reconnect = true
+    end
+end
+
+-- ~/.unsandbox/paas_log_cursor: Unix time of the last successful fetch
+local function paas_cursor_path()
+    local home = os.getenv("HOME")
+    if not home then return nil end
+    return home .. "/.unsandbox/paas_log_cursor"
+end
+
+local function paas_read_cursor()
+    local p = paas_cursor_path()
+    local f = p and io.open(p, "r")
+    if not f then return nil end
+    local ts = tonumber((f:read("*l") or ""):match("^%s*(%d+)"))
+    f:close()
+    if not ts or ts <= 0 then return nil end
+    return tostring(math.max(5, os.time() - ts)) .. "s"
+end
+
+local function paas_write_cursor()
+    local p = paas_cursor_path()
+    if not p then return end
+    local f = io.open(p, "w")
+    if not f then
+        os.execute("mkdir -p -m 700 '" .. os.getenv("HOME"):gsub("'", "'\\''") .. "/.unsandbox'")
+        f = io.open(p, "w")
+        if not f then return end
+    end
+    f:write(tostring(os.time()) .. "\n")
+    f:close()
+end
+
+local function paas_print_tagged(src, line)
+    if src == nil then print(line); return end
+    if os.getenv("NO_COLOR") then
+        print(string.format("%-12s %s", src, line))
+    else
+        print(string.format("\027[36m%-12s\027[0m %s", src, line))
+    end
+    io.stdout:flush()
+end
+
+local PAAS_LOGS_HELP = [[
+Usage: lua un.lua paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Portal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com)
+Requires a partner API key with log access enabled.]]
+
+-- `paas logs` CLI (mirrors the C client). args: argv after "logs".
+function Un.cli_paas_logs(args)
+    local o = { source = "all", lines = 100 }
+    local i = 1
+    while i <= #args do
+        local a, v = args[i], args[i + 1]
+        if a == "-p" and v then o.public_key = v; i = i + 1
+        elseif a == "-k" and v then o.secret_key = v; i = i + 1
+        elseif a == "--source" and v then o.source = v; i = i + 1
+        elseif a == "--all" then o.source = "all"
+        elseif a == "--api" then o.source = "api"
+        elseif a == "--portal" then o.source = "portal"
+        elseif a == "--pool" and v then o.source = "pool/" .. v; i = i + 1
+        elseif (a == "--lines" or a == "-n") and v then
+            o.lines = math.max(1, math.min(10000, math.floor(tonumber(v) or 0))); i = i + 1
+        elseif a == "--since" and v then o.since = v; i = i + 1
+        elseif a == "--grep" and v then o.grep = v; i = i + 1
+        elseif (a == "--level" or a == "-l") and v then o.level = v; i = i + 1
+        elseif a == "--follow" or a == "-f" then o.follow = true
+        elseif a == "--json" then o.json = true
+        elseif a == "-h" or a == "--help" then o.help = true
+        end
+        i = i + 1
+    end
+    if o.help then io.stderr:write(PAAS_LOGS_HELP .. "\n"); os.exit(0) end
+    local kopts = {}
+    if o.public_key and o.secret_key then kopts.public_key, kopts.secret_key = o.public_key, o.secret_key end
+    if not Un.get_credentials(kopts) then
+        io.stderr:write("Error: API credentials required.\n")
+        os.exit(1)
+    end
+    if o.follow then
+        io.stderr:write("Streaming " .. o.source .. " logs... (Ctrl+C to stop)\n")
+        kopts.source, kopts.grep, kopts.level = o.source, o.grep, o.level
+        local ok, status = Un.logs_stream(kopts, paas_print_tagged)
+        if ok then os.exit(0) end
+        if status == 401 or status == 403 then
+            io.stderr:write("Error: HTTP " .. status .. " (auth failed)\n")
+        else
+            io.stderr:write("Error: HTTP " .. tostring(status) .. "\n")
+        end
+        os.exit(1)
+    end
+    local since = o.since or paas_read_cursor() or "5m"
+    local body, status = Un.portal_logs_get(o.source, o.lines, since, o.grep, o.level, kopts)
+    if not status then
+        io.stderr:write("Error: " .. Un.LAST_ERROR .. "\n"); os.exit(1)
+    end
+    if status ~= 200 then
+        local ok, obj = pcall(json.decode, body or "")
+        local msg = (ok and type(obj) == "table" and type(obj.error) == "string" and obj.error ~= "") and (" — " .. obj.error) or ""
+        io.stderr:write("Error: HTTP " .. status .. msg .. "\n")
+        os.exit(1)
+    end
+    paas_write_cursor()
+    if o.json then print(body); os.exit(0) end
+    local ok, obj = pcall(json.decode, body or "")
+    if not ok or type(obj) ~= "table" or type(obj.lines) ~= "table" then
+        io.stderr:write("Error: Invalid response format\n"); os.exit(1)
+    end
+    local is_all = obj.sources ~= nil
+    for _, e in ipairs(obj.lines) do
+        if type(e) == "table" then
+            if is_all then paas_print_tagged(e.source, e.line or "") else print(e.line or "") end
+        else
+            print(tostring(e))
+        end
+    end
+    os.exit(0)
 end
 
 -- ============================================================================
@@ -1092,12 +1335,25 @@ if arg and arg[0] then
         print("       lua un.lua languages [--json]")
         print("       lua un.lua key [--extend]")
         print("       lua un.lua key --rotate [--otp CODE]")
+        print("       lua un.lua paas logs [options]")
         os.exit(1)
     end
 
     local cmd = args[1]
 
-    if cmd == "languages" then
+    if cmd == "paas" then
+        if args[2] == "logs" then
+            local rest = {}
+            for k = 3, #args do rest[#rest + 1] = args[k] end
+            Un.cli_paas_logs(rest)
+        elseif args[2] == nil then
+            io.stderr:write("Usage: lua un.lua paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n")
+            os.exit(1)
+        else
+            io.stderr:write("Error: Unknown paas command '" .. args[2] .. "'\n")
+            os.exit(1)
+        end
+    elseif cmd == "languages" then
         local json_output = args[2] == "--json"
         local langs = Un.get_languages()
         if json_output then

@@ -53,6 +53,7 @@ import std.conv;
 import std.array;
 import std.algorithm;
 import std.typecons;
+import std.json;
 import core.stdc.stdlib : exit;
 
 // API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
@@ -66,7 +67,18 @@ string API_BASE() {
     }
     return cached;
 }
-immutable string PORTAL_BASE = "https://unsandbox.com";
+// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
+// Serves /logs/{source} (partner log access) and /keys/extend.
+string PORTAL_BASE() {
+    static string cached;
+    if (cached is null) {
+        string base = environment.get("UNSANDBOX_PORTAL_URL", "");
+        if (base.empty) base = "https://unsandbox.com";
+        while (base.length > 0 && base[$-1] == '/') base = base[0 .. $-1];
+        cached = base;
+    }
+    return cached;
+}
 immutable string BLUE = "\033[34m";
 immutable string RED = "\033[31m";
 immutable string GREEN = "\033[32m";
@@ -910,17 +922,302 @@ string imageCloneFn(string imageId, string name, string description, string publ
     return execCurl(cmd);
 }
 
+// PaaS Logs (CLI_SPEC.md "PaaS Logs Command"): GET {PORTAL}/logs/{source}[/stream].
+// HMAC covers "ts:GET:/logs/{source}:" (path only). curl runs from an argv array
+// (no shell); the secret stays in-process, only its signature leaves.
+
+string pctEncode(string v) {
+    import std.ascii : isAlphaNum;
+    string r;
+    foreach (char c; v) {
+        if (isAlphaNum(c) || c == '-' || c == '_' || c == '.' || c == '~') r ~= c;
+        else r ~= format("%%%02X", cast(ubyte) c);
+    }
+    return r;
+}
+
+void addQuery(ref string url, string key, string val) {
+    import std.algorithm : canFind;
+    if (val.empty) return;
+    url ~= (url.canFind('?') ? "&" : "?") ~ key ~ "=" ~ pctEncode(val);
+}
+
+string logsPath(string source, bool stream) {
+    string src = source.empty ? "all" : source;
+    return "/logs/" ~ src ~ (stream ? "/stream" : "");
+}
+
+string[] portalAuthArgs(string path, string publicKey, string secretKey) {
+    string[] a = ["-H", "Authorization: Bearer " ~ publicKey];
+    if (!secretKey.empty) {
+        string ts = getTimestamp();
+        a ~= ["-H", "X-Timestamp: " ~ ts, "-H", "X-Signature: " ~ computeHmac(secretKey, ts ~ ":GET:" ~ path ~ ":")];
+    }
+    return a;
+}
+
+immutable string STATUS_MARK = "__UNSB_HTTP_STATUS__";
+
+// Raw portal fetch; status 0 = no HTTP response.
+CurlResult logsFetchRaw(string source, int lines, string since, string grep, string level, string publicKey, string secretKey) {
+    import std.string : lastIndexOf;
+    string path = logsPath(source, false);
+    string url = PORTAL_BASE ~ path ~ format("?lines=%d", lines);
+    addQuery(url, "since", since);
+    addQuery(url, "grep", grep);
+    addQuery(url, "level", level);
+    string[] argv = ["curl", "-s", "-X", "GET", url] ~ portalAuthArgs(path, publicKey, secretKey)
+                  ~ ["-A", "un-cli/2.0", "-w", "\n" ~ STATUS_MARK ~ "%{http_code}"];
+    string output;
+    try {
+        output = std.process.execute(argv).output;
+    } catch (Exception) {
+        return CurlResult("", 0);
+    }
+    auto idx = output.lastIndexOf("\n" ~ STATUS_MARK);
+    if (idx < 0) return CurlResult(output, 0);
+    int status = 0;
+    try { status = to!int(output[idx + 1 + STATUS_MARK.length .. $].strip()); } catch (Exception) {}
+    return CurlResult(output[0 .. idx], status);
+}
+
 // PaaS Logs functions
 string logsFetch(string source, int lines, string since, string grep, string publicKey, string secretKey) {
-    string path = "/paas/logs?";
-    if (!source.empty) path ~= format("source=%s&", source);
-    if (lines > 0) path ~= format("lines=%d&", lines);
-    if (!since.empty) path ~= format("since=%s&", since);
-    if (!grep.empty) path ~= format("grep=%s&", grep);
-    if (path[$-1] == '&' || path[$-1] == '?') path = path[0..$-1];
-    string authHeaders = buildAuthHeaders("GET", path, "", publicKey, secretKey);
-    string cmd = format(`curl -s -X GET '%s%s' %s`, API_BASE, path, authHeaders);
-    return execCurl(cmd);
+    int n = lines > 0 ? (lines > 10000 ? 10000 : lines) : 100;
+    return logsFetchRaw(source, n, since, grep, "", publicKey, secretKey).body;
+}
+
+string paasCursorPath() {
+    string home = environment.get("HOME", "");
+    return home.empty ? "" : home ~ "/.unsandbox/paas_log_cursor";
+}
+
+string readPaasCursor() {
+    import std.datetime.systime : Clock;
+    string p = paasCursorPath();
+    if (p.empty || !exists(p)) return "";
+    try {
+        long ts = to!long(readText(p).strip());
+        if (ts <= 0) return "";
+        long ago = Clock.currTime.toUnixTime() - ts;
+        if (ago < 5) ago = 5;
+        return format("%ds", ago);
+    } catch (Exception) {
+        return "";
+    }
+}
+
+void writePaasCursor() {
+    import std.datetime.systime : Clock;
+    string p = paasCursorPath();
+    if (p.empty) return;
+    try {
+        mkdirRecurse(dirName(p));
+        std.file.write(p, format("%d\n", Clock.currTime.toUnixTime()));
+    } catch (Exception) {}
+}
+
+string jStr(JSONValue v, string key) {
+    if (v.type != JSONType.object) return "";
+    auto p = key in v.object;
+    if (p is null || p.type != JSONType.string) return "";
+    return p.str;
+}
+
+void printPaasError(int status, string body_) {
+    string msg;
+    try { msg = jStr(parseJSON(body_), "error"); } catch (Exception) {}
+    if (!msg.empty) stderr.writefln("Error: HTTP %d — %s", status, msg);
+    else stderr.writefln("Error: HTTP %d", status);
+}
+
+int fetchPaasLogs(string source, int lines, string since, string grep, bool jsonOut, string level, string publicKey, string secretKey) {
+    auto r = logsFetchRaw(source, lines, since, grep, level, publicKey, secretKey);
+    if (r.status == 0) {
+        stderr.writeln("Error: Network error fetching logs");
+        return 1;
+    }
+    if (r.status != 200) {
+        printPaasError(r.status, r.body);
+        return 1;
+    }
+    writePaasCursor();
+    if (jsonOut) {
+        writeln(r.body);
+        return 0;
+    }
+    JSONValue root;
+    try { root = parseJSON(r.body); } catch (Exception) {
+        stderr.writeln("Error: Invalid response format");
+        return 1;
+    }
+    if (root.type != JSONType.object || ("lines" in root.object) is null || root["lines"].type != JSONType.array) {
+        stderr.writeln("Error: Invalid response format");
+        return 1;
+    }
+    bool isAll = ("sources" in root.object) !is null;
+    foreach (item; root["lines"].array) {
+        if (item.type == JSONType.string) {
+            writeln(item.str);
+        } else if (item.type == JSONType.object) {
+            string src = jStr(item, "source");
+            if (isAll && !src.empty) writefln("\033[36m%-12s\033[0m %s", src, jStr(item, "line"));
+            else writeln(jStr(item, "line"));
+        }
+    }
+    return 0;
+}
+
+// Follow {PORTAL}/logs/{source}/stream; reconnect (2s doubling to 30s) with since=
+// covering the gap and a fresh signature. 401/403 is fatal.
+int streamPaasLogs(string source, string grep, string level, string publicKey, string secretKey) {
+    import std.datetime.systime : Clock;
+    import core.thread : Thread;
+    import core.time : seconds;
+    import std.algorithm : canFind;
+    string path = logsPath(source, true);
+    string base = PORTAL_BASE ~ path;
+    addQuery(base, "grep", grep);
+    addQuery(base, "level", level);
+    stderr.writefln("Streaming %s logs... (Ctrl+C to stop)", source);
+    int delay = 2;
+    long lastRecv = 0;
+    bool reconnect = false;
+    while (true) {
+        string url = base;
+        if (reconnect && lastRecv > 0) {
+            long gap = Clock.currTime.toUnixTime() - lastRecv + 5;
+            if (gap < 10) gap = 10;
+            url ~= format("%ssince=%ds", url.canFind('?') ? "&" : "?", gap);
+        }
+        string[] argv = ["curl", "-s", "-N", "--http1.1", "-H", "Accept: text/event-stream"]
+                      ~ portalAuthArgs(path, publicKey, secretKey)
+                      ~ ["-A", "un-cli/2.0", "-w", "\n" ~ STATUS_MARK ~ "%{http_code}\n", url];
+        long connectedAt = Clock.currTime.toUnixTime();
+        int status = 0;
+        ProcessPipes pp;
+        try {
+            pp = pipeProcess(argv, Redirect.stdout);
+        } catch (Exception) {
+            stderr.writeln("Error: Stream error: cannot run curl");
+            return 1;
+        }
+        foreach (rawLine; pp.stdout.byLine()) {
+            string line = rawLine.idup;
+            if (line.startsWith(STATUS_MARK)) {
+                try { status = to!int(line[STATUS_MARK.length .. $].strip()); } catch (Exception) {}
+                continue;
+            }
+            if (!line.startsWith("data:")) continue;
+            string data = line[5 .. $].stripLeft();
+            if (data.empty || data == ":keepalive") continue;
+            try {
+                auto n = parseJSON(data);
+                if (n.type == JSONType.object && ("line" in n.object) !is null) {
+                    string src = jStr(n, "source");
+                    writefln("\033[36m%-12s\033[0m %s", src.empty ? source : src, jStr(n, "line"));
+                } else {
+                    writeln(data);
+                }
+            } catch (Exception) {
+                writeln(data);
+            }
+            stdout.flush();
+            lastRecv = Clock.currTime.toUnixTime();
+        }
+        wait(pp.pid);
+        if (status == 401 || status == 403) {
+            stderr.writefln("Error: HTTP %d (auth failed)", status);
+            return 1;
+        }
+        if (status != 0 && status != 200 && status < 500) {
+            stderr.writefln("Error: HTTP %d", status);
+            return 1;
+        }
+        if (status == 0 && !reconnect && lastRecv == 0) {
+            stderr.writeln("Error: Stream error: could not connect");
+            return 1;
+        }
+        if (Clock.currTime.toUnixTime() - connectedAt > 30) delay = 2;
+        Thread.sleep(delay.seconds);
+        delay = delay * 2 > 30 ? 30 : delay * 2;
+        reconnect = true;
+    }
+}
+
+void paasLogsHelp() {
+    stderr.write(`Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  un paas logs                             # last 100 lines from all sources
+  un paas logs --api --lines 500           # last 500 API log lines
+  un paas logs --portal --grep error       # portal logs matching 'error'
+  un paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  un paas logs -l warning                  # warnings and above from all sources
+  un paas logs --follow                    # follow all logs in real-time
+  un paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled.
+`);
+}
+
+// `un paas logs ...` (args after "logs"); -p/--account resolved by main's first pass.
+int cmdPaasLogs(string[] args, string publicKey, string secretKey) {
+    string source = "all";
+    int lines = 100;
+    string since, grep, level;
+    bool follow = false, jsonOut = false;
+    for (size_t i = 0; i < args.length; i++) {
+        string a = args[i];
+        bool hasNext = i + 1 < args.length;
+        if ((a == "-p" || a == "-k" || a == "--account") && hasNext) { i++; }
+        else if (a == "--source" && hasNext) { source = args[++i]; }
+        else if (a == "--all") { source = "all"; }
+        else if (a == "--api") { source = "api"; }
+        else if (a == "--portal") { source = "portal"; }
+        else if (a == "--pool" && hasNext) { source = "pool/" ~ args[++i]; }
+        else if ((a == "--lines" || a == "-n") && hasNext) {
+            int n = 0;
+            try { n = to!int(args[++i]); } catch (Exception) {}
+            lines = n < 1 ? 1 : (n > 10000 ? 10000 : n);
+        }
+        else if (a == "--since" && hasNext) { since = args[++i]; }
+        else if (a == "--grep" && hasNext) { grep = args[++i]; }
+        else if ((a == "--level" || a == "-l") && hasNext) { level = args[++i]; }
+        else if (a == "--follow" || a == "-f") { follow = true; }
+        else if (a == "--json") { jsonOut = true; }
+        else if (a == "-h" || a == "--help") { paasLogsHelp(); return 0; }
+    }
+    if (publicKey.empty) {
+        stderr.writeln("Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key");
+        return 1;
+    }
+    if (follow) return streamPaasLogs(source, grep, level, publicKey, secretKey);
+    if (since.empty) {
+        since = readPaasCursor();
+        if (since.empty) since = "5m";
+    }
+    return fetchPaasLogs(source, lines, since, grep, jsonOut, level, publicKey, secretKey);
 }
 
 // Key validation
@@ -1575,7 +1872,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     if (state == "expired") {
         writefln("%sExpired%s", RED, RESET);
         writefln("Public Key: %s", publicKey);
-        writefln("%sTo renew: Visit https://unsandbox.com/keys/extend%s", YELLOW, RESET);
+        writefln("%sTo renew: Visit %s/keys/extend%s", YELLOW, PORTAL_BASE, RESET);
         exit(3);
     } else if (state == "suspended") {
         writefln("%sSuspended%s", RED, RESET);
@@ -1897,6 +2194,18 @@ int main(string[] args) {
         stderr.writeln("  env export <id>     Export vault contents");
         stderr.writeln("  env delete <id>     Delete vault");
         return 1;
+    }
+
+    if (args[1] == "paas") {
+        if (args.length < 3) {
+            stderr.writeln("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.");
+            return 1;
+        }
+        if (args[2] != "logs") {
+            stderr.writefln("Error: Unknown paas command '%s'\nRun 'un paas' for available commands.", args[2]);
+            return 1;
+        }
+        return cmdPaasLogs(args[3 .. $], publicKey, secretKey);
     }
 
     if (args[1] == "session") {

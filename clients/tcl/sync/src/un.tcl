@@ -29,7 +29,7 @@ package require sha256
 namespace eval Un {
     variable VERSION "4.2.50"
     variable API_BASE [string trimright [expr {[info exists ::env(UNSANDBOX_API_URL)] && $::env(UNSANDBOX_API_URL) ne "" ? $::env(UNSANDBOX_API_URL) : "https://api.unsandbox.com"}] /]
-    variable PORTAL_BASE "https://unsandbox.com"
+    variable PORTAL_BASE [string trimright [expr {[info exists ::env(UNSANDBOX_PORTAL_URL)] && $::env(UNSANDBOX_PORTAL_URL) ne "" ? $::env(UNSANDBOX_PORTAL_URL) : "https://unsandbox.com"}] /]
     variable LANGUAGES_CACHE_TTL 3600
     variable LANGUAGES_CACHE_FILE [file join $::env(HOME) ".unsandbox" "languages.json"]
     variable LAST_ERROR ""
@@ -812,16 +812,317 @@ namespace eval Un {
     # PaaS Logs Functions (2)
     # ============================================================================
 
-    proc logs_fetch {{source "all"} {lines 100} {since "1h"} {grep ""} {public_key ""} {secret_key ""}} {
-        set parts [list "\"source\":\"$source\"" "\"lines\":$lines" "\"since\":\"$since\""]
-        if {$grep ne ""} { lappend parts "\"grep\":\"$grep\"" }
-        set body "\{[join $parts ","]\}"
-        return [api_request_json "/paas/logs" "POST" $body $public_key $secret_key]
+    # Platform logs live on the portal: GET $PORTAL_BASE/logs/{source}[/stream]
+    # (partner keys with log access). HMAC covers the path only: "ts:GET:/logs/api:".
+
+    proc uri_escape {v} {
+        set out ""
+        foreach b [split [encoding convertto utf-8 $v] ""] {
+            if {[string match {[A-Za-z0-9._~-]} $b]} {
+                append out $b
+            } else {
+                binary scan $b cu n
+                append out [format "%%%02X" $n]
+            }
+        }
+        return $out
     }
 
-    proc logs_stream {args} {
-        set_error "logs_stream requires async support"
-        error "logs_stream requires async support"
+    proc logs_query {args} {
+        set q {}
+        foreach {k v} $args {
+            if {$v ne ""} { lappend q "$k=[uri_escape $v]" }
+        }
+        if {[llength $q] == 0} { return "" }
+        return "?[join $q &]"
+    }
+
+    proc portal_headers {path public_key secret_key} {
+        lassign [get_credentials $public_key $secret_key] pk sk
+        set headers [list Authorization "Bearer $pk"]
+        if {$sk ne ""} {
+            set timestamp [clock seconds]
+            lappend headers X-Timestamp $timestamp X-Signature [hmac_sign $sk "${timestamp}:GET:${path}:"]
+        }
+        return $headers
+    }
+
+    # Raw portal fetch: returns {ncode body}; raises on network errors.
+    proc logs_fetch_raw {source lines since grep level public_key secret_key} {
+        variable PORTAL_BASE
+        set path "/logs/$source"
+        set headers [portal_headers $path $public_key $secret_key]
+        set url "${PORTAL_BASE}${path}[logs_query lines $lines since $since grep $grep level $level]"
+        set token [::http::geturl $url -headers $headers -timeout 120000 -binary 1]
+        set status [::http::status $token]
+        set ncode [::http::ncode $token]
+        set body [encoding convertfrom utf-8 [::http::data $token]]
+        ::http::cleanup $token
+        if {$status ne "ok"} { error "request $status" }
+        return [list $ncode $body]
+    }
+
+    # Library: fetch logs; returns the decoded dict (raises on non-200).
+    proc logs_fetch {{source "all"} {lines 100} {since "5m"} {grep ""} {public_key ""} {secret_key ""} {level ""}} {
+        lassign [logs_fetch_raw $source $lines $since $grep $level $public_key $secret_key] ncode body
+        if {$ncode != 200} {
+            set_error "API error ($ncode): $body"
+            error "API error ($ncode): $body"
+        }
+        return [::json::json2dict $body]
+    }
+
+    proc print_log_row {src line} {
+        if {$src ne ""} {
+            puts [format "\033\[36m%-12s\033\[0m %s" $src $line]
+        } else {
+            puts $line
+        }
+        flush stdout
+    }
+
+    proc log_cursor_path {} { return [file join $::env(HOME) ".unsandbox" "paas_log_cursor"] }
+
+    proc read_log_cursor {} {
+        if {[catch {set fh [open [log_cursor_path] r]}]} { return "" }
+        set ts [string trim [gets $fh]]
+        close $fh
+        if {![string is digit -strict $ts] || $ts <= 0} { return "" }
+        set ago [expr {[clock seconds] - $ts}]
+        if {$ago < 5} { set ago 5 }
+        return "${ago}s"
+    }
+
+    proc write_log_cursor {} {
+        set dir [file join $::env(HOME) ".unsandbox"]
+        catch {
+            if {![file isdirectory $dir]} { file mkdir $dir; file attributes $dir -permissions 0700 }
+            set fh [open [log_cursor_path] w]
+            puts $fh [clock seconds]
+            close $fh
+        }
+    }
+
+    # SSE body handler: reads what arrived, emits complete events.
+    proc stream_handler {cb sock token} {
+        variable stream_buf
+        variable stream_last
+        variable stream_seen
+        set data [read $sock]
+        set stream_seen [clock seconds]
+        if {[::http::ncode $token] != 200} { return [string length $data] }
+        append stream_buf $data
+        set stream_buf [string map {"\r\n" "\n"} $stream_buf]
+        while {[set i [string first "\n\n" $stream_buf]] >= 0} {
+            set event [string range $stream_buf 0 [expr {$i - 1}]]
+            set stream_buf [string range $stream_buf [expr {$i + 2}] end]
+            foreach line [split [encoding convertfrom utf-8 $event] "\n"] {
+                if {![string match "data: *" $line]} continue
+                set payload [string range $line 6 end]
+                if {$payload eq ":keepalive"} continue
+                set stream_last [clock seconds]
+                if {![catch {::json::json2dict $payload} ev] && [string index [string trimleft $payload] 0] eq "\{"} {
+                    if {[dict exists $ev line]} {
+                        set src [expr {[dict exists $ev source] ? [dict get $ev source] : ""}]
+                        {*}$cb $src [dict get $ev line]
+                    }
+                } else {
+                    {*}$cb "" $payload
+                }
+            }
+        }
+        return [string length $data]
+    }
+
+    proc stream_watchdog {token} {
+        variable stream_seen
+        variable stream_watch
+        if {[clock seconds] - $stream_seen > 120} {
+            ::http::reset $token timeout
+            return
+        }
+        set stream_watch [after 5000 [list ::Un::stream_watchdog $token]]
+    }
+
+    # Library + CLI: stream /logs/{source}/stream (SSE), reconnecting on drops
+    # (2 s backoff doubling to 30 s, since=<gap>s). Returns 0 on stop, 1 on error.
+    proc logs_stream {{source "all"} {grep ""} {level ""} {public_key ""} {secret_key ""} {callback ::Un::print_log_row}} {
+        variable PORTAL_BASE
+        variable stream_buf
+        variable stream_last 0
+        variable stream_seen
+        variable stream_watch
+        set path "/logs/$source/stream"
+        puts stderr "Streaming $source logs... (Ctrl+C to stop)"
+        set delay 2; set reconnect 0
+        while {1} {
+            set since ""
+            if {$reconnect && $stream_last > 0} {
+                set gap [expr {[clock seconds] - $stream_last + 5}]
+                if {$gap < 10} { set gap 10 }
+                set since "${gap}s"
+            }
+            set url "${PORTAL_BASE}${path}[logs_query grep $grep level $level since $since]"
+            set headers [portal_headers $path $public_key $secret_key]
+            lappend headers Accept text/event-stream
+            set stream_buf ""
+            set stream_seen [clock seconds]
+            set started [clock seconds]
+            # HTTP/1.0 so the stream arrives unchunked, closed by the server.
+            if {[catch {::http::geturl $url -headers $headers -protocol 1.0 -binary 1 \
+                    -handler [list ::Un::stream_handler $callback] -command ::Un::stream_done} token]} {
+                puts stderr "Error: Stream error: $token"
+                return 1
+            }
+            set stream_watch [after 5000 [list ::Un::stream_watchdog $token]]
+            ::http::wait $token
+            after cancel $stream_watch
+            set status [::http::status $token]
+            set ncode [::http::ncode $token]
+            ::http::cleanup $token
+            if {[clock seconds] - $started > 30} { set delay 2 }
+            if {$ncode == 401 || $ncode == 403} {
+                puts stderr "Error: HTTP $ncode (auth failed)"
+                return 1
+            }
+            if {$ncode eq "" && $status eq "error"} {
+                puts stderr "Error: Stream error: connection failed"
+                return 1
+            }
+            if {$ncode == 200 || ($ncode ne "" && $ncode >= 500) || $status in {eof timeout error}} {
+                after [expr {$delay * 1000}]
+                set delay [expr {min($delay * 2, 30)}]
+                set reconnect 1
+                continue
+            }
+            break
+        }
+        write_log_cursor
+        puts stderr "\nStream stopped."
+        return 0
+    }
+
+    proc stream_done {token} {}
+
+    proc paas_logs_help {} {
+        set p "tclsh un.tcl"
+        puts stderr "Usage: $p paas logs \[options\]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  $p paas logs                             # last 100 lines from all sources
+  $p paas logs --api --lines 500           # last 500 API log lines
+  $p paas logs --portal --grep error       # portal logs matching 'error'
+  $p paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  $p paas logs -l warning                  # warnings and above from all sources
+  $p paas logs --follow                    # follow all logs in real-time
+  $p paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled."
+    }
+
+    proc cmd_paas {args} {
+        variable ACCOUNT_INDEX
+        if {[llength $args] == 0} {
+            puts stderr "Usage: tclsh un.tcl paas <command> \[options\]\n\nCommands:\n  logs    Fetch or stream production logs"
+            puts stderr "\nRun 'tclsh un.tcl paas <command> -h' for help on a specific command."
+            return 1
+        }
+        set sub [lindex $args 0]
+        if {$sub ne "logs"} {
+            puts stderr "Error: Unknown paas command '$sub'\nRun 'tclsh un.tcl paas' for available commands."
+            return 1
+        }
+        set source all; set lines 100; set since ""; set since_explicit 0
+        set grep ""; set level ""; set follow 0; set json 0; set help 0
+        set pk ""; set sk ""
+        set n [llength $args]
+        for {set i 1} {$i < $n} {incr i} {
+            set a [lindex $args $i]
+            set has [expr {$i + 1 < $n}]
+            set next [lindex $args [expr {$i + 1}]]
+            if {$a eq "-p" && $has} { set pk $next; incr i
+            } elseif {$a eq "-k" && $has} { set sk $next; incr i
+            } elseif {$a eq "--account" && $has} { set ACCOUNT_INDEX $next; incr i
+            } elseif {$a eq "--source" && $has} { set source $next; incr i
+            } elseif {$a eq "--all"} { set source all
+            } elseif {$a eq "--api"} { set source api
+            } elseif {$a eq "--portal"} { set source portal
+            } elseif {$a eq "--pool" && $has} { set source "pool/$next"; incr i
+            } elseif {($a eq "--lines" || $a eq "-n") && $has} {
+                incr i
+                if {![regexp {^\s*([-+]?[0-9]+)} $next -> v]} { set v 0 }
+                scan $v %d v
+                set lines [expr {max(1, min(10000, $v))}]
+            } elseif {$a eq "--since" && $has} { set since $next; set since_explicit 1; incr i
+            } elseif {$a eq "--grep" && $has} { set grep $next; incr i
+            } elseif {($a eq "--level" || $a eq "-l") && $has} { set level $next; incr i
+            } elseif {$a eq "--follow" || $a eq "-f"} { set follow 1
+            } elseif {$a eq "--json"} { set json 1
+            } elseif {$a eq "-h" || $a eq "--help"} { set help 1
+            }
+        }
+        if {$help} { paas_logs_help; return 0 }
+        if {[catch {get_credentials $pk $sk} creds] || [lindex $creds 0] eq ""} {
+            puts stderr "Error: API credentials required."
+            puts stderr "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or"
+            puts stderr "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or"
+            puts stderr "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key"
+            return 1
+        }
+        if {!$since_explicit} {
+            set since [read_log_cursor]
+            if {$since eq ""} { set since 5m }
+        }
+        if {$follow} { return [logs_stream $source $grep $level $pk $sk] }
+
+        if {[catch {logs_fetch_raw $source $lines $since $grep $level $pk $sk} r]} {
+            puts stderr "Error: Network error fetching logs: $r"
+            return 1
+        }
+        lassign $r ncode body
+        if {$ncode != 200} {
+            set err ""
+            catch { set err [dict get [::json::json2dict $body] error] }
+            puts stderr "Error: HTTP $ncode[expr {$err ne "" ? " — $err" : ""}]"
+            return 1
+        }
+        write_log_cursor
+        if {$json} { puts $body; return 0 }
+        if {[catch {::json::json2dict $body} data] || ![dict exists $data lines]} {
+            puts stderr "Error: Invalid response format"
+            return 1
+        }
+        set is_all [dict exists $data sources]
+        foreach l [dict get $data lines] {
+            if {$is_all} {
+                set src [expr {[dict exists $l source] ? [dict get $l source] : ""}]
+                set ln [expr {[dict exists $l line] ? [dict get $l line] : ""}]
+                print_log_row $src $ln
+            } else {
+                puts $l
+            }
+        }
+        return 0
     }
 
     # ============================================================================
@@ -1335,6 +1636,7 @@ Environment:
             service { cmd_service {*}[lrange $argv 1 end] }
             snapshot { cmd_snapshot {*}[lrange $argv 1 end] }
             image { cmd_image {*}[lrange $argv 1 end] }
+            paas { exit [cmd_paas {*}[lrange $argv 1 end]] }
             --help - -h { show_help }
             -s {
                 set lang [lindex $argv 1]

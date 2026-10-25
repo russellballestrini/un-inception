@@ -47,7 +47,7 @@ use Time::HiRes qw(time sleep);
 
 our $VERSION = "4.3.4";
 our $API_BASE = ($ENV{UNSANDBOX_API_URL} || 'https://api.unsandbox.com') =~ s{/+$}{}r;
-our $PORTAL_BASE = 'https://unsandbox.com';
+our $PORTAL_BASE = ($ENV{UNSANDBOX_PORTAL_URL} || 'https://unsandbox.com') =~ s{/+$}{}r;
 
 # Thread-local error storage
 our $LAST_ERROR = "";
@@ -684,26 +684,155 @@ sub image_clone {
 # PaaS Logs Functions (2)
 # ============================================================================
 
-sub logs_fetch {
-    my (%opts) = @_;
-    my $body = {
-        source => $opts{source} || 'all',
-        lines => $opts{lines} || 100,
-        since => $opts{since} || '1h'
-    };
-    $body->{grep} = $opts{grep} if $opts{grep};
-    return api_request('POST', '/paas/logs', $body, %opts);
+# Platform logs live on the portal: GET $PORTAL_BASE/logs/{source}[/stream]
+# (partner keys with log access). HMAC covers the path only, "ts:GET:/logs/api:".
+
+sub _uri_escape {
+    my ($v) = @_;
+    my $b = $v; utf8::encode($b) if utf8::is_utf8($b);
+    $b =~ s/([^A-Za-z0-9\-._~])/sprintf('%%%02X', ord($1))/ge;
+    return $b;
 }
 
+sub _logs_query {
+    my (@kv) = @_;
+    my @q;
+    while (@kv) {
+        my ($k, $v) = splice(@kv, 0, 2);
+        push @q, "$k=" . _uri_escape($v) if defined $v && $v ne '';
+    }
+    return @q ? '?' . join('&', @q) : '';
+}
+
+# Signed portal GET request object for PATH (+ query string).
+sub _portal_request {
+    my ($path, $query, %opts) = @_;
+    my ($pk, $sk) = get_credentials(%opts);
+    return undef unless $pk;
+    my $timestamp = int(time);
+    my $req = HTTP::Request->new('GET', "$PORTAL_BASE$path$query");
+    $req->header('Authorization' => "Bearer $pk");
+    if ($sk) {
+        $req->header('X-Timestamp' => $timestamp);
+        $req->header('X-Signature' => hmac_sign($sk, "$timestamp:GET:$path:"));
+    }
+    return $req;
+}
+
+# Raw portal fetch: returns the HTTP::Response (undef without credentials).
+sub logs_fetch_response {
+    my (%opts) = @_;
+    my $path = '/logs/' . ($opts{source} || 'all');
+    my $query = _logs_query(lines => $opts{lines} || 100, since => $opts{since} || '5m',
+                            grep => $opts{grep}, level => $opts{level});
+    my $req = _portal_request($path, $query, %opts) or do { set_error("No credentials available"); return undef };
+    return LWP::UserAgent->new(timeout => 120)->request($req);
+}
+
+# Library: fetch logs; returns the decoded JSON (undef + last_error on failure).
+sub logs_fetch {
+    my (%opts) = @_;
+    my $res = logs_fetch_response(%opts) or return undef;
+    unless ($res->is_success) {
+        set_error("API error (" . $res->code . "): " . $res->content);
+        return undef;
+    }
+    return eval { decode_json($res->content) };
+}
+
+# Library + CLI: stream SSE events from /logs/{source}/stream, reconnecting on
+# drops (2 s backoff doubling to 30 s, since=<gap>s). callback gets
+# (source, line); default prints them. Returns 0 on stop, 1 on fatal error.
 sub logs_stream {
     my (%opts) = @_;
-    # SSE streaming - returns immediately, callback for each line
-    my $callback = $opts{callback};
-    return undef unless $callback;
+    my $source = $opts{source} || 'all';
+    my $callback = $opts{callback} || sub { print_log_row($_[0], $_[1]) };
+    my $path = "/logs/$source/stream";
+    my $stop = 0;
+    local $SIG{INT} = sub { $stop = 1; die "interrupted\n" };
+    print STDERR "Streaming $source logs... (Ctrl+C to stop)\n" unless $opts{quiet};
+    my ($delay, $reconnect, $last) = (2, 0, 0);
+    while (!$stop) {
+        my @since;
+        if ($reconnect && $last > 0) {
+            my $gap = int(time) - $last + 5; $gap = 10 if $gap < 10;
+            @since = (since => "${gap}s");
+        }
+        my $req = _portal_request($path, _logs_query(grep => $opts{grep}, level => $opts{level}, @since), %opts)
+            or do { set_error("No credentials available"); return 1 };
+        $req->header('Accept' => 'text/event-stream');
+        my $buf = '';
+        my $ua = LWP::UserAgent->new(timeout => 120);
+        my $started = time;
+        my $res = eval { $ua->request($req, sub {
+            my ($chunk, $r) = @_;
+            die "interrupted\n" if $stop;
+            return unless $r->code == 200;
+            $buf .= $chunk;
+            $buf =~ s/\r\n/\n/g;
+            while ($buf =~ s/^(.*?)\n\n//s) {
+                for my $line (split /\n/, $1) {
+                    next unless $line =~ /^data: (.*)$/;
+                    my $payload = $1;
+                    next if $payload eq ':keepalive';
+                    $last = int(time);
+                    my $ev = eval { decode_json($payload) };
+                    if (ref $ev eq 'HASH') {
+                        $callback->($ev->{source}, $ev->{line}) if defined $ev->{line};
+                    } else {
+                        $callback->(undef, $payload);
+                    }
+                }
+            }
+        }) };
+        last if $stop;
+        $delay = 2 if time - $started > 30;
+        my $code = $res ? $res->code : 0;
+        if ($code == 401 || $code == 403) {
+            print STDERR "Error: HTTP $code (auth failed)\n";
+            return 1;
+        }
+        my $internal = $res && ($res->header('Client-Warning') // '') eq 'Internal response';
+        if ($internal && $res->message =~ /Can't connect|Name or service not known/i) {
+            print STDERR "Error: Stream error: " . $res->message . "\n";
+            return 1;
+        }
+        if ($code == 200 || $code >= 500) {
+            sleep($delay);
+            $delay *= 2; $delay = 30 if $delay > 30;
+            $reconnect = 1;
+            next;
+        }
+        last;
+    }
+    write_log_cursor();
+    print STDERR "\nStream stopped.\n" unless $opts{quiet};
+    return 0;
+}
 
-    # SSE streaming not easily supported in sync Perl, return placeholder
-    set_error("logs_stream requires async support");
-    return undef;
+sub print_log_row {
+    my ($src, $line) = @_;
+    $line //= '';
+    if (defined $src && $src ne '') { printf "\033[36m%-12s\033[0m %s\n", $src, $line }
+    else { print "$line\n" }
+    STDOUT->flush;
+}
+
+sub log_cursor_path { return "$ENV{HOME}/.unsandbox/paas_log_cursor"; }
+
+sub read_log_cursor {
+    open(my $fh, '<', log_cursor_path()) or return undef;
+    my $ts = <$fh>; close $fh;
+    return undef unless defined $ts && $ts =~ /^(\d+)/ && $1 > 0;
+    my $ago = int(time) - $1; $ago = 5 if $ago < 5;
+    return "${ago}s";
+}
+
+sub write_log_cursor {
+    my $dir = "$ENV{HOME}/.unsandbox";
+    mkdir $dir, 0700 unless -d $dir;
+    open(my $fh, '>', log_cursor_path()) or return;
+    print $fh int(time), "\n"; close $fh;
 }
 
 # ============================================================================
@@ -1534,6 +1663,120 @@ sub cmd_languages {
     }
 }
 
+sub paas_logs_help {
+    my $p = $0;
+    print STDERR <<"EOF";
+Usage: $p paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  $p paas logs                             # last 100 lines from all sources
+  $p paas logs --api --lines 500           # last 500 API log lines
+  $p paas logs --portal --grep error       # portal logs matching 'error'
+  $p paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  $p paas logs -l warning                  # warnings and above from all sources
+  $p paas logs --follow                    # follow all logs in real-time
+  $p paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled.
+EOF
+}
+
+sub cmd_paas {
+    my (@args) = @_;
+    unless (@args) {
+        print STDERR "Usage: $0 paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n";
+        print STDERR "\nRun '$0 paas <command> -h' for help on a specific command.\n";
+        return 1;
+    }
+    my $sub = shift @args;
+    if ($sub ne 'logs') {
+        print STDERR "Error: Unknown paas command '$sub'\nRun '$0 paas' for available commands.\n";
+        return 1;
+    }
+    my %o = (source => 'all', lines => 100);
+    my ($since_explicit, $follow, $json, $help) = (0, 0, 0, 0);
+    for (my $i = 0; $i < @args; $i++) {
+        my $a = $args[$i]; my $has = $i + 1 < @args;
+        if ($a eq '-p' && $has) { $o{public_key} = $args[++$i] }
+        elsif ($a eq '-k' && $has) { $o{secret_key} = $args[++$i] }
+        elsif ($a eq '--account' && $has) { $Un::ACCOUNT_INDEX = int($args[++$i]) }
+        elsif ($a eq '--source' && $has) { $o{source} = $args[++$i] }
+        elsif ($a eq '--all') { $o{source} = 'all' }
+        elsif ($a eq '--api') { $o{source} = 'api' }
+        elsif ($a eq '--portal') { $o{source} = 'portal' }
+        elsif ($a eq '--pool' && $has) { $o{source} = 'pool/' . $args[++$i] }
+        elsif (($a eq '--lines' || $a eq '-n') && $has) {
+            my $n = $args[++$i]; $n = ($n =~ /^\s*([-+]?\d+)/) ? int($1) : 0;
+            $n = 1 if $n < 1; $n = 10000 if $n > 10000; $o{lines} = $n;
+        }
+        elsif ($a eq '--since' && $has) { $o{since} = $args[++$i]; $since_explicit = 1 }
+        elsif ($a eq '--grep' && $has) { $o{grep} = $args[++$i] }
+        elsif (($a eq '--level' || $a eq '-l') && $has) { $o{level} = $args[++$i] }
+        elsif ($a eq '--follow' || $a eq '-f') { $follow = 1 }
+        elsif ($a eq '--json') { $json = 1 }
+        elsif ($a eq '-h' || $a eq '--help') { $help = 1 }
+    }
+    if ($help) { paas_logs_help(); return 0 }
+
+    my %cred = map { exists $o{$_} ? ($_ => $o{$_}) : () } qw(public_key secret_key);
+    my ($pk) = Un::get_credentials(%cred);
+    unless ($pk) {
+        print STDERR "Error: API credentials required.\n";
+        print STDERR "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n";
+        print STDERR "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n";
+        print STDERR "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n";
+        return 1;
+    }
+    $o{since} = Un::read_log_cursor() // '5m' unless $since_explicit;
+
+    binmode(STDOUT, ':encoding(UTF-8)');
+    return Un::logs_stream(%o) if $follow;
+
+    my $res = Un::logs_fetch_response(%o);
+    my $internal = $res && ($res->header('Client-Warning') // '') eq 'Internal response';
+    if (!$res || $internal) {
+        print STDERR "Error: Network error fetching logs: " . ($res ? $res->message : 'no response') . "\n";
+        return 1;
+    }
+    if ($res->code != 200) {
+        my $err = eval { decode_json($res->content)->{error} };
+        print STDERR "Error: HTTP " . $res->code . (defined $err && $err ne '' ? " — $err" : '') . "\n";
+        return 1;
+    }
+    Un::write_log_cursor();
+    if ($json) { print $res->decoded_content(charset => "UTF-8"), "\n"; return 0 }
+    my $data = eval { decode_json($res->content) };
+    unless (ref $data eq 'HASH' && ref $data->{lines} eq 'ARRAY') {
+        print STDERR "Error: Invalid response format\n";
+        return 1;
+    }
+    for my $l (@{$data->{lines}}) {
+        if (ref $l eq 'HASH') { Un::print_log_row($l->{source}, $l->{line}) }
+        else { print "$l\n" }
+    }
+    return 0;
+}
+
 sub show_help {
     print <<"HELP";
 Unsandbox CLI - Execute code in secure sandboxes
@@ -1630,6 +1873,10 @@ sub main {
         env => [],
         files => []
     );
+
+    if (@ARGV && $ARGV[0] eq 'paas') {
+        exit(cmd_paas(@ARGV[1 .. $#ARGV]));
+    }
 
     my $i = 0;
     while ($i < @ARGV) {

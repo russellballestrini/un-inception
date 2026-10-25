@@ -1479,8 +1479,99 @@ class Unsandbox {
 
     private static ?string $lastError = null;
 
+    // Platform logs live on the portal (RequireLogAccess, partner keys), not the API host:
+    // GET {portalBase}/logs/{api|portal|pool/NODE|all}[/stream]. HMAC signs the path only.
+
     /**
-     * Fetch batch logs from the PaaS platform.
+     * Portal base URL: UNSANDBOX_PORTAL_URL or https://unsandbox.com, no trailing slash.
+     */
+    public static function portalBase(): string {
+        $url = getenv('UNSANDBOX_PORTAL_URL');
+        return rtrim(($url !== false && $url !== '') ? $url : 'https://unsandbox.com', '/');
+    }
+
+    private static function logsPath(string $source, bool $stream = false): string {
+        $src = trim($source, '/');
+        if ($src === '') $src = 'all';
+        return "/logs/{$src}" . ($stream ? '/stream' : '');
+    }
+
+    private static function logsQuery(array $params): string {
+        $parts = [];
+        foreach ($params as $k => $v) {
+            if ($v === null || $v === '') continue;
+            $parts[] = $k . '=' . rawurlencode((string)$v);
+        }
+        return $parts ? '?' . implode('&', $parts) : '';
+    }
+
+    /**
+     * Signed GET to the portal. With $onData set, streams the body through it.
+     * Returns [httpCode, body, curlError].
+     */
+    private function portalLogsGet(string $path, string $query, string $publicKey, string $secretKey, ?callable $onData = null): array {
+        $timestamp = time();
+        $signature = $this->signRequest($secretKey, $timestamp, 'GET', $path);
+        $headers = [
+            "Authorization: Bearer {$publicKey}",
+            "X-Timestamp: {$timestamp}",
+            "X-Signature: {$signature}",
+        ];
+        $ch = curl_init(self::portalBase() . $path . $query);
+        $body = '';
+        $opts = [CURLOPT_USERAGENT => 'un-php/2.0', CURLOPT_CONNECTTIMEOUT => 30];
+        if ($onData !== null) {
+            $headers[] = 'Accept: text/event-stream';
+            $opts[CURLOPT_HTTP_VERSION] = CURL_HTTP_VERSION_1_1;
+            $opts[CURLOPT_LOW_SPEED_LIMIT] = 1;
+            $opts[CURLOPT_LOW_SPEED_TIME] = 120;
+            $opts[CURLOPT_WRITEFUNCTION] = function ($ch, $data) use (&$body, $onData) {
+                if (curl_getinfo($ch, CURLINFO_RESPONSE_CODE) === 200) {
+                    $onData($data);
+                } else {
+                    $body .= $data;
+                }
+                return strlen($data);
+            };
+        } else {
+            $opts[CURLOPT_RETURNTRANSFER] = true;
+            $opts[CURLOPT_TIMEOUT] = 120;
+        }
+        $opts[CURLOPT_HTTPHEADER] = $headers;
+        curl_setopt_array($ch, $opts);
+        $res = curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $err = $res === false ? curl_error($ch) : null;
+        curl_close($ch);
+        if ($onData === null && is_string($res)) $body = $res;
+        return [$code, $body, $err];
+    }
+
+    /**
+     * Build an SSE parser: feed it raw chunks, it calls $emit(?source, line) per data event.
+     */
+    private static function sseParser(callable $emit): callable {
+        $buf = '';
+        return function (string $chunk) use (&$buf, $emit) {
+            $buf .= $chunk;
+            while (($idx = strpos($buf, "\n")) !== false) {
+                $line = rtrim(substr($buf, 0, $idx), "\r");
+                $buf = substr($buf, $idx + 1);
+                if (strpos($line, 'data: ') !== 0) continue;
+                $data = substr($line, 6);
+                if ($data === ':keepalive') continue;
+                $entry = json_decode($data, true);
+                if (is_array($entry)) {
+                    if (array_key_exists('line', $entry)) $emit($entry['source'] ?? null, (string)$entry['line']);
+                } else {
+                    $emit(null, $data);
+                }
+            }
+        };
+    }
+
+    /**
+     * Fetch batch logs from the portal (partner log access).
      *
      * @param string $source Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
      * @param int $lines Number of lines to fetch (1-10000)
@@ -1488,9 +1579,10 @@ class Unsandbox {
      * @param string|null $grep Optional filter pattern
      * @param string|null $publicKey Optional API key
      * @param string|null $secretKey Optional API secret
-     * @return array Log entries
+     * @param string|null $level Optional minimum level (debug, info, notice, warning, err, crit)
+     * @return array {source, lines:[...]} or, for "all", {sources, lines:[{source,line}]}
      * @throws CredentialsException Missing credentials
-     * @throws ApiException API request failed
+     * @throws ApiException Request failed
      */
     public function logsFetch(
         string $source = 'all',
@@ -1498,18 +1590,23 @@ class Unsandbox {
         string $since = '5m',
         ?string $grep = null,
         ?string $publicKey = null,
-        ?string $secretKey = null
+        ?string $secretKey = null,
+        ?string $level = null
     ): array {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
-        $path = "/logs?source=" . urlencode($source) . "&lines={$lines}&since=" . urlencode($since);
-        if ($grep !== null) {
-            $path .= "&grep=" . urlencode($grep);
-        }
-        return $this->makeRequest('GET', $path, $publicKey, $secretKey);
+        $lines = max(1, min(10000, $lines));
+        [$code, $body, $err] = $this->portalLogsGet(self::logsPath($source),
+            self::logsQuery(['lines' => $lines, 'since' => $since, 'grep' => $grep, 'level' => $level]),
+            $publicKey, $secretKey);
+        if ($err !== null) throw new ApiException("Network error: {$err}");
+        $decoded = json_decode($body, true);
+        if ($code !== 200) throw new ApiException("HTTP {$code}", $code, is_array($decoded) ? $decoded : null);
+        if (!is_array($decoded)) throw new ApiException('Invalid JSON response');
+        return $decoded;
     }
 
     /**
-     * Stream logs via Server-Sent Events.
+     * Stream logs from the portal via Server-Sent Events (one connection).
      *
      * Blocks until interrupted or server closes connection.
      *
@@ -1518,57 +1615,189 @@ class Unsandbox {
      * @param callable|null $callback Function called for each log line (signature: callback(source, line))
      * @param string|null $publicKey Optional API key
      * @param string|null $secretKey Optional API secret
+     * @param string|null $level Optional minimum level
      * @throws CredentialsException Missing credentials
-     * @throws ApiException API request failed
+     * @throws ApiException Request failed
      */
     public function logsStream(
         string $source = 'all',
         ?string $grep = null,
         ?callable $callback = null,
         ?string $publicKey = null,
-        ?string $secretKey = null
+        ?string $secretKey = null,
+        ?string $level = null
     ): void {
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
+        $parser = self::sseParser(function ($src, $line) use ($source, $callback) {
+            $src = $src ?? $source;
+            if ($callback !== null) {
+                $callback($src, $line);
+            } else {
+                printf("%-12s %s\n", $src, $line);
+                fflush(STDOUT);
+            }
+        });
+        [$code, , $err] = $this->portalLogsGet(self::logsPath($source, true),
+            self::logsQuery(['grep' => $grep, 'level' => $level]), $publicKey, $secretKey, $parser);
+        if ($code !== 200) throw new ApiException($err !== null ? "Network error: {$err}" : "HTTP {$code}", $code);
+    }
 
-        $path = "/logs/stream?source=" . urlencode($source);
-        if ($grep !== null) {
-            $path .= "&grep=" . urlencode($grep);
+    private const PAAS_LOGS_HELP = <<<'HELP'
+Usage: un.php paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.
+HELP;
+
+    private static function logCursorPath(): string {
+        return (getenv('HOME') ?: '') . '/.unsandbox/paas_log_cursor';
+    }
+
+    private static function readLogCursor(): ?string {
+        $raw = @file_get_contents(self::logCursorPath());
+        if ($raw === false) return null;
+        $ts = (int)trim($raw);
+        if ($ts <= 0) return null;
+        return max(5, time() - $ts) . 's';
+    }
+
+    private static function writeLogCursor(): void {
+        $dir = dirname(self::logCursorPath());
+        if (!is_dir($dir)) @mkdir($dir, 0700, true);
+        @file_put_contents(self::logCursorPath(), time() . "\n");
+    }
+
+    private static function httpErrorText(int $code, string $body): string {
+        $d = json_decode($body, true);
+        $err = is_array($d) ? ($d['error'] ?? null) : null;
+        return "Error: HTTP {$code}" . ($err !== null ? " \u{2014} {$err}" : '');
+    }
+
+    /**
+     * `un paas logs` - mirrors the C client's flags, output and exit codes.
+     */
+    public function cliPaas(array $args): int {
+        if (!$args) {
+            fwrite(STDERR, "Usage: un.php paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n");
+            return 1;
         }
+        if ($args[0] !== 'logs') {
+            fwrite(STDERR, "Error: Unknown paas command '{$args[0]}'\n");
+            return 1;
+        }
+        $source = 'all'; $lines = 100; $since = null; $grep = null; $level = null;
+        $follow = false; $asJson = false; $pk = null; $sk = null; $account = null;
+        $a = array_slice($args, 1);
+        $n = count($a);
+        for ($i = 0; $i < $n; $i++) {
+            $x = $a[$i];
+            $has = $i + 1 < $n;
+            if ($x === '-p' && $has) $pk = $a[++$i];
+            elseif ($x === '-k' && $has) $sk = $a[++$i];
+            elseif ($x === '--account' && $has) $account = (int)$a[++$i];
+            elseif ($x === '--source' && $has) $source = $a[++$i];
+            elseif ($x === '--all') $source = 'all';
+            elseif ($x === '--api') $source = 'api';
+            elseif ($x === '--portal') $source = 'portal';
+            elseif ($x === '--pool' && $has) $source = 'pool/' . $a[++$i];
+            elseif (($x === '--lines' || $x === '-n') && $has) $lines = max(1, min(10000, (int)$a[++$i]));
+            elseif ($x === '--since' && $has) $since = $a[++$i];
+            elseif ($x === '--grep' && $has) $grep = $a[++$i];
+            elseif (($x === '--level' || $x === '-l') && $has) $level = $a[++$i];
+            elseif ($x === '--follow' || $x === '-f') $follow = true;
+            elseif ($x === '--json') $asJson = true;
+            elseif ($x === '-h' || $x === '--help') { fwrite(STDERR, self::PAAS_LOGS_HELP . "\n"); return 0; }
+        }
+        try {
+            [$publicKey, $secretKey] = $this->resolveCredentials($pk, $sk, $account);
+        } catch (CredentialsException $e) {
+            fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
+            return 1;
+        }
+        if ($since === null) $since = self::readLogCursor() ?? '5m';
+        if ($follow) return $this->paasLogsFollow($source, $grep, $level, $publicKey, $secretKey);
 
-        $timestamp = time();
-        $signature = $this->signRequest($secretKey, $timestamp, 'GET', $path);
+        [$code, $body, $err] = $this->portalLogsGet(self::logsPath($source),
+            self::logsQuery(['lines' => $lines, 'since' => $since, 'grep' => $grep, 'level' => $level]),
+            $publicKey, $secretKey);
+        if ($err !== null) {
+            fwrite(STDERR, "Error: Network error fetching logs: {$err}\n");
+            return 1;
+        }
+        if ($code !== 200) {
+            fwrite(STDERR, self::httpErrorText($code, $body) . "\n");
+            return 1;
+        }
+        self::writeLogCursor();
+        if ($asJson) {
+            echo $body, "\n";
+            return 0;
+        }
+        $d = json_decode($body, true);
+        if (!is_array($d) || !isset($d['lines']) || !is_array($d['lines'])) {
+            fwrite(STDERR, "Error: Invalid response format\n");
+            return 1;
+        }
+        foreach ($d['lines'] as $e) {
+            if (is_array($e)) {
+                if (isset($e['source'])) printf("%-12s %s\n", $e['source'], $e['line'] ?? '');
+                else echo ($e['line'] ?? ''), "\n";
+            } else {
+                echo $e, "\n";
+            }
+        }
+        return 0;
+    }
 
-        $ch = curl_init(self::apiBase() . $path);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => false,
-            CURLOPT_HTTPHEADER => [
-                "Authorization: Bearer {$publicKey}",
-                "X-Timestamp: {$timestamp}",
-                "X-Signature: {$signature}",
-                "Accept: text/event-stream",
-            ],
-            CURLOPT_WRITEFUNCTION => function($ch, $data) use ($source, $callback) {
-                $lines = explode("\n", $data);
-                foreach ($lines as $line) {
-                    if (strpos($line, 'data: ') === 0) {
-                        $json = substr($line, 6);
-                        $entry = @json_decode($json, true);
-                        $entrySource = $entry['source'] ?? $source;
-                        $entryLine = $entry['line'] ?? $json;
-
-                        if ($callback !== null) {
-                            $callback($entrySource, $entryLine);
-                        } else {
-                            echo "[{$entrySource}] {$entryLine}\n";
-                        }
-                    }
-                }
-                return strlen($data);
-            },
-        ]);
-
-        curl_exec($ch);
-        curl_close($ch);
+    private function paasLogsFollow(string $source, ?string $grep, ?string $level, string $publicKey, string $secretKey): int {
+        fwrite(STDERR, "Streaming {$source} logs... (Ctrl+C to stop)\n");
+        $path = self::logsPath($source, true);
+        $delay = 2; $lastRecv = 0; $reconnect = false;
+        $parser = self::sseParser(function ($src, $line) use (&$lastRecv) {
+            if ($src !== null) printf("%-12s %s\n", $src, $line);
+            else echo $line, "\n";
+            fflush(STDOUT);
+            $lastRecv = time();
+        });
+        while (true) {
+            $since = ($reconnect && $lastRecv > 0) ? max(10, time() - $lastRecv + 5) . 's' : null;
+            $connected = time();
+            // fresh signature each connection (timestamps expire)
+            [$code, $body] = $this->portalLogsGet($path,
+                self::logsQuery(['grep' => $grep, 'level' => $level, 'since' => $since]),
+                $publicKey, $secretKey, $parser);
+            if ($code === 401 || $code === 403) {
+                fwrite(STDERR, "Error: HTTP {$code} (auth failed)\n");
+                return 1;
+            }
+            if ($code !== 0 && $code !== 200 && $code < 500) {
+                fwrite(STDERR, self::httpErrorText($code, $body) . "\n");
+                return 1;
+            }
+            if (time() - $connected > 30) $delay = 2;
+            sleep($delay);
+            $delay = min(30, $delay * 2);
+            $reconnect = true;
+        }
     }
 
     // =========================================================================
@@ -2145,6 +2374,10 @@ class Unsandbox {
      */
     public function cliMain(array $argv): void {
         $script = array_shift($argv);
+
+        if (($argv[0] ?? null) === 'paas') {
+            exit($this->cliPaas(array_slice($argv, 1)));
+        }
 
         if (empty($argv)) {
             $this->cliShowHelp();
@@ -3364,7 +3597,7 @@ class Unsandbox {
             if ($state === 'expired') {
                 echo "Expired\n";
                 echo "Public Key: {$pk}\n";
-                echo "To renew: Visit https://unsandbox.com/keys/extend\n";
+                echo "To renew: Visit " . self::portalBase() . "/keys/extend\n";
             } elseif ($state === 'suspended') {
                 echo "Suspended\n";
                 echo "Public Key: {$pk}\n";
@@ -3729,6 +3962,7 @@ USAGE:
     php un.php snapshot [options]
     php un.php key
     php un.php key --rotate [--otp CODE]   Rotate key secret (sudo OTP)
+    php un.php paas logs [options]         Platform logs (partner keys; -h for options)
     php un.php languages [--json]
 
 GLOBAL OPTIONS:

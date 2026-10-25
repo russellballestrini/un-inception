@@ -81,6 +81,17 @@ fn api_base() -> String {
         .to_string()
 }
 
+/// Portal base URL: UNSANDBOX_PORTAL_URL, default https://unsandbox.com, trailing slash stripped.
+/// Serves /logs/{source} (partner log access) and /keys/extend.
+fn portal_base() -> String {
+    env::var("UNSANDBOX_PORTAL_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://unsandbox.com".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
 /// Languages cache TTL in seconds (1 hour)
 const LANGUAGES_CACHE_TTL: u64 = 3600;
 
@@ -2511,6 +2522,8 @@ pub struct LogsFetchOptions {
     pub since: Option<String>,
     /// Optional filter pattern
     pub grep: Option<String>,
+    /// Optional minimum level (debug, info, notice, warning, err, crit, alert, emerg)
+    pub level: Option<String>,
 }
 
 /// Response from logs fetch.
@@ -2527,155 +2540,364 @@ pub struct LogsEntry {
     pub timestamp: String,
 }
 
-/// Fetch batch logs from the portal.
+/// Percent-encode a query value (RFC 3986 unreserved characters pass through).
+fn pct_encode(v: &str) -> String {
+    let mut out = String::new();
+    for b in v.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+/// Portal path for a log source: "/logs/{source}" (+ "/stream").
+fn logs_path(source: &str, stream: bool) -> String {
+    let src = if source.is_empty() { "all" } else { source };
+    if stream { format!("/logs/{}/stream", src) } else { format!("/logs/{}", src) }
+}
+
+/// Append "key=value" (percent-encoded) for every non-empty value.
+fn logs_query(url: &mut String, params: &[(&str, Option<&str>)]) {
+    for (k, v) in params {
+        if let Some(v) = v {
+            if v.is_empty() { continue; }
+            url.push(if url.contains('?') { '&' } else { '?' });
+            url.push_str(k);
+            url.push('=');
+            url.push_str(&pct_encode(v));
+        }
+    }
+}
+
+/// Signed GET to the portal. HMAC covers the path only (server verifies
+/// conn.request_path, no query string). Returns (status, body).
+fn portal_get(path: &str, url: &str, creds: &Credentials, timeout: Option<Duration>) -> Result<reqwest::blocking::Response> {
+    let client = Client::builder().timeout(timeout).build()?;
+    let timestamp = get_timestamp();
+    let signature = sign_request(&creds.secret_key, timestamp, "GET", path, "");
+    Ok(client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", creds.public_key))
+        .header("X-Timestamp", timestamp.to_string())
+        .header("X-Signature", signature)
+        .header("User-Agent", "un-rust-sync/2.0")
+        .send()?)
+}
+
+/// Fetch raw JSON from {PORTAL}/logs/{source}. Returns (status, body text).
+fn logs_fetch_raw(source: &str, lines: u32, since: Option<&str>, grep: Option<&str>, level: Option<&str>, creds: &Credentials) -> Result<(u16, String)> {
+    let path = logs_path(source, false);
+    let mut url = format!("{}{}?lines={}", portal_base(), path, lines);
+    logs_query(&mut url, &[("since", since), ("grep", grep), ("level", level)]);
+    let resp = portal_get(&path, &url, creds, Some(Duration::from_secs(120)))?;
+    let status = resp.status().as_u16();
+    Ok((status, resp.text()?))
+}
+
+/// Turn a portal logs response into entries: single source {"source","lines":["..."]}
+/// or all {"sources":[...],"lines":[{"source","line"}]}.
+fn parse_logs_response(body: &str) -> Result<Vec<LogsEntry>> {
+    let v: serde_json::Value = serde_json::from_str(body)?;
+    let src = v.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let mut out = vec![];
+    if let Some(arr) = v.get("lines").and_then(|l| l.as_array()) {
+        for item in arr {
+            if let Some(line) = item.as_str() {
+                out.push(LogsEntry { source: src.clone(), line: line.to_string(), timestamp: String::new() });
+            } else if item.is_object() {
+                out.push(LogsEntry {
+                    source: item.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                    line: item.get("line").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                    timestamp: String::new(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Fetch batch logs from the portal: GET {UNSANDBOX_PORTAL_URL}/logs/{source}.
+///
+/// Requires a partner API key with log access enabled.
 ///
 /// # Arguments
 /// * `source` - Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
 /// * `opts` - Fetch options (can be None for defaults)
 /// * `creds` - API credentials
 ///
-/// # Returns
-/// Vector of log entries
-///
 /// # Examples
 /// ```ignore
 /// let creds = resolve_credentials(None, None, None)?;
-///
-/// // Fetch last 100 lines from all sources
-/// let opts = LogsFetchOptions {
-///     lines: Some(100),
-///     since: Some("1h".to_string()),
-///     ..Default::default()
-/// };
-/// let logs = logs_fetch("all", Some(opts), &creds)?;
-/// for entry in logs {
+/// let opts = LogsFetchOptions { lines: Some(100), since: Some("1h".to_string()), ..Default::default() };
+/// for entry in logs_fetch("all", Some(opts), &creds)? {
 ///     println!("[{}] {}", entry.source, entry.line);
 /// }
 /// ```
 pub fn logs_fetch(source: &str, opts: Option<LogsFetchOptions>, creds: &Credentials) -> Result<Vec<LogsEntry>> {
-    let mut path = String::from("/paas/logs");
-    let mut params = vec![];
-
-    if !source.is_empty() {
-        params.push(format!("source={}", source));
+    let opts = opts.unwrap_or_default();
+    let lines = opts.lines.unwrap_or(100).clamp(1, 10000);
+    let (status, body) = logs_fetch_raw(source, lines, opts.since.as_deref(), opts.grep.as_deref(), opts.level.as_deref(), creds)?;
+    if !(200..300).contains(&status) {
+        return Err(UnsandboxError::ApiError { status, message: body });
     }
-
-    if let Some(opts) = opts {
-        if let Some(lines) = opts.lines {
-            params.push(format!("lines={}", lines));
-        }
-        if let Some(since) = opts.since {
-            params.push(format!("since={}", since));
-        }
-        if let Some(grep) = opts.grep {
-            params.push(format!("grep={}", grep));
-        }
-    }
-
-    if !params.is_empty() {
-        path = format!("{}?{}", path, params.join("&"));
-    }
-
-    #[derive(Deserialize)]
-    struct LogsResponse {
-        #[serde(default)]
-        logs: Vec<LogsEntry>,
-    }
-
-    let response: LogsResponse = make_request("GET", &path, creds, None::<&()>)?;
-    Ok(response.logs)
+    parse_logs_response(&body)
 }
 
 /// Callback function for streaming logs.
 pub type LogCallback = fn(source: &str, line: &str);
 
-/// Stream logs via Server-Sent Events.
+/// Stream logs via Server-Sent Events from {UNSANDBOX_PORTAL_URL}/logs/{source}/stream.
 ///
-/// This function blocks until the stream is closed or an error occurs.
-/// Note: This is a simplified implementation that reads until EOF.
-///
-/// # Arguments
-/// * `source` - Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
-/// * `grep` - Optional filter pattern (empty string for no filter)
-/// * `callback` - Function called for each log line
-/// * `creds` - API credentials
-///
-/// # Returns
-/// Ok(()) on clean shutdown, error on failure
+/// Blocks until the stream closes (one connection; the CLI reconnects).
+/// Each `data: {"source","line"}` event calls `callback(source, line)`.
 ///
 /// # Examples
 /// ```ignore
-/// let creds = resolve_credentials(None, None, None)?;
-///
-/// fn handle_log(source: &str, line: &str) {
-///     println!("[{}] {}", source, line);
-/// }
-///
+/// fn handle_log(source: &str, line: &str) { println!("[{}] {}", source, line); }
 /// logs_stream("all", "", handle_log, &creds)?;
 /// ```
 pub fn logs_stream(source: &str, grep: &str, callback: LogCallback, creds: &Credentials) -> Result<()> {
-    let mut path = String::from("/paas/logs/stream");
-    let mut params = vec![];
-
-    if !source.is_empty() {
-        params.push(format!("source={}", source));
+    let path = logs_path(source, true);
+    let mut url = format!("{}{}", portal_base(), path);
+    logs_query(&mut url, &[("grep", Some(grep))]);
+    let resp = portal_get(&path, &url, creds, None)?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(UnsandboxError::ApiError { status, message: resp.text()? });
     }
-    if !grep.is_empty() {
-        params.push(format!("grep={}", grep));
-    }
-
-    if !params.is_empty() {
-        path = format!("{}?{}", path, params.join("&"));
-    }
-
-    let url = format!("{}{}", api_base(), path);
-    let timestamp = get_timestamp();
-    let signature = sign_request(&creds.secret_key, timestamp, "GET", &path, "");
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(None)  // No timeout for streaming
-        .build()?;
-
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", creds.public_key))
-        .header("X-Timestamp", timestamp.to_string())
-        .header("X-Signature", signature)
-        .header("Accept", "text/event-stream")
-        .header("User-Agent", "un-rust-sync/2.0")
-        .send()?;
-
-    let status = response.status().as_u16();
-    if status < 200 || status >= 300 {
-        let response_text = response.text()?;
-        return Err(UnsandboxError::ApiError {
-            status,
-            message: response_text,
-        });
-    }
-
-    let reader = BufReader::new(response);
-    let mut current_source = source.to_string();
-
-    for line in reader.lines() {
-        let line = line?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        // Parse SSE format
-        if let Some(event) = line.strip_prefix("event:") {
-            current_source = event.trim().to_string();
-        } else if let Some(data) = line.strip_prefix("data:") {
-            let data = data.trim();
-            if !data.is_empty() {
-                callback(&current_source, data);
-            }
-        }
-    }
-
+    read_sse(resp, source, &mut |s, l| callback(s, l));
     Ok(())
+}
+
+/// Read SSE events until EOF or a read error; returns true on clean EOF.
+fn read_sse<R: io::Read>(resp: R, default_source: &str, on_line: &mut dyn FnMut(&str, &str)) -> bool {
+    let reader = BufReader::new(resp);
+    for line in reader.lines() {
+        let line = match line { Ok(l) => l, Err(_) => return false };
+        let Some(data) = line.strip_prefix("data:") else { continue };
+        let data = data.trim_start();
+        if data.is_empty() || data == ":keepalive" { continue; }
+        match serde_json::from_str::<serde_json::Value>(data) {
+            Ok(v) if v.is_object() => {
+                if let Some(l) = v.get("line").and_then(|x| x.as_str()) {
+                    let src = v.get("source").and_then(|x| x.as_str()).unwrap_or(default_source);
+                    on_line(src, l);
+                }
+            }
+            _ => on_line(default_source, data),
+        }
+    }
+    true
+}
+
+// -----------------------------------------------------------------------------
+// `un paas logs` (CLI_SPEC.md "PaaS Logs Command")
+// -----------------------------------------------------------------------------
+
+fn paas_cursor_path() -> Option<PathBuf> {
+    env::var("HOME").ok().filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".unsandbox").join("paas_log_cursor"))
+}
+
+/// Seconds since the last successful fetch as "Ns" (minimum 5s), or None.
+fn read_paas_cursor() -> Option<String> {
+    let ts: i64 = fs::read_to_string(paas_cursor_path()?).ok()?.trim().parse().ok()?;
+    if ts <= 0 { return None; }
+    let ago = (get_timestamp() as i64 - ts).max(5);
+    Some(format!("{}s", ago))
+}
+
+fn write_paas_cursor() {
+    if let Some(p) = paas_cursor_path() {
+        if let Some(dir) = p.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::write(p, format!("{}\n", get_timestamp()));
+    }
+}
+
+fn paas_usage() {
+    eprintln!("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.");
+}
+
+fn paas_logs_help() {
+    eprintln!("Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  un paas logs                             # last 100 lines from all sources
+  un paas logs --api --lines 500           # last 500 API log lines
+  un paas logs --portal --grep error       # portal logs matching 'error'
+  un paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  un paas logs -l warning                  # warnings and above from all sources
+  un paas logs --follow                    # follow all logs in real-time
+  un paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled.");
+}
+
+fn json_error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body).ok()?.get("error")?.as_str().map(|s| s.to_string())
+}
+
+/// `un paas ...` entry point; `args` starts after "paas".
+fn cmd_paas(args: &[String]) -> i32 {
+    let Some(sub) = args.first() else { paas_usage(); return 1; };
+    if sub != "logs" {
+        eprintln!("Error: Unknown paas command '{}'\nRun 'un paas' for available commands.", sub);
+        return 1;
+    }
+    cmd_paas_logs(&args[1..])
+}
+
+fn cmd_paas_logs(args: &[String]) -> i32 {
+    let mut source = String::from("all");
+    let mut lines: u32 = 100;
+    let mut since: Option<String> = None;
+    let mut grep: Option<String> = None;
+    let mut level: Option<String> = None;
+    let (mut follow, mut json, mut help) = (false, false, false);
+    let (mut pk, mut sk, mut account): (Option<String>, Option<String>, Option<usize>) = (None, None, None);
+    let mut i = 0;
+    let next = |i: &mut usize| -> Option<String> { if *i + 1 < args.len() { *i += 1; Some(args[*i].clone()) } else { None } };
+    while i < args.len() {
+        match args[i].as_str() {
+            "-p" => { if let Some(v) = next(&mut i) { pk = Some(v); } }
+            "-k" => { if let Some(v) = next(&mut i) { sk = Some(v); } }
+            "--account" => { if let Some(v) = next(&mut i) { account = v.parse().ok(); } }
+            "--source" => { if let Some(v) = next(&mut i) { source = v; } }
+            "--all" => source = "all".into(),
+            "--api" => source = "api".into(),
+            "--portal" => source = "portal".into(),
+            "--pool" => { if let Some(v) = next(&mut i) { source = format!("pool/{}", v); } }
+            "--lines" | "-n" => { if let Some(v) = next(&mut i) { lines = v.parse::<i64>().unwrap_or(0).clamp(1, 10000) as u32; } }
+            "--since" => { if let Some(v) = next(&mut i) { since = Some(v); } }
+            "--grep" => { if let Some(v) = next(&mut i) { grep = Some(v); } }
+            "--level" | "-l" => { if let Some(v) = next(&mut i) { level = Some(v); } }
+            "--follow" | "-f" => follow = true,
+            "--json" => json = true,
+            "-h" | "--help" => help = true,
+            _ => {}
+        }
+        i += 1;
+    }
+    if help { paas_logs_help(); return 0; }
+
+    let creds = match resolve_credentials(pk.as_deref(), sk.as_deref(), account) {
+        Ok(c) if !c.public_key.is_empty() => c,
+        _ => {
+            eprintln!("Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key");
+            return 1;
+        }
+    };
+
+    if follow {
+        return stream_paas_logs(&creds, &source, grep.as_deref(), level.as_deref());
+    }
+    let since = since.or_else(read_paas_cursor).unwrap_or_else(|| "5m".to_string());
+    let (status, body) = match logs_fetch_raw(&source, lines, Some(&since), grep.as_deref(), level.as_deref(), &creds) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Error: Network error fetching logs: {}", e); return 1; }
+    };
+    if status != 200 {
+        match json_error_message(&body) {
+            Some(m) => eprintln!("Error: HTTP {} — {}", status, m),
+            None => eprintln!("Error: HTTP {}", status),
+        }
+        return 1;
+    }
+    write_paas_cursor();
+    if json { println!("{}", body); return 0; }
+    let is_all = body.contains("\"sources\"");
+    match parse_logs_response(&body) {
+        Ok(entries) => {
+            for e in entries {
+                if is_all && !e.source.is_empty() {
+                    println!("\x1b[36m{:<12}\x1b[0m {}", e.source, e.line);
+                } else {
+                    println!("{}", e.line);
+                }
+            }
+            0
+        }
+        Err(_) => { eprintln!("Error: Invalid response format"); 1 }
+    }
+}
+
+/// Follow {PORTAL}/logs/{source}/stream; reconnects (2s doubling to 30s) with
+/// since= covering the gap, fresh signature per connection. 401/403 is fatal.
+fn stream_paas_logs(creds: &Credentials, source: &str, grep: Option<&str>, level: Option<&str>) -> i32 {
+    let path = logs_path(source, true);
+    let mut base_url = format!("{}{}", portal_base(), path);
+    logs_query(&mut base_url, &[("grep", grep), ("level", level)]);
+    eprintln!("Streaming {} logs... (Ctrl+C to stop)", source);
+    let mut delay: u64 = 2;
+    let mut last_recv: u64 = 0;
+    let mut reconnect = false;
+    loop {
+        let mut url = base_url.clone();
+        if reconnect && last_recv > 0 {
+            let gap = (get_timestamp().saturating_sub(last_recv) + 5).max(10);
+            url.push(if url.contains('?') { '&' } else { '?' });
+            url.push_str(&format!("since={}s", gap));
+        }
+        let connected_at = get_timestamp();
+        let resp = match portal_get(&path, &url, creds, None) {
+            Ok(r) => r,
+            Err(e) => {
+                if reconnect {
+                    thread::sleep(Duration::from_secs(delay));
+                    delay = (delay * 2).min(30);
+                    continue;
+                }
+                eprintln!("Error: Stream error: {}", e);
+                return 1;
+            }
+        };
+        let status = resp.status().as_u16();
+        if status == 401 || status == 403 {
+            eprintln!("Error: HTTP {} (auth failed)", status);
+            return 1;
+        }
+        if status == 200 {
+            read_sse(resp, source, &mut |s, l| {
+                println!("\x1b[36m{:<12}\x1b[0m {}", s, l);
+                let _ = io::stdout().flush();
+                last_recv = get_timestamp();
+            });
+        } else if status < 500 {
+            match resp.text().ok().and_then(|b| json_error_message(&b)) {
+                Some(m) => eprintln!("Error: HTTP {} — {}", status, m),
+                None => eprintln!("Error: HTTP {}", status),
+            }
+            return 1;
+        }
+        if get_timestamp().saturating_sub(connected_at) > 30 { delay = 2; }
+        thread::sleep(Duration::from_secs(delay));
+        delay = (delay * 2).min(30);
+        reconnect = true;
+    }
 }
 
 // =============================================================================
@@ -4455,7 +4677,7 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         "expired" => {
             println!("Expired");
             println!("Public Key: {}", pk);
-            println!("To renew: Visit https://unsandbox.com/keys/extend");
+            println!("To renew: Visit {}/keys/extend", portal_base());
             return EXIT_AUTH_ERROR;
         }
         "suspended" => {
@@ -4802,6 +5024,9 @@ fn cmd_languages(opts: &CliOptions) -> i32 {
 /// ```
 pub fn cli_main() -> i32 {
     let args: Vec<String> = env::args().collect();
+    if args.get(1).map(|a| a.as_str()) == Some("paas") {
+        return cmd_paas(&args[2..]);
+    }
     let opts = parse_args(&args);
 
     if opts.help {

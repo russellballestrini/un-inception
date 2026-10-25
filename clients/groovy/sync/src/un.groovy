@@ -88,7 +88,7 @@ import groovy.json.JsonOutput
 @groovy.transform.Field def API_BASE = (System.getenv('UNSANDBOX_API_URL') ?: 'https://api.unsandbox.com').replaceAll('/+$', '')
 
 /** Portal base URL for unsandbox */
-@groovy.transform.Field def PORTAL_BASE = 'https://unsandbox.com'
+@groovy.transform.Field def PORTAL_BASE = (System.getenv('UNSANDBOX_PORTAL_URL') ?: 'https://unsandbox.com').replaceAll('/+$', '')
 
 /** Default execution timeout in seconds */
 @groovy.transform.Field def DEFAULT_TIMEOUT = 300
@@ -1426,15 +1426,51 @@ def imageClone(String imageId, String name = null, String description = null, Ma
 // PaaS Logs Functions
 // ============================================================================
 
+/** Portal logs path: /logs/{source}[/stream]. */
+def logsPath(String source, boolean stream = false) {
+    return "/logs/${source ?: 'all'}" + (stream ? '/stream' : '')
+}
+
+/** Query string from key/value pairs, percent-encoded, empty values skipped. */
+def logsQuery(Map kv) {
+    def q = kv.findAll { k, v -> v != null && v.toString() != '' }.collect { k, v ->
+        "${k}=" + URLEncoder.encode(v.toString(), 'UTF-8').replace('+', '%20')
+    }
+    return q ? '?' + q.join('&') : ''
+}
+
+/** Signed GET to the portal; HMAC covers the path only (server checks conn.request_path). */
+def portalGet(String path, String query, String publicKey, String secretKey, int readTimeout) {
+    def timestamp = (System.currentTimeMillis() / 1000) as long
+    def conn = new URL("${PORTAL_BASE}${path}${query}").openConnection() as java.net.HttpURLConnection
+    conn.requestMethod = 'GET'
+    conn.connectTimeout = 30000
+    conn.readTimeout = readTimeout
+    conn.setRequestProperty('Authorization', "Bearer ${publicKey}")
+    conn.setRequestProperty('X-Timestamp', timestamp.toString())
+    conn.setRequestProperty('X-Signature', signRequest(secretKey, timestamp, 'GET', path, ''))
+    conn.setRequestProperty('User-Agent', 'un-groovy/2.0')
+    return conn
+}
+
+/** GET {portal}/logs/{source}; returns [status, body]. */
+def logsFetchRaw(String source, int lines, String since, String grep, String level, String publicKey, String secretKey) {
+    def q = logsQuery([lines: (lines > 0 ? lines : 100), since: since, grep: grep, level: level])
+    def conn = portalGet(logsPath(source), q, publicKey, secretKey, DEFAULT_TIMEOUT * 1000)
+    def code = conn.responseCode
+    def stream = code >= 400 ? conn.errorStream : conn.inputStream
+    return [code, stream ? stream.getText('UTF-8') : '']
+}
+
 /**
- * Fetch batch logs.
+ * Fetch batch logs from the portal: GET {portal}/logs/{source}.
+ * options: publicKey, secretKey, level
  */
 def logsFetch(String source = 'all', int lines = 100, String since = null, String grep = null, Map options = [:]) {
     def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
-    def params = ["source=${source}", "lines=${lines}"]
-    if (since) params << "since=${since}"
-    if (grep) params << "grep=${URLEncoder.encode(grep, 'UTF-8')}"
-    return apiRequest("/paas/logs?${params.join('&')}", 'GET', null, publicKey, secretKey)
+    def (code, body) = logsFetchRaw(source, lines, since, grep, options.level as String, publicKey, secretKey)
+    if (code != 200) throw new APIError("HTTP ${code}", code as Integer, body as String)
+    return new JsonSlurper().parseText(body)
 }
 
 /**
@@ -1444,60 +1480,216 @@ interface LogCallback {
     void onLogLine(String source, String line)
 }
 
+/** One SSE connection to {portal}/logs/{source}/stream; returns HTTP status (0 on network error). */
+def logsStreamOnce(String source, String grep, String level, String since, Closure cb, String publicKey, String secretKey) {
+    try {
+        def conn = portalGet(logsPath(source, true), logsQuery([grep: grep, level: level, since: since]), publicKey, secretKey, 0)
+        conn.setRequestProperty('Accept', 'text/event-stream')
+        def code = conn.responseCode
+        if (code != 200) {
+            conn.errorStream?.text
+            return code
+        }
+        try {
+            conn.inputStream.withReader('UTF-8') { reader ->
+                def line
+                while ((line = reader.readLine()) != null) {
+                    if (!line.startsWith('data:')) continue
+                    def data = line.substring(5).trim()
+                    if (!data || data == ':keepalive') continue
+                    if (data.startsWith('{')) {
+                        def ev = new JsonSlurper().parseText(data)
+                        if (ev.line instanceof String) cb(ev.source ? ev.source.toString() : '', ev.line)
+                    } else {
+                        cb('', data)
+                    }
+                }
+            }
+        } catch (IOException e) {
+            // dropped connection: caller reconnects
+        }
+        return 200
+    } catch (IOException e) {
+        return 0
+    }
+}
+
 /**
- * Stream logs via SSE. Blocks until interrupted or server closes.
+ * Stream until a 4xx, reconnecting on drops (2 s backoff doubling to 30 s,
+ * since= overlap). Returns the HTTP status that ended the stream.
+ */
+def logsFollow(String source, String grep, String level, Closure cb, String publicKey, String secretKey) {
+    int delay = 2
+    long lastRecv = 0
+    String since = null
+    def wrap = { String src, String l -> lastRecv = (System.currentTimeMillis() / 1000) as long; cb(src, l) }
+    while (true) {
+        long start = System.currentTimeMillis()
+        int code = logsStreamOnce(source, grep, level, since, wrap, publicKey, secretKey)
+        if (System.currentTimeMillis() - start > 30000) delay = 2
+        if (code >= 400 && code < 500) return code
+        Thread.sleep(delay * 1000L)
+        delay = Math.min(delay * 2, 30)
+        if (lastRecv > 0) {
+            long gap = ((System.currentTimeMillis() / 1000) as long) - lastRecv + 5
+            since = "${Math.max(gap, 10L)}s"
+        }
+    }
+}
+
+/**
+ * Stream logs via SSE from {portal}/logs/{source}/stream. Blocks until the
+ * server ends the stream.
  *
- * @param source Log source ('all', 'api', 'portal', 'pool/cammy', 'pool/ai')
- * @param grep Optional filter pattern
- * @param callback Callback for each log line
- * @param options Optional parameters (publicKey, secretKey)
  * @return true on clean shutdown, false on error
  */
 def logsStream(String source = 'all', String grep = null, LogCallback callback, Map options = [:]) {
     def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
+    def code = logsStreamOnce(source, grep, options.level as String, null, { String s, String l -> callback?.onLogLine(s, l) }, publicKey, secretKey)
+    return code == 200
+}
 
-    def path = "/paas/logs/stream?source=${source ?: 'all'}"
-    if (grep) {
-        path += "&grep=${URLEncoder.encode(grep, 'UTF-8')}"
-    }
+/** ~/.unsandbox/paas_log_cursor: last successful fetch, Unix seconds. */
+def logCursorFile() {
+    return new File((System.getenv('HOME') ?: System.getProperty('user.home')), '.unsandbox/paas_log_cursor')
+}
 
-    def timestamp = (System.currentTimeMillis() / 1000) as long
-    def signature = signRequest(secretKey, timestamp, 'GET', path, '')
-
-    def url = new URL("${API_BASE}${path}")
-    def connection = url.openConnection() as java.net.HttpURLConnection
-
-    connection.requestMethod = 'GET'
-    connection.setRequestProperty('Authorization', "Bearer ${publicKey}")
-    connection.setRequestProperty('X-Timestamp', timestamp.toString())
-    connection.setRequestProperty('X-Signature', signature)
-    connection.setRequestProperty('Accept', 'text/event-stream')
-    connection.connectTimeout = 30000
-    connection.readTimeout = 0  // No timeout for streaming
-
-    if (connection.responseCode != 200) {
-        return false
-    }
-
+def readLogCursor() {
     try {
-        def reader = new BufferedReader(new InputStreamReader(connection.inputStream, 'UTF-8'))
-        def currentSource = source ?: 'all'
-        def line
-
-        while ((line = reader.readLine()) != null) {
-            if (line.startsWith('data: ')) {
-                def data = line.substring(6)
-                if (callback) {
-                    callback.onLogLine(currentSource, data)
-                }
-            } else if (line.startsWith('event: ')) {
-                currentSource = line.substring(7)
-            }
-        }
-        return true
+        long ts = logCursorFile().text.trim() as long
+        if (ts <= 0) return null
+        long ago = Math.max(((System.currentTimeMillis() / 1000) as long) - ts, 5L)
+        return "${ago}s".toString()
     } catch (Exception e) {
-        return false
+        return null
     }
+}
+
+def writeLogCursor() {
+    try {
+        def f = logCursorFile()
+        f.parentFile.mkdirs()
+        f.text = "${(System.currentTimeMillis() / 1000) as long}\n"
+    } catch (Exception e) {
+        // best effort
+    }
+}
+
+def printPaasLogsHelp() {
+    System.err.print('''Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.
+''')
+}
+
+/** `un paas <command>`: currently `logs`. Returns the exit code. */
+def cmdPaas(List argv) {
+    if (argv.size() < 2) {
+        System.err.print("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.\n")
+        return 1
+    }
+    if (argv[1] != 'logs') {
+        System.err.println("Error: Unknown paas command '${argv[1]}'")
+        System.err.println("Run 'un paas' for available commands.")
+        return 1
+    }
+    String source = 'all', since = null, grep = null, level = null, pk = null, sk = null
+    int lines = 100, account = -1
+    boolean follow = false, json = false
+    def clamp = { String v -> int n = (v.isInteger() ? v as int : 0); Math.max(1, Math.min(10000, n)) }
+    for (int i = 2; i < argv.size(); i++) {
+        String a = argv[i]
+        boolean more = i + 1 < argv.size()
+        if (a == '-p' && more) pk = argv[++i]
+        else if (a == '-k' && more) sk = argv[++i]
+        else if (a == '--account' && more) { String v = argv[++i]; account = v.isInteger() ? v as int : -1 }
+        else if (a == '--source' && more) source = argv[++i]
+        else if (a == '--all') source = 'all'
+        else if (a == '--api') source = 'api'
+        else if (a == '--portal') source = 'portal'
+        else if (a == '--pool' && more) source = "pool/${argv[++i]}".toString()
+        else if ((a == '--lines' || a == '-n') && more) lines = clamp(argv[++i])
+        else if (a == '--since' && more) since = argv[++i]
+        else if (a == '--grep' && more) grep = argv[++i]
+        else if ((a == '--level' || a == '-l') && more) level = argv[++i]
+        else if (a == '--follow' || a == '-f') follow = true
+        else if (a == '--json') json = true
+        else if (a == '-h' || a == '--help') { printPaasLogsHelp(); return 0 }
+    }
+    def creds = null
+    try {
+        creds = getCredentials(pk, sk, account)
+    } catch (Exception e) {
+        creds = null
+    }
+    if (!creds || !creds[0]) {
+        System.err.print("Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n")
+        return 1
+    }
+    String publicKey = creds[0]
+    String secretKey = creds[1]
+    if (follow) {
+        System.err.println("Streaming ${source} logs... (Ctrl+C to stop)")
+        int code = logsFollow(source, grep, level, { String src, String l ->
+            println(src ? String.format('\033[36m%-12s\033[0m %s', src, l) : l)
+            System.out.flush()
+        }, publicKey, secretKey)
+        if (code == 401 || code == 403) System.err.println("Error: HTTP ${code} (auth failed)")
+        else if (code) System.err.println("Error: HTTP ${code}")
+        return 1
+    }
+    if (!since) since = readLogCursor() ?: '5m'
+    def res
+    try {
+        res = logsFetchRaw(source, lines, since, grep, level, publicKey, secretKey)
+    } catch (IOException e) {
+        System.err.println("Error: Network error fetching logs: ${e.message}")
+        return 1
+    }
+    int code = res[0] as int
+    String body = res[1]
+    if (code != 200) {
+        def msg = null
+        try { msg = new JsonSlurper().parseText(body)?.error } catch (Exception e) { msg = null }
+        System.err.println("Error: HTTP ${code}" + (msg instanceof String ? " — ${msg}" : ''))
+        return 1
+    }
+    writeLogCursor()
+    if (json) {
+        println(body)
+        return 0
+    }
+    def parsed = null
+    try { parsed = new JsonSlurper().parseText(body) } catch (Exception e) { parsed = null }
+    if (!(parsed instanceof Map) || !(parsed.lines instanceof List)) {
+        System.err.println('Error: Invalid response format')
+        return 1
+    }
+    parsed.lines.each { e ->
+        if (e instanceof Map) println(String.format('\033[36m%-12s\033[0m %s', e.source.toString(), e.line.toString()))
+        else println(e.toString())
+    }
+    return 0
 }
 
 /**
@@ -2428,7 +2620,7 @@ def cmdKey(args) {
     if (state == 'expired') {
         println("${RED}Expired${RESET}")
         println("Public Key: ${publicKey}")
-        println("${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}")
+        println("${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}")
         System.exit(3)
     } else if (state == 'suspended') {
         println("${RED}Suspended${RESET}")
@@ -2955,6 +3147,11 @@ Library Usage:
 // ============================================================================
 // Main Execution (CLI)
 // ============================================================================
+
+// paas has its own flags (-n, -l, -f mean lines/level/follow there)
+if (this.args && this.args[0] == 'paas') {
+    System.exit(cmdPaas(this.args as List))
+}
 
 try {
     def args = parseArgs(this.args as List)

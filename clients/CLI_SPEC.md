@@ -61,6 +61,7 @@ un snapshot [options]             # Manage snapshots
 un image [options]                # Manage images
 un languages [options]            # List available languages
 un key                            # Check API key
+un paas logs [options]            # Platform logs (partner keys)
 ```
 
 ## Global Options
@@ -375,6 +376,58 @@ is used is the key owner's job, not the tool's.
 Every implementation reads `UNSANDBOX_API_URL` (default `https://api.unsandbox.com`,
 no trailing slash) for all requests, so CLIs can be pointed at a staging or local
 endpoint.
+
+### Portal base URL
+
+Every implementation reads `UNSANDBOX_PORTAL_URL` (default `https://unsandbox.com`,
+trailing slashes stripped) for portal requests: `un paas logs` and the
+`/keys/extend` renewal link.
+
+## PaaS Logs Command
+
+Platform logs live on the **portal**, not the API host: `GET {PORTAL}/logs/{source}`
+and `GET {PORTAL}/logs/{source}/stream`, where source is `api`, `portal`,
+`pool/<node>` or `all`. (`/paas/logs` exists on neither host.) Access needs a
+partner API key with log access enabled; anything else answers 401/403.
+
+```bash
+un paas logs                          # last 100 lines, all sources
+un paas logs --api -n 500             # API server
+un paas logs --portal --grep error    # portal, lines matching 'error'
+un paas logs --pool cammy --since 1h  # one pool node
+un paas logs -l warning               # warning and above
+un paas logs --follow                 # stream (Ctrl+C to stop)
+```
+
+| Option | Description |
+|--------|-------------|
+| `--all` / `--api` / `--portal` | Source (default `all`) |
+| `--pool NODE` | Source `pool/NODE` |
+| `--source SRC` | Source string: `api`, `portal`, `pool/NODE`, `all` |
+| `--lines N`, `-n N` | Lines (default 100, clamped 1..10000) |
+| `--since T` | Window: `30s`, `5m`, `1h`, `1d` (default: cursor, else `5m`) |
+| `--grep PAT` | Server-side filter |
+| `--level L`, `-l L` | Min level: `debug info notice warning err crit alert emerg` |
+| `--follow`, `-f` | Stream via SSE |
+| `--json` | Print the raw JSON response |
+| `-p KEY` / `-k KEY` / `--account N` | Credentials, as for every command |
+
+Request: query `lines`, `since`, `grep`, `level` (percent-encoded; omit empty
+ones). HMAC signs the **path only**: `timestamp:GET:/logs/{source}:` (empty body;
+the server verifies `conn.request_path`, no query string).
+
+Response (batch): single source `{"source","host","unit","lines":["..."],"count"}`
+— print each line as is. `all` returns `{"sources":[...],"lines":[{"source","line"}],"count"}`
+— print `%-12s %s` (source, line). Non-200: print `Error: HTTP <code> — <error>` to
+stderr and exit 1. On success write the current Unix time to
+`~/.unsandbox/paas_log_cursor`; without `--since`, the next fetch asks for the
+seconds since that cursor (minimum `5s`), so repeated calls return only new lines.
+
+Stream: each event `data: {"source","line"}` prints as `%-12s %s`; comment lines
+(`: keepalive`) print nothing. When the connection drops (or ends with 200, or a 5xx),
+reconnect with fresh signature headers after a backoff (2 s doubling to 30 s),
+adding `since=<seconds since last line + 5, min 10>s`. On 401/403 print
+`Error: HTTP <code> (auth failed)` and exit 1.
 
 ## Output Formatting
 

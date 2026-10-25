@@ -20,7 +20,8 @@ set -euo pipefail
 VERSION="4.2.50"
 API_BASE="${UNSANDBOX_API_URL:-https://api.unsandbox.com}"
 while [ "${API_BASE%/}" != "$API_BASE" ]; do API_BASE="${API_BASE%/}"; done
-PORTAL_BASE="https://unsandbox.com"
+PORTAL_BASE="${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}"
+while [ "${PORTAL_BASE%/}" != "$PORTAL_BASE" ]; do PORTAL_BASE="${PORTAL_BASE%/}"; done
 LAST_ERROR=""
 ACCOUNT_INDEX=-1
 
@@ -753,27 +754,308 @@ image_clone() {
 
     api_request "POST" "/images/$image_id/clone" "$body"
 }
-
 # ============================================================================
-# PaaS Logs Functions (2)
+# PaaS Logs (portal: GET $PORTAL_BASE/logs/{source}[/stream], partner keys)
 # ============================================================================
 
-logs_fetch() {
-    local source="${1:-all}"
-    local lines="${2:-100}"
-    local since="${3:-1h}"
-    local grep_pattern="${4:-}"
-
-    local body
-    body=$(jq -n --arg source "$source" --argjson lines "$lines" --arg since "$since" --arg grep "$grep_pattern" \
-        '{source: $source, lines: $lines, since: $since, grep: (if $grep != "" then $grep else null end)}')
-
-    api_request "POST" "/paas/logs" "$body"
+# Percent-encode one query value (RFC 3986 unreserved characters pass through).
+urlencode() {
+    local LC_ALL=C s="$1" out="" c i
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [a-zA-Z0-9.~_-]) out+="$c" ;;
+            *) printf -v c '%%%02X' "'$c"; out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
 }
 
+# Append "key=value" (encoded) to a query string held in variable $1; empty values skipped.
+_logs_q() {
+    [ -n "$3" ] || return 0
+    local -n _q="$1"
+    _q+="${_q:+&}$2=$(urlencode "$3")"
+}
+
+# Signed portal GET. Usage: _portal_get PATH QUERY OUTFILE HEADERFILE [curl opts...]
+# HMAC covers the path only ("ts:GET:/logs/api:"), as the portal verifies conn.request_path.
+_portal_get() {
+    local path="$1" query="$2" out="$3" hdr="$4"; shift 4
+    local creds pk sk timestamp signature=""
+    creds=$(get_credentials) || return 1
+    pk="${creds%%:*}"; sk="${creds#*:}"
+    timestamp=$(date +%s)
+    [ -n "$sk" ] && signature=$(hmac_sign "$sk" "$timestamp:GET:$path:")
+    local url="$PORTAL_BASE$path${query:+?$query}"
+    curl -s "$@" -D "$hdr" -o "$out" -X GET "$url" \
+        -H "Authorization: Bearer $pk" \
+        ${signature:+-H "X-Timestamp: $timestamp" -H "X-Signature: $signature"}
+}
+
+_http_status() {
+    local code
+    code=$(sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' "$1" 2>/dev/null)
+    printf '%s' "${code:-000}"
+}
+
+_log_cursor_path() { printf '%s/.unsandbox/paas_log_cursor' "$HOME"; }
+
+_read_log_cursor() {
+    local ts ago
+    ts=$(head -n1 "$(_log_cursor_path)" 2>/dev/null) || return 1
+    [[ "$ts" =~ ^[0-9]+$ ]] && [ "$ts" -gt 0 ] || return 1
+    ago=$(( $(date +%s) - ts )); [ "$ago" -lt 5 ] && ago=5
+    printf '%ss' "$ago"
+}
+
+_write_log_cursor() {
+    mkdir -p "$HOME/.unsandbox" 2>/dev/null && chmod 700 "$HOME/.unsandbox" 2>/dev/null
+    date +%s > "$(_log_cursor_path)" 2>/dev/null || true
+}
+
+_logs_source_path() {
+    printf '/logs/%s' "${1:-all}"
+}
+
+# Library: fetch logs as JSON. logs_fetch [source] [lines] [since] [grep] [level]
+logs_fetch() {
+    local source="${1:-all}" lines="${2:-100}" since="${3:-5m}" grep_pattern="${4:-}" level="${5:-}"
+    local path query="" tmp code rc=0
+    path=$(_logs_source_path "$source")
+    _logs_q query lines "$lines"; _logs_q query since "$since"
+    _logs_q query grep "$grep_pattern"; _logs_q query level "$level"
+    tmp=$(umask 077; mktemp -d) || return 1
+    _portal_get "$path" "$query" "$tmp/body" "$tmp/hdr" || { rm -rf "$tmp"; return 1; }
+    code=$(_http_status "$tmp/hdr")
+    if [ "$code" != 200 ]; then
+        set_error "HTTP $code $(jq -r '.error // empty' "$tmp/body" 2>/dev/null)"
+        rc=1
+    fi
+    cat "$tmp/body" 2>/dev/null
+    rm -rf "$tmp"
+    return $rc
+}
+
+# Print one "source line" row the way the C client does.
+_logs_row() {
+    printf '\033[36m%-12s\033[0m %s\n' "$1" "$2"
+}
+
+# Library + CLI: stream logs (SSE) until Ctrl+C. logs_stream [source] [grep] [level]
 logs_stream() {
-    set_error "logs_stream requires async support"
-    return 1
+    local source="${1:-all}" grep_pattern="${2:-}" level="${3:-}"
+    local path base_q="" query tmp code curl_rc delay=2 reconnect=0 last=0 started line payload
+    path="$(_logs_source_path "$source")/stream"
+    _logs_q base_q grep "$grep_pattern"; _logs_q base_q level "$level"
+    tmp=$(umask 077; mktemp -d) || return 1
+    trap 'rm -rf "$tmp"; _write_log_cursor; echo >&2; echo "Stream stopped." >&2; exit 0' INT
+    echo "Streaming $source logs... (Ctrl+C to stop)" >&2
+    while :; do
+        query="$base_q"
+        if [ "$reconnect" -eq 1 ] && [ "$last" -gt 0 ]; then
+            local gap=$(( $(date +%s) - last + 5 )); [ "$gap" -lt 10 ] && gap=10
+            _logs_q query since "${gap}s"
+        fi
+        : > "$tmp/hdr"; started=$(date +%s)
+        set +e
+        _portal_get "$path" "$query" /dev/stdout "$tmp/hdr" -N --http1.1 -H "Accept: text/event-stream" \
+            -y 120 -Y 1 | while IFS= read -r line; do
+                line="${line%$'\r'}"
+                case "$line" in
+                    "data: "*) payload="${line#data: }" ;;
+                    *) continue ;;
+                esac
+                [ "$payload" = ":keepalive" ] && continue
+                date +%s > "$tmp/last"
+                if printf '%s' "$payload" | jq -e 'type == "object"' >/dev/null 2>&1; then
+                    if printf '%s' "$payload" | jq -e 'has("line")' >/dev/null 2>&1; then
+                        local src ln
+                        src=$(printf '%s' "$payload" | jq -r '.source // empty')
+                        ln=$(printf '%s' "$payload" | jq -r '.line')
+                        if [ -n "$src" ]; then _logs_row "$src" "$ln"; else printf '%s\n' "$ln"; fi
+                    fi
+                else
+                    printf '%s\n' "$payload"
+                fi
+            done
+        curl_rc=${PIPESTATUS[0]}
+        set -e
+        last=$(cat "$tmp/last" 2>/dev/null || echo "$last")
+        code=$(_http_status "$tmp/hdr")
+        [ $(( $(date +%s) - started )) -gt 30 ] && delay=2
+        if [ "$code" = 401 ] || [ "$code" = 403 ]; then
+            echo "Error: HTTP $code (auth failed)" >&2
+            rm -rf "$tmp"; trap - INT
+            return 1
+        fi
+        # 200 ended, dropped connection, low-speed timeout, empty reply, or 5xx: reconnect
+        if [ "$code" = 200 ] || [ "${code:-0}" -ge 500 ] 2>/dev/null || \
+           [ "$curl_rc" = 18 ] || [ "$curl_rc" = 56 ] || [ "$curl_rc" = 28 ] || [ "$curl_rc" = 52 ]; then
+            sleep "$delay"
+            delay=$(( delay * 2 )); [ "$delay" -gt 30 ] && delay=30
+            reconnect=1
+            continue
+        fi
+        if [ "$curl_rc" != 0 ]; then
+            echo "Error: Stream error: curl exit $curl_rc" >&2
+            rm -rf "$tmp"; trap - INT
+            return 1
+        fi
+        break
+    done
+    rm -rf "$tmp"; trap - INT
+    _write_log_cursor
+    echo "" >&2; echo "Stream stopped." >&2
+    return 0
+}
+
+_paas_logs_help() {
+    cat >&2 << EOF
+Usage: $0 paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  $0 paas logs                             # last 100 lines from all sources
+  $0 paas logs --api --lines 500           # last 500 API log lines
+  $0 paas logs --portal --grep error       # portal logs matching 'error'
+  $0 paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  $0 paas logs -l warning                  # warnings and above from all sources
+  $0 paas logs --follow                    # follow all logs in real-time
+  $0 paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled.
+EOF
+}
+
+_clamp_lines() {
+    local n=0
+    if [[ "$1" =~ ^[[:space:]]*(-?)([0-9]{1,9}) ]]; then
+        n=$((10#${BASH_REMATCH[2]}))
+        [ -n "${BASH_REMATCH[1]}" ] && n=$((-n))
+    fi
+    [ "$n" -lt 1 ] && n=1
+    [ "$n" -gt 10000 ] && n=10000
+    printf '%s' "$n"
+}
+
+cmd_paas() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: $0 paas <command> [options]" >&2
+        echo "" >&2
+        echo "Commands:" >&2
+        echo "  logs    Fetch or stream production logs" >&2
+        echo "" >&2
+        echo "Run '$0 paas <command> -h' for help on a specific command." >&2
+        return 1
+    fi
+    if [ "$1" != "logs" ]; then
+        echo "Error: Unknown paas command '$1'" >&2
+        echo "Run '$0 paas' for available commands." >&2
+        return 1
+    fi
+    shift
+    cmd_paas_logs "$@"
+}
+
+cmd_paas_logs() {
+    local source="all" lines=100 since="" since_explicit=0 grep_pattern="" level="" follow=0 json=0 help=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -p) [ $# -ge 2 ] && { PUBLIC_KEY="$2"; shift; } ;;
+            -k) [ $# -ge 2 ] && { SECRET_KEY="$2"; shift; } ;;
+            --account) [ $# -ge 2 ] && { ACCOUNT_INDEX="$2"; shift; } ;;
+            --source) [ $# -ge 2 ] && { source="$2"; shift; } ;;
+            --all) source="all" ;;
+            --api) source="api" ;;
+            --portal) source="portal" ;;
+            --pool) [ $# -ge 2 ] && { source="pool/$2"; shift; } ;;
+            --lines|-n) [ $# -ge 2 ] && { lines=$(_clamp_lines "$2"); shift; } ;;
+            --since) [ $# -ge 2 ] && { since="$2"; since_explicit=1; shift; } ;;
+            --grep) [ $# -ge 2 ] && { grep_pattern="$2"; shift; } ;;
+            --level|-l) [ $# -ge 2 ] && { level="$2"; shift; } ;;
+            --follow|-f) follow=1 ;;
+            --json) json=1 ;;
+            -h|--help) help=1 ;;
+        esac
+        shift
+    done
+    if [ "$help" -eq 1 ]; then _paas_logs_help; return 0; fi
+
+    local creds
+    creds=$(get_credentials 2>/dev/null || true)
+    if [ -z "${creds%%:*}" ]; then
+        echo "Error: API credentials required." >&2
+        echo "  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or" >&2
+        echo "  Use -p PUBLIC_KEY -k SECRET_KEY flags, or" >&2
+        echo "  Create ~/.unsandbox/accounts.csv with: public_key,secret_key" >&2
+        return 1
+    fi
+    if [ "$since_explicit" -eq 0 ]; then
+        since=$(_read_log_cursor) || since="5m"
+    fi
+
+    if [ "$follow" -eq 1 ]; then
+        logs_stream "$source" "$grep_pattern" "$level"
+        return
+    fi
+
+    local path query="" tmp code err
+    path=$(_logs_source_path "$source")
+    _logs_q query lines "$lines"; _logs_q query since "$since"
+    _logs_q query grep "$grep_pattern"; _logs_q query level "$level"
+    tmp=$(umask 077; mktemp -d) || return 1
+    if ! _portal_get "$path" "$query" "$tmp/body" "$tmp/hdr"; then
+        echo "Error: Network error fetching logs" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    code=$(_http_status "$tmp/hdr")
+    if [ "$code" = 000 ]; then
+        echo "Error: Network error fetching logs" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    if [ "$code" != 200 ]; then
+        err=$(jq -r '.error // empty' "$tmp/body" 2>/dev/null || true)
+        echo "Error: HTTP $code${err:+ — $err}" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    _write_log_cursor
+    if [ "$json" -eq 1 ]; then
+        cat "$tmp/body"; echo
+        rm -rf "$tmp"; return 0
+    fi
+    if ! jq -e '.lines | type == "array"' "$tmp/body" >/dev/null 2>&1; then
+        echo "Error: Invalid response format" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    if jq -e 'has("sources")' "$tmp/body" >/dev/null 2>&1; then
+        jq -r '.lines[] | select(type == "object") | (.source // "") as $s
+            | if $s != "" then "\u001b[36m" + $s + (" " * ([12 - ($s|length), 0] | max)) + "\u001b[0m " + (.line // "")
+              else (.line // "") end' "$tmp/body"
+    else
+        jq -r '.lines[] | if type == "string" then . else tostring end' "$tmp/body"
+    fi
+    rm -rf "$tmp"
+    return 0
 }
 
 # ============================================================================
@@ -1426,6 +1708,7 @@ Commands:
   service       Manage persistent services
   snapshot      Manage snapshots
   image         Manage images
+  paas logs     Fetch or stream platform logs (partner keys; see paas logs -h)
 
 Session options:
   --list        List all sessions
@@ -1526,6 +1809,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         image)
             shift
             cmd_image "$@"
+            ;;
+        paas)
+            shift
+            cmd_paas "$@"
             ;;
         -s)
             lang="$2"

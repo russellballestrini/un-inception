@@ -48,7 +48,9 @@ BEGIN {
     API_BASE = ENVIRON["UNSANDBOX_API_URL"]
     if (API_BASE == "") API_BASE = "https://api.unsandbox.com"
     sub(/\/+$/, "", API_BASE)
-    PORTAL_BASE = "https://unsandbox.com"
+    PORTAL_BASE = ENVIRON["UNSANDBOX_PORTAL_URL"]
+    if (PORTAL_BASE == "") PORTAL_BASE = "https://unsandbox.com"
+    sub(/\/+$/, "", PORTAL_BASE)
     LANGUAGES_CACHE_TTL = 3600  # 1 hour cache TTL
     LANGUAGES_CACHE_FILE = ENVIRON["HOME"] "/.unsandbox/languages.json"
     LAST_ERROR = ""
@@ -2080,41 +2082,353 @@ function get_languages(json_output) {
 # PaaS Logs Functions (2)
 # ============================================================================
 
-function logs_fetch(source, lines, since, grep_pattern    , timestamp, sig_headers, signature, sig_input, sig_cmd, json, tmp, line, response) {
-    get_api_keys()
-    if (source == "") source = "all"
-    if (lines == "") lines = 100
-    if (since == "") since = "1h"
-
-    json = "{\"source\":\"" source "\",\"lines\":" lines ",\"since\":\"" since "\""
-    if (grep_pattern != "") {
-        json = json ",\"grep\":\"" escape_json(grep_pattern) "\""
+# Percent-encode one query value (RFC 3986 unreserved characters pass through).
+function urlenc(s    , out, i, c, n, cmd, hex, h, k) {
+    if (!("a" in ORD)) for (i = 1; i < 128; i++) ORD[sprintf("%c", i)] = i
+    if (s ~ /^[\001-\177]*$/) {
+        out = ""; n = length(s)
+        for (i = 1; i <= n; i++) {
+            c = substr(s, i, 1)
+            if (c ~ /[A-Za-z0-9._~-]/) out = out c
+            else out = out sprintf("%%%02X", ORD[c])
+        }
+        return out
     }
-    json = json "}"
-
-    tmp = body_file(json)
-
-    timestamp = systime()
-    sig_headers = ""
-    if (GLOBAL_SECRET_KEY != "") {
-        sig_input = timestamp ":POST:/paas/logs:" json
-        signature = hmac_sign_stdin(GLOBAL_SECRET_KEY, sig_input)
-        sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
-    }
-    cmd = "curl -s -X POST '" API_BASE "/paas/logs' -H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' -H 'Content-Type: application/json' " sig_headers "--data-binary @" shq(tmp)
-    response = ""
-    while ((cmd | getline line) > 0) {
-        response = response line
-    }
+    # Non-ASCII: let od hand back the raw bytes; the value travels on stdin only.
+    cmd = "od -An -tx1 -v"
+    printf "%s", s |& cmd
+    close(cmd, "to")
+    hex = ""
+    while ((cmd |& getline h) > 0) hex = hex " " h
     close(cmd)
-    body_rm(tmp)
-    print response
+    out = ""; n = split(hex, k, /[ \t]+/)
+    for (i = 1; i <= n; i++) {
+        if (k[i] == "") continue
+        c = strtonum("0x" k[i])
+        if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 46 || c == 95 || c == 126)
+            out = out sprintf("%c", c)
+        else out = out "%" toupper(k[i])
+    }
+    return out
 }
 
-function logs_stream() {
-    set_error("logs_stream requires async support")
-    print RED "Error: logs_stream requires async support" RESET > "/dev/stderr"
-    exit 1
+function logs_q(q, key, val) {
+    if (val == "") return q
+    return q (q == "" ? "" : "&") key "=" urlenc(val)
+}
+
+# Read a JSON string whose opening quote sits at s[pos]; returns the raw
+# (still escaped) text and leaves JPOS just past the closing quote.
+function json_str_at(s, pos    , i, n, c) {
+    n = length(s)
+    for (i = pos + 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "\"") break
+    }
+    JPOS = i + 1
+    return substr(s, pos + 1, i - pos - 1)
+}
+
+# Print the "lines" array of a portal /logs response the way the C client does:
+# strings as is; {"source","line"} objects as "%-12s %s". Returns 0 when found.
+function logs_print_lines(s    , p, n, c, depth, key, val, src, ln, expect_key) {
+    p = index(s, "\"lines\":")
+    if (!p) return 1
+    p += 8; n = length(s)
+    while (p <= n && substr(s, p, 1) ~ /[ \t\r\n]/) p++
+    if (substr(s, p, 1) != "[") return 1
+    p++
+    while (p <= n) {
+        c = substr(s, p, 1)
+        if (c == "]") return 0
+        if (c == "\"") {
+            print json_unescape(json_str_at(s, p)); p = JPOS; continue
+        }
+        if (c == "{") {
+            src = ""; ln = ""; key = ""; expect_key = 1; p++
+            while (p <= n) {
+                c = substr(s, p, 1)
+                if (c == "}") { p++; break }
+                if (c == "\"") {
+                    val = json_str_at(s, p); p = JPOS
+                    if (expect_key) key = val
+                    else if (key == "source") src = json_unescape(val)
+                    else if (key == "line") ln = json_unescape(val)
+                    continue
+                }
+                if (c == ":") expect_key = 0
+                else if (c == ",") expect_key = 1
+                p++
+            }
+            if (src != "") logs_row(src, ln)
+            else print ln
+            continue
+        }
+        p++
+    }
+    return 1
+}
+
+function logs_row(src, ln) {
+    printf "\033[36m%-12s\033[0m %s\n", src, ln
+    fflush()
+}
+
+# Signed portal GET command line (public key + signature only; HMAC over the
+# path, "ts:GET:/logs/api:"). Writes the response head to hdr.
+function portal_get_cmd(path, query, hdr, extra    , ts, sig, sig_headers, url) {
+    get_api_keys()
+    ts = systime(); sig_headers = ""
+    if (GLOBAL_SECRET_KEY != "") {
+        sig = hmac_sign_stdin(GLOBAL_SECRET_KEY, ts ":GET:" path ":")
+        sig_headers = "-H 'X-Timestamp: " ts "' -H 'X-Signature: " sig "' "
+    }
+    url = PORTAL_BASE path (query != "" ? "?" query : "")
+    return "curl -s " extra " -D " shq(hdr) " -X GET " shq(url) " -H " shq("Authorization: Bearer " GLOBAL_PUBLIC_KEY) " " sig_headers
+}
+
+function http_status(hdr    , line, code, a) {
+    code = "000"
+    if ((getline line < hdr) > 0 && match(line, /^HTTP\/[0-9.]+ ([0-9]+)/, a)) code = a[1]
+    close(hdr)
+    return code
+}
+
+function read_file(f    , line, out, first) {
+    out = ""; first = 1
+    while ((getline line < f) > 0) { out = out (first ? "" : "\n") line; first = 0 }
+    close(f)
+    return out
+}
+
+function private_dir(    cmd, dir) {
+    cmd = "umask 077 && mktemp -d \"${TMPDIR:-/tmp}/un_awk.XXXXXXXX\""
+    dir = ""
+    cmd | getline dir
+    close(cmd)
+    if (dir == "") {
+        print RED "Error: cannot create temp dir" RESET > "/dev/stderr"
+        exit 1
+    }
+    return dir
+}
+
+function log_cursor_path() { return ENVIRON["HOME"] "/.unsandbox/paas_log_cursor" }
+
+function read_log_cursor(    f, ts, ago) {
+    f = log_cursor_path(); ts = ""
+    if ((getline ts < f) <= 0) { close(f); return "" }
+    close(f)
+    if (ts !~ /^[0-9]+$/ || ts + 0 <= 0) return ""
+    ago = systime() - ts
+    if (ago < 5) ago = 5
+    return ago "s"
+}
+
+function write_log_cursor(    d, f) {
+    d = ENVIRON["HOME"] "/.unsandbox"
+    system("mkdir -p " shq(d) " && chmod 700 " shq(d))
+    f = log_cursor_path()
+    print systime() > f
+    close(f)
+}
+
+# Library: GET /logs/{source}; prints the JSON body. Returns the HTTP status.
+function logs_fetch(source, lines, since, grep_pattern, level    , path, q, dir, cmd, code, body) {
+    if (source == "") source = "all"
+    if (lines == "") lines = 100
+    if (since == "") since = "5m"
+    path = "/logs/" source
+    q = logs_q("", "lines", lines); q = logs_q(q, "since", since)
+    q = logs_q(q, "grep", grep_pattern); q = logs_q(q, "level", level)
+    dir = private_dir()
+    cmd = portal_get_cmd(path, q, dir "/hdr", "-o " shq(dir "/body"))
+    system(cmd)
+    code = http_status(dir "/hdr")
+    body = read_file(dir "/body")
+    system("rm -rf " shq(dir))
+    LOGS_BODY = body
+    if (code != "200") set_error("HTTP " code " " json_string_field(body, "error"))
+    print body
+    return code
+}
+
+# CLI: `paas logs` batch fetch, same output as the C client. Returns exit code.
+function paas_logs_fetch(source, lines, since, grep_pattern, level, json_output    , path, q, dir, cmd, code, body, err) {
+    path = "/logs/" source
+    q = logs_q("", "lines", lines); q = logs_q(q, "since", since)
+    q = logs_q(q, "grep", grep_pattern); q = logs_q(q, "level", level)
+    dir = private_dir()
+    cmd = portal_get_cmd(path, q, dir "/hdr", "-o " shq(dir "/body"))
+    system(cmd)
+    code = http_status(dir "/hdr")
+    body = read_file(dir "/body")
+    system("rm -rf " shq(dir))
+    if (code == "000") {
+        print "Error: Network error fetching logs" > "/dev/stderr"
+        return 1
+    }
+    if (code != "200") {
+        err = json_unescape(json_string_field(body, "error"))
+        printf "Error: HTTP %s%s\n", code, (err != "" ? " — " err : "") > "/dev/stderr"
+        return 1
+    }
+    write_log_cursor()
+    if (json_output) { print body; return 0 }
+    if (logs_print_lines(body) != 0) {
+        print "Error: Invalid response format" > "/dev/stderr"
+        return 1
+    }
+    return 0
+}
+
+# Library + CLI: stream /logs/{source}/stream (SSE), reconnecting like the C
+# client (2 s backoff doubling to 30 s, since=<gap>s). Returns exit code.
+function logs_stream(source, grep_pattern, level    , path, base_q, q, dir, cmd, line, payload, src, ln, code, rc, delay, reconnect, last, gap, started) {
+    if (source == "") source = "all"
+    path = "/logs/" source "/stream"
+    base_q = logs_q("", "grep", grep_pattern); base_q = logs_q(base_q, "level", level)
+    dir = private_dir()
+    print "Streaming " source " logs... (Ctrl+C to stop)" > "/dev/stderr"
+    delay = 2; reconnect = 0; last = 0
+    while (1) {
+        q = base_q
+        if (reconnect && last > 0) {
+            gap = systime() - last + 5
+            if (gap < 10) gap = 10
+            q = logs_q(q, "since", gap "s")
+        }
+        system(": > " shq(dir "/hdr"))
+        cmd = portal_get_cmd(path, q, dir "/hdr", "-N --http1.1 -y 120 -Y 1 -H 'Accept: text/event-stream'")
+        started = systime()
+        while ((cmd | getline line) > 0) {
+            sub(/\r$/, "", line)
+            if (substr(line, 1, 6) != "data: ") continue
+            payload = substr(line, 7)
+            if (payload == ":keepalive") continue
+            last = systime()
+            if (payload ~ /^[ \t]*\{/) {
+                if (payload !~ /"line"[ \t]*:/) continue
+                src = json_unescape(json_string_raw(payload, "source"))
+                ln = json_unescape(json_string_raw(payload, "line"))
+                if (src != "") logs_row(src, ln)
+                else { print ln; fflush() }
+            } else { print payload; fflush() }
+        }
+        rc = close(cmd)
+        code = http_status(dir "/hdr")
+        if (systime() - started > 30) delay = 2
+        if (code == "401" || code == "403") {
+            print "Error: HTTP " code " (auth failed)" > "/dev/stderr"
+            system("rm -rf " shq(dir))
+            return 1
+        }
+        if (code == "200" || code + 0 >= 500 || rc == 18 || rc == 56 || rc == 28 || rc == 52) {
+            system("sleep " delay)
+            delay *= 2; if (delay > 30) delay = 30
+            reconnect = 1
+            continue
+        }
+        if (rc != 0) {
+            print "Error: Stream error: curl exit " rc > "/dev/stderr"
+            system("rm -rf " shq(dir))
+            return 1
+        }
+        break
+    }
+    system("rm -rf " shq(dir))
+    write_log_cursor()
+    print "\nStream stopped." > "/dev/stderr"
+    return 0
+}
+
+# Raw (still escaped) JSON string value of key in a flat object.
+function json_string_raw(s, key    , p) {
+    p = index(s, "\"" key "\"")
+    if (!p) return ""
+    p += length(key) + 2
+    while (substr(s, p, 1) ~ /[ \t:]/) p++
+    if (substr(s, p, 1) != "\"") return ""
+    return json_str_at(s, p)
+}
+
+function paas_logs_help(    p) {
+    p = "awk -f un.awk"
+    print "Usage: " p " paas logs [options]\n" > "/dev/stderr"
+    print "Fetch or stream PaaS production logs.\n" > "/dev/stderr"
+    print "Sources:" > "/dev/stderr"
+    print "  --all              All sources (default)" > "/dev/stderr"
+    print "  --api              API server logs" > "/dev/stderr"
+    print "  --portal           Portal server logs" > "/dev/stderr"
+    print "  --pool NODE        Pool node logs (e.g., cammy, ai)" > "/dev/stderr"
+    print "  --source SOURCE    Source string (api, portal, pool/cammy, all)" > "/dev/stderr"
+    print "\nOptions:" > "/dev/stderr"
+    print "  --lines N, -n N    Number of lines (default: 100, max: 10000)" > "/dev/stderr"
+    print "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)" > "/dev/stderr"
+    print "  --grep PATTERN     Filter log lines by pattern" > "/dev/stderr"
+    print "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit" > "/dev/stderr"
+    print "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)" > "/dev/stderr"
+    print "  --json             Output raw JSON response" > "/dev/stderr"
+    print "  -p KEY             Public key" > "/dev/stderr"
+    print "  -k KEY             Secret key" > "/dev/stderr"
+    print "  -h                 Show this help" > "/dev/stderr"
+    print "\nExamples:" > "/dev/stderr"
+    print "  " p " paas logs                             # last 100 lines from all sources" > "/dev/stderr"
+    print "  " p " paas logs --api --lines 500           # last 500 API log lines" > "/dev/stderr"
+    print "  " p " paas logs --portal --grep error       # portal logs matching 'error'" > "/dev/stderr"
+    print "  " p " paas logs --pool cammy --since 1h     # cammy pool logs from last hour" > "/dev/stderr"
+    print "  " p " paas logs -l warning                  # warnings and above from all sources" > "/dev/stderr"
+    print "  " p " paas logs --follow                    # follow all logs in real-time" > "/dev/stderr"
+    print "  " p " paas logs --follow -l warning         # follow warnings+ in real-time" > "/dev/stderr"
+    print "\nRequires a partner API key with log access enabled." > "/dev/stderr"
+}
+
+function clamp_lines(v    , n) {
+    n = (v ~ /^[ \t]*[-+]?[0-9]/) ? int(v + 0) : 0
+    if (n < 1) n = 1
+    if (n > 10000) n = 10000
+    return n
+}
+
+function cmd_paas(    i, source, lines, since, since_explicit, grep_pattern, level, follow, json_output, help) {
+    if (ARGC < 3) {
+        print "Usage: awk -f un.awk paas <command> [options]\n" > "/dev/stderr"
+        print "Commands:" > "/dev/stderr"
+        print "  logs    Fetch or stream production logs" > "/dev/stderr"
+        print "\nRun 'awk -f un.awk paas <command> -h' for help on a specific command." > "/dev/stderr"
+        return 1
+    }
+    if (ARGV[2] != "logs") {
+        print "Error: Unknown paas command '" ARGV[2] "'" > "/dev/stderr"
+        print "Run 'awk -f un.awk paas' for available commands." > "/dev/stderr"
+        return 1
+    }
+    source = "all"; lines = 100; since = ""; since_explicit = 0; grep_pattern = ""; level = ""
+    follow = 0; json_output = 0; help = 0
+    for (i = 3; i < ARGC; i++) {
+        if ((ARGV[i] == "-p" || ARGV[i] == "-k" || ARGV[i] == "--account") && i + 1 < ARGC) i++
+        else if (ARGV[i] == "--source" && i + 1 < ARGC) source = ARGV[++i]
+        else if (ARGV[i] == "--all") source = "all"
+        else if (ARGV[i] == "--api") source = "api"
+        else if (ARGV[i] == "--portal") source = "portal"
+        else if (ARGV[i] == "--pool" && i + 1 < ARGC) source = "pool/" ARGV[++i]
+        else if ((ARGV[i] == "--lines" || ARGV[i] == "-n") && i + 1 < ARGC) lines = clamp_lines(ARGV[++i])
+        else if (ARGV[i] == "--since" && i + 1 < ARGC) { since = ARGV[++i]; since_explicit = 1 }
+        else if (ARGV[i] == "--grep" && i + 1 < ARGC) grep_pattern = ARGV[++i]
+        else if ((ARGV[i] == "--level" || ARGV[i] == "-l") && i + 1 < ARGC) level = ARGV[++i]
+        else if (ARGV[i] == "--follow" || ARGV[i] == "-f") follow = 1
+        else if (ARGV[i] == "--json") json_output = 1
+        else if (ARGV[i] == "-h" || ARGV[i] == "--help") help = 1
+    }
+    if (help) { paas_logs_help(); return 0 }
+    get_api_keys()
+    if (!since_explicit) {
+        since = read_log_cursor()
+        if (since == "") since = "5m"
+    }
+    if (follow) return logs_stream(source, grep_pattern, level)
+    return paas_logs_fetch(source, lines, since, grep_pattern, level, json_output)
 }
 
 function session_snapshot(id, name, hot    , endpoint, json, tmp, timestamp, sig_headers, signature, sig_input, sig_cmd, line, response) {
@@ -2593,6 +2907,10 @@ END {
             session_create(shell, network, vcpu, input_files)
         }
         exit 0
+    }
+
+    if (ARGV[1] == "paas") {
+        exit cmd_paas()
     }
 
     if (ARGV[1] == "key") {

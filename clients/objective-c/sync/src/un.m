@@ -92,7 +92,18 @@ static NSString* UNApiBase(void) {
     return base;
 }
 #define UN_API_BASE UNApiBase()
-static NSString* const UN_PORTAL_BASE = @"https://unsandbox.com";
+// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)
+static NSString* UNPortalBase(void) {
+    static NSString* base = nil;
+    if (!base) {
+        NSString* env = [[[NSProcessInfo processInfo] environment] objectForKey:@"UNSANDBOX_PORTAL_URL"];
+        NSString* b = ([env length] > 0) ? env : @"https://unsandbox.com";
+        while ([b hasSuffix:@"/"]) b = [b substringToIndex:[b length] - 1];
+        base = [b copy];
+    }
+    return base;
+}
+#define UN_PORTAL_BASE UNPortalBase()
 static const NSInteger UN_DEFAULT_TIMEOUT = 300;
 static const NSInteger UN_DEFAULT_TTL = 60;
 static const NSInteger UN_LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
@@ -2457,141 +2468,255 @@ void cmdSnapshot(NSArray* args) {
 // Logs Command
 // ============================================================================
 
-void cmdLogs(NSArray* args) {
-    NSString* publicKey, *secretKey;
-    UNGetApiKeysCLI(&publicKey, &secretKey);
+// un paas logs: portal GET /logs/{source}[/stream] (partner log access).
+// HMAC signs the path only ("ts:GET:/logs/{source}:"), as the portal verifies conn.request_path.
 
-    NSString* source = @"all";
-    NSInteger lines = 100;
-    NSString* since = @"1h";
-    NSString* grepPattern = nil;
-    BOOL follow = NO;
+static NSString* UNPaasEncode(NSString* v) {
+    NSCharacterSet* ok = [NSCharacterSet characterSetWithCharactersInString:
+        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"];
+    return [v stringByAddingPercentEncodingWithAllowedCharacters:ok] ?: v;
+}
 
-    for (NSUInteger i = 0; i < [args count]; i++) {
-        NSString* arg = args[i];
-        if (([arg isEqualToString:@"--source"] || [arg isEqualToString:@"-s"]) && i + 1 < [args count]) {
-            source = args[++i];
-        } else if (([arg isEqualToString:@"--lines"] || [arg isEqualToString:@"-n"]) && i + 1 < [args count]) {
-            lines = [args[++i] integerValue];
-        } else if ([arg isEqualToString:@"--since"] && i + 1 < [args count]) {
-            since = args[++i];
-        } else if (([arg isEqualToString:@"--grep"] || [arg isEqualToString:@"-g"]) && i + 1 < [args count]) {
-            grepPattern = args[++i];
-        } else if ([arg isEqualToString:@"--follow"] || [arg isEqualToString:@"-f"]) {
-            follow = YES;
-        }
-    }
+static NSString* UNPaasQuery(NSInteger lines, NSString* since, NSString* grep, NSString* level) {
+    NSMutableArray* parts = [NSMutableArray array];
+    if (lines > 0) [parts addObject:[NSString stringWithFormat:@"lines=%ld", (long)lines]];
+    if ([since length] > 0) [parts addObject:[@"since=" stringByAppendingString:UNPaasEncode(since)]];
+    if ([grep length] > 0) [parts addObject:[@"grep=" stringByAppendingString:UNPaasEncode(grep)]];
+    if ([level length] > 0) [parts addObject:[@"level=" stringByAppendingString:UNPaasEncode(level)]];
+    return [parts count] ? [@"?" stringByAppendingString:[parts componentsJoinedByString:@"&"]] : @"";
+}
 
-    if (follow) {
-        // Streaming logs via SSE
-        NSMutableString* endpoint = [NSMutableString stringWithFormat:@"/paas/logs/stream?source=%@", source];
-        if (grepPattern) {
-            NSString* encoded = [grepPattern stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-            [endpoint appendFormat:@"&grep=%@", encoded];
-        }
-
-        NSString* urlStr = [NSString stringWithFormat:@"%@%@", UN_PORTAL_BASE, endpoint];
-        NSURL* url = [NSURL URLWithString:urlStr];
-        NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
-        request.HTTPMethod = @"GET";
-        [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
-
-        // Add HMAC authentication headers
-        if (secretKey && [secretKey length] > 0) {
-            NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
-            NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
-            NSString* signature = UNHmacSha256Hex(secretKey, message);
-            [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
-            [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
-            [request setValue:signature forHTTPHeaderField:@"X-Signature"];
-        } else {
-            [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
-        }
-
-        printf("Streaming logs (Ctrl+C to stop)...\n");
-
-        // Use synchronous download for SSE - will block
-        dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-        __block NSData* responseData = nil;
-
-        NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
-            completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-                responseData = data;
-                dispatch_semaphore_signal(semaphore);
-            }];
-        [task resume];
-
-        // For SSE, we need to handle streaming differently - just show we attempted
-        // Real SSE would need a custom NSURLSession delegate
-        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-
-        if (responseData) {
-            NSString* output = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
-            printf("%s\n", [output UTF8String]);
-        }
-        return;
-    }
-
-    // Fetch logs
-    NSMutableString* endpoint = [NSMutableString stringWithFormat:@"/paas/logs?source=%@&lines=%ld&since=%@",
-                                  source, (long)lines, since];
-    if (grepPattern) {
-        NSString* encoded = [grepPattern stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-        [endpoint appendFormat:@"&grep=%@", encoded];
-    }
-
-    // Call Portal API for logs
-    NSString* urlStr = [NSString stringWithFormat:@"%@%@", UN_PORTAL_BASE, endpoint];
-    NSURL* url = [NSURL URLWithString:urlStr];
+static NSMutableURLRequest* UNPaasRequest(NSString* path, NSString* query, NSString* publicKey, NSString* secretKey) {
+    NSURL* url = [NSURL URLWithString:[NSString stringWithFormat:@"%@%@%@", UN_PORTAL_BASE, path, query]];
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"GET";
-    [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+    [request setValue:UNComputeSignature(secretKey ?: @"", timestamp, @"GET", path, @"") forHTTPHeaderField:@"X-Signature"];
+    return request;
+}
 
-    // Add HMAC authentication headers
-    if (secretKey && [secretKey length] > 0) {
-        NSString* timestamp = [NSString stringWithFormat:@"%ld", (long)[[NSDate date] timeIntervalSince1970]];
-        NSString* message = [NSString stringWithFormat:@"%@:GET:%@:", timestamp, endpoint];
-        NSString* signature = UNHmacSha256Hex(secretKey, message);
-        [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
-        [request setValue:timestamp forHTTPHeaderField:@"X-Timestamp"];
-        [request setValue:signature forHTTPHeaderField:@"X-Signature"];
-    } else {
-        [request setValue:[NSString stringWithFormat:@"Bearer %@", publicKey] forHTTPHeaderField:@"Authorization"];
-    }
+static NSString* UNPaasCursorPath(void) {
+    NSString* home = [[[NSProcessInfo processInfo] environment] objectForKey:@"HOME"];
+    return [home length] ? [home stringByAppendingPathComponent:@".unsandbox/paas_log_cursor"] : nil;
+}
 
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    __block NSDictionary* responseData = nil;
-    __block NSInteger statusCode = 0;
+static NSString* UNPaasCursorRead(void) {
+    NSString* p = UNPaasCursorPath();
+    NSString* txt = p ? [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil] : nil;
+    long ts = txt ? atol([txt UTF8String]) : 0;
+    if (ts <= 0) return nil;
+    long ago = (long)[[NSDate date] timeIntervalSince1970] - ts;
+    return [NSString stringWithFormat:@"%lds", ago < 5 ? 5L : ago];
+}
 
-    NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithRequest:request
-        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-            NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
-            statusCode = httpResponse.statusCode;
-            if (data) {
-                responseData = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+static void UNPaasCursorWrite(void) {
+    NSString* p = UNPaasCursorPath();
+    if (!p) return;
+    mkdir([[p stringByDeletingLastPathComponent] fileSystemRepresentation], 0700);
+    NSString* now = [NSString stringWithFormat:@"%ld\n", (long)[[NSDate date] timeIntervalSince1970]];
+    [now writeToFile:p atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
+static void UNPaasTagged(NSString* src, NSString* line) {
+    printf("\033[36m%-12s\033[0m %s\n", [src UTF8String], [line UTF8String]);
+    fflush(stdout);
+}
+
+@interface UNPaasSSEDelegate : NSObject <NSURLSessionDataDelegate>
+@property (nonatomic) NSInteger status;
+@property (nonatomic) BOOL failed;
+@property (nonatomic, strong) NSDate* lastRecv;
+@property (nonatomic, strong) NSMutableData* buf;
+@property (nonatomic) dispatch_semaphore_t done;
+@end
+
+@implementation UNPaasSSEDelegate
+- (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)dataTask
+    didReceiveResponse:(NSURLResponse*)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    self.status = [(NSHTTPURLResponse*)response statusCode];
+    completionHandler(NSURLSessionResponseAllow);
+}
+- (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)dataTask didReceiveData:(NSData*)data {
+    if (self.status != 200) return;
+    if (!self.buf) self.buf = [NSMutableData data];
+    [self.buf appendData:data];
+    NSData* sep = [@"\n\n" dataUsingEncoding:NSUTF8StringEncoding];
+    while (1) {
+        NSRange r = [self.buf rangeOfData:sep options:0 range:NSMakeRange(0, [self.buf length])];
+        if (r.location == NSNotFound) break;
+        NSString* ev = [[NSString alloc] initWithData:[self.buf subdataWithRange:NSMakeRange(0, r.location)] encoding:NSUTF8StringEncoding];
+        [self.buf replaceBytesInRange:NSMakeRange(0, r.location + r.length) withBytes:NULL length:0];
+        for (NSString* line in [ev componentsSeparatedByString:@"\n"]) {
+            if (![line hasPrefix:@"data: "]) continue;
+            NSString* payload = [line substringFromIndex:6];
+            if ([payload isEqualToString:@":keepalive"]) continue;
+            self.lastRecv = [NSDate date];
+            id obj = [NSJSONSerialization JSONObjectWithData:[payload dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            if ([obj isKindOfClass:[NSDictionary class]]) {
+                NSString* l = obj[@"line"]; NSString* src = obj[@"source"];
+                if ([l isKindOfClass:[NSString class]]) {
+                    if ([src isKindOfClass:[NSString class]]) UNPaasTagged(src, l);
+                    else { printf("%s\n", [l UTF8String]); fflush(stdout); }
+                }
+            } else {
+                printf("%s\n", [payload UTF8String]); fflush(stdout);
             }
-            dispatch_semaphore_signal(semaphore);
-        }];
-    [task resume];
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-
-    if (statusCode == 200 && responseData) {
-        NSArray* logLines = responseData[@"logs"];
-        if (logLines && [logLines isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* entry in logLines) {
-                NSString* src = entry[@"source"] ?: @"unknown";
-                NSString* msg = entry[@"line"] ?: @"";
-                printf("[%s] %s\n", [src UTF8String], [msg UTF8String]);
-            }
-        } else {
-            NSData* jsonData = [NSJSONSerialization dataWithJSONObject:responseData options:NSJSONWritingPrettyPrinted error:nil];
-            NSString* jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-            printf("%s\n", [jsonString UTF8String]);
         }
-    } else {
-        fprintf(stderr, "%sError: HTTP %ld%s\n", [RED UTF8String], (long)statusCode, [RESET UTF8String]);
-        exit(1);
     }
+}
+- (void)URLSession:(NSURLSession*)session task:(NSURLSessionTask*)task didCompleteWithError:(NSError*)error {
+    if (error) self.failed = YES;
+    dispatch_semaphore_signal(self.done);
+}
+@end
+
+static int UNPaasStream(NSString* source, NSString* grep, NSString* level, NSString* publicKey, NSString* secretKey) {
+    NSString* path = [NSString stringWithFormat:@"/logs/%@/stream", source];
+    fprintf(stderr, "Streaming %s logs... (Ctrl+C to stop)\n", [source UTF8String]);
+    unsigned delay = 2;
+    BOOL reconnect = NO;
+    NSDate* lastRecv = nil;
+    while (1) {
+        NSString* since = nil;
+        if (reconnect && lastRecv) {
+            long gap = (long)(-[lastRecv timeIntervalSinceNow]) + 5;
+            since = [NSString stringWithFormat:@"%lds", gap < 10 ? 10L : gap];
+        }
+        // Fresh HMAC headers each connection (timestamps expire)
+        NSMutableURLRequest* request = UNPaasRequest(path, UNPaasQuery(0, since, grep, level), publicKey, secretKey);
+        [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
+        request.timeoutInterval = 120;
+        UNPaasSSEDelegate* d = [[UNPaasSSEDelegate alloc] init];
+        d.done = dispatch_semaphore_create(0);
+        d.lastRecv = lastRecv;
+        NSURLSession* session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]
+                                                              delegate:d delegateQueue:nil];
+        NSDate* started = [NSDate date];
+        [[session dataTaskWithRequest:request] resume];
+        dispatch_semaphore_wait(d.done, DISPATCH_TIME_FOREVER);
+        [session finishTasksAndInvalidate];
+        lastRecv = d.lastRecv;
+        if (-[started timeIntervalSinceNow] > 30) delay = 2;
+        NSInteger st = d.status;
+        if (st == 401 || st == 403) {
+            fprintf(stderr, "Error: HTTP %ld (auth failed)\n", (long)st);
+            return 1;
+        }
+        if (st == 200 || st == 0 || st >= 500) {
+            sleep(delay);
+            delay = delay * 2 > 30 ? 30 : delay * 2;
+            reconnect = YES;
+            continue;
+        }
+        fprintf(stderr, "Error: HTTP %ld\n", (long)st);
+        return 1;
+    }
+}
+
+static void UNPaasHelp(void) {
+    fprintf(stderr,
+        "Usage: un paas logs [options]\n\n"
+        "Fetch or stream PaaS production logs.\n\n"
+        "Sources:\n"
+        "  --all              All sources (default)\n"
+        "  --api              API server logs\n"
+        "  --portal           Portal server logs\n"
+        "  --pool NODE        Pool node logs (e.g., cammy, ai)\n"
+        "  --source SOURCE    Source string (api, portal, pool/cammy, all)\n\n"
+        "Options:\n"
+        "  --lines N, -n N    Number of lines (default: 100, max: 10000)\n"
+        "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)\n"
+        "  --grep PATTERN     Filter log lines by pattern\n"
+        "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit\n"
+        "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)\n"
+        "  --json             Output raw JSON response\n"
+        "  -p KEY             Public key\n"
+        "  -k KEY             Secret key\n"
+        "  -h                 Show this help\n\n"
+        "Requires a partner API key with log access enabled.\n");
+}
+
+/** `un paas logs [options]` (also reached as the older `un logs`). Returns the exit code. */
+int cmdPaasLogs(NSArray* args) {
+    NSString* source = @"all";
+    NSInteger lines = 100;
+    NSString *since = nil, *grepPattern = nil, *level = nil, *cliPk = nil, *cliSk = nil;
+    BOOL follow = NO, json = NO;
+    NSUInteger n = [args count];
+    for (NSUInteger i = 0; i < n; i++) {
+        NSString* a = args[i];
+        BOOL hasNext = i + 1 < n;
+        if ([a isEqualToString:@"-p"] && hasNext) cliPk = args[++i];
+        else if ([a isEqualToString:@"-k"] && hasNext) cliSk = args[++i];
+        else if ([a isEqualToString:@"--account"] && hasNext) g_accountIndex = [args[++i] integerValue];
+        else if ([a isEqualToString:@"--source"] && hasNext) source = args[++i];
+        else if ([a isEqualToString:@"--all"]) source = @"all";
+        else if ([a isEqualToString:@"--api"]) source = @"api";
+        else if ([a isEqualToString:@"--portal"]) source = @"portal";
+        else if ([a isEqualToString:@"--pool"] && hasNext) source = [@"pool/" stringByAppendingString:args[++i]];
+        else if (([a isEqualToString:@"--lines"] || [a isEqualToString:@"-n"]) && hasNext) {
+            lines = [args[++i] integerValue];
+            if (lines < 1) lines = 1;
+            if (lines > 10000) lines = 10000;
+        }
+        else if ([a isEqualToString:@"--since"] && hasNext) since = args[++i];
+        else if ([a isEqualToString:@"--grep"] && hasNext) grepPattern = args[++i];
+        else if (([a isEqualToString:@"--level"] || [a isEqualToString:@"-l"]) && hasNext) level = args[++i];
+        else if ([a isEqualToString:@"--follow"] || [a isEqualToString:@"-f"]) follow = YES;
+        else if ([a isEqualToString:@"--json"]) json = YES;
+        else if ([a isEqualToString:@"-h"] || [a isEqualToString:@"--help"]) { UNPaasHelp(); return 0; }
+    }
+
+    NSString *publicKey = nil, *secretKey = nil;
+    if ([cliPk length] && [cliSk length]) { publicKey = cliPk; secretKey = cliSk; }
+    else UNGetApiKeysCLI(&publicKey, &secretKey);
+
+    if (follow) return UNPaasStream(source, grepPattern, level, publicKey, secretKey);
+
+    if (!since) since = UNPaasCursorRead() ?: @"5m";
+    NSString* path = [@"/logs/" stringByAppendingString:source];
+    NSMutableURLRequest* request = UNPaasRequest(path, UNPaasQuery(lines, since, grepPattern, level), publicKey, secretKey);
+    request.timeoutInterval = 60;
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* data = [NSURLConnection sendSynchronousRequest:request returningResponse:&response error:&error];
+    NSInteger status = [response statusCode];
+    if (!response) {
+        fprintf(stderr, "Error: Network error fetching logs: %s\n", [[error localizedDescription] UTF8String]);
+        return 1;
+    }
+    id obj = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (status != 200) {
+        NSString* err = [obj isKindOfClass:[NSDictionary class]] ? obj[@"error"] : nil;
+        if ([err isKindOfClass:[NSString class]]) fprintf(stderr, "Error: HTTP %ld — %s\n", (long)status, [err UTF8String]);
+        else fprintf(stderr, "Error: HTTP %ld\n", (long)status);
+        return 1;
+    }
+    UNPaasCursorWrite();
+    if (json) {
+        printf("%s\n", [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] UTF8String]);
+        return 0;
+    }
+    NSArray* entries = [obj isKindOfClass:[NSDictionary class]] ? obj[@"lines"] : nil;
+    if (![entries isKindOfClass:[NSArray class]]) {
+        fprintf(stderr, "Error: Invalid response format\n");
+        return 1;
+    }
+    for (id e in entries) {
+        if ([e isKindOfClass:[NSString class]]) printf("%s\n", [e UTF8String]);
+        else if ([e isKindOfClass:[NSDictionary class]] && [e[@"line"] isKindOfClass:[NSString class]]) {
+            if ([e[@"source"] isKindOfClass:[NSString class]]) UNPaasTagged(e[@"source"], e[@"line"]);
+            else printf("%s\n", [e[@"line"] UTF8String]);
+        }
+    }
+    fflush(stdout);
+    return 0;
+}
+
+void cmdLogs(NSArray* args) {
+    exit(cmdPaasLogs(args));
 }
 
 // ============================================================================
@@ -2676,7 +2801,8 @@ void showHelp(void) {
     printf("  un.m languages [--json]\n");
     printf("  un.m key [options]\n");
     printf("  un.m key --rotate              Rotate this key's secret (sudo OTP), update accounts.csv\n");
-    printf("  un.m key --rotate --otp CODE   Finish a rotation started without a terminal\n\n");
+    printf("  un.m key --rotate --otp CODE   Finish a rotation started without a terminal\n");
+    printf("  un.m paas logs [options]       Platform logs (partner keys; un.m paas logs -h)\n\n");
     printf("Execute options:\n");
     printf("  -e KEY=VALUE    Environment variable (multiple allowed)\n");
     printf("  -f FILE         Input file (multiple allowed)\n");
@@ -2770,6 +2896,12 @@ int main(int argc, const char* argv[]) {
             cmdKey([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else if ([firstArg isEqualToString:@"snapshot"]) {
             cmdSnapshot([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
+        } else if ([firstArg isEqualToString:@"paas"]) {
+            if ([args count] < 2 || ![args[1] isEqualToString:@"logs"]) {
+                fprintf(stderr, "Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n");
+                return 1;
+            }
+            return cmdPaasLogs([args subarrayWithRange:NSMakeRange(2, [args count] - 2)]);
         } else if ([firstArg isEqualToString:@"logs"]) {
             cmdLogs([args subarrayWithRange:NSMakeRange(1, [args count] - 1)]);
         } else if ([firstArg isEqualToString:@"health"]) {

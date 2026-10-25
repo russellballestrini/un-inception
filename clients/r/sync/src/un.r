@@ -56,7 +56,7 @@
 #' }
 #' @name unsandbox
 #' @docType package
-NULL
+invisible(NULL)  # roxygen anchor; a bare NULL prints "NULL" on every Rscript run
 
 library(httr)
 library(jsonlite)
@@ -94,7 +94,7 @@ API_BASE <- sub("/+$", "", if (nzchar(Sys.getenv("UNSANDBOX_API_URL"))) Sys.gete
 #' @title Portal Base URL
 #' @description Base URL for the Unsandbox web portal
 #' @export
-PORTAL_BASE <- "https://unsandbox.com"
+PORTAL_BASE <- sub("/+$", "", if (nzchar(Sys.getenv("UNSANDBOX_PORTAL_URL"))) Sys.getenv("UNSANDBOX_PORTAL_URL") else "https://unsandbox.com")
 
 #' @title Languages Cache TTL
 #' @description Cache time-to-live in seconds (1 hour)
@@ -1448,7 +1448,40 @@ image_clone <- function(image_id, name = NULL, description = NULL,
 # PaaS Logs Functions
 # =============================================================================
 
-#' Fetch PaaS Logs
+# =============================================================================
+# PaaS Logs — portal: GET {PORTAL}/logs/{source}[/stream]
+# =============================================================================
+
+logs_query <- function(params) {
+    keep <- params[!vapply(params, function(v) is.null(v) || identical(v, ""), logical(1))]
+    if (length(keep) == 0) return("")
+    parts <- vapply(names(keep), function(k) paste0(k, "=", URLencode(as.character(keep[[k]]), reserved = TRUE)), character(1))
+    paste0("?", paste(parts, collapse = "&"))
+}
+
+# Signed headers for a portal GET. HMAC covers "ts:GET:<path>:" (path only,
+# no query) - the portal verifies conn.request_path.
+portal_headers <- function(path, public_key, secret_key, extra = list()) {
+    h <- list(`Authorization` = paste("Bearer", public_key), `User-Agent` = "un-cli/2.0")
+    if (!is.null(secret_key) && secret_key != "") {
+        timestamp <- as.character(as.integer(Sys.time()))
+        h$`X-Timestamp` <- timestamp
+        h$`X-Signature` <- compute_signature(secret_key, paste0(timestamp, ":GET:", path, ":"))
+    }
+    do.call(add_headers, c(h, extra))
+}
+
+# Batch logs request: list(status, body); status 0 on network failure
+portal_logs_get <- function(source, lines, since, grep, level, public_key, secret_key) {
+    path <- paste0("/logs/", source)
+    url <- paste0(PORTAL_BASE, path, logs_query(list(lines = as.character(lines), since = since, grep = grep, level = level)))
+    tryCatch({
+        response <- GET(url, portal_headers(path, public_key, secret_key), timeout(300))
+        list(status = status_code(response), body = content(response, "text", encoding = "UTF-8"))
+    }, error = function(e) list(status = 0L, body = conditionMessage(e)))
+}
+
+#' Fetch PaaS Logs (portal /logs/{source})
 #'
 #' @param source Log source ("all", "api", "portal", "pool/cammy", "pool/ai")
 #' @param lines Number of lines
@@ -1456,15 +1489,189 @@ image_clone <- function(image_id, name = NULL, description = NULL,
 #' @param grep Filter pattern (optional)
 #' @param public_key API public key (optional)
 #' @param secret_key API secret key (optional)
-#' @return Logs string
+#' @param level Minimum log level (optional)
+#' @return Parsed JSON response (list), or NULL on error
 #' @export
-logs_fetch <- function(source = "all", lines = 100, since = "1h", grep = NULL,
-                       public_key = NULL, secret_key = NULL) {
+logs_fetch <- function(source = "all", lines = 100, since = "5m", grep = NULL,
+                       public_key = NULL, secret_key = NULL, level = NULL) {
     creds <- get_credentials(public_key, secret_key)
-    endpoint <- sprintf("/logs?source=%s&lines=%d&since=%s", source, lines, since)
-    if (!is.null(grep)) endpoint <- paste0(endpoint, "&grep=", grep)
-    result <- api_request(endpoint, creds$public_key, creds$secret_key)
-    return(result$logs %||% "")
+    r <- portal_logs_get(source, lines, since, grep, level, creds$public_key, creds$secret_key)
+    if (r$status != 200) return(NULL)
+    tryCatch(fromJSON(r$body, simplifyVector = FALSE), error = function(e) NULL)
+}
+
+#' Stream PaaS Logs over SSE (portal /logs/{source}/stream)
+#'
+#' Calls callback(source, line) per log line; reconnects with backoff
+#' (2s doubling to 30s) adding since=<gap>s. Returns the HTTP status that
+#' ended the stream (401/403 = auth failed).
+#' @export
+logs_stream <- function(source = "all", grep = NULL, level = NULL, callback = NULL,
+                        public_key = NULL, secret_key = NULL, reconnect = TRUE) {
+    creds <- get_credentials(public_key, secret_key)
+    if (is.null(callback)) callback <- function(src, line) cat(line, "\n", sep = "")
+    path <- paste0("/logs/", source, "/stream")
+    delay <- 2; is_reconnect <- FALSE; last_recv <- 0
+    repeat {
+        since <- if (is_reconnect && last_recv > 0) paste0(max(10, as.integer(Sys.time()) - last_recv + 5), "s") else NULL
+        url <- paste0(PORTAL_BASE, path, logs_query(list(grep = grep, level = level, since = since)))
+        buf <- ""
+        t0 <- as.integer(Sys.time())
+        handle_chunk <- function(x) {
+            buf <<- paste0(buf, rawToChar(x))
+            repeat {
+                pos <- regexpr("\n\n", buf, fixed = TRUE)
+                if (pos < 0) break
+                event <- substr(buf, 1, pos - 1)
+                buf <<- substr(buf, pos + 2, nchar(buf))
+                for (ln in strsplit(event, "\n", fixed = TRUE)[[1]]) {
+                    if (!startsWith(ln, "data: ")) next
+                    payload <- substring(ln, 7)
+                    if (payload == ":keepalive") next
+                    obj <- tryCatch(fromJSON(payload, simplifyVector = FALSE), error = function(e) NULL)
+                    if (is.list(obj)) {
+                        if (!is.null(obj$line)) { callback(obj$source, obj$line); last_recv <<- as.integer(Sys.time()) }
+                    } else {
+                        callback(NULL, payload); last_recv <<- as.integer(Sys.time())
+                    }
+                }
+            }
+        }
+        status <- tryCatch({
+            response <- GET(url, portal_headers(path, creds$public_key, creds$secret_key,
+                                                list(`Accept` = "text/event-stream")),
+                            write_stream(handle_chunk), config(http_version = 2L, low_speed_limit = 1L, low_speed_time = 120L))
+            status_code(response)
+        }, error = function(e) 0L)
+        if (as.integer(Sys.time()) - t0 > 30) delay <- 2
+        if (status %in% c(401L, 403L)) return(status)
+        if (!(status == 200 || status == 0 || status >= 500)) return(status)
+        if (!reconnect) return(status)
+        Sys.sleep(delay)
+        delay <- min(30, delay * 2)
+        is_reconnect <- TRUE
+    }
+}
+
+paas_cursor_path <- function() file.path(Sys.getenv("HOME"), ".unsandbox", "paas_log_cursor")
+
+paas_read_cursor <- function() {
+    p <- paas_cursor_path()
+    if (!file.exists(p)) return(NULL)
+    ts <- suppressWarnings(as.numeric(trimws(readLines(p, n = 1, warn = FALSE))))
+    if (length(ts) == 0 || is.na(ts) || ts <= 0) return(NULL)
+    paste0(max(5, as.integer(Sys.time()) - ts), "s")
+}
+
+paas_write_cursor <- function() {
+    p <- paas_cursor_path()
+    d <- dirname(p)
+    if (!dir.exists(d)) { dir.create(d, recursive = TRUE, showWarnings = FALSE); Sys.chmod(d, "0700") }
+    tryCatch(writeLines(as.character(as.integer(Sys.time())), p), error = function(e) NULL)
+}
+
+paas_print_tagged <- function(src, line) {
+    if (is.null(src)) { cat(line, "\n", sep = ""); return(invisible()) }
+    tag <- formatC(src, width = -12, flag = "-")
+    if (nzchar(Sys.getenv("NO_COLOR"))) cat(tag, " ", line, "\n", sep = "")
+    else cat("\033[36m", tag, "\033[0m ", line, "\n", sep = "")
+    flush(stdout())
+}
+
+PAAS_LOGS_HELP <- "Usage: un.r paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Portal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com)
+Requires a partner API key with log access enabled.
+"
+
+# `paas logs` CLI (mirrors the C client). args: argv after "logs".
+cmd_paas_logs <- function(args, account_index = -1) {
+    o <- list(source = "all", lines = 100L, follow = FALSE, json = FALSE, help = FALSE)
+    i <- 1
+    nxt <- function() if (i + 1 <= length(args)) args[i + 1] else NULL
+    while (i <= length(args)) {
+        a <- args[i]; v <- nxt(); used <- FALSE
+        if (a == "-p" && !is.null(v)) { o$pk <- v; used <- TRUE }
+        else if (a == "-k" && !is.null(v)) { o$sk <- v; used <- TRUE }
+        else if (a == "--source" && !is.null(v)) { o$source <- v; used <- TRUE }
+        else if (a == "--all") o$source <- "all"
+        else if (a == "--api") o$source <- "api"
+        else if (a == "--portal") o$source <- "portal"
+        else if (a == "--pool" && !is.null(v)) { o$source <- paste0("pool/", v); used <- TRUE }
+        else if (a %in% c("--lines", "-n") && !is.null(v)) {
+            n <- suppressWarnings(as.integer(v)); if (is.na(n)) n <- 0L
+            o$lines <- max(1L, min(10000L, n)); used <- TRUE
+        }
+        else if (a == "--since" && !is.null(v)) { o$since <- v; used <- TRUE }
+        else if (a == "--grep" && !is.null(v)) { o$grep <- v; used <- TRUE }
+        else if (a %in% c("--level", "-l") && !is.null(v)) { o$level <- v; used <- TRUE }
+        else if (a %in% c("--follow", "-f")) o$follow <- TRUE
+        else if (a == "--json") o$json <- TRUE
+        else if (a %in% c("-h", "--help")) o$help <- TRUE
+        i <- i + (if (used) 2 else 1)
+    }
+    if (o$help) { cat(PAAS_LOGS_HELP, file = stderr()); quit(status = 0) }
+    creds <- tryCatch(
+        if (!is.null(o$pk) && !is.null(o$sk)) list(public_key = o$pk, secret_key = o$sk)
+        else get_credentials(account_index = account_index),
+        error = function(e) { cat("Error: API credentials required.\n", file = stderr()); quit(status = 1) })
+    if (o$follow) {
+        cat(sprintf("Streaming %s logs... (Ctrl+C to stop)\n", o$source), file = stderr())
+        st <- logs_stream(o$source, o$grep, o$level, paas_print_tagged, creds$public_key, creds$secret_key)
+        if (st %in% c(401L, 403L)) cat(sprintf("Error: HTTP %d (auth failed)\n", st), file = stderr())
+        else cat(sprintf("Error: HTTP %d\n", st), file = stderr())
+        quit(status = 1)
+    }
+    since <- if (!is.null(o$since)) o$since else { cur <- paas_read_cursor(); if (is.null(cur)) "5m" else cur }
+    r <- portal_logs_get(o$source, o$lines, since, o$grep, o$level, creds$public_key, creds$secret_key)
+    if (r$status == 0) { cat(sprintf("Error: Network error fetching logs: %s\n", r$body), file = stderr()); quit(status = 1) }
+    if (r$status != 200) {
+        obj <- tryCatch(fromJSON(r$body, simplifyVector = FALSE), error = function(e) NULL)
+        msg <- if (is.list(obj) && is.character(obj$error) && nzchar(obj$error)) paste0(" — ", obj$error) else ""
+        cat(sprintf("Error: HTTP %d%s\n", r$status, msg), file = stderr())
+        quit(status = 1)
+    }
+    paas_write_cursor()
+    if (o$json) { cat(r$body, "\n", sep = ""); quit(status = 0) }
+    obj <- tryCatch(fromJSON(r$body, simplifyVector = FALSE), error = function(e) NULL)
+    if (!is.list(obj) || is.null(obj$lines)) { cat("Error: Invalid response format\n", file = stderr()); quit(status = 1) }
+    is_all <- !is.null(obj$sources)
+    for (e in obj$lines) {
+        if (is.list(e)) {
+            if (is_all) paas_print_tagged(e$source, e$line) else cat(e$line, "\n", sep = "")
+        } else cat(e, "\n", sep = "")
+    }
+    quit(status = 0)
+}
+
+cmd_paas <- function(args, account_index = -1) {
+    if (length(args) == 0) {
+        cat("Usage: un.r paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n", file = stderr())
+        quit(status = 1)
+    }
+    if (args[1] == "logs") cmd_paas_logs(args[-1], account_index)
+    cat(sprintf("Error: Unknown paas command '%s'\n", args[1]), file = stderr())
+    quit(status = 1)
 }
 
 # =============================================================================
@@ -3056,6 +3263,16 @@ parse_args <- function() {
 }
 
 main <- function() {
+    raw <- commandArgs(trailingOnly = TRUE)
+    acct <- -1L
+    ai <- which(raw == "--account")
+    if (length(ai) > 0 && ai[1] < length(raw)) {
+        acct <- suppressWarnings(as.integer(raw[ai[1] + 1])); if (is.na(acct)) acct <- -1L
+        raw <- raw[-c(ai[1], ai[1] + 1)]
+    }
+    if (length(raw) > 0 && raw[1] == "paas") {
+        cmd_paas(raw[-1], acct)
+    }
     args <- parse_args()
 
     if (!is.null(args$command) && args$command == "session") {
@@ -3082,6 +3299,7 @@ main <- function() {
         cat("       un.r key [options]\n", file = stderr())
         cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
+        cat("       un.r paas logs [options]\n", file = stderr())
         cat("\nLanguages options:\n", file = stderr())
         cat("  --json              Output as JSON array\n", file = stderr())
         cat("\nService env commands:\n", file = stderr())

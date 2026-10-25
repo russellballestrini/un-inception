@@ -32,6 +32,7 @@ if (IS_NODE) {
 }
 
 const API_BASE = ((IS_NODE && process.env.UNSANDBOX_API_URL) || 'https://api.unsandbox.com').replace(/\/+$/, '');
+const PORTAL_BASE = ((IS_NODE && process.env.UNSANDBOX_PORTAL_URL) || 'https://unsandbox.com').replace(/\/+$/, '');
 const POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000];
 const LANGUAGES_CACHE_TTL = 3600; // 1 hour
 
@@ -1757,8 +1758,39 @@ async function image(prompt, options = {}) {
 
 let _lastError = null;
 
+// Platform logs live on the portal (RequireLogAccess, partner keys), not the API host:
+// GET {PORTAL_BASE}/logs/{api|portal|pool/NODE|all}[/stream]. HMAC signs the path only.
+
+function logsPath(source, stream = false) {
+  const src = String(source || 'all').replace(/^\/+|\/+$/g, '') || 'all';
+  return `/logs/${src}${stream ? '/stream' : ''}`;
+}
+
+function logsQuery(params) {
+  const enc = (v) => encodeURIComponent(String(v)).replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  const parts = Object.entries(params)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${enc(v)}`);
+  return parts.length ? `?${parts.join('&')}` : '';
+}
+
+/** Signed GET to the portal; resolves to the fetch Response (caller checks status). */
+async function portalLogsGet(urlPath, query, publicKey, secretKey, stream = false) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const headers = {
+    'Authorization': `Bearer ${publicKey}`,
+    'X-Timestamp': timestamp.toString(),
+    'X-Signature': await signRequest(secretKey, timestamp, 'GET', urlPath, null),
+    'User-Agent': 'un-js/2.0',
+  };
+  if (stream) headers['Accept'] = 'text/event-stream';
+  const options = { method: 'GET', headers };
+  if (!stream) options.signal = AbortSignal.timeout(120000);
+  return fetch(`${PORTAL_BASE}${urlPath}${query}`, options);
+}
+
 /**
- * Fetch batch logs from the PaaS platform.
+ * Fetch batch logs from the portal (partner log access).
  *
  * Args:
  *   source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
@@ -1767,18 +1799,47 @@ let _lastError = null;
  *   grep: Optional filter pattern
  *   publicKey: API public key
  *   secretKey: API secret key
+ *   level: Optional minimum level (debug, info, notice, warning, err, crit)
  *
- * Returns: Promise<Object> (log entries)
+ * Returns: Promise<Object> ({source, lines:[...]} or, for "all", {sources, lines:[{source,line}]})
  */
-async function logsFetch(source = 'all', lines = 100, since = '5m', grep = null, publicKey, secretKey) {
+async function logsFetch(source = 'all', lines = 100, since = '5m', grep = null, publicKey, secretKey, level = null) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  let urlPath = `/logs?source=${source}&lines=${lines}&since=${since}`;
-  if (grep) urlPath += `&grep=${encodeURIComponent(grep)}`;
-  return makeRequest('GET', urlPath, publicKey, secretKey);
+  const n = Math.max(1, Math.min(10000, parseInt(lines, 10) || 1));
+  const response = await portalLogsGet(logsPath(source), logsQuery({ lines: n, since, grep, level }), publicKey, secretKey);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
+  }
+  return response.json();
+}
+
+/** Yield {source, line} per SSE data event from a fetch Response body; comments yield nothing. */
+async function* sseEntries(response) {
+  const decoder = new TextDecoder();
+  let buf = '';
+  for await (const chunk of response.body) {
+    buf += decoder.decode(chunk, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).replace(/\r$/, '');
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith('data: ')) continue;
+      const data = line.substring(6);
+      if (data === ':keepalive') continue;
+      let entry;
+      try { entry = JSON.parse(data); } catch (e) { yield { source: null, line: data }; continue; }
+      if (entry && typeof entry === 'object') {
+        if ('line' in entry) yield { source: entry.source ?? null, line: entry.line };
+      } else {
+        yield { source: null, line: data };
+      }
+    }
+  }
 }
 
 /**
- * Stream logs via Server-Sent Events.
+ * Stream logs from the portal via Server-Sent Events (one connection).
  *
  * Args:
  *   source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
@@ -1786,72 +1847,22 @@ async function logsFetch(source = 'all', lines = 100, since = '5m', grep = null,
  *   callback: Function called for each log line (signature: callback(source, line))
  *   publicKey: API public key
  *   secretKey: API secret key
+ *   level: Optional minimum level
  *
  * Returns: Promise<void> (blocks until interrupted or server closes)
  */
-async function logsStream(source = 'all', grep = null, callback = null, publicKey, secretKey) {
+async function logsStream(source = 'all', grep = null, callback = null, publicKey, secretKey, level = null) {
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-
-  let urlPath = `/logs/stream?source=${source}`;
-  if (grep) urlPath += `&grep=${encodeURIComponent(grep)}`;
-
-  const timestamp = Math.floor(Date.now() / 1000);
-  const signature = await signRequest(secretKey, timestamp, 'GET', urlPath, null);
-
-  const url = `${API_BASE}${urlPath}`;
-  const headers = {
-    'Authorization': `Bearer ${publicKey}`,
-    'X-Timestamp': timestamp.toString(),
-    'X-Signature': signature,
-    'Accept': 'text/event-stream',
-  };
-
-  // Node.js SSE streaming
-  if (IS_NODE) {
-    const https = await import('https');
-    return new Promise((resolve, reject) => {
-      const urlObj = new URL(url);
-      const options = {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname + urlObj.search,
-        method: 'GET',
-        headers,
-      };
-
-      const req = https.default.request(options, (res) => {
-        res.on('data', (chunk) => {
-          const lines = chunk.toString().split('\n');
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.substring(6);
-              try {
-                const entry = JSON.parse(data);
-                if (callback) {
-                  callback(entry.source || source, entry.line || data);
-                } else {
-                  console.log(`[${entry.source || source}] ${entry.line || data}`);
-                }
-              } catch (e) {
-                if (callback) {
-                  callback(source, data);
-                } else {
-                  console.log(`[${source}] ${data}`);
-                }
-              }
-            }
-          }
-        });
-        res.on('end', resolve);
-        res.on('error', reject);
-      });
-
-      req.on('error', reject);
-      req.end();
-    });
+  const response = await portalLogsGet(logsPath(source, true), logsQuery({ grep, level }), publicKey, secretKey, true);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP ${response.status}: ${text}`);
   }
-
-  // Browser EventSource not directly supported with custom headers
-  throw new Error('logsStream is only supported in Node.js');
+  for await (const e of sseEntries(response)) {
+    const src = e.source || source;
+    if (callback) callback(src, e.line);
+    else console.log(`${src.padEnd(12)} ${e.line}`);
+  }
 }
 
 // ============================================================================
@@ -2127,6 +2138,7 @@ USAGE:
   node un.js key --rotate                Rotate this key's secret (sudo OTP); updates accounts.csv
   node un.js key --rotate --otp CODE     Finish a rotation started without a terminal
   node un.js languages [--json]          List available languages
+  node un.js paas logs [options]         Platform logs (partner keys; -h for options)
 
 GLOBAL OPTIONS:
   -s, --shell <lang>      Language for inline code execution
@@ -3075,7 +3087,7 @@ function printKeyResult(status, data, pk) {
     if (state === 'expired') {
       console.log('Expired');
       console.log(`Public Key: ${pk}`);
-      console.log('To renew: Visit https://unsandbox.com/keys/extend');
+      console.log(`To renew: Visit ${PORTAL_BASE}/keys/extend`);
     } else if (state === 'suspended') {
       console.log('Suspended');
       console.log(`Public Key: ${pk}`);
@@ -3350,8 +3362,180 @@ async function handleExecute(opts) {
 /**
  * Main CLI entry point.
  */
+// ============================================================================
+// `un paas logs` - mirrors the C client's flags, output and exit codes
+// ============================================================================
+
+const PAAS_LOGS_HELP = `Usage: un.js paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.`;
+
+function logCursorPath() {
+  return path.join(process.env.HOME || '', '.unsandbox', 'paas_log_cursor');
+}
+
+function readLogCursor() {
+  try {
+    const ts = parseInt(fs.readFileSync(logCursorPath(), 'utf8').trim(), 10);
+    if (!(ts > 0)) return null;
+    return `${Math.max(5, Math.floor(Date.now() / 1000) - ts)}s`;
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeLogCursor() {
+  try {
+    fs.mkdirSync(path.dirname(logCursorPath()), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(logCursorPath(), `${Math.floor(Date.now() / 1000)}\n`);
+  } catch (e) { /* best effort */ }
+}
+
+async function httpErrorText(response) {
+  let err = null;
+  try { err = JSON.parse(await response.text()).error; } catch (e) { /* not JSON */ }
+  return `Error: HTTP ${response.status}` + (err ? ` — ${err}` : '');
+}
+
+async function paasCommand(argv) {
+  if (argv.length === 0) {
+    console.error('Usage: un.js paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs');
+    return 1;
+  }
+  if (argv[0] !== 'logs') {
+    console.error(`Error: Unknown paas command '${argv[0]}'`);
+    return 1;
+  }
+  let source = 'all', lines = 100, since = null, grep = null, level = null;
+  let follow = false, asJson = false, pk = null, sk = null, account;
+  const a = argv.slice(1);
+  const clamp = (v) => Math.max(1, Math.min(10000, parseInt(v, 10) || 0));
+  for (let i = 0; i < a.length; i++) {
+    const has = i + 1 < a.length;
+    const x = a[i];
+    if (x === '-p' && has) pk = a[++i];
+    else if (x === '-k' && has) sk = a[++i];
+    else if (x === '--account' && has) account = parseInt(a[++i], 10) || 0;
+    else if (x === '--source' && has) source = a[++i];
+    else if (x === '--all') source = 'all';
+    else if (x === '--api') source = 'api';
+    else if (x === '--portal') source = 'portal';
+    else if (x === '--pool' && has) source = `pool/${a[++i]}`;
+    else if ((x === '--lines' || x === '-n') && has) lines = clamp(a[++i]);
+    else if (x === '--since' && has) since = a[++i];
+    else if (x === '--grep' && has) grep = a[++i];
+    else if ((x === '--level' || x === '-l') && has) level = a[++i];
+    else if (x === '--follow' || x === '-f') follow = true;
+    else if (x === '--json') asJson = true;
+    else if (x === '-h' || x === '--help') { console.error(PAAS_LOGS_HELP); return 0; }
+  }
+  let publicKey, secretKey;
+  try {
+    [publicKey, secretKey] = resolveCredentials(pk, sk, account);
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    return 1;
+  }
+  if (since === null) since = readLogCursor() || '5m';
+  if (follow) return paasLogsFollow(source, grep, level, publicKey, secretKey);
+
+  let response;
+  try {
+    response = await portalLogsGet(logsPath(source), logsQuery({ lines, since, grep, level }), publicKey, secretKey);
+  } catch (e) {
+    console.error(`Error: Network error fetching logs: ${e.cause ? e.cause.message : e.message}`);
+    return 1;
+  }
+  if (response.status !== 200) {
+    console.error(await httpErrorText(response));
+    return 1;
+  }
+  const text = await response.text();
+  writeLogCursor();
+  if (asJson) {
+    console.log(text);
+    return 0;
+  }
+  let entries;
+  try {
+    entries = JSON.parse(text).lines;
+    if (!Array.isArray(entries)) throw new Error('no lines');
+  } catch (e) {
+    console.error('Error: Invalid response format');
+    return 1;
+  }
+  for (const e of entries) {
+    if (e && typeof e === 'object') {
+      if (e.source != null) console.log(`${String(e.source).padEnd(12)} ${e.line ?? ''}`);
+      else console.log(e.line ?? '');
+    } else {
+      console.log(e);
+    }
+  }
+  return 0;
+}
+
+async function paasLogsFollow(source, grep, level, publicKey, secretKey) {
+  console.error(`Streaming ${source} logs... (Ctrl+C to stop)`);
+  process.on('SIGINT', () => process.exit(0));
+  const urlPath = logsPath(source, true);
+  let delay = 2, lastRecv = 0, reconnect = false;
+  for (;;) {
+    let since = null;
+    if (reconnect && lastRecv > 0) since = `${Math.max(10, Math.floor(Date.now() / 1000 - lastRecv) + 5)}s`;
+    const connected = Date.now();
+    try {
+      // fresh signature each connection (timestamps expire)
+      const response = await portalLogsGet(urlPath, logsQuery({ grep, level, since }), publicKey, secretKey, true);
+      const status = response.status;
+      if (status === 401 || status === 403) {
+        console.error(`Error: HTTP ${status} (auth failed)`);
+        return 1;
+      }
+      if (status === 200) {
+        for await (const e of sseEntries(response)) {
+          console.log(e.source != null ? `${String(e.source).padEnd(12)} ${e.line}` : e.line);
+          lastRecv = Date.now() / 1000;
+        }
+      } else if (status < 500) {
+        console.error(await httpErrorText(response));
+        return 1;
+      }
+    } catch (e) { /* dropped connection: reconnect silently */ }
+    if (Date.now() - connected > 30000) delay = 2;
+    await sleep(delay * 1000);
+    delay = Math.min(30, delay * 2);
+    reconnect = true;
+  }
+}
+
 async function cliMain() {
   const args = process.argv.slice(2);
+
+  if (args[0] === 'paas') {
+    process.exitCode = await paasCommand(args.slice(1));
+    return;
+  }
 
   if (args.length === 0) {
     console.log(HELP_TEXT);

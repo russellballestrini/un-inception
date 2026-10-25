@@ -11,7 +11,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 var API_BASE = (Environment.GetEnvironmentVariable("UNSANDBOX_API_URL") is { Length: > 0 } apiUrlEnv ? apiUrlEnv : "https://api.unsandbox.com").TrimEnd('/');
-const string PORTAL_BASE = "https://unsandbox.com";
+// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)
+var PORTAL_BASE = Unsandbox.PortalBase;
 const string VERSION = "4.3.4";
 
 // ANSI colors
@@ -49,6 +50,10 @@ using var httpClient = new HttpClient { BaseAddress = new Uri(API_BASE), Timeout
 
 try
 {
+    // `un paas logs ...` (portal /logs/{source}); `un logs ...` kept as an alias
+    if (args.Length >= 1 && (args[0] == "paas" || args[0] == "logs"))
+        return CmdPaas(args[0] == "paas" ? args[1..] : args);
+
     var parsedArgs = ParseArgs(args);
 
     if (parsedArgs.ShowHelp)
@@ -1333,6 +1338,198 @@ Args ParseArgs(string[] args)
     return result;
 }
 
+// =============================================================================
+// un paas logs: portal GET /logs/{source}[/stream] (partner log access)
+// =============================================================================
+
+int CmdPaas(string[] rest)
+{
+    if (rest.Length == 0 || rest[0] != "logs")
+    {
+        Console.Error.WriteLine("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs");
+        return 1;
+    }
+    string source = "all";
+    string? since = null, grep = null, level = null, cliPk = null, cliSk = null;
+    int lines = 100, account = -1;
+    bool follow = false, json = false;
+    for (var i = 1; i < rest.Length; i++)
+    {
+        var a = rest[i];
+        var hasNext = i + 1 < rest.Length;
+        if (a == "-p" && hasNext) cliPk = rest[++i];
+        else if (a == "-k" && hasNext) cliSk = rest[++i];
+        else if (a == "--account" && hasNext) account = int.TryParse(rest[++i], out var n) ? n : 0;
+        else if (a == "--source" && hasNext) source = rest[++i];
+        else if (a == "--all") source = "all";
+        else if (a == "--api") source = "api";
+        else if (a == "--portal") source = "portal";
+        else if (a == "--pool" && hasNext) source = "pool/" + rest[++i];
+        else if ((a == "--lines" || a == "-n") && hasNext) lines = Math.Clamp(int.TryParse(rest[++i], out var l) ? l : 1, 1, 10000);
+        else if (a == "--since" && hasNext) since = rest[++i];
+        else if (a == "--grep" && hasNext) grep = rest[++i];
+        else if ((a == "--level" || a == "-l") && hasNext) level = rest[++i];
+        else if (a == "--follow" || a == "-f") follow = true;
+        else if (a == "--json") json = true;
+        else if (a == "-h" || a == "--help") { PrintPaasLogsHelp(); return 0; }
+    }
+    var (pk, sk) = !string.IsNullOrEmpty(cliPk) && !string.IsNullOrEmpty(cliSk) ? (cliPk, cliSk) : GetApiKeys(null, account);
+    if (follow) return PaasLogsStream(source, grep, level, pk, sk);
+
+    since ??= PaasCursorRead() ?? "5m";
+    var path = $"/logs/{source}";
+    int status; string body;
+    try { (status, body) = Unsandbox.PortalGet(path, Unsandbox.PaasLogsQuery(lines, since, grep, level), pk, sk); }
+    catch (Exception ex) { Console.Error.WriteLine($"Error: Network error fetching logs: {ex.Message}"); return 1; }
+    JsonElement? root = null;
+    try { root = JsonDocument.Parse(body).RootElement; } catch { }
+    if (status != 200)
+    {
+        var err = root is { ValueKind: JsonValueKind.Object } r && r.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        Console.Error.WriteLine(err != null ? $"Error: HTTP {status} — {err}" : $"Error: HTTP {status}");
+        return 1;
+    }
+    PaasCursorWrite();
+    if (json) { Console.WriteLine(body); return 0; }
+    if (root is not { ValueKind: JsonValueKind.Object } obj || !obj.TryGetProperty("lines", out var arr) || arr.ValueKind != JsonValueKind.Array)
+    {
+        Console.Error.WriteLine("Error: Invalid response format");
+        return 1;
+    }
+    foreach (var entry in arr.EnumerateArray())
+    {
+        if (entry.ValueKind == JsonValueKind.String) Console.WriteLine(entry.GetString());
+        else if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("line", out var ln) && ln.ValueKind == JsonValueKind.String)
+        {
+            if (entry.TryGetProperty("source", out var src) && src.ValueKind == JsonValueKind.String) PaasTagged(src.GetString()!, ln.GetString()!);
+            else Console.WriteLine(ln.GetString());
+        }
+    }
+    return 0;
+}
+
+void PaasTagged(string src, string line) => Console.WriteLine($"\x1B[36m{src,-12}\x1B[0m {line}");
+
+string? PaasCursorPath()
+{
+    var home = Environment.GetEnvironmentVariable("HOME");
+    return string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".unsandbox", "paas_log_cursor");
+}
+
+string? PaasCursorRead()
+{
+    try
+    {
+        var p = PaasCursorPath();
+        if (p == null || !File.Exists(p) || !long.TryParse(File.ReadAllText(p).Trim(), out var ts) || ts <= 0) return null;
+        return $"{Math.Max(DateTimeOffset.UtcNow.ToUnixTimeSeconds() - ts, 5)}s";
+    }
+    catch { return null; }
+}
+
+void PaasCursorWrite()
+{
+    try
+    {
+        var p = PaasCursorPath();
+        if (p == null) return;
+        var dir = Path.GetDirectoryName(p)!;
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(p, $"{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}\n");
+    }
+    catch { }
+}
+
+int PaasLogsStream(string source, string? grep, string? level, string pk, string sk)
+{
+    var path = $"/logs/{source}/stream";
+    Console.Error.WriteLine($"Streaming {source} logs... (Ctrl+C to stop)");
+    var delay = 2;
+    DateTimeOffset? lastRecv = null;
+    var reconnect = false;
+    using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+    while (true)
+    {
+        string? since = null;
+        if (reconnect && lastRecv is { } lr) since = $"{Math.Max((int)(DateTimeOffset.UtcNow - lr).TotalSeconds + 5, 10)}s";
+        // Fresh HMAC headers each connection (timestamps expire)
+        using var request = Unsandbox.PortalRequest(path, Unsandbox.PaasLogsQuery(null, since, grep, level), pk, sk);
+        request.Headers.Add("Accept", "text/event-stream");
+        var status = 0;
+        var started = DateTimeOffset.UtcNow;
+        try
+        {
+            using var response = client.Send(request, HttpCompletionOption.ResponseHeadersRead);
+            status = (int)response.StatusCode;
+            if (status == 200)
+            {
+                using var reader = new StreamReader(response.Content.ReadAsStream());
+                string? line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    if (!line.StartsWith("data: ")) continue;
+                    var payload = line[6..];
+                    if (payload == ":keepalive") continue;
+                    lastRecv = DateTimeOffset.UtcNow;
+                    try
+                    {
+                        var ev = JsonDocument.Parse(payload).RootElement;
+                        if (ev.ValueKind == JsonValueKind.Object && ev.TryGetProperty("line", out var ln) && ln.ValueKind == JsonValueKind.String)
+                        {
+                            if (ev.TryGetProperty("source", out var src) && src.ValueKind == JsonValueKind.String) PaasTagged(src.GetString()!, ln.GetString()!);
+                            else Console.WriteLine(ln.GetString());
+                        }
+                    }
+                    catch (JsonException) { Console.WriteLine(payload); }
+                }
+            }
+        }
+        catch (Exception) { if (status == 200) status = 0; }
+        if ((DateTimeOffset.UtcNow - started).TotalSeconds > 30) delay = 2;
+        if (status == 401 || status == 403)
+        {
+            Console.Error.WriteLine($"Error: HTTP {status} (auth failed)");
+            return 1;
+        }
+        if (status == 200 || status == 0 || status >= 500)
+        {
+            Thread.Sleep(delay * 1000);
+            delay = Math.Min(delay * 2, 30);
+            reconnect = true;
+            continue;
+        }
+        Console.Error.WriteLine($"Error: HTTP {status}");
+        return 1;
+    }
+}
+
+void PrintPaasLogsHelp()
+{
+    Console.Error.WriteLine(@"Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.");
+}
+
 void PrintHelp()
 {
     Console.WriteLine($@"un {VERSION} (.NET 10 sync) - Unsandbox CLI
@@ -1345,6 +1542,7 @@ Usage: dotnet run -- [options] <source_file>
        dotnet run -- image [options]
        dotnet run -- languages [options]
        dotnet run -- key [options]
+       dotnet run -- paas logs [options]   (platform logs, partner keys)
 
 Execute options:
   -e KEY=VALUE      Set environment variable
@@ -2098,21 +2296,53 @@ public static class Unsandbox
 
     // --- PaaS Logs (2) ---
 
-    public static string? LogsFetch(string source, int lines = 100, string? since = null, string? grep = null, string? publicKey = null, string? secretKey = null)
+    /// <summary>Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)</summary>
+    public static string PortalBase { get; } = (Environment.GetEnvironmentVariable("UNSANDBOX_PORTAL_URL") is { Length: > 0 } p ? p : "https://unsandbox.com").TrimEnd('/');
+    private static readonly HttpClient _portalClient = new() { Timeout = TimeSpan.FromMinutes(5) };
+
+    /// <summary>Fetch platform logs: GET {portal}/logs/{source} (all, api, portal, pool/NODE). Returns the raw JSON.</summary>
+    public static string? LogsFetch(string source, int lines = 100, string? since = null, string? grep = null, string? publicKey = null, string? secretKey = null, string? level = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
-        var endpoint = $"/paas/logs?source={source}&lines={lines}";
-        if (since != null) endpoint += $"&since={since}";
-        if (grep != null) endpoint += $"&grep={Uri.EscapeDataString(grep)}";
         try
         {
-            var result = ApiCall(endpoint, HttpMethod.Get, null, pk, sk);
-            return JsonSerializer.Serialize(result);
+            var (status, body) = PortalGet($"/logs/{source}", PaasLogsQuery(lines, since, grep, level), pk, sk);
+            if (status != 200) { _lastError = $"HTTP {status}: {body}"; return null; }
+            return body;
         }
         catch (Exception ex) { _lastError = ex.Message; return null; }
     }
 
-    // LogsStream requires SSE/WebSocket support - not implemented in sync version
+    /// <summary>"?lines=..&since=..&grep=..&level=.." percent-encoded, empty values omitted</summary>
+    public static string PaasLogsQuery(int? lines, string? since, string? grep, string? level)
+    {
+        var parts = new List<string>();
+        if (lines.HasValue) parts.Add($"lines={lines.Value}");
+        foreach (var (k, v) in new[] { ("since", since), ("grep", grep), ("level", level) })
+            if (!string.IsNullOrEmpty(v)) parts.Add($"{k}={Uri.EscapeDataString(v)}");
+        return parts.Count > 0 ? "?" + string.Join("&", parts) : "";
+    }
+
+    /// <summary>Signed GET request on the portal; HMAC covers the path only (no query)</summary>
+    public static HttpRequestMessage PortalRequest(string path, string query, string publicKey, string secretKey)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, PortalBase + path + query);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        request.Headers.Add("Authorization", $"Bearer {publicKey}");
+        request.Headers.Add("X-Timestamp", timestamp.ToString());
+        request.Headers.Add("X-Signature", HmacSign(secretKey, $"{timestamp}:GET:{path}:"));
+        return request;
+    }
+
+    public static (int, string) PortalGet(string path, string query, string publicKey, string secretKey)
+    {
+        using var request = PortalRequest(path, query, publicKey, secretKey);
+        using var response = _portalClient.Send(request);
+        using var reader = new StreamReader(response.Content.ReadAsStream());
+        return ((int)response.StatusCode, reader.ReadToEnd());
+    }
+
+    // Streaming (SSE): see `un paas logs --follow` (PaasLogsStream)
 
     // --- Utilities ---
 

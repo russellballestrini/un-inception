@@ -48,9 +48,10 @@ import crypto.hmac
 import crypto.sha256
 import net.http
 import time
+import json as vjson
 
 const api_base = resolve_api_base()
-const portal_base = 'https://unsandbox.com'
+const portal_base = resolve_portal_base()
 const max_env_content_size = 65536
 const languages_cache_ttl = 3600  // 1 hour in seconds
 const blue = '\x1b[34m'
@@ -63,6 +64,13 @@ const reset = '\x1b[0m'
 fn resolve_api_base() string {
 	v := os.getenv('UNSANDBOX_API_URL').trim_right('/')
 	return if v != '' { v } else { 'https://api.unsandbox.com' }
+}
+
+// Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
+// Serves /logs/{source} (partner log access) and /keys/extend.
+fn resolve_portal_base() string {
+	v := os.getenv('UNSANDBOX_PORTAL_URL').trim_right('/')
+	return if v != '' { v } else { 'https://unsandbox.com' }
 }
 
 fn detect_language(filename string) !string {
@@ -968,26 +976,386 @@ fn cmd_snapshot(list bool, info string, session string, service string, restore 
 	exit(1)
 }
 
+// ---------------------------------------------------------------------------
+// PaaS logs (CLI_SPEC.md "PaaS Logs Command"): GET {portal}/logs/{source}[/stream].
+// HMAC covers "ts:GET:/logs/{source}:" (path only), computed in-process. Batch
+// fetches go through net.http; streams run curl from an argv list (no shell).
+// ---------------------------------------------------------------------------
+
+struct PaasLogsSingle {
+	source string
+	lines  []string
+}
+
+struct PaasLogLine {
+	source string
+	line   string
+}
+
+struct PaasLogsAll {
+	sources []string
+	lines   []PaasLogLine
+}
+
+struct PaasError {
+	err string @[json: 'error']
+}
+
+fn pct_encode(v string) string {
+	mut out := ''
+	for c in v.bytes() {
+		if c.is_alnum() || c == `-` || c == `_` || c == `.` || c == `~` {
+			out += c.ascii_str()
+		} else {
+			out += '%' + '${c:02X}'
+		}
+	}
+	return out
+}
+
+fn add_query(url string, key string, val string) string {
+	if val == '' {
+		return url
+	}
+	sep := if url.contains('?') { '&' } else { '?' }
+	return '${url}${sep}${key}=${pct_encode(val)}'
+}
+
+fn logs_path(source string, stream bool) string {
+	src := if source == '' { 'all' } else { source }
+	return if stream { '/logs/${src}/stream' } else { '/logs/${src}' }
+}
+
+const paas_status_mark = '__UNSB_HTTP_STATUS__'
+
+// Raw portal fetch: (status, body); status 0 = no HTTP response.
+fn logs_fetch_raw(source string, lines int, since string, grep string, level string, pub_key string, secret_key string) (int, string) {
+	path := logs_path(source, false)
+	mut url := '${portal_base}${path}?lines=${lines}'
+	url = add_query(url, 'since', since)
+	url = add_query(url, 'grep', grep)
+	url = add_query(url, 'level', level)
+	ts, sig := sign_request('GET', path, '', secret_key)
+	mut header := http.new_header()
+	header.add_custom('Authorization', 'Bearer ${pub_key}') or {}
+	header.add_custom('X-Timestamp', '${ts}') or {}
+	header.add_custom('X-Signature', sig) or {}
+	header.add_custom('User-Agent', 'un-cli/2.0') or {}
+	resp := http.fetch(http.FetchConfig{
+		url:    url
+		method: .get
+		header: header
+	}) or { return 0, '${err}' }
+	return resp.status_code, resp.body
+}
+
+// Library-style fetch kept for compatibility; returns the portal's JSON body.
+fn logs_fetch(source string, lines int, since string, grep string, pub_key string, secret_key string) string {
+	n := if lines > 0 { if lines > 10000 { 10000 } else { lines } } else { 100 }
+	_, body := logs_fetch_raw(source, n, since, grep, '', pub_key, secret_key)
+	return body
+}
+
+fn paas_cursor_path() string {
+	home := os.getenv('HOME')
+	return if home == '' { '' } else { os.join_path(home, '.unsandbox', 'paas_log_cursor') }
+}
+
+fn read_paas_cursor() string {
+	p := paas_cursor_path()
+	if p == '' || !os.exists(p) {
+		return ''
+	}
+	data := os.read_file(p) or { return '' }
+	ts := data.trim_space().i64()
+	if ts <= 0 {
+		return ''
+	}
+	mut ago := time.now().unix() - ts
+	if ago < 5 {
+		ago = 5
+	}
+	return '${ago}s'
+}
+
+fn write_paas_cursor() {
+	p := paas_cursor_path()
+	if p == '' {
+		return
+	}
+	os.mkdir_all(os.dir(p)) or {}
+	os.write_file(p, '${time.now().unix()}\n') or {}
+}
+
+fn print_paas_error(status int, body string) {
+	e := vjson.decode(PaasError, body) or { PaasError{} }
+	if e.err != '' {
+		eprintln('Error: HTTP ${status} — ${e.err}')
+	} else {
+		eprintln('Error: HTTP ${status}')
+	}
+}
+
+fn fetch_paas_logs(source string, lines int, since string, grep string, json_out bool, level string, pub_key string, secret_key string) int {
+	status, body := logs_fetch_raw(source, lines, since, grep, level, pub_key, secret_key)
+	if status == 0 {
+		eprintln('Error: Network error fetching logs: ${body}')
+		return 1
+	}
+	if status != 200 {
+		print_paas_error(status, body)
+		return 1
+	}
+	write_paas_cursor()
+	if json_out {
+		println(body)
+		return 0
+	}
+	if body.contains('"sources"') {
+		all := vjson.decode(PaasLogsAll, body) or {
+			eprintln('Error: Invalid response format')
+			return 1
+		}
+		for l in all.lines {
+			if l.source != '' {
+				println('\x1b[36m${l.source:-12s}\x1b[0m ${l.line}')
+			} else {
+				println(l.line)
+			}
+		}
+	} else {
+		one := vjson.decode(PaasLogsSingle, body) or {
+			eprintln('Error: Invalid response format')
+			return 1
+		}
+		for l in one.lines {
+			println(l)
+		}
+	}
+	return 0
+}
+
+// Handle one SSE line; returns true when a log line printed.
+fn paas_sse_line(line string, source string) bool {
+	if !line.starts_with('data:') {
+		return false
+	}
+	data := line[5..].trim_left(' ')
+	if data == '' || data == ':keepalive' {
+		return false
+	}
+	ev := vjson.decode(PaasLogLine, data) or {
+		println(data)
+		return true
+	}
+	if ev.line == '' && !data.contains('"line"') {
+		println(data)
+		return true
+	}
+	src := if ev.source != '' { ev.source } else { source }
+	println('\x1b[36m${src:-12s}\x1b[0m ${ev.line}')
+	return true
+}
+
+// Follow {portal}/logs/{source}/stream; reconnect (2s doubling to 30s) with since=
+// covering the gap and a fresh signature. 401/403 is fatal.
+fn stream_paas_logs(source string, grep string, level string, pub_key string, secret_key string) int {
+	path := logs_path(source, true)
+	mut base := '${portal_base}${path}'
+	base = add_query(base, 'grep', grep)
+	base = add_query(base, 'level', level)
+	curl := os.find_abs_path_of_executable('curl') or {
+		eprintln('Error: Stream error: curl not found')
+		return 1
+	}
+	eprintln('Streaming ${source} logs... (Ctrl+C to stop)')
+	mut delay := 2
+	mut last_recv := i64(0)
+	mut reconnect := false
+	for {
+		mut url := base
+		if reconnect && last_recv > 0 {
+			mut gap := time.now().unix() - last_recv + 5
+			if gap < 10 {
+				gap = 10
+			}
+			sep := if url.contains('?') { '&' } else { '?' }
+			url = '${url}${sep}since=${gap}s'
+		}
+		ts, sig := sign_request('GET', path, '', secret_key)
+		connected_at := time.now().unix()
+		mut p := os.new_process(curl)
+		p.set_args(['-s', '-N', '--http1.1', '-H', 'Accept: text/event-stream', '-H',
+			'Authorization: Bearer ${pub_key}', '-H', 'X-Timestamp: ${ts}', '-H',
+			'X-Signature: ${sig}', '-A', 'un-cli/2.0', '-w',
+			'\n${paas_status_mark}%{http_code}\n', url])
+		p.set_redirect_stdio()
+		p.run()
+		mut status := 0
+		mut buf := ''
+		for {
+			chunk := p.stdout_read()
+			if chunk == '' {
+				if !p.is_alive() {
+					break
+				}
+				continue
+			}
+			buf += chunk
+			for {
+				nl := buf.index('\n') or { break }
+				line := buf[..nl]
+				buf = buf[nl + 1..]
+				if line.starts_with(paas_status_mark) {
+					status = line[paas_status_mark.len..].trim_space().int()
+				} else if paas_sse_line(line, source) {
+					last_recv = time.now().unix()
+				}
+			}
+		}
+		if buf.starts_with(paas_status_mark) {
+			status = buf[paas_status_mark.len..].trim_space().int()
+		}
+		p.wait()
+		p.close()
+		if status == 401 || status == 403 {
+			eprintln('Error: HTTP ${status} (auth failed)')
+			return 1
+		}
+		if status != 0 && status != 200 && status < 500 {
+			eprintln('Error: HTTP ${status}')
+			return 1
+		}
+		if status == 0 && !reconnect && last_recv == 0 {
+			eprintln('Error: Stream error: could not connect')
+			return 1
+		}
+		if time.now().unix() - connected_at > 30 {
+			delay = 2
+		}
+		time.sleep(delay * time.second)
+		delay = if delay * 2 > 30 { 30 } else { delay * 2 }
+		reconnect = true
+	}
+	return 0
+}
+
+fn paas_logs_help() {
+	eprintln('Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  un paas logs                             # last 100 lines from all sources
+  un paas logs --api --lines 500           # last 500 API log lines
+  un paas logs --portal --grep error       # portal logs matching \'error\'
+  un paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  un paas logs -l warning                  # warnings and above from all sources
+  un paas logs --follow                    # follow all logs in real-time
+  un paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled.')
+}
+
+// `un paas logs ...` (args after "logs"); -p/--account resolved by main's first pass.
+fn cmd_paas_logs(args []string) int {
+	pub_key := get_public_key()
+	secret_key := get_secret_key()
+	mut source := 'all'
+	mut lines := 100
+	mut since := ''
+	mut grep := ''
+	mut level := ''
+	mut follow := false
+	mut json_out := false
+	mut i := 0
+	for i < args.len {
+		a := args[i]
+		has_next := i + 1 < args.len
+		if a in ['-p', '-k', '--account'] && has_next {
+			i++
+		} else if a == '--source' && has_next {
+			i++
+			source = args[i]
+		} else if a == '--all' {
+			source = 'all'
+		} else if a == '--api' {
+			source = 'api'
+		} else if a == '--portal' {
+			source = 'portal'
+		} else if a == '--pool' && has_next {
+			i++
+			source = 'pool/${args[i]}'
+		} else if a in ['--lines', '-n'] && has_next {
+			i++
+			n := args[i].int()
+			lines = if n < 1 { 1 } else if n > 10000 { 10000 } else { n }
+		} else if a == '--since' && has_next {
+			i++
+			since = args[i]
+		} else if a == '--grep' && has_next {
+			i++
+			grep = args[i]
+		} else if a in ['--level', '-l'] && has_next {
+			i++
+			level = args[i]
+		} else if a in ['--follow', '-f'] {
+			follow = true
+		} else if a == '--json' {
+			json_out = true
+		} else if a in ['-h', '--help'] {
+			paas_logs_help()
+			return 0
+		}
+		i++
+	}
+	if pub_key == '' {
+		eprintln('Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key')
+		return 1
+	}
+	if follow {
+		return stream_paas_logs(source, grep, level, pub_key, secret_key)
+	}
+	if since == '' {
+		since = read_paas_cursor()
+		if since == '' {
+			since = '5m'
+		}
+	}
+	return fetch_paas_logs(source, lines, since, grep, json_out, level, pub_key, secret_key)
+}
+
+// Kept for compatibility with older callers: portal /logs/{source}.
 fn cmd_logs(source string, lines int, since string, grep string, follow bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
-
 	src := if source != '' { source } else { 'all' }
-	ln := if lines > 0 { lines } else { 100 }
-	sn := if since != '' { since } else { '1h' }
-
-	if follow {
-		mut endpoint := '/paas/logs/stream?source=${src}'
-		if grep != '' { endpoint += '&grep=${grep}' }
-		sig_prefix := signed_shell_prefix('GET', endpoint, '', secret_key)
-		cmd := "${sig_prefix}curl -s -N -X GET '${portal_base}${endpoint}' -H 'Accept: text/event-stream' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
-		println(exec_curl(cmd))
+	rc := if follow {
+		stream_paas_logs(src, grep, '', pub_key, secret_key)
 	} else {
-		mut endpoint := '/paas/logs?source=${src}&lines=${ln}&since=${sn}'
-		if grep != '' { endpoint += '&grep=${grep}' }
-		sig_prefix := signed_shell_prefix('GET', endpoint, '', secret_key)
-		cmd := "${sig_prefix}curl -s -X GET '${portal_base}${endpoint}' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
-		println(exec_curl(cmd))
+		n := if lines > 0 { if lines > 10000 { 10000 } else { lines } } else { 100 }
+		fetch_paas_logs(src, n, if since != '' { since } else { '5m' }, grep, false, '', pub_key, secret_key)
+	}
+	if rc != 0 {
+		exit(rc)
 	}
 }
 
@@ -2090,30 +2458,21 @@ fn main() {
 		return
 	}
 
-	if os.args[1] == 'logs' {
-		mut source := ''
-		mut lines := 0
-		mut since := ''
-		mut grep := ''
-		mut follow := false
-
-		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
-				'--source' { i++; source = os.args[i] }
-				'--lines' { i++; lines = os.args[i].int() }
-				'--since' { i++; since = os.args[i] }
-				'--grep' { i++; grep = os.args[i] }
-				'--follow', '-f' { follow = true }
-				'-k' { i++; api_key = os.args[i] }
-				'--account' { i++  /* already handled in first pass */ }
-				else {}
-			}
-			i++
+	if os.args[1] == 'paas' {
+		if os.args.len < 3 {
+			eprintln('Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun \'un paas <command> -h\' for help on a specific command.')
+			exit(1)
 		}
+		if os.args[2] != 'logs' {
+			eprintln('Error: Unknown paas command \'${os.args[2]}\'\nRun \'un paas\' for available commands.')
+			exit(1)
+		}
+		exit(cmd_paas_logs(os.args[3..]))
+	}
 
-		cmd_logs(source, lines, since, grep, follow, api_key)
-		return
+	if os.args[1] == 'logs' {
+		// Alias for `paas logs`
+		exit(cmd_paas_logs(os.args[2..]))
 	}
 
 	if os.args[1] == 'health' {

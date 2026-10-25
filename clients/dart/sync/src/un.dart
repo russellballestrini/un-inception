@@ -115,7 +115,12 @@ final String apiBase = (() {
   final url = Platform.environment['UNSANDBOX_API_URL'] ?? '';
   return url.isEmpty ? 'https://api.unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
 })();
-const String portalBase = 'https://unsandbox.com';
+// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
+// Serves /logs/{source} (partner log access) and /keys/extend.
+final String portalBase = (() {
+  final url = Platform.environment['UNSANDBOX_PORTAL_URL'] ?? '';
+  return url.isEmpty ? 'https://unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
+})();
 const String blue = '\x1B[34m';
 const String red = '\x1B[31m';
 const String green = '\x1B[32m';
@@ -1408,13 +1413,270 @@ Future<void> serviceRedeploy(String id, String? bootstrap, String publicKey, Str
   print('${green}Service redeploying: $id$reset');
 }
 
-// PaaS logs functions
-Future<void> logsFetch(String source, int lines, String? since, String? grepPattern, String publicKey, String? secretKey) async {
-  var params = '?source=$source&lines=$lines';
-  if (since != null) params += '&since=$since';
-  if (grepPattern != null) params += '&grep=${Uri.encodeComponent(grepPattern)}';
-  final result = await apiRequestCurl('/logs$params', 'GET', null, publicKey, secretKey);
-  print(jsonEncode(result));
+// PaaS logs: GET {portalBase}/logs/{source}[/stream], HMAC over the path only.
+// Partner keys with log access; anything else answers 401/403. In-process HTTP.
+int _unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+String _logsQuery(String base, List<List<String?>> params) {
+  final parts = <String>[];
+  for (final p in params) {
+    final v = p[1];
+    if (v == null || v.isEmpty) continue;
+    parts.add('${p[0]}=${Uri.encodeComponent(v)}');
+  }
+  return parts.isEmpty ? base : '$base?${parts.join('&')}';
+}
+
+String _logCursorPath() => '${Platform.environment['HOME'] ?? '.'}/.unsandbox/paas_log_cursor';
+
+String? _readLogCursor() {
+  try {
+    final ts = int.parse(File(_logCursorPath()).readAsStringSync().trim());
+    if (ts <= 0) return null;
+    final ago = _unixNow() - ts;
+    return '${ago < 5 ? 5 : ago}s';
+  } catch (_) {
+    return null;
+  }
+}
+
+void _writeLogCursor() {
+  try {
+    final dir = Directory('${Platform.environment['HOME'] ?? '.'}/.unsandbox');
+    if (!dir.existsSync()) {
+      dir.createSync(recursive: true);
+      Process.runSync('chmod', ['700', dir.path]);
+    }
+    File(_logCursorPath()).writeAsStringSync('${_unixNow()}\n');
+  } catch (_) {}
+}
+
+Future<HttpClientResponse> _logsOpen(HttpClient client, String publicKey, String? secretKey, String path, String url, bool stream) async {
+  final req = await client.getUrl(Uri.parse(url));
+  req.headers.set('User-Agent', 'un-cli/2.0');
+  req.headers.set('Authorization', 'Bearer $publicKey');
+  if (stream) req.headers.set('Accept', 'text/event-stream');
+  if (secretKey != null && secretKey.isNotEmpty) {
+    // the secret only signs in-process; it never leaves this process
+    final ts = _unixNow().toString();
+    req.headers.set('X-Timestamp', ts);
+    req.headers.set('X-Signature', hmacSha256Hex(utf8.encode(secretKey), utf8.encode('$ts:GET:$path:')));
+  }
+  return req.close();
+}
+
+void _logsPrintLine(String? source, String line) {
+  if (source != null && source.isNotEmpty) {
+    stdout.writeln('${source.padRight(12)} $line');
+  } else {
+    stdout.writeln(line);
+  }
+}
+
+String _logsErrorText(String body) {
+  try {
+    final e = (jsonDecode(body) as Map)['error'];
+    return e is String ? ' — $e' : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/// Batch fetch from the portal; prints lines (or raw JSON). Returns an exit code.
+Future<int> paasLogsFetch(String publicKey, String? secretKey, String source, int lines, String? since, String? grepPattern, String? level, bool jsonOutput) async {
+  final path = '/logs/$source';
+  final url = _logsQuery('$portalBase$path', [['lines', '$lines'], ['since', since], ['grep', grepPattern], ['level', level]]);
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 30);
+  try {
+    int code;
+    String body;
+    try {
+      final resp = await _logsOpen(client, publicKey, secretKey, path, url, false);
+      code = resp.statusCode;
+      body = await resp.transform(utf8.decoder).join();
+    } catch (e) {
+      stderr.writeln('Error: Network error fetching logs: $e');
+      return 1;
+    }
+    if (code != 200) {
+      stderr.writeln('Error: HTTP $code${_logsErrorText(body)}');
+      return 1;
+    }
+    _writeLogCursor();
+    if (jsonOutput) {
+      stdout.writeln(body);
+      return 0;
+    }
+    dynamic j;
+    try { j = jsonDecode(body); } catch (_) {}
+    final ls = j is Map ? j['lines'] : null;
+    if (ls is! List) {
+      stderr.writeln('Error: Invalid response format');
+      return 1;
+    }
+    final isAll = (j as Map).containsKey('sources');
+    for (final e in ls) {
+      if (e is String) {
+        _logsPrintLine(null, e);
+      } else if (e is Map && e['line'] is String) {
+        _logsPrintLine(isAll ? e['source'] as String? : null, e['line'] as String);
+      }
+    }
+    return 0;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+/// Follow via SSE; reconnects with backoff (2 s doubling to 30 s), re-signing each time.
+Future<int> paasLogsStream(String publicKey, String? secretKey, String source, String? grepPattern, String? level) async {
+  final path = '/logs/$source/stream';
+  stderr.writeln('Streaming $source logs... (Ctrl+C to stop)');
+  var delay = 2;
+  var lastRecv = 0;
+  var reconnect = false;
+  while (true) {
+    String? since;
+    if (reconnect && lastRecv > 0) {
+      final gap = _unixNow() - lastRecv + 5;
+      since = '${gap < 10 ? 10 : gap}s';
+    }
+    final url = _logsQuery('$portalBase$path', [['grep', grepPattern], ['level', level], ['since', since]]);
+    final started = _unixNow();
+    var code = 0;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 30);
+    try {
+      final resp = await _logsOpen(client, publicKey, secretKey, path, url, true);
+      code = resp.statusCode;
+      if (code == 200) {
+        await for (final line in resp.transform(utf8.decoder).transform(const LineSplitter()).timeout(const Duration(seconds: 120))) {
+          if (!line.startsWith('data: ')) continue;
+          final payload = line.substring(6);
+          if (payload == ':keepalive') continue;
+          dynamic j;
+          try { j = jsonDecode(payload); } catch (_) {}
+          if (j is Map && j['line'] is String) {
+            _logsPrintLine(j['source'] as String?, j['line'] as String);
+            lastRecv = _unixNow();
+          } else if (j is Map && j.containsKey('event')) {
+            // lifecycle event (timeout/exit): nothing to print
+          } else {
+            _logsPrintLine(null, payload);
+            lastRecv = _unixNow();
+          }
+        }
+      } else {
+        await resp.drain<void>();
+      }
+    } catch (_) {
+      // dropped connection / timeout: reconnect below
+    } finally {
+      client.close(force: true);
+    }
+    if (code == 401 || code == 403) {
+      stderr.writeln('Error: HTTP $code (auth failed)');
+      return 1;
+    } else if (code == 0 || code == 200 || code >= 500) {
+      if (_unixNow() - started > 30) delay = 2;
+      await Future.delayed(Duration(seconds: delay));
+      delay = delay * 2 > 30 ? 30 : delay * 2;
+      reconnect = true;
+    } else {
+      stderr.writeln('Error: HTTP $code');
+      return 1;
+    }
+  }
+}
+
+const String _paasLogsHelp = '''Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  --account N        Account index in ~/.unsandbox/accounts.csv
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.''';
+
+Future<int> cmdPaas(List<String> argv) async {
+  if (argv.isEmpty) {
+    stderr.writeln('Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs');
+    return 1;
+  }
+  if (argv[0] != 'logs') {
+    stderr.writeln("Error: Unknown paas command '${argv[0]}'");
+    return 1;
+  }
+  var source = 'all';
+  var lines = 100;
+  String? since, grepPattern, level, pk, sk;
+  int? account;
+  var follow = false, jsonOutput = false;
+  for (var i = 1; i < argv.length; i++) {
+    final opt = argv[i];
+    final val = i + 1 < argv.length ? argv[i + 1] : null;
+    if (opt == '-h' || opt == '--help') {
+      stderr.writeln(_paasLogsHelp);
+      return 0;
+    } else if (opt == '--all') {
+      source = 'all';
+    } else if (opt == '--api') {
+      source = 'api';
+    } else if (opt == '--portal') {
+      source = 'portal';
+    } else if (opt == '--follow' || opt == '-f') {
+      follow = true;
+    } else if (opt == '--json') {
+      jsonOutput = true;
+    } else if (val == null) {
+      continue;
+    } else if (opt == '--pool') {
+      source = 'pool/$val'; i++;
+    } else if (opt == '--source') {
+      source = val; i++;
+    } else if (opt == '--lines' || opt == '-n') {
+      final n = int.tryParse(val) ?? 1;
+      lines = n < 1 ? 1 : (n > 10000 ? 10000 : n);
+      i++;
+    } else if (opt == '--since') {
+      since = val; i++;
+    } else if (opt == '--grep') {
+      grepPattern = val; i++;
+    } else if (opt == '--level' || opt == '-l') {
+      level = val; i++;
+    } else if (opt == '-p') {
+      pk = val; i++;
+    } else if (opt == '-k') {
+      sk = val; i++;
+    } else if (opt == '--account') {
+      account = int.tryParse(val); i++;
+    }
+  }
+  final keys = getApiKeys(sk, argsPublicKey: pk, account: account);
+  final publicKey = keys[0]!;
+  final secretKey = keys[1];
+  if (follow) return paasLogsStream(publicKey, secretKey, source, grepPattern, level);
+  return paasLogsFetch(publicKey, secretKey, source, lines, since ?? _readLogCursor() ?? '5m', grepPattern, level, jsonOutput);
+}
+
+// Library form kept for callers: prints the raw JSON response.
+Future<void> logsFetch(String source, int lines, String? since, String? grepPattern, String publicKey, String? secretKey, {String? level}) async {
+  await paasLogsFetch(publicKey, secretKey, source, lines, since ?? '5m', grepPattern, level, true);
 }
 
 // Utility functions
@@ -2067,6 +2329,11 @@ Languages options:
 }
 
 void main(List<String> arguments) async {
+  if (arguments.isNotEmpty && arguments[0] == 'paas') {
+    final rc = await cmdPaas(arguments.sublist(1));
+    await stdout.flush();
+    exit(rc);
+  }
   try {
     final args = parseArgs(arguments);
 

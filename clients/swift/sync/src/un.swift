@@ -89,7 +89,13 @@ let API_BASE: String = {
     while base.hasSuffix("/") { base.removeLast() }
     return base
 }()
-let PORTAL_BASE = "https://unsandbox.com"
+/// Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)
+let PORTAL_BASE: String = {
+    var base = ProcessInfo.processInfo.environment["UNSANDBOX_PORTAL_URL"] ?? ""
+    if base.isEmpty { base = "https://unsandbox.com" }
+    while base.hasSuffix("/") { base.removeLast() }
+    return base
+}()
 let POLL_DELAYS_MS: [Int] = [300, 450, 700, 900, 650, 1600, 2000]
 let LANGUAGES_CACHE_TTL: TimeInterval = 3600  // 1 hour
 
@@ -1299,72 +1305,57 @@ func transferImage(_ imageId: String, toApiKey: String, publicKey: String? = nil
 
 // MARK: - PaaS Logs
 
-/// Fetch batch logs from the portal
-func fetchLogs(source: String = "all", lines: Int = 100, since: String = "1h", grep: String? = nil, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
+/// Fetch batch logs from the portal: GET {PORTAL}/logs/{source}
+/// (source: all, api, portal, pool/<node>). Signs the path only.
+func fetchLogs(source: String = "all", lines: Int = 100, since: String = "1h", grep: String? = nil, level: String? = nil, publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    var endpoint = "/paas/logs?source=\(source)&lines=\(lines)&since=\(since)"
-    if let grep = grep {
-        endpoint += "&grep=\(grep.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? grep)"
+    let path = "/logs/\(source)"
+    let (status, data, netError) = portalGet(path: path, query: paasLogsQuery(lines: lines, since: since, grep: grep, level: level), publicKey: pk, secretKey: sk)
+    if let netError = netError { throw UnsandboxError.networkError(netError) }
+    let json = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+    if status != 200 {
+        throw UnsandboxError.apiError(status, json?["error"] as? String ?? String(data: data ?? Data(), encoding: .utf8) ?? "")
     }
+    guard let result = json else { throw UnsandboxError.invalidResponse("Failed to parse JSON") }
+    return result
+}
 
-    let url = URL(string: "\(PORTAL_BASE)\(endpoint)")!
+/// Percent-encode a query value (RFC 3986 unreserved characters pass through)
+func paasQueryEncode(_ v: String) -> String {
+    let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+    return v.addingPercentEncoding(withAllowedCharacters: allowed) ?? v
+}
+
+/// Build "?lines=..&since=..&grep=..&level=.." (empty values omitted)
+func paasLogsQuery(lines: Int?, since: String?, grep: String?, level: String?) -> String {
+    var parts: [String] = []
+    if let lines = lines { parts.append("lines=\(lines)") }
+    for (k, v) in [("since", since), ("grep", grep), ("level", level)] {
+        if let v = v, !v.isEmpty { parts.append("\(k)=\(paasQueryEncode(v))") }
+    }
+    return parts.isEmpty ? "" : "?" + parts.joined(separator: "&")
+}
+
+/// Signed GET on the portal. Returns (status, body, network error).
+func portalGet(path: String, query: String, publicKey: String, secretKey: String) -> (Int, Data?, String?) {
+    guard let url = URL(string: "\(PORTAL_BASE)\(path)\(query)") else { return (0, nil, "invalid URL") }
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
-    request.timeoutInterval = 30
-
+    request.timeoutInterval = 60
     let timestamp = Int(Date().timeIntervalSince1970)
-    let signature = signRequest(secretKey: sk, timestamp: timestamp, method: "GET", path: endpoint, body: nil)
-
-    request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(publicKey)", forHTTPHeaderField: "Authorization")
     request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
-    request.setValue(signature, forHTTPHeaderField: "X-Signature")
-
-    var result: [String: Any]?
-    var requestError: Error?
-
+    request.setValue(signRequest(secretKey: secretKey, timestamp: timestamp, method: "GET", path: path, body: nil), forHTTPHeaderField: "X-Signature")
+    var status = 0; var body: Data?; var err: String?
     let semaphore = DispatchSemaphore(value: 0)
-
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
-        defer { semaphore.signal() }
-
-        if let error = error {
-            requestError = UnsandboxError.networkError(error.localizedDescription)
-            return
-        }
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            requestError = UnsandboxError.invalidResponse("No HTTP response")
-            return
-        }
-
-        guard let data = data else {
-            requestError = UnsandboxError.invalidResponse("No data received")
-            return
-        }
-
-        if httpResponse.statusCode >= 400 {
-            let body = String(data: data, encoding: .utf8) ?? "Unknown error"
-            requestError = UnsandboxError.apiError(httpResponse.statusCode, body)
-            return
-        }
-
-        do {
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                result = json
-            }
-        } catch {
-            requestError = UnsandboxError.invalidResponse("Failed to parse JSON")
-        }
-    }
-
-    task.resume()
+    URLSession.shared.dataTask(with: request) { data, response, error in
+        if let error = error { err = error.localizedDescription }
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        body = data
+        semaphore.signal()
+    }.resume()
     semaphore.wait()
-
-    if let error = requestError {
-        throw error
-    }
-
-    return result ?? [:]
+    return (status, body, err)
 }
 
 // MARK: - Health Check
@@ -1639,6 +1630,7 @@ func printHelp() {
         un snapshot [options]             Manage snapshots
         un key                            Check API key
         un languages [--json]             List available languages
+        un paas logs [options]            Platform logs (partner keys; un paas logs -h)
 
     GLOBAL OPTIONS:
         -s, --shell LANG      Language for inline code
@@ -2459,27 +2451,232 @@ func handleImageCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
 
 /// Handle logs command
 func handleLogsCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
-    let source = args.logsSource ?? "all"
-    let lines = args.logsLines ?? 100
-    let since = args.logsSince ?? "1h"
-    let grep = args.logsGrep
+    var o = PaasLogsOptions()
+    o.source = args.logsSource ?? "all"
+    if let n = args.logsLines { o.lines = min(max(n, 1), 10000) }
+    o.since = args.logsSince
+    o.grep = args.logsGrep
+    o.follow = args.logsFollow
+    o.json = args.jsonOutput
+    exit(runPaasLogs(o, pk, sk))
+}
 
-    let result = try fetchLogs(source: source, lines: lines, since: since, grep: grep, publicKey: pk, secretKey: sk)
+// MARK: - un paas logs (portal /logs/{source}, partner log access)
 
-    if let logs = result["logs"] as? [[String: Any]] {
-        for log in logs {
-            let src = log["source"] as? String ?? "unknown"
-            let line = log["line"] as? String ?? ""
-            let timestamp = log["timestamp"] as? String ?? ""
-            if timestamp.isEmpty {
-                print("[\(src)] \(line)")
-            } else {
-                print("[\(timestamp)] [\(src)] \(line)")
+struct PaasLogsOptions {
+    var source = "all"
+    var lines = 100
+    var since: String? = nil
+    var grep: String? = nil
+    var level: String? = nil
+    var follow = false
+    var json = false
+    var publicKey: String? = nil
+    var secretKey: String? = nil
+    var account: Int? = nil
+    var help = false
+}
+
+func parsePaasLogsArgs(_ a: [String]) -> PaasLogsOptions {
+    var o = PaasLogsOptions()
+    var i = 0
+    func next() -> String? { if i + 1 < a.count { i += 1; return a[i] }; return nil }
+    while i < a.count {
+        switch a[i] {
+        case "-p": if let v = next() { o.publicKey = v }
+        case "-k": if let v = next() { o.secretKey = v }
+        case "--account": if let v = next() { o.account = Int(v) }
+        case "--source": if let v = next() { o.source = v }
+        case "--all": o.source = "all"
+        case "--api": o.source = "api"
+        case "--portal": o.source = "portal"
+        case "--pool": if let v = next() { o.source = "pool/\(v)" }
+        case "--lines", "-n": if let v = next() { o.lines = min(max(Int(v) ?? 1, 1), 10000) }
+        case "--since": if let v = next() { o.since = v }
+        case "--grep": if let v = next() { o.grep = v }
+        case "--level", "-l": if let v = next() { o.level = v }
+        case "--follow", "-f": o.follow = true
+        case "--json": o.json = true
+        case "-h", "--help": o.help = true
+        default: break
+        }
+        i += 1
+    }
+    return o
+}
+
+func printPaasLogsHelp() {
+    fputs("""
+    Usage: un paas logs [options]
+
+    Fetch or stream PaaS production logs.
+
+    Sources:
+      --all              All sources (default)
+      --api              API server logs
+      --portal           Portal server logs
+      --pool NODE        Pool node logs (e.g., cammy, ai)
+      --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+    Options:
+      --lines N, -n N    Number of lines (default: 100, max: 10000)
+      --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+      --grep PATTERN     Filter log lines by pattern
+      --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+      --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+      --json             Output raw JSON response
+      -p KEY             Public key
+      -k KEY             Secret key
+      -h                 Show this help
+
+    Requires a partner API key with log access enabled.
+
+    """, stderr)
+}
+
+func paasLogCursorPath() -> String? {
+    guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty else { return nil }
+    return "\(home)/.unsandbox/paas_log_cursor"
+}
+
+/// Seconds since the last successful fetch ("42s", minimum 5s), or nil
+func readPaasLogCursor() -> String? {
+    guard let p = paasLogCursorPath(), let txt = try? String(contentsOfFile: p, encoding: .utf8),
+          let ts = Int(txt.trimmingCharacters(in: .whitespacesAndNewlines)), ts > 0 else { return nil }
+    return "\(max(Int(Date().timeIntervalSince1970) - ts, 5))s"
+}
+
+func writePaasLogCursor() {
+    guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty, let p = paasLogCursorPath() else { return }
+    try? FileManager.default.createDirectory(atPath: "\(home)/.unsandbox", withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try? "\(Int(Date().timeIntervalSince1970))\n".write(toFile: p, atomically: true, encoding: .utf8)
+}
+
+func paasLogsPrintTagged(_ source: String, _ line: String) {
+    print("\u{001B}[36m" + source.padding(toLength: max(12, source.count), withPad: " ", startingAt: 0) + "\u{001B}[0m " + line)
+    fflush(stdout)
+}
+
+func runPaasLogs(_ o: PaasLogsOptions, _ pk: String, _ sk: String) -> Int32 {
+    let path = "/logs/\(o.source)"
+    if o.follow { return streamPaasLogs(o, pk, sk) }
+    let since = o.since ?? readPaasLogCursor() ?? "5m"
+    let (status, data, netError) = portalGet(path: path, query: paasLogsQuery(lines: o.lines, since: since, grep: o.grep, level: o.level), publicKey: pk, secretKey: sk)
+    if let netError = netError {
+        fputs("Error: Network error fetching logs: \(netError)\n", stderr)
+        return 1
+    }
+    let json = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any]
+    if status != 200 {
+        var msg = "Error: HTTP \(status)"
+        if let e = json?["error"] as? String { msg += " \u{2014} \(e)" }
+        fputs(msg + "\n", stderr)
+        return 1
+    }
+    writePaasLogCursor()
+    if o.json {
+        print(String(data: data ?? Data(), encoding: .utf8) ?? "")
+        return 0
+    }
+    guard let result = json, let lines = result["lines"] as? [Any] else {
+        fputs("Error: Invalid response format\n", stderr)
+        return 1
+    }
+    for entry in lines {
+        if let s = entry as? String {
+            print(s)
+        } else if let d = entry as? [String: Any], let line = d["line"] as? String {
+            if let src = d["source"] as? String { paasLogsPrintTagged(src, line) } else { print(line) }
+        }
+    }
+    fflush(stdout)
+    return 0
+}
+
+/// Incremental SSE reader: prints each `data: {"source","line"}` event as it arrives
+final class PaasSSEDelegate: NSObject, URLSessionDataDelegate {
+    var status = 0
+    var error: String?
+    var lastRecv: Date?
+    private var buf = Data()
+    let done = DispatchSemaphore(value: 0)
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard status == 200 else { return }
+        buf.append(data)
+        let sep = Data("\n\n".utf8)
+        while let r = buf.range(of: sep) {
+            let event = String(data: buf.subdata(in: buf.startIndex..<r.lowerBound), encoding: .utf8) ?? ""
+            buf.removeSubrange(buf.startIndex..<r.upperBound)
+            for line in event.split(separator: "\n", omittingEmptySubsequences: false) where line.hasPrefix("data: ") {
+                let payload = String(line.dropFirst(6))
+                if payload == ":keepalive" { continue }
+                lastRecv = Date()
+                if let d = (try? JSONSerialization.jsonObject(with: Data(payload.utf8))) as? [String: Any] {
+                    if let line = d["line"] as? String {
+                        if let src = d["source"] as? String { paasLogsPrintTagged(src, line) } else { print(line); fflush(stdout) }
+                    }
+                } else {
+                    print(payload); fflush(stdout)
+                }
             }
         }
-    } else {
-        let jsonData = try JSONSerialization.data(withJSONObject: result, options: .prettyPrinted)
-        print(String(data: jsonData, encoding: .utf8) ?? "{}")
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error { self.error = error.localizedDescription }
+        done.signal()
+    }
+}
+
+func streamPaasLogs(_ o: PaasLogsOptions, _ pk: String, _ sk: String) -> Int32 {
+    let path = "/logs/\(o.source)/stream"
+    fputs("Streaming \(o.source) logs... (Ctrl+C to stop)\n", stderr)
+    var delay: UInt32 = 2
+    var lastRecv: Date? = nil
+    var reconnect = false
+    while true {
+        var since: String? = nil
+        if reconnect, let last = lastRecv {
+            since = "\(max(Int(Date().timeIntervalSince(last)) + 5, 10))s"
+        }
+        guard let url = URL(string: "\(PORTAL_BASE)\(path)\(paasLogsQuery(lines: nil, since: since, grep: o.grep, level: o.level))") else { return 1 }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 120
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        // Fresh HMAC headers each connection (timestamps expire)
+        let timestamp = Int(Date().timeIntervalSince1970)
+        request.setValue("Bearer \(pk)", forHTTPHeaderField: "Authorization")
+        request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
+        request.setValue(signRequest(secretKey: sk, timestamp: timestamp, method: "GET", path: path, body: nil), forHTTPHeaderField: "X-Signature")
+        let delegate = PaasSSEDelegate()
+        delegate.lastRecv = lastRecv
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let started = Date()
+        session.dataTask(with: request).resume()
+        delegate.done.wait()
+        session.finishTasksAndInvalidate()
+        lastRecv = delegate.lastRecv
+        if Date().timeIntervalSince(started) > 30 { delay = 2 }
+        if delegate.status == 401 || delegate.status == 403 {
+            fputs("Error: HTTP \(delegate.status) (auth failed)\n", stderr)
+            return 1
+        }
+        if delegate.status == 200 || delegate.status >= 500 || delegate.status == 0 {
+            // Dropped, ended, or transient: silent reconnect with backoff
+            sleep(delay)
+            delay = min(delay * 2, 30)
+            reconnect = true
+            continue
+        }
+        fputs("Error: HTTP \(delegate.status)\n", stderr)
+        return 1
     }
 }
 
@@ -2787,8 +2984,26 @@ func handleLanguagesCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws 
 @main
 struct UnCLI {
     static func main() {
+        let argv = CommandLine.arguments
+        if argv.count >= 2 && (argv[1] == "paas" || argv[1] == "logs") {
+            // `un paas logs ...` (and the older top-level `un logs ...` alias)
+            let rest = argv[1] == "paas" ? Array(argv.dropFirst(2)) : ["logs"] + Array(argv.dropFirst(2))
+            guard rest.first == "logs" else {
+                fputs("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n", stderr)
+                exit(1)
+            }
+            let o = parsePaasLogsArgs(Array(rest.dropFirst()))
+            if o.help { printPaasLogsHelp(); exit(0) }
+            do {
+                let (pk, sk) = try resolveCredentials(publicKey: o.publicKey, secretKey: o.secretKey, accountIndex: o.account)
+                exit(runPaasLogs(o, pk, sk))
+            } catch {
+                fputs("Error: API credentials required.\n", stderr)
+                exit(1)
+            }
+        }
         let args = CLIArgs()
-        args.parse(CommandLine.arguments)
+        args.parse(argv)
 
         // Resolve credentials
         let pk: String

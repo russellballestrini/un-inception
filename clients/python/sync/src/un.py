@@ -2183,8 +2183,6 @@ def clone_image(
 # =============================================================================
 
 
-PORTAL_BASE = "https://unsandbox.com"
-
 
 def validate_keys(
     public_key: Optional[str] = None,
@@ -2285,6 +2283,39 @@ def image(
 _last_error: Optional[str] = None
 
 
+PORTAL_BASE = (os.environ.get("UNSANDBOX_PORTAL_URL") or "https://unsandbox.com").rstrip("/")
+
+# Platform logs live on the portal (RequireLogAccess, partner keys), not the API host:
+# GET {PORTAL_BASE}/logs/{api|portal|pool/NODE|all}[/stream]. HMAC signs the path only.
+
+
+def _logs_path(source: str, stream: bool = False) -> str:
+    source = (source or "all").strip("/") or "all"
+    return f"/logs/{source}" + ("/stream" if stream else "")
+
+
+def _logs_query(**params) -> str:
+    from urllib.parse import quote
+    parts = [f"{k}={quote(str(v), safe='-_.~')}" for k, v in params.items() if v not in (None, "")]
+    return ("?" + "&".join(parts)) if parts else ""
+
+
+def _portal_logs_get(path: str, query: str, public_key: str, secret_key: str, stream: bool = False):
+    """Signed GET to the portal; returns the requests.Response (caller checks status)."""
+    _check_requests()
+    timestamp = int(time.time())
+    headers = {
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": str(timestamp),
+        "X-Signature": _sign_request(secret_key, timestamp, "GET", path, None),
+    }
+    if stream:
+        headers["Accept"] = "text/event-stream"
+        return requests.get(f"{PORTAL_BASE}{path}{query}", headers=headers, stream=True,
+                            timeout=(30, 120))
+    return requests.get(f"{PORTAL_BASE}{path}{query}", headers=headers, timeout=120)
+
+
 def logs_fetch(
     source: str = "all",
     lines: int = 100,
@@ -2292,9 +2323,10 @@ def logs_fetch(
     grep: Optional[str] = None,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    level: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Fetch batch logs from the PaaS platform.
+    Fetch batch logs from the portal (partner log access).
 
     Args:
         source: Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
@@ -2303,20 +2335,45 @@ def logs_fetch(
         grep: Optional filter pattern
         public_key: Optional API key
         secret_key: Optional API secret
+        level: Optional minimum level (debug, info, notice, warning, err, crit)
 
     Returns:
-        Dict with log entries
+        Dict: {"source","lines":[...]} or, for "all", {"sources","lines":[{"source","line"}]}
 
     Raises:
-        requests.RequestException: Network errors
-        ValueError: Invalid response format
+        requests.RequestException: Network errors / non-2xx (HTTPError)
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    params = f"?source={source}&lines={lines}&since={since}"
-    if grep:
-        params += f"&grep={grep}"
-    return _make_request("GET", f"/logs{params}", public_key, secret_key)
+    lines = max(1, min(10000, int(lines)))
+    response = _portal_logs_get(_logs_path(source),
+                                _logs_query(lines=lines, since=since, grep=grep, level=level),
+                                public_key, secret_key)
+    response.raise_for_status()
+    return response.json()
+
+
+def _sse_entries(response):
+    """Yield (source, line) for each SSE data event; comments/keepalives yield nothing."""
+    for raw in response.iter_lines():
+        if not raw:
+            continue
+        decoded = raw.decode("utf-8", errors="replace")
+        if not decoded.startswith("data: "):
+            continue
+        data = decoded[6:]
+        if data == ":keepalive":
+            continue
+        try:
+            entry = json.loads(data)
+        except json.JSONDecodeError:
+            yield (None, data)
+            continue
+        if isinstance(entry, dict):
+            if "line" in entry:
+                yield (entry.get("source"), entry["line"])
+        else:
+            yield (None, data)
 
 
 def logs_stream(
@@ -2325,9 +2382,10 @@ def logs_stream(
     callback=None,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    level: Optional[str] = None,
 ) -> None:
     """
-    Stream logs via Server-Sent Events.
+    Stream logs from the portal via Server-Sent Events (one connection).
 
     Blocks until interrupted or server closes connection.
 
@@ -2337,49 +2395,207 @@ def logs_stream(
         callback: Function called for each log line (signature: callback(source, line))
         public_key: Optional API key
         secret_key: Optional API secret
+        level: Optional minimum level
 
     Raises:
-        requests.RequestException: Network errors
+        requests.RequestException: Network errors / non-2xx (HTTPError)
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-
-    url = f"{API_BASE}/logs/stream?source={source}"
-    if grep:
-        url += f"&grep={grep}"
-
-    timestamp = int(time.time())
-    path = f"/logs/stream?source={source}"
-    if grep:
-        path += f"&grep={grep}"
-
-    signature = _sign_request(secret_key, timestamp, "GET", path, None)
-
-    headers = {
-        "Authorization": f"Bearer {public_key}",
-        "X-Timestamp": str(timestamp),
-        "X-Signature": signature,
-        "Accept": "text/event-stream",
-    }
-
-    with requests.get(url, headers=headers, stream=True, timeout=None) as response:
+    with _portal_logs_get(_logs_path(source, stream=True), _logs_query(grep=grep, level=level),
+                          public_key, secret_key, stream=True) as response:
         response.raise_for_status()
-        for line in response.iter_lines():
-            if line:
-                decoded = line.decode("utf-8")
-                if decoded.startswith("data: "):
-                    data = decoded[6:]
-                    try:
-                        entry = json.loads(data)
-                        if callback:
-                            callback(entry.get("source", source), entry.get("line", data))
-                        else:
-                            print(f"[{entry.get('source', source)}] {entry.get('line', data)}")
-                    except json.JSONDecodeError:
-                        if callback:
-                            callback(source, data)
-                        else:
-                            print(f"[{source}] {data}")
+        for src, line in _sse_entries(response):
+            src = src or source
+            if callback:
+                callback(src, line)
+            else:
+                print(f"{src:<12} {line}", flush=True)
+
+
+def _log_cursor_path() -> Path:
+    return Path(os.environ.get("HOME", str(Path.home()))) / ".unsandbox" / "paas_log_cursor"
+
+
+def _read_log_cursor() -> Optional[str]:
+    try:
+        ts = int(_log_cursor_path().read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if ts <= 0:
+        return None
+    return f"{max(5, int(time.time()) - ts)}s"
+
+
+def _write_log_cursor() -> None:
+    try:
+        p = _log_cursor_path()
+        p.parent.mkdir(mode=0o700, exist_ok=True)
+        p.write_text(f"{int(time.time())}\n")
+    except OSError:
+        pass
+
+
+def _http_error_text(response) -> str:
+    try:
+        err = response.json().get("error")
+    except Exception:
+        err = None
+    return f"Error: HTTP {response.status_code}" + (f" \u2014 {err}" if err else "")
+
+
+_PAAS_LOGS_HELP = """Usage: un.py paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled."""
+
+
+def _paas_command(argv: List[str]) -> int:
+    """`un paas logs ...` - mirrors the C client's flags, output and exit codes."""
+    if not argv:
+        print("Usage: un.py paas <command> [options]\n\nCommands:\n"
+              "  logs    Fetch or stream production logs", file=sys.stderr)
+        return 1
+    if argv[0] != "logs":
+        print(f"Error: Unknown paas command '{argv[0]}'", file=sys.stderr)
+        return 1
+    source, lines, since, grep, level = "all", 100, None, None, None
+    follow = as_json = False
+    pk = sk = None
+    account = None
+    args = argv[1:]
+    i = 0
+    def nxt():
+        nonlocal i
+        i += 1
+        return args[i] if i < len(args) else None
+    def clamp(v):
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            n = 0
+        return max(1, min(10000, n))
+    while i < len(args):
+        a = args[i]
+        has = i + 1 < len(args)
+        if a == "-p" and has: pk = nxt()
+        elif a == "-k" and has: sk = nxt()
+        elif a == "--account" and has:
+            try: account = int(nxt())
+            except ValueError: account = 0
+        elif a == "--source" and has: source = nxt()
+        elif a == "--all": source = "all"
+        elif a == "--api": source = "api"
+        elif a == "--portal": source = "portal"
+        elif a == "--pool" and has: source = f"pool/{nxt()}"
+        elif a in ("--lines", "-n") and has: lines = clamp(nxt())
+        elif a == "--since" and has: since = nxt()
+        elif a == "--grep" and has: grep = nxt()
+        elif a in ("--level", "-l") and has: level = nxt()
+        elif a in ("--follow", "-f"): follow = True
+        elif a == "--json": as_json = True
+        elif a in ("-h", "--help"):
+            print(_PAAS_LOGS_HELP, file=sys.stderr)
+            return 0
+        i += 1
+    try:
+        public_key, secret_key = _resolve_credentials(pk, sk, account)
+    except CredentialsError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if since is None:
+        since = _read_log_cursor() or "5m"
+    _check_requests()
+    if follow:
+        return _paas_logs_follow(source, grep, level, public_key, secret_key)
+    try:
+        response = _portal_logs_get(_logs_path(source),
+                                    _logs_query(lines=lines, since=since, grep=grep, level=level),
+                                    public_key, secret_key)
+    except requests.exceptions.RequestException as e:
+        print(f"Error: Network error fetching logs: {e}", file=sys.stderr)
+        return 1
+    if response.status_code != 200:
+        print(_http_error_text(response), file=sys.stderr)
+        return 1
+    _write_log_cursor()
+    if as_json:
+        print(response.text)
+        return 0
+    try:
+        data = response.json()
+        entries = data["lines"]
+    except Exception:
+        print("Error: Invalid response format", file=sys.stderr)
+        return 1
+    for e in entries:
+        if isinstance(e, dict):
+            if e.get("source") is not None:
+                print(f"{e['source']:<12} {e.get('line', '')}")
+            else:
+                print(e.get("line", ""))
+        else:
+            print(e)
+    return 0
+
+
+def _paas_logs_follow(source, grep, level, public_key, secret_key) -> int:
+    print(f"Streaming {source} logs... (Ctrl+C to stop)", file=sys.stderr)
+    path = _logs_path(source, stream=True)
+    delay, last_recv, reconnect = 2, 0.0, False
+    try:
+        while True:
+            since = None
+            if reconnect and last_recv > 0:
+                since = f"{max(10, int(time.time() - last_recv) + 5)}s"
+            connected = time.time()
+            status = None
+            try:
+                # fresh signature each connection (timestamps expire)
+                with _portal_logs_get(path, _logs_query(grep=grep, level=level, since=since),
+                                      public_key, secret_key, stream=True) as response:
+                    status = response.status_code
+                    if status in (401, 403):
+                        print(f"Error: HTTP {status} (auth failed)", file=sys.stderr)
+                        return 1
+                    if status == 200:
+                        for src, line in _sse_entries(response):
+                            if src is not None:
+                                print(f"{src:<12} {line}", flush=True)
+                            else:
+                                print(line, flush=True)
+                            last_recv = time.time()
+                    elif status < 500:
+                        print(_http_error_text(response), file=sys.stderr)
+                        return 1
+            except requests.exceptions.RequestException:
+                pass  # dropped / timed out: reconnect silently
+            if time.time() - connected > 30:
+                delay = 2
+            time.sleep(delay)
+            delay = min(30, delay * 2)
+            reconnect = True
+    except KeyboardInterrupt:
+        return 0
 
 
 # =============================================================================
@@ -2566,6 +2782,7 @@ Examples:
   python un.py service --list               List all services
   python un.py snapshot --list              List all snapshots
   python un.py key                          Check API key
+  python un.py paas logs --api -n 500       Platform logs (partner keys)
   python un.py languages                    List available languages
   python un.py languages --json             List languages as JSON
 """,
@@ -2775,6 +2992,8 @@ Examples:
 
 def cli_main():
     """Main entry point for CLI."""
+    if len(sys.argv) > 1 and sys.argv[1] == "paas":
+        sys.exit(_paas_command(sys.argv[2:]))
     parser = _build_parser()
     args = parser.parse_args()
 

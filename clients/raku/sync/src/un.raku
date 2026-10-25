@@ -69,7 +69,8 @@ use Digest::HMAC;
 
 # API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
 our $API_BASE is export = (%*ENV<UNSANDBOX_API_URL> || "https://api.unsandbox.com").subst(/'/'+$/, '');
-constant $PORTAL_BASE is export = "https://unsandbox.com";
+# Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash
+our $PORTAL_BASE is export = (%*ENV<UNSANDBOX_PORTAL_URL> || "https://unsandbox.com").subst(/'/'+$/, '');
 constant $DEFAULT_TIMEOUT is export = 300;
 constant $DEFAULT_TTL is export = 60;
 
@@ -1122,58 +1123,117 @@ sub image-clone(Str $image-id, Str :$name, Str :$description, Str :$public-key, 
 }
 
 # ============================================================================
-# PaaS Logs Functions
+# PaaS Logs Functions — portal: GET {PORTAL}/logs/{source}[/stream]
 # ============================================================================
 
-#| Fetch batch logs from portal
+sub logs-query(@pairs) {
+    my @parts = @pairs.grep({ .value.defined && .value ne '' }).map({ .key ~ '=' ~ uri-encode(.value.Str) });
+    return @parts ?? '?' ~ @parts.join('&') !! '';
+}
+
+#| curl argv for a signed portal GET. HMAC covers "ts:GET:<path>:" (path only,
+#| no query) — the portal verifies conn.request_path. Only the derived signature
+#| reaches curl; the secret stays in this process.
+sub portal-curl-args(Str $path, Str $url, @extra, Str :$public-key, Str :$secret-key, Int :$account-index = -1) {
+    my ($pk, $sk) = ($public-key.defined && $secret-key.defined)
+        ?? ($public-key, $secret-key) !! get-credentials(:$account-index);
+    my @args = 'curl', '-s', |@extra, '-H', 'User-Agent: un-cli/2.0', '-H', "Authorization: Bearer $pk";
+    if $sk {
+        my $timestamp = now.Int;
+        @args.append: '-H', "X-Timestamp: $timestamp", '-H', "X-Signature: {sign-request($sk, $timestamp, 'GET', $path, '')}";
+    }
+    @args.append: '-w', "\n__UN_HTTP__%\{http_code}\n", $url;
+    return @args;
+}
+
+#| Batch logs request: returns (http-code, body); code 0 on network failure.
+sub portal-logs-get(Str $source, Int $lines, $since, $grep, $level, *%cred) is export {
+    my $path = "/logs/$source";
+    my $url = $PORTAL_BASE ~ $path ~ logs-query((lines => $lines.Str, since => $since, grep => $grep, level => $level));
+    my $proc = CORE::<&run>(|portal-curl-args($path, $url, (), |%cred), :out);
+    my $out = $proc.out.slurp(:close);
+    if $out ~~ / ^ (.*) \n '__UN_HTTP__' (\d+) \n? $ / {
+        return ($1.Int, ~$0);
+    }
+    return (0, $out);
+}
+
+#| Fetch batch logs from the portal. Returns the raw JSON response body.
 #| source: "all", "api", "portal", "pool/cammy", "pool/ai"
-#| lines: number of lines (1-10000)
-#| since: time window ("1m", "5m", "1h", "1d")
-#| grep: optional filter pattern
+#| lines: number of lines (1-10000); since: "1m", "5m", "1h", "1d"
+#| grep: optional filter pattern; level: optional minimum level
 sub logs-fetch(
     Str :$source = 'all',
     Int :$lines = 100,
-    Str :$since = '1h',
+    Str :$since = '5m',
     Str :$grep,
+    Str :$level,
     Str :$public-key,
     Str :$secret-key
 ) returns Str is export {
-    my $endpoint = "/logs?source={$source}&lines={$lines}&since={$since}";
-    $endpoint ~= "&grep={uri-encode($grep)}" if $grep;
-    my %result = api-request($endpoint, 'GET', :$public-key, :$secret-key);
-    return to-json(%result);
+    my ($code, $body) = portal-logs-get($source, $lines, $since, $grep, $level, :$public-key, :$secret-key);
+    return $body;
 }
 
-#| Stream logs via SSE (blocking call)
-#| Returns when interrupted or server closes connection
+#| One SSE connection; returns (http-code, last-recv).
+sub logs-stream-once(Str $source, $grep, $level, $since, &callback, Int $last-recv is copy, *%cred) {
+    my $path = "/logs/$source/stream";
+    my $url = $PORTAL_BASE ~ $path ~ logs-query((grep => $grep, level => $level, since => $since));
+    my @args = portal-curl-args($path, $url, ('-N', '--http1.1', '-H', 'Accept: text/event-stream', '-Y', '1', '-y', '120'), |%cred);
+    my $proc = CORE::<&run>(|@args, :out);
+    my $code = 0;
+    for $proc.out.lines -> $line {
+        if $line.starts-with('__UN_HTTP__') {
+            $code = $line.substr(11).trim.Int;
+        } elsif $line.starts-with('data: ') {
+            my $payload = $line.substr(6);
+            next if $payload eq ':keepalive';
+            my $obj = try from-json($payload);
+            if $obj ~~ Associative {
+                if $obj<line>:exists {
+                    &callback($obj<source> // Str, $obj<line>.Str);
+                    $last-recv = now.Int;
+                }
+            } else {
+                &callback(Str, $payload);
+                $last-recv = now.Int;
+            }
+        }
+    }
+    $proc.out.close;
+    return ($code, $last-recv);
+}
+
+#| Stream logs via SSE (blocking). callback(source, line) per log line.
+#| Reconnects with backoff (2s doubling to 30s) and since=<gap>s; returns the
+#| HTTP status that ended it (401/403 = auth failed).
 sub logs-stream(
     Str :$source = 'all',
     Str :$grep,
-    :&callback,
+    Str :$level,
+    :&callback = -> $s, $l { say $l },
+    Bool :$reconnect = True,
     Str :$public-key,
-    Str :$secret-key
-) returns Bool is export {
-    my ($pk, $sk) = get-credentials(:$public-key, :$secret-key);
-    my $endpoint = "/logs/stream?source={$source}";
-    $endpoint ~= "&grep={uri-encode($grep)}" if $grep;
-
-    my $timestamp = now.Int;
-    my $signature = sign-request($sk, $timestamp, 'GET', $endpoint, '');
-
-    my @args = 'curl', '-s', '-N', "{$API_BASE}{$endpoint}";
-    @args.append: '-H', "Authorization: Bearer $pk";
-    @args.append: '-H', "X-Timestamp: $timestamp";
-    @args.append: '-H', "X-Signature: $signature";
-    @args.append: '-H', 'Accept: text/event-stream';
-
-    my $proc = CORE::<&run>(|@args, :out);
-    for $proc.out.lines -> $line {
-        if $line.starts-with('data: ') {
-            my $data = $line.substr(6);
-            &callback($source, $data) if &callback;
-        }
+    Str :$secret-key,
+    Int :$account-index = -1
+) returns Int is export {
+    my $delay = 2;
+    my $is-reconnect = False;
+    my $last-recv = 0;
+    loop {
+        my $since = ($is-reconnect && $last-recv > 0) ?? "{max(10, now.Int - $last-recv + 5)}s" !! Str;
+        my $t0 = now.Int;
+        my ($code, $lr) = logs-stream-once($source, $grep, $level, $since, &callback, $last-recv,
+                                            :$public-key, :$secret-key, :$account-index);
+        $last-recv = $lr;
+        $delay = 2 if now.Int - $t0 > 30;
+        return $code if $code == 401 || $code == 403;
+        return $code unless $code == 200 || $code == 0 || $code >= 500;
+        return $code unless $reconnect;
+        sleep $delay;
+        $delay = min(30, $delay * 2);
+        $is-reconnect = True;
     }
-    return True;
 }
 
 # ============================================================================
@@ -2417,6 +2477,132 @@ sub cmd-snapshot(@args, Int :$account-index = -1) {
     exit 1;
 }
 
+# paas logs CLI (mirrors the C client)
+sub paas-cursor-path() { %*ENV<HOME> ?? %*ENV<HOME>.IO.add('.unsandbox').add('paas_log_cursor') !! IO::Path }
+
+sub paas-read-cursor() {
+    my $p = paas-cursor-path();
+    return Str unless $p.defined && $p.e;
+    my $ts = try $p.slurp.trim.Int;
+    return Str unless $ts && $ts > 0;
+    return "{max(5, now.Int - $ts)}s";
+}
+
+sub paas-write-cursor() {
+    my $p = paas-cursor-path() or return;
+    my $dir = $p.parent;
+    unless $dir.d { try { $dir.mkdir(0o700) } }
+    try { $p.spurt("{now.Int}\n") };
+}
+
+sub paas-print-tagged($src, $line) {
+    if !$src.defined { say $line; return }
+    my $tag = sprintf('%-12s', $src);
+    say %*ENV<NO_COLOR> ?? "$tag $line" !! "\e[36m$tag\e[0m $line";
+    $*OUT.flush;
+}
+
+sub cmd-paas-logs(@args, Int :$account-index = -1) {
+    my %o = source => 'all', lines => 100;
+    my $i = 0;
+    while $i < @args.elems {
+        my $a = @args[$i];
+        my $v = $i + 1 < @args.elems ?? @args[$i + 1] !! Str;
+        given $a {
+            when '-p'        { if $v.defined { %o<pk> = $v; $i++ } }
+            when '-k'        { if $v.defined { %o<sk> = $v; $i++ } }
+            when '--source'  { if $v.defined { %o<source> = $v; $i++ } }
+            when '--all'     { %o<source> = 'all' }
+            when '--api'     { %o<source> = 'api' }
+            when '--portal'  { %o<source> = 'portal' }
+            when '--pool'    { if $v.defined { %o<source> = "pool/$v"; $i++ } }
+            when '--lines' | '-n' { if $v.defined { %o<lines> = max(1, min(10000, (try $v.Int) // 0)); $i++ } }
+            when '--since'   { if $v.defined { %o<since> = $v; $i++ } }
+            when '--grep'    { if $v.defined { %o<grep> = $v; $i++ } }
+            when '--level' | '-l' { if $v.defined { %o<level> = $v; $i++ } }
+            when '--follow' | '-f' { %o<follow> = True }
+            when '--json'    { %o<json> = True }
+            when '-h' | '--help' { %o<help> = True }
+        }
+        $i++;
+    }
+    if %o<help> {
+        note q:to/END/.chomp;
+        Usage: un.raku paas logs [options]
+
+        Fetch or stream PaaS production logs.
+
+        Sources:
+          --all              All sources (default)
+          --api              API server logs
+          --portal           Portal server logs
+          --pool NODE        Pool node logs (e.g., cammy, ai)
+          --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+        Options:
+          --lines N, -n N    Number of lines (default: 100, max: 10000)
+          --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+          --grep PATTERN     Filter log lines by pattern
+          --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+          --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+          --json             Output raw JSON response
+          -p KEY             Public key
+          -k KEY             Secret key
+          -h                 Show this help
+
+        Portal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com)
+        Requires a partner API key with log access enabled.
+        END
+        exit 0;
+    }
+    # -p/-k count only as a pair; otherwise the normal credential chain
+    my %cred = (%o<pk>.defined && %o<sk>.defined)
+        ?? (public-key => %o<pk>, secret-key => %o<sk>) !! (account-index => $account-index);
+    if %o<follow> {
+        note "Streaming %o<source> logs... (Ctrl+C to stop)";
+        my $code = logs-stream(:source(%o<source>), :grep(%o<grep>), :level(%o<level>),
+                               :callback(&paas-print-tagged), |%cred);
+        if $code == 401 || $code == 403 { note "Error: HTTP $code (auth failed)"; exit 1 }
+        note "Error: HTTP $code";
+        exit 1;
+    }
+    my $since = %o<since> // paas-read-cursor() // '5m';
+    my ($code, $body) = portal-logs-get(%o<source>, %o<lines>, $since, %o<grep>, %o<level>, |%cred);
+    if $code == 0 { note "Error: Network error fetching logs"; exit 1 }
+    if $code != 200 {
+        my $obj = try from-json($body);
+        my $err = ($obj ~~ Associative && $obj<error> ~~ Str && $obj<error> ne '') ?? " — $obj<error>" !! '';
+        note "Error: HTTP $code$err";
+        exit 1;
+    }
+    paas-write-cursor();
+    if %o<json> { say $body; exit 0 }
+    my $obj = try from-json($body);
+    unless $obj ~~ Associative && $obj<lines> ~~ Positional {
+        note "Error: Invalid response format";
+        exit 1;
+    }
+    my $is-all = $obj<sources>:exists;
+    for $obj<lines>.list -> $e {
+        if $e ~~ Associative {
+            $is-all ?? paas-print-tagged($e<source> // Str, $e<line>) !! say $e<line>;
+        } else {
+            say $e;
+        }
+    }
+    exit 0;
+}
+
+sub cmd-paas(@args, Int :$account-index = -1) {
+    if !@args {
+        note "Usage: un.raku paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs";
+        exit 1;
+    }
+    if @args[0] eq 'logs' { cmd-paas-logs(@args[1..*], :$account-index); return }
+    note "Error: Unknown paas command '@args[0]'";
+    exit 1;
+}
+
 sub MAIN(*@args is copy) is export {
     # Pre-parse --account N (global credential flag) before dispatching
     my $account-index = -1;
@@ -2438,6 +2624,7 @@ sub MAIN(*@args is copy) is export {
         note "       un.raku image [options]";
         note "       un.raku key [options]";
         note "       un.raku languages [--json]";
+        note "       un.raku paas logs [options]";
         note "";
         note "Languages options:";
         note "  --json              Output as JSON array";
@@ -2496,6 +2683,9 @@ sub MAIN(*@args is copy) is export {
         }
         when 'languages' {
             cmd-languages(@args[1..*], :$account-index);
+        }
+        when 'paas' {
+            cmd-paas(@args[1..*], :$account-index);
         }
         default {
             cmd-execute(@args, :$account-index);

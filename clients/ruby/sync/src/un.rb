@@ -65,6 +65,9 @@ module Un
   # API base URL
   API_BASE = ENV.fetch('UNSANDBOX_API_URL', 'https://api.unsandbox.com').sub(%r{/+\z}, '')
 
+  # Portal base URL (platform logs, key renewal)
+  PORTAL_BASE = (ENV['UNSANDBOX_PORTAL_URL'].to_s.empty? ? 'https://unsandbox.com' : ENV['UNSANDBOX_PORTAL_URL']).sub(%r{/+\z}, '')
+
   # Polling delays in milliseconds for exponential backoff
   POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000].freeze
 
@@ -1323,82 +1326,124 @@ module Un
     # PaaS Logs Functions
     # ============================================================================
 
-    # Fetch batch logs from the PaaS platform
+    # Platform logs live on the portal (RequireLogAccess, partner keys), not the API host:
+    # GET {PORTAL_BASE}/logs/{api|portal|pool/NODE|all}[/stream]. HMAC signs the path only.
+
+    # @return [String] "/logs/<source>" (+ "/stream")
+    def logs_path(source, stream = false)
+      src = source.to_s.gsub(%r{\A/+|/+\z}, '')
+      src = 'all' if src.empty?
+      "/logs/#{src}#{stream ? '/stream' : ''}"
+    end
+
+    # @return [String] "?k=v&..." with values percent-encoded, empty ones omitted
+    def logs_query(params)
+      parts = params.reject { |_, v| v.nil? || v.to_s.empty? }.map do |k, v|
+        "#{k}=#{v.to_s.b.gsub(/[^A-Za-z0-9\-_.~]/) { |c| format('%%%02X', c.ord) }}"
+      end
+      parts.empty? ? '' : "?#{parts.join('&')}"
+    end
+
+    # Signed GET to the portal. Without a block returns the Net::HTTPResponse;
+    # with a block yields the streaming response.
+    def portal_logs_get(path, query, public_key, secret_key, stream: false, &block)
+      uri = URI.parse("#{PORTAL_BASE}#{path}#{query}")
+      timestamp = Time.now.to_i
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == 'https')
+      http.open_timeout = 30
+      http.read_timeout = stream ? 120 : REQUEST_TIMEOUT
+      req = Net::HTTP::Get.new(uri.request_uri)
+      req['Authorization'] = "Bearer #{public_key}"
+      req['X-Timestamp'] = timestamp.to_s
+      req['X-Signature'] = sign_request(secret_key, timestamp, 'GET', path)
+      req['Accept'] = 'text/event-stream' if stream
+      http.start { |h| block ? h.request(req, &block) : h.request(req) }
+    end
+
+    # Feed SSE text into buf; yields [source, line] per data event (comments yield nothing)
+    def sse_feed(buf, chunk)
+      buf << chunk
+      while (idx = buf.index("\n"))
+        line = buf.slice!(0..idx).chomp
+        next unless line.start_with?('data: ')
+
+        data = line[6..]
+        next if data == ':keepalive'
+
+        begin
+          entry = JSON.parse(data)
+          if entry.is_a?(Hash)
+            yield entry['source'], entry['line'] if entry.key?('line')
+          else
+            yield nil, data
+          end
+        rescue JSON::ParserError
+          yield nil, data
+        end
+      end
+    end
+
+    # Fetch batch logs from the portal (partner log access)
     #
     # @param source [String] Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
     # @param lines [Integer] Number of lines to fetch (1-10000)
     # @param since [String] Time window - "1m", "5m", "1h", "1d"
     # @param grep [String, nil] Optional filter pattern
+    # @param level [String, nil] Optional minimum level (debug, info, notice, warning, err, crit)
     # @param public_key [String, nil] Optional API key
     # @param secret_key [String, nil] Optional API secret
-    # @return [Hash] Log entries
+    # @return [Hash] {"source","lines"=>[...]} or, for "all", {"sources","lines"=>[{"source","line"}]}
     # @raise [CredentialsError] If no credentials found
-    # @raise [APIError] If API request fails
+    # @raise [APIError] If the request fails
     #
     # @example
     #     logs = Un.logs_fetch(source: 'api', lines: 50, since: '5m')
     def logs_fetch(source: 'all', lines: 100, since: '5m', grep: nil,
-                   public_key: nil, secret_key: nil)
+                   public_key: nil, secret_key: nil, level: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      path = "/logs?source=#{source}&lines=#{lines}&since=#{since}"
-      path += "&grep=#{CGI.escape(grep)}" if grep
-      make_request('GET', path, pk, sk)
+      n = lines.to_i.clamp(1, 10_000)
+      response = portal_logs_get(logs_path(source), logs_query(lines: n, since: since, grep: grep, level: level), pk, sk)
+      unless response.code.to_i == 200
+        raise APIError.new("API request failed: #{response.code} #{response.message}",
+                           status_code: response.code.to_i, response_body: response.body)
+      end
+      JSON.parse(response.body)
     end
 
-    # Stream logs via Server-Sent Events
+    # Stream logs from the portal via Server-Sent Events (one connection)
     #
     # Blocks until interrupted or server closes connection.
     #
     # @param source [String] Log source - "all", "api", "portal", "pool/cammy", "pool/ai"
     # @param grep [String, nil] Optional filter pattern
+    # @param level [String, nil] Optional minimum level
     # @param public_key [String, nil] Optional API key
     # @param secret_key [String, nil] Optional API secret
     # @yield [source, line] Called for each log line received
     # @raise [CredentialsError] If no credentials found
-    # @raise [APIError] If API request fails
+    # @raise [APIError] If the request fails
     #
     # @example
     #     Un.logs_stream(source: 'api') do |src, line|
     #       puts "[#{src}] #{line}"
     #     end
-    def logs_stream(source: 'all', grep: nil, public_key: nil, secret_key: nil, &block)
+    def logs_stream(source: 'all', grep: nil, public_key: nil, secret_key: nil, level: nil)
       pk, sk = resolve_credentials(public_key, secret_key)
-      path = "/logs/stream?source=#{source}"
-      path += "&grep=#{CGI.escape(grep)}" if grep
-
-      uri = URI("#{API_BASE}#{path}")
-      timestamp = Time.now.to_i
-      signature = sign_request(sk, timestamp, 'GET', path)
-
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = (uri.scheme == 'https')
-      http.read_timeout = nil
-
-      request = Net::HTTP::Get.new(uri)
-      request['Authorization'] = "Bearer #{pk}"
-      request['X-Timestamp'] = timestamp.to_s
-      request['X-Signature'] = signature
-      request['Accept'] = 'text/event-stream'
-
-      http.request(request) do |response|
+      portal_logs_get(logs_path(source, true), logs_query(grep: grep, level: level), pk, sk, stream: true) do |response|
+        unless response.code.to_i == 200
+          raise APIError.new("API request failed: #{response.code} #{response.message}",
+                             status_code: response.code.to_i, response_body: response.read_body)
+        end
+        buf = +''
         response.read_body do |chunk|
-          chunk.split("\n").each do |line|
-            next unless line.start_with?('data: ')
-
-            data = line[6..]
-            begin
-              entry = JSON.parse(data)
-              if block_given?
-                yield entry['source'] || source, entry['line'] || data
-              else
-                puts "[#{entry['source'] || source}] #{entry['line'] || data}"
-              end
-            rescue JSON::ParserError
-              if block_given?
-                yield source, data
-              else
-                puts "[#{source}] #{data}"
-              end
+          sse_feed(buf, chunk) do |src, line|
+            src ||= source
+            if block_given?
+              yield src, line
+            else
+              puts format('%-12s %s', src, line)
+              $stdout.flush
             end
           end
         end
@@ -1979,6 +2024,9 @@ module Un
       when 'languages'
         ARGV.shift
         cli_languages(options)
+      when 'paas'
+        ARGV.shift
+        exit(cli_paas(ARGV.dup))
       when '-h', '--help', 'help'
         cli_show_help
         exit(EXIT_SUCCESS)
@@ -2014,6 +2062,7 @@ module Un
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
           ruby un.rb key --rotate [--otp CODE]    Rotate key secret (sudo OTP)
+          ruby un.rb paas logs [options]          Platform logs (partner keys; -h for options)
           ruby un.rb languages [--json]           List available languages
 
         Global Options:
@@ -2038,6 +2087,196 @@ module Un
           ruby un.rb session --list
           ruby un.rb service --name web --ports 80 --bootstrap "python -m http.server 80"
       HELP
+    end
+
+    PAAS_LOGS_HELP = <<~HELP
+      Usage: un.rb paas logs [options]
+
+      Fetch or stream PaaS production logs.
+
+      Sources:
+        --all              All sources (default)
+        --api              API server logs
+        --portal           Portal server logs
+        --pool NODE        Pool node logs (e.g., cammy, ai)
+        --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+      Options:
+        --lines N, -n N    Number of lines (default: 100, max: 10000)
+        --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+        --grep PATTERN     Filter log lines by pattern
+        --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+        --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+        --json             Output raw JSON response
+        -p KEY             Public key
+        -k KEY             Secret key
+        -h                 Show this help
+
+      Requires a partner API key with log access enabled.
+    HELP
+
+    def log_cursor_path
+      File.join(ENV['HOME'] || Dir.home, '.unsandbox', 'paas_log_cursor')
+    end
+
+    def read_log_cursor
+      ts = File.read(log_cursor_path).strip.to_i
+      return nil unless ts.positive?
+
+      "#{[Time.now.to_i - ts, 5].max}s"
+    rescue StandardError
+      nil
+    end
+
+    def write_log_cursor
+      FileUtils.mkdir_p(File.dirname(log_cursor_path), mode: 0o700)
+      File.write(log_cursor_path, "#{Time.now.to_i}\n")
+    rescue StandardError
+      nil
+    end
+
+    def http_error_text(code, body)
+      err = begin
+        JSON.parse(body.to_s)['error']
+      rescue StandardError
+        nil
+      end
+      "Error: HTTP #{code}" + (err ? " — #{err}" : '')
+    end
+
+    # `un paas logs` - mirrors the C client's flags, output and exit codes
+    def cli_paas(args)
+      if args.empty?
+        $stderr.puts "Usage: un.rb paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs"
+        return 1
+      end
+      unless args[0] == 'logs'
+        $stderr.puts "Error: Unknown paas command '#{args[0]}'"
+        return 1
+      end
+      source = 'all'
+      lines = 100
+      since = grep = level = pk = sk = account = nil
+      follow = as_json = false
+      a = args[1..]
+      i = 0
+      while i < a.length
+        x = a[i]
+        has = i + 1 < a.length
+        case x
+        when '-p' then (pk = a[i += 1]) if has
+        when '-k' then (sk = a[i += 1]) if has
+        when '--account' then (account = a[i += 1].to_i) if has
+        when '--source' then (source = a[i += 1]) if has
+        when '--all' then source = 'all'
+        when '--api' then source = 'api'
+        when '--portal' then source = 'portal'
+        when '--pool' then (source = "pool/#{a[i += 1]}") if has
+        when '--lines', '-n' then (lines = a[i += 1].to_i.clamp(1, 10_000)) if has
+        when '--since' then (since = a[i += 1]) if has
+        when '--grep' then (grep = a[i += 1]) if has
+        when '--level', '-l' then (level = a[i += 1]) if has
+        when '--follow', '-f' then follow = true
+        when '--json' then as_json = true
+        when '-h', '--help'
+          $stderr.puts PAAS_LOGS_HELP
+          return 0
+        end
+        i += 1
+      end
+      begin
+        public_key, secret_key = resolve_credentials(pk, sk, account)
+      rescue CredentialsError => e
+        $stderr.puts "Error: #{e.message}"
+        return 1
+      end
+      since ||= read_log_cursor || '5m'
+      return paas_logs_follow(source, grep, level, public_key, secret_key) if follow
+
+      begin
+        response = portal_logs_get(logs_path(source), logs_query(lines: lines, since: since, grep: grep, level: level),
+                                   public_key, secret_key)
+      rescue StandardError => e
+        $stderr.puts "Error: Network error fetching logs: #{e.message}"
+        return 1
+      end
+      unless response.code.to_i == 200
+        $stderr.puts http_error_text(response.code, response.body)
+        return 1
+      end
+      write_log_cursor
+      if as_json
+        puts response.body
+        return 0
+      end
+      entries = begin
+        JSON.parse(response.body)['lines']
+      rescue StandardError
+        nil
+      end
+      unless entries.is_a?(Array)
+        $stderr.puts 'Error: Invalid response format'
+        return 1
+      end
+      entries.each do |e|
+        if e.is_a?(Hash)
+          puts(e['source'].nil? ? e['line'].to_s : format('%-12s %s', e['source'], e['line']))
+        else
+          puts e
+        end
+      end
+      0
+    end
+
+    def paas_logs_follow(source, grep, level, public_key, secret_key)
+      $stderr.puts "Streaming #{source} logs... (Ctrl+C to stop)"
+      path = logs_path(source, true)
+      delay = 2
+      last_recv = nil
+      reconnect = false
+      loop do
+        since = reconnect && last_recv ? "#{[(Time.now - last_recv).to_i + 5, 10].max}s" : nil
+        connected = Time.now
+        status = nil
+        body = nil
+        begin
+          # fresh signature each connection (timestamps expire)
+          portal_logs_get(path, logs_query(grep: grep, level: level, since: since), public_key, secret_key,
+                          stream: true) do |response|
+            status = response.code.to_i
+            if status == 200
+              buf = +''
+              response.read_body do |chunk|
+                sse_feed(buf, chunk) do |src, line|
+                  puts(src.nil? ? line.to_s : format('%-12s %s', src, line))
+                  $stdout.flush
+                  last_recv = Time.now
+                end
+              end
+            else
+              body = response.read_body
+            end
+          end
+        rescue Interrupt
+          return 0
+        rescue StandardError
+          nil # dropped connection: reconnect silently
+        end
+        if [401, 403].include?(status)
+          $stderr.puts "Error: HTTP #{status} (auth failed)"
+          return 1
+        end
+        if status && status != 200 && status < 500
+          $stderr.puts http_error_text(status, body)
+          return 1
+        end
+        delay = 2 if Time.now - connected > 30
+        sleep delay
+        delay = [delay * 2, 30].min
+        reconnect = true
+      end
+    rescue Interrupt
+      0
     end
 
     # Parse global options from ARGV
@@ -3059,7 +3298,7 @@ module Un
         when 'expired'
           puts 'Expired'
           puts "Public Key: #{pk}"
-          puts 'To renew: Visit https://unsandbox.com/keys/extend'
+          puts "To renew: Visit #{PORTAL_BASE}/keys/extend"
         when 'suspended'
           puts 'Suspended'
           puts "Public Key: #{pk}"

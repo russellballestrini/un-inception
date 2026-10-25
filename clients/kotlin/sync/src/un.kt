@@ -49,7 +49,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 val API_BASE = (System.getenv("UNSANDBOX_API_URL")?.takeIf { it.isNotEmpty() } ?: "https://api.unsandbox.com").trimEnd('/')
-val PORTAL_BASE = "https://unsandbox.com"
+val PORTAL_BASE = (System.getenv("UNSANDBOX_PORTAL_URL")?.takeIf { it.isNotEmpty() } ?: "https://unsandbox.com").trimEnd('/')
 val LANGUAGES_CACHE_TTL = 3600L  // 1 hour in seconds
 val BLUE = "\u001B[34m"
 val RED = "\u001B[31m"
@@ -131,6 +131,8 @@ data class Args(
 )
 
 fun main(args: Array<String>) {
+    // paas has its own flags (-n, -l, -f mean lines/level/follow there)
+    if (args.isNotEmpty() && args[0] == "paas") exitProcess(cmdPaas(args))
     try {
         val parsedArgs = parseArgs(args)
 
@@ -2032,13 +2034,231 @@ fun imageClone(imageId: String, name: String? = null, description: String? = nul
     return result["image_id"]?.toString()
 }
 
-// PaaS Logs functions
-fun logsFetch(source: String = "all", lines: Int = 100, since: String? = null, grep: String? = null, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+// PaaS Logs functions: GET {PORTAL_BASE}/logs/{source}[/stream] (partner log access)
+
+/** Portal logs path: /logs/{source}[/stream]. */
+fun logsPath(source: String?, stream: Boolean = false): String =
+    "/logs/" + (if (source.isNullOrEmpty()) "all" else source) + (if (stream) "/stream" else "")
+
+/** Query string from key/value pairs, percent-encoded, empty values skipped. */
+fun logsQuery(vararg kv: Pair<String, String?>): String {
+    val q = kv.filter { !it.second.isNullOrEmpty() }
+        .map { "${it.first}=" + java.net.URLEncoder.encode(it.second, "UTF-8").replace("+", "%20") }
+    return if (q.isEmpty()) "" else "?" + q.joinToString("&")
+}
+
+/** Signed GET to the portal; HMAC covers the path only (server checks conn.request_path). */
+fun portalGet(path: String, query: String, publicKey: String?, secretKey: String, readTimeoutMs: Int): HttpURLConnection {
+    val timestamp = System.currentTimeMillis() / 1000
+    val conn = URL(PORTAL_BASE + path + query).openConnection() as HttpURLConnection
+    conn.requestMethod = "GET"
+    conn.connectTimeout = 30000
+    conn.readTimeout = readTimeoutMs
+    conn.setRequestProperty("Authorization", "Bearer $publicKey")
+    conn.setRequestProperty("X-Timestamp", timestamp.toString())
+    conn.setRequestProperty("X-Signature", hmacSha256(secretKey, "$timestamp:GET:$path:"))
+    conn.setRequestProperty("User-Agent", "un-kotlin/2.0")
+    return conn
+}
+
+/** GET {portal}/logs/{source}; returns (status, body). */
+fun logsFetchRaw(source: String, lines: Int, since: String?, grep: String?, level: String?, pk: String?, sk: String): Pair<Int, String> {
+    val q = logsQuery("lines" to (if (lines > 0) lines else 100).toString(), "since" to since, "grep" to grep, "level" to level)
+    val conn = portalGet(logsPath(source), q, pk, sk, 300000)
+    val code = conn.responseCode
+    val stream = if (code >= 400) conn.errorStream else conn.inputStream
+    return Pair(code, stream?.bufferedReader()?.readText() ?: "")
+}
+
+fun logsFetch(source: String = "all", lines: Int = 100, since: String? = null, grep: String? = null, publicKey: String? = null, secretKey: String? = null, level: String? = null): Map<String, Any> {
     val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
-    val params = mutableListOf("source=$source", "lines=$lines")
-    if (since != null) params.add("since=$since")
-    if (grep != null) params.add("grep=${java.net.URLEncoder.encode(grep, "UTF-8")}")
-    return apiRequest("/paas/logs?${params.joinToString("&")}", "GET", null, pk, sk)
+    val (code, body) = logsFetchRaw(source, lines, since, grep, level, pk, sk)
+    if (code != 200) throw RuntimeException("HTTP $code - $body")
+    return parseJson(body)
+}
+
+/** One SSE connection to {portal}/logs/{source}/stream; returns HTTP status (0 on network error). */
+fun logsStreamOnce(source: String, grep: String?, level: String?, since: String?, pk: String?, sk: String, cb: (String, String) -> Unit): Int {
+    try {
+        val conn = portalGet(logsPath(source, true), logsQuery("grep" to grep, "level" to level, "since" to since), pk, sk, 0)
+        conn.setRequestProperty("Accept", "text/event-stream")
+        val code = conn.responseCode
+        if (code != 200) {
+            conn.errorStream?.bufferedReader()?.readText()
+            return code
+        }
+        try {
+            conn.inputStream.bufferedReader().useLines { seq ->
+                for (line in seq) {
+                    if (!line.startsWith("data:")) continue
+                    val data = line.substring(5).trim()
+                    if (data.isEmpty() || data == ":keepalive") continue
+                    if (data.startsWith("{")) {
+                        val ev = parseJson(data)
+                        val l = ev["line"] as? String ?: continue
+                        cb(ev["source"] as? String ?: "", l)
+                    } else {
+                        cb("", data)
+                    }
+                }
+            }
+        } catch (e: java.io.IOException) {
+            // dropped connection: caller reconnects
+        }
+        return 200
+    } catch (e: java.io.IOException) {
+        return 0
+    }
+}
+
+/** Stream until a 4xx, reconnecting on drops (2 s backoff doubling to 30 s, since= overlap). */
+fun logsFollow(source: String, grep: String?, level: String?, pk: String?, sk: String, cb: (String, String) -> Unit): Int {
+    var delay = 2L
+    var lastRecv = 0L
+    var since: String? = null
+    while (true) {
+        val start = System.currentTimeMillis()
+        val code = logsStreamOnce(source, grep, level, since, pk, sk) { s, l -> lastRecv = System.currentTimeMillis() / 1000; cb(s, l) }
+        if (System.currentTimeMillis() - start > 30000) delay = 2
+        if (code in 400..499) return code
+        Thread.sleep(delay * 1000)
+        delay = minOf(delay * 2, 30)
+        if (lastRecv > 0) since = "${maxOf(System.currentTimeMillis() / 1000 - lastRecv + 5, 10)}s"
+    }
+}
+
+fun logsStream(source: String = "all", grep: String? = null, publicKey: String? = null, secretKey: String? = null, callback: (String, String) -> Unit): Boolean {
+    val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
+    return logsStreamOnce(source, grep, null, null, pk, sk, callback) == 200
+}
+
+fun logCursorFile(): File = File((System.getenv("HOME") ?: System.getProperty("user.home") ?: "."), ".unsandbox/paas_log_cursor")
+
+fun readLogCursor(): String? {
+    val ts = try { logCursorFile().readText().trim().toLong() } catch (e: Exception) { return null }
+    if (ts <= 0) return null
+    return "${maxOf(System.currentTimeMillis() / 1000 - ts, 5)}s"
+}
+
+fun writeLogCursor() {
+    try {
+        val f = logCursorFile()
+        f.parentFile?.mkdirs()
+        f.writeText("${System.currentTimeMillis() / 1000}\n")
+    } catch (e: Exception) {
+        // best effort
+    }
+}
+
+const val PAAS_LOGS_HELP = """Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Requires a partner API key with log access enabled.
+"""
+
+/** `un paas <command>`: currently `logs`. Returns the exit code. */
+fun cmdPaas(argv: Array<String>): Int {
+    if (argv.size < 2) {
+        System.err.print("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.\n")
+        return 1
+    }
+    if (argv[1] != "logs") {
+        System.err.println("Error: Unknown paas command '${argv[1]}'")
+        System.err.println("Run 'un paas' for available commands.")
+        return 1
+    }
+    var source = "all"
+    var since: String? = null
+    var grep: String? = null
+    var level: String? = null
+    var pkArg: String? = null
+    var skArg: String? = null
+    var lines = 100
+    var account = -1
+    var follow = false
+    var json = false
+    var i = 2
+    while (i < argv.size) {
+        val a = argv[i]
+        val more = i + 1 < argv.size
+        when {
+            a == "-p" && more -> pkArg = argv[++i]
+            a == "-k" && more -> skArg = argv[++i]
+            a == "--account" && more -> account = argv[++i].toIntOrNull() ?: -1
+            a == "--source" && more -> source = argv[++i]
+            a == "--all" -> source = "all"
+            a == "--api" -> source = "api"
+            a == "--portal" -> source = "portal"
+            a == "--pool" && more -> source = "pool/" + argv[++i]
+            (a == "--lines" || a == "-n") && more -> lines = (argv[++i].toIntOrNull() ?: 0).coerceIn(1, 10000)
+            a == "--since" && more -> since = argv[++i]
+            a == "--grep" && more -> grep = argv[++i]
+            (a == "--level" || a == "-l") && more -> level = argv[++i]
+            a == "--follow" || a == "-f" -> follow = true
+            a == "--json" -> json = true
+            a == "-h" || a == "--help" -> { System.err.print(PAAS_LOGS_HELP); return 0 }
+        }
+        i++
+    }
+    // getApiKeys exits with a clean error when no credentials resolve
+    val (pk0, sk) = if (pkArg != null && skArg != null) Pair(pkArg, skArg) else getApiKeys(skArg, account)
+    val pk = pkArg ?: pk0
+    if (follow) {
+        System.err.println("Streaming $source logs... (Ctrl+C to stop)")
+        val code = logsFollow(source, grep, level, pk, sk) { s, l ->
+            println(if (s.isEmpty()) l else String.format("\u001B[36m%-12s\u001B[0m %s", s, l))
+            System.out.flush()
+        }
+        if (code == 401 || code == 403) System.err.println("Error: HTTP $code (auth failed)")
+        else if (code != 0) System.err.println("Error: HTTP $code")
+        return 1
+    }
+    if (since.isNullOrEmpty()) since = readLogCursor() ?: "5m"
+    val (code, body) = try {
+        logsFetchRaw(source, lines, since, grep, level, pk, sk)
+    } catch (e: java.io.IOException) {
+        System.err.println("Error: Network error fetching logs: ${e.message}")
+        return 1
+    }
+    if (code != 200) {
+        val msg = try { parseJson(body)["error"] as? String } catch (e: Exception) { null }
+        System.err.println("Error: HTTP $code" + (if (msg != null) " — $msg" else ""))
+        return 1
+    }
+    writeLogCursor()
+    if (json) {
+        println(body)
+        return 0
+    }
+    val entries = try { parseJson(body)["lines"] as? List<*> } catch (e: Exception) { null }
+    if (entries == null) {
+        System.err.println("Error: Invalid response format")
+        return 1
+    }
+    for (e in entries) {
+        if (e is Map<*, *>) println(String.format("\u001B[36m%-12s\u001B[0m %s", e["source"].toString(), e["line"].toString()))
+        else println(e.toString())
+    }
+    return 0
 }
 
 // Validate keys

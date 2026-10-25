@@ -65,7 +65,7 @@
 -compile([nowarn_unused_function]).
 
 -define(API_BASE, api_base()).
--define(PORTAL_BASE, "https://unsandbox.com").
+-define(PORTAL_BASE, portal_base()).
 -define(VERSION, "4.2.0").
 -define(LANGUAGES_CACHE_TTL, 3600).
 
@@ -584,33 +584,204 @@ image_clone(ImageId, Opts) ->
     extract_json_field(Response, "id").
 
 %% ============================================================================
-%% PaaS Logs Functions (2)
+%% PaaS Logs Functions (2) — portal: GET {PORTAL}/logs/{source}[/stream]
 %% ============================================================================
 
-%% @doc Fetch batch logs from portal.
+%% @doc Fetch batch logs from the portal. Returns the raw JSON response body.
+%% Opts: source ("all" | "api" | "portal" | "pool/NODE"), lines, since, grep, level.
 logs_fetch() -> logs_fetch(#{}).
 logs_fetch(Opts) ->
     Source = maps:get(source, Opts, "all"),
     Lines = maps:get(lines, Opts, 100),
-    Since = maps:get(since, Opts, "1h"),
-    Grep = maps:get(grep, Opts, undefined),
-    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ uri_string:quote(G) end,
-    api_get("/logs?source=" ++ Source ++ "&lines=" ++ integer_to_list(Lines) ++ "&since=" ++ Since ++ GrepParam, Opts).
+    {_Code, Body} = portal_logs_get(Source, Lines, maps:get(since, Opts, "5m"),
+                                    maps:get(grep, Opts, undefined), maps:get(level, Opts, undefined), Opts),
+    Body.
 
-%% @doc Stream logs (simplified polling implementation).
+%% @doc Stream logs over SSE; Callback(Source, Line) per log line. Returns on
+%% 401/403 or when the stream ends without reconnect (Opts reconnect => false).
 logs_stream(Callback) -> logs_stream(Callback, #{}).
 logs_stream(Callback, Opts) ->
     Source = maps:get(source, Opts, "all"),
-    Grep = maps:get(grep, Opts, undefined),
-    Interval = maps:get(interval, Opts, 5000),
-    GrepParam = case Grep of undefined -> ""; G -> "&grep=" ++ uri_string:quote(G) end,
-    logs_stream_loop(Source, GrepParam, Callback, Interval, Opts).
+    paas_stream_loop(Source, maps:get(grep, Opts, undefined), maps:get(level, Opts, undefined),
+                     Callback, Opts, 2, false, 0).
 
-logs_stream_loop(Source, GrepParam, Callback, Interval, Opts) ->
-    Response = api_get("/logs?source=" ++ Source ++ "&lines=50&since=10s" ++ GrepParam, Opts),
-    Callback(Source, Response),
-    timer:sleep(Interval),
-    logs_stream_loop(Source, GrepParam, Callback, Interval, Opts).
+portal_logs_path(Source) -> "/logs/" ++ Source.
+
+pct_encode(S) ->
+    lists:flatten([pct_char(C) || C <- binary_to_list(unicode:characters_to_binary(S))]).
+pct_char(C) when (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+                 orelse (C >= $0 andalso C =< $9) orelse C == $- orelse C == $_
+                 orelse C == $. orelse C == $~ -> [C];
+pct_char(C) -> io_lib:format("%~2.16.0B", [C]).
+
+logs_query(Pairs) ->
+    Parts = [K ++ "=" ++ pct_encode(V) || {K, V} <- Pairs, V =/= undefined, V =/= ""],
+    case Parts of [] -> ""; _ -> "?" ++ string:join(Parts, "&") end.
+
+%% curl argv for a signed portal GET. HMAC covers "ts:GET:<path>:" (path only,
+%% no query) — the portal verifies conn.request_path. The secret never leaves
+%% this process: only the derived signature reaches curl.
+portal_curl_args(Path, Url, Extra, Opts) ->
+    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
+    Auth = case SecretKey of
+        false -> ["-H", "Authorization: Bearer " ++ PublicKey];
+        _ ->
+            Ts = integer_to_list(erlang:system_time(second)),
+            ["-H", "Authorization: Bearer " ++ PublicKey, "-H", "X-Timestamp: " ++ Ts,
+             "-H", "X-Signature: " ++ make_signature(SecretKey, Ts, "GET", Path, "")]
+    end,
+    ["-s" | Extra] ++ ["-H", "User-Agent: un-cli/2.0"] ++ Auth ++ ["-w", "\n__UN_HTTP__%{http_code}\n", Url].
+
+curl_exe() ->
+    case os:find_executable("curl") of
+        false -> io:format(standard_error, "Error: curl not found~n", []), halt(1);
+        Exe -> Exe
+    end.
+
+%% {HttpCode, Body} for a batch logs request (code 0 on network failure).
+portal_logs_get(Source, Lines, Since, Grep, Level, Opts) ->
+    Path = portal_logs_path(Source),
+    Url = ?PORTAL_BASE ++ Path ++ logs_query([{"lines", integer_to_list(Lines)}, {"since", Since},
+                                              {"grep", Grep}, {"level", Level}]),
+    Port = open_port({spawn_executable, curl_exe()},
+                     [{args, portal_curl_args(Path, Url, [], Opts)}, binary, exit_status, use_stdio]),
+    Out = binary_to_list(unicode:characters_to_binary(collect_port(Port, []))),
+    case string:split(Out, "\n__UN_HTTP__", trailing) of
+        [Body, CodeStr] -> {try list_to_integer(string:trim(CodeStr)) catch _:_ -> 0 end, Body};
+        _ -> {0, Out}
+    end.
+
+collect_port(Port, Acc) ->
+    receive
+        {Port, {data, D}} -> collect_port(Port, [D | Acc]);
+        {Port, {exit_status, _}} -> iolist_to_binary(lists:reverse(Acc))
+    end.
+
+%% One SSE connection; returns {HttpCode, LastRecvTime}.
+paas_stream_once(Source, Grep, Level, Callback, Opts, SinceArg, LastRecv) ->
+    Path = portal_logs_path(Source) ++ "/stream",
+    Url = ?PORTAL_BASE ++ Path ++ logs_query([{"grep", Grep}, {"level", Level}, {"since", SinceArg}]),
+    Args = portal_curl_args(Path, Url, ["-N", "--http1.1", "-H", "Accept: text/event-stream",
+                                        "-Y", "1", "-y", "120"], Opts),
+    Port = open_port({spawn_executable, curl_exe()}, [{args, Args}, {line, 1048576}, binary, exit_status, use_stdio]),
+    paas_stream_read(Port, Callback, [], 0, LastRecv).
+
+paas_stream_read(Port, Callback, Part, Code, LastRecv) ->
+    receive
+        {Port, {data, {noeol, D}}} -> paas_stream_read(Port, Callback, [D | Part], Code, LastRecv);
+        {Port, {data, {eol, D}}} ->
+            Line = binary_to_list(iolist_to_binary(lists:reverse([D | Part]))),
+            case Line of
+                "__UN_HTTP__" ++ C ->
+                    paas_stream_read(Port, Callback, [], try list_to_integer(string:trim(C)) catch _:_ -> 0 end, LastRecv);
+                "data: " ++ Payload ->
+                    case sse_payload(Payload) of
+                        skip -> paas_stream_read(Port, Callback, [], Code, LastRecv);
+                        {Src, L} ->
+                            Callback(Src, L),
+                            paas_stream_read(Port, Callback, [], Code, erlang:system_time(second))
+                    end;
+                _ -> paas_stream_read(Port, Callback, [], Code, LastRecv)
+            end;
+        {Port, {exit_status, _}} ->
+            %% curl's -w trailer has no newline, so it arrives unterminated
+            case binary_to_list(iolist_to_binary(lists:reverse(Part))) of
+                "__UN_HTTP__" ++ C -> {try list_to_integer(string:trim(C)) catch _:_ -> 0 end, LastRecv};
+                _ -> {Code, LastRecv}
+            end
+    end.
+
+sse_payload(":keepalive") -> skip;
+sse_payload(Payload) ->
+    case catch jdec(Payload) of
+        {M, _} when is_map(M) ->
+            case {maps:get("source", M, undefined), maps:get("line", M, undefined)} of
+                {_, undefined} -> skip;   % event:timeout / exit / error notices
+                {undefined, L} -> {undefined, L};
+                {S, L} -> {S, L}
+            end;
+        _ -> {undefined, unicode:characters_to_list(list_to_binary(Payload))}
+    end.
+
+paas_stream_loop(Source, Grep, Level, Callback, Opts, Delay, IsReconnect, LastRecv) ->
+    SinceArg = case IsReconnect andalso LastRecv > 0 of
+        true -> integer_to_list(max(10, erlang:system_time(second) - LastRecv + 5)) ++ "s";
+        false -> undefined
+    end,
+    T0 = erlang:system_time(second),
+    {Code, Last} = paas_stream_once(Source, Grep, Level, Callback, Opts, SinceArg, LastRecv),
+    D0 = case erlang:system_time(second) - T0 > 30 of true -> 2; false -> Delay end,
+    if
+        Code == 401; Code == 403 -> {error, Code};
+        Code == 200; Code == 0; Code >= 500 ->
+            case maps:get(reconnect, Opts, true) of
+                false -> ok;
+                true ->
+                    timer:sleep(D0 * 1000),
+                    paas_stream_loop(Source, Grep, Level, Callback, Opts, min(30, D0 * 2), true, Last)
+            end;
+        true -> {error, Code}
+    end.
+
+%% Minimal JSON decoder: objects -> maps (string keys), arrays -> lists,
+%% strings -> lists (unicode), numbers, true/false/null. Returns {Value, Rest}.
+jdec(S) -> jval(jws(S)).
+jws([C | R]) when C == $\s; C == $\t; C == $\n; C == $\r -> jws(R);
+jws(S) -> S.
+jval([${ | R]) -> jobj(jws(R), #{});
+jval([$[ | R]) -> jarr(jws(R), []);
+jval([$" | R]) -> jstr(R, []);
+jval("true" ++ R) -> {true, R};
+jval("false" ++ R) -> {false, R};
+jval("null" ++ R) -> {null, R};
+jval(S) ->
+    {N, R} = lists:splitwith(fun(C) -> lists:member(C, "+-0123456789.eE") end, S),
+    {case string:to_float(N) of {error, _} -> list_to_integer(N); {F, _} -> F end, R}.
+jobj([$} | R], M) -> {M, R};
+jobj([$, | R], M) -> jobj(jws(R), M);
+jobj([$" | R], M) ->
+    {K, R1} = jstr(R, []),
+    [$: | R2] = jws(R1),
+    {V, R3} = jval(jws(R2)),
+    jobj(jws(R3), M#{K => V}).
+jarr([$] | R], A) -> {lists:reverse(A), R};
+jarr([$, | R], A) -> jarr(jws(R), A);
+jarr(S, A) -> {V, R} = jval(S), jarr(jws(R), [V | A]).
+jstr([$" | R], A) -> {unicode:characters_to_list(list_to_binary(lists:reverse(A))), R};
+jstr([$\\, $u, A1, A2, A3, A4 | R], A) ->
+    Cp = list_to_integer([A1, A2, A3, A4], 16),
+    jstr(R, lists:reverse(binary_to_list(unicode:characters_to_binary([Cp]))) ++ A);
+jstr([$\\, C | R], A) ->
+    jstr(R, [case C of $n -> $\n; $t -> $\t; $r -> $\r; $b -> $\b; $f -> $\f; _ -> C end | A]);
+jstr([C | R], A) -> jstr(R, [C | A]).
+
+%% ~/.unsandbox/paas_log_cursor: Unix time of the last successful fetch.
+paas_cursor_path() ->
+    case os:getenv("HOME") of false -> undefined; H -> filename:join([H, ".unsandbox", "paas_log_cursor"]) end.
+
+paas_read_cursor() ->
+    case paas_cursor_path() of
+        undefined -> undefined;
+        P ->
+            case file:read_file(P) of
+                {ok, B} ->
+                    case catch list_to_integer(string:trim(binary_to_list(B))) of
+                        Ts when is_integer(Ts), Ts > 0 ->
+                            integer_to_list(max(5, erlang:system_time(second) - Ts)) ++ "s";
+                        _ -> undefined
+                    end;
+                _ -> undefined
+            end
+    end.
+
+paas_write_cursor() ->
+    case paas_cursor_path() of
+        undefined -> ok;
+        P ->
+            Dir = filename:dirname(P),
+            case filelib:is_dir(Dir) of false -> file:make_dir(Dir), file:change_mode(Dir, 8#700); true -> ok end,
+            file:write_file(P, integer_to_list(erlang:system_time(second)) ++ "\n")
+    end.
 
 %% ============================================================================
 %% Key Validation (1)
@@ -741,6 +912,7 @@ dispatch([]) ->
     io:format("       un.erl [--account N] image [options]~n"),
     io:format("       un.erl [--account N] key [options]~n"),
     io:format("       un.erl languages [--json]~n"),
+    io:format("       un.erl [--account N] paas logs [options]~n"),
     io:format("~nGlobal options:~n"),
     io:format("  --account N    Use accounts.csv row N (bypasses env vars)~n"),
     halt(1);
@@ -762,6 +934,9 @@ dispatch(["key" | Rest]) ->
 
 dispatch(["languages" | Rest]) ->
     languages_command(Rest);
+
+dispatch(["paas" | Rest]) ->
+    paas_command(Rest);
 
 dispatch(Args) ->
     execute_command(Args).
@@ -1627,6 +1802,14 @@ get_api_key() ->
     {PublicKey, _} = get_api_keys(),
     PublicKey.
 
+%% Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash
+portal_base() ->
+    case os:getenv("UNSANDBOX_PORTAL_URL") of
+        false -> "https://unsandbox.com";
+        "" -> "https://unsandbox.com";
+        Url -> string:trim(Url, trailing, "/")
+    end.
+
 %% API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
 api_base() ->
     case os:getenv("UNSANDBOX_API_URL") of
@@ -1869,6 +2052,131 @@ build_auth_headers(PublicKey, SecretKey, Method, Path, Body) ->
             ++ " -H 'X-Signature: " ++ Signature ++ "'";
         true ->
             " -H 'Authorization: Bearer " ++ PublicKey ++ "'"
+    end.
+
+%% ============================================================================
+%% paas logs CLI (mirrors the C client)
+%% ============================================================================
+
+paas_command(["logs" | Rest]) -> paas_logs_command(Rest);
+paas_command([]) ->
+    io:format(standard_error, "Usage: un.erl paas <command> [options]~n~nCommands:~n  logs    Fetch or stream production logs~n~nRun 'un.erl paas <command> -h' for help on a specific command.~n", []),
+    halt(1);
+paas_command([Cmd | _]) ->
+    io:format(standard_error, "Error: Unknown paas command '~s'~nRun 'un.erl paas' for available commands.~n", [Cmd]),
+    halt(1).
+
+paas_logs_parse([], O) -> O;
+paas_logs_parse(["-p", V | R], O) -> paas_logs_parse(R, O#{public_key => V});
+paas_logs_parse(["-k", V | R], O) -> paas_logs_parse(R, O#{secret_key => V});
+paas_logs_parse(["--source", V | R], O) -> paas_logs_parse(R, O#{source => V});
+paas_logs_parse(["--all" | R], O) -> paas_logs_parse(R, O#{source => "all"});
+paas_logs_parse(["--api" | R], O) -> paas_logs_parse(R, O#{source => "api"});
+paas_logs_parse(["--portal" | R], O) -> paas_logs_parse(R, O#{source => "portal"});
+paas_logs_parse(["--pool", V | R], O) -> paas_logs_parse(R, O#{source => "pool/" ++ V});
+paas_logs_parse([F, V | R], O) when F == "--lines"; F == "-n" ->
+    N = case string:to_integer(V) of {I, _} when is_integer(I) -> I; _ -> 0 end,
+    paas_logs_parse(R, O#{lines => max(1, min(10000, N))});
+paas_logs_parse(["--since", V | R], O) -> paas_logs_parse(R, O#{since => V});
+paas_logs_parse(["--grep", V | R], O) -> paas_logs_parse(R, O#{grep => V});
+paas_logs_parse([F, V | R], O) when F == "--level"; F == "-l" -> paas_logs_parse(R, O#{level => V});
+paas_logs_parse([F | R], O) when F == "--follow"; F == "-f" -> paas_logs_parse(R, O#{follow => true});
+paas_logs_parse(["--json" | R], O) -> paas_logs_parse(R, O#{json => true});
+paas_logs_parse([F | R], O) when F == "-h"; F == "--help" -> paas_logs_parse(R, O#{help => true});
+paas_logs_parse([_ | R], O) -> paas_logs_parse(R, O).
+
+paas_logs_help() ->
+    io:format(standard_error,
+      "Usage: un.erl paas logs [options]~n~n"
+      "Fetch or stream PaaS production logs.~n~n"
+      "Sources:~n"
+      "  --all              All sources (default)~n"
+      "  --api              API server logs~n"
+      "  --portal           Portal server logs~n"
+      "  --pool NODE        Pool node logs (e.g., cammy, ai)~n"
+      "  --source SOURCE    Source string (api, portal, pool/cammy, all)~n"
+      "~nOptions:~n"
+      "  --lines N, -n N    Number of lines (default: 100, max: 10000)~n"
+      "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)~n"
+      "  --grep PATTERN     Filter log lines by pattern~n"
+      "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit~n"
+      "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)~n"
+      "  --json             Output raw JSON response~n"
+      "  -p KEY             Public key~n"
+      "  -k KEY             Secret key~n"
+      "  -h                 Show this help~n"
+      "~nPortal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com)~n"
+      "Requires a partner API key with log access enabled.~n", []).
+
+paas_logs_command(Args) ->
+    io:setopts(standard_io, [{encoding, unicode}]),
+    io:setopts(standard_error, [{encoding, unicode}]),
+    O0 = paas_logs_parse(Args, #{}),
+    case maps:get(help, O0, false) of true -> paas_logs_help(), halt(0); false -> ok end,
+    %% -p/-k only count as a pair; otherwise fall back to the normal credential chain
+    O = case {maps:get(public_key, O0, undefined), maps:get(secret_key, O0, undefined)} of
+        {P, S} when P =/= undefined, S =/= undefined -> O0;
+        _ -> maps:without([public_key, secret_key], O0)
+    end,
+    Source = maps:get(source, O, "all"),
+    Grep = maps:get(grep, O, undefined),
+    Level = maps:get(level, O, undefined),
+    case maps:get(follow, O, false) of
+        true ->
+            io:format(standard_error, "Streaming ~s logs... (Ctrl+C to stop)~n", [Source]),
+            Print = fun(Src, L) -> paas_print_tagged(Src, L) end,
+            case paas_stream_loop(Source, Grep, Level, Print, O, 2, false, 0) of
+                {error, C} when C == 401; C == 403 ->
+                    io:format(standard_error, "Error: HTTP ~B (auth failed)~n", [C]), halt(1);
+                {error, C} -> io:format(standard_error, "Error: HTTP ~B~n", [C]), halt(1);
+                _ -> halt(0)
+            end;
+        false ->
+            Since = case maps:get(since, O, undefined) of
+                undefined -> case paas_read_cursor() of undefined -> "5m"; Cur -> Cur end;
+                Sv -> Sv
+            end,
+            {Code, Body} = portal_logs_get(Source, maps:get(lines, O, 100), Since, Grep, Level, O),
+            if
+                Code == 0 ->
+                    io:format(standard_error, "Error: Network error fetching logs~n", []), halt(1);
+                Code =/= 200 ->
+                    Err = case catch jdec(Body) of
+                        {M, _} when is_map(M) -> maps:get("error", M, undefined);
+                        _ -> undefined
+                    end,
+                    case Err of
+                        E when is_list(E), E =/= "" -> io:format(standard_error, "Error: HTTP ~B — ~ts~n", [Code, E]);
+                        _ -> io:format(standard_error, "Error: HTTP ~B~n", [Code])
+                    end,
+                    halt(1);
+                true -> ok
+            end,
+            paas_write_cursor(),
+            case maps:get(json, O, false) of
+                true -> io:format("~ts~n", [list_to_binary(Body)]), halt(0);
+                false -> ok
+            end,
+            case catch jdec(Body) of
+                {#{"lines" := Lines} = M2, _} when is_list(Lines) ->
+                    IsAll = maps:is_key("sources", M2),
+                    lists:foreach(fun
+                        (#{"line" := L} = E2) when IsAll -> paas_print_tagged(maps:get("source", E2, undefined), L);
+                        (#{"line" := L}) -> io:format("~ts~n", [L]);
+                        (L) when is_list(L) -> io:format("~ts~n", [L]);
+                        (_) -> ok
+                    end, Lines),
+                    halt(0);
+                _ ->
+                    io:format(standard_error, "Error: Invalid response format~n", []), halt(1)
+            end
+    end.
+
+paas_print_tagged(undefined, L) -> io:format("~ts~n", [L]);
+paas_print_tagged(Src, L) ->
+    case os:getenv("NO_COLOR") of
+        false -> io:format("\033[36m~-12ts\033[0m ~ts~n", [Src, L]);
+        _ -> io:format("~-12ts ~ts~n", [Src, L])
     end.
 
 ext_to_lang(".hs") -> {ok, "haskell"};

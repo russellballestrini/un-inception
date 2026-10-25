@@ -43,11 +43,10 @@
 #   un.nim session --list
 #   un.nim service --name web --ports 8080
 
-import os, strutils, osproc, strformat, times, terminal, tables, json
+import os, strutils, osproc, strformat, times, terminal, tables, json, streams
 from posix import nil
 
 const
-  PORTAL_BASE = "https://unsandbox.com"
   BLUE = "\x1b[34m"
   RED = "\x1b[31m"
   GREEN = "\x1b[32m"
@@ -59,6 +58,12 @@ const
 let API_BASE = block:
   let v = getEnv("UNSANDBOX_API_URL", "").strip(leading = false, chars = {'/'})
   if v.len > 0: v else: "https://api.unsandbox.com"
+
+# Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
+# Serves /logs/{source} (partner log access) and /keys/extend.
+let PORTAL_BASE = block:
+  let v = getEnv("UNSANDBOX_PORTAL_URL", "").strip(leading = false, chars = {'/'})
+  if v.len > 0: v else: "https://unsandbox.com"
 
 let langMap = {
   ".py": "python", ".js": "javascript", ".ts": "typescript",
@@ -1109,25 +1114,261 @@ proc cmdSnapshot(list: bool, infoId, sessionId, serviceId, restoreId, deleteId, 
   stderr.writeLine(RED & "Error: Use --list, --info, --session, --service, --restore, --delete, --lock, --unlock, or --clone" & RESET)
   quit(1)
 
-proc cmdLogs(source: string, lines: int, since, grep: string, follow: bool, publicKey, secretKey: string) =
-  let sourceParam = if source != "": source else: "all"
-  let linesParam = if lines > 0: lines else: 100
-  let sinceParam = if since != "": since else: "1h"
+# ---------------------------------------------------------------------------
+# PaaS logs (CLI_SPEC.md "PaaS Logs Command"): GET {PORTAL}/logs/{source}[/stream].
+# HMAC covers "ts:GET:/logs/{source}:" (path only). curl runs from an argv list
+# (no shell); the secret never leaves this process, only its signature does.
+# ---------------------------------------------------------------------------
 
-  if follow:
-    var endpoint = fmt"/paas/logs/stream?source={sourceParam}"
-    if grep != "": endpoint.add(fmt"&grep={grep}")
-    let authHeaders = buildAuthHeaders("GET", endpoint, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -N -X GET '{PORTAL_BASE}{endpoint}' -H 'Accept: text/event-stream' {authHeaders}"""
-    # Stream logs - this will block
-    let output = execProcess(cmd)
-    echo output
-  else:
-    var endpoint = fmt"/paas/logs?source={sourceParam}&lines={linesParam}&since={sinceParam}"
-    if grep != "": endpoint.add(fmt"&grep={grep}")
-    let authHeaders = buildAuthHeaders("GET", endpoint, "", publicKey, secretKey)
-    let cmd = fmt"""curl -s -X GET '{PORTAL_BASE}{endpoint}' {authHeaders}"""
-    echo execCurl(cmd)
+proc pctEncode(v: string): string =
+  for c in v:
+    if c in {'A'..'Z', 'a'..'z', '0'..'9', '-', '_', '.', '~'}: result.add(c)
+    else: result.add('%' & toHex(ord(c), 2))
+
+proc addQuery(url: var string, key, val: string) =
+  if val == "": return
+  url.add(if '?' in url: '&' else: '?')
+  url.add(key & "=" & pctEncode(val))
+
+proc logsPath(source: string, stream: bool): string =
+  let src = if source == "": "all" else: source
+  result = "/logs/" & src
+  if stream: result.add("/stream")
+
+proc portalAuthArgs(path, publicKey, secretKey: string): seq[string] =
+  result = @["-H", "Authorization: Bearer " & publicKey]
+  if secretKey != "":
+    let ts = getTimestamp()
+    let sig = computeHmac(secretKey, ts & ":GET:" & path & ":")
+    result.add(@["-H", "X-Timestamp: " & ts, "-H", "X-Signature: " & sig])
+
+const STATUS_MARK = "__UNSB_HTTP_STATUS__"
+
+# Raw fetch: (status, body); status 0 = curl never got a response.
+proc logsFetchRaw(source: string, lines: int, since, grep, level, publicKey, secretKey: string): (int, string) =
+  let path = logsPath(source, false)
+  var url = PORTAL_BASE & path & "?lines=" & $lines
+  url.addQuery("since", since)
+  url.addQuery("grep", grep)
+  url.addQuery("level", level)
+  let args = @["-s", "-X", "GET", url] & portalAuthArgs(path, publicKey, secretKey) &
+             @["-A", "un-cli/2.0", "-w", "\n" & STATUS_MARK & "%{http_code}"]
+  var output = ""
+  try:
+    output = execProcess("curl", args = args, options = {poUsePath, poStdErrToStdOut})
+  except OSError:
+    return (0, "")
+  let idx = output.rfind("\n" & STATUS_MARK)
+  if idx < 0: return (0, output)
+  let status = try: parseInt(output[idx + 1 + STATUS_MARK.len .. ^1].strip()) except ValueError: 0
+  return (status, output[0 ..< idx])
+
+proc paasCursorPath(): string =
+  let home = getEnv("HOME", "")
+  if home == "": "" else: home / ".unsandbox" / "paas_log_cursor"
+
+proc readPaasCursor(): string =
+  let p = paasCursorPath()
+  if p == "" or not fileExists(p): return ""
+  try:
+    let ts = parseBiggestInt(readFile(p).strip())
+    if ts <= 0: return ""
+    var ago = epochTime().int64 - ts
+    if ago < 5: ago = 5
+    return $ago & "s"
+  except CatchableError:
+    return ""
+
+proc writePaasCursor() =
+  let p = paasCursorPath()
+  if p == "": return
+  try:
+    createDir(parentDir(p))
+    writeFile(p, $epochTime().int64 & "\n")
+  except CatchableError:
+    discard
+
+proc jStr(n: JsonNode, key: string): string =
+  if n != nil and n.kind == JObject and n.hasKey(key) and n[key].kind == JString: n[key].getStr() else: ""
+
+proc printPaasError(status: int, body: string) =
+  var msg = ""
+  try: msg = jStr(parseJson(body), "error")
+  except CatchableError: discard
+  if msg != "": stderr.writeLine("Error: HTTP " & $status & " — " & msg)
+  else: stderr.writeLine("Error: HTTP " & $status)
+
+proc fetchPaasLogs(source: string, lines: int, since, grep: string, jsonOut: bool, level, publicKey, secretKey: string): int =
+  let (status, body) = logsFetchRaw(source, lines, since, grep, level, publicKey, secretKey)
+  if status == 0:
+    stderr.writeLine("Error: Network error fetching logs")
+    return 1
+  if status != 200:
+    printPaasError(status, body)
+    return 1
+  writePaasCursor()
+  if jsonOut:
+    echo body
+    return 0
+  var root: JsonNode
+  try: root = parseJson(body)
+  except CatchableError:
+    stderr.writeLine("Error: Invalid response format")
+    return 1
+  if root.kind != JObject or not root.hasKey("lines") or root["lines"].kind != JArray:
+    stderr.writeLine("Error: Invalid response format")
+    return 1
+  let isAll = root.hasKey("sources")
+  for item in root["lines"]:
+    if item.kind == JString:
+      echo item.getStr()
+    elif item.kind == JObject:
+      let src = jStr(item, "source")
+      if isAll and src != "": echo "\x1b[36m" & src.alignLeft(12) & "\x1b[0m " & jStr(item, "line")
+      else: echo jStr(item, "line")
+  return 0
+
+# Follow {PORTAL}/logs/{source}/stream; reconnect (2s doubling to 30s) with
+# since= covering the gap and a fresh signature. 401/403 is fatal.
+proc streamPaasLogs(source, grep, level, publicKey, secretKey: string): int =
+  let path = logsPath(source, true)
+  var base = PORTAL_BASE & path
+  base.addQuery("grep", grep)
+  base.addQuery("level", level)
+  stderr.writeLine("Streaming " & source & " logs... (Ctrl+C to stop)")
+  var delay = 2
+  var lastRecv: int64 = 0
+  var reconnect = false
+  while true:
+    var url = base
+    if reconnect and lastRecv > 0:
+      let gap = max(epochTime().int64 - lastRecv + 5, 10)
+      url.add((if '?' in url: "&" else: "?") & "since=" & $gap & "s")
+    let args = @["-s", "-N", "--http1.1", "-H", "Accept: text/event-stream"] &
+               portalAuthArgs(path, publicKey, secretKey) &
+               @["-A", "un-cli/2.0", "-w", "\n" & STATUS_MARK & "%{http_code}\n", url]
+    let connectedAt = epochTime().int64
+    var status = 0
+    var p: Process
+    try:
+      p = startProcess("curl", args = args, options = {poUsePath})
+    except OSError:
+      stderr.writeLine("Error: Stream error: cannot run curl")
+      return 1
+    let outp = p.outputStream
+    var line = ""
+    while outp.readLine(line):
+      if line.startsWith(STATUS_MARK):
+        status = try: parseInt(line[STATUS_MARK.len .. ^1].strip()) except ValueError: 0
+        continue
+      if not line.startsWith("data:"): continue
+      let data = line[5 .. ^1].strip(trailing = false)
+      if data == "" or data == ":keepalive": continue
+      try:
+        let n = parseJson(data)
+        if n.kind == JObject and n.hasKey("line"):
+          let src = if jStr(n, "source") != "": jStr(n, "source") else: source
+          stdout.writeLine("\x1b[36m" & src.alignLeft(12) & "\x1b[0m " & jStr(n, "line"))
+        else:
+          stdout.writeLine(data)
+      except CatchableError:
+        stdout.writeLine(data)
+      stdout.flushFile()
+      lastRecv = epochTime().int64
+    discard p.waitForExit()
+    p.close()
+    if status == 401 or status == 403:
+      stderr.writeLine("Error: HTTP " & $status & " (auth failed)")
+      return 1
+    if status != 0 and status != 200 and status < 500:
+      stderr.writeLine("Error: HTTP " & $status)
+      return 1
+    if status == 0 and not reconnect and lastRecv == 0:
+      stderr.writeLine("Error: Stream error: could not connect")
+      return 1
+    if epochTime().int64 - connectedAt > 30: delay = 2
+    sleep(delay * 1000)
+    delay = min(delay * 2, 30)
+    reconnect = true
+
+proc paasLogsHelp() =
+  stderr.write("""Usage: un paas logs [options]
+
+Fetch or stream PaaS production logs.
+
+Sources:
+  --all              All sources (default)
+  --api              API server logs
+  --portal           Portal server logs
+  --pool NODE        Pool node logs (e.g., cammy, ai)
+  --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+Options:
+  --lines N, -n N    Number of lines (default: 100, max: 10000)
+  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+  --grep PATTERN     Filter log lines by pattern
+  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+  --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+  --json             Output raw JSON response
+  -p KEY             Public key
+  -k KEY             Secret key
+  -h                 Show this help
+
+Examples:
+  un paas logs                             # last 100 lines from all sources
+  un paas logs --api --lines 500           # last 500 API log lines
+  un paas logs --portal --grep error       # portal logs matching 'error'
+  un paas logs --pool cammy --since 1h     # cammy pool logs from last hour
+  un paas logs -l warning                  # warnings and above from all sources
+  un paas logs --follow                    # follow all logs in real-time
+  un paas logs --follow -l warning         # follow warnings+ in real-time
+
+Requires a partner API key with log access enabled.
+""")
+
+# `un paas logs ...` (args after "logs"); -p/-k/--account come from main's pre-scan.
+proc cmdPaasLogs(args: seq[string], publicKey, secretKey: string): int =
+  var source = "all"
+  var lines = 100
+  var since, grep, level = ""
+  var follow, jsonOut = false
+  var i = 0
+  while i < args.len:
+    let a = args[i]
+    let hasNext = i + 1 < args.len
+    if a in ["-p", "-k", "--account"] and hasNext: inc i
+    elif a == "--source" and hasNext: source = args[i+1]; inc i
+    elif a == "--all": source = "all"
+    elif a == "--api": source = "api"
+    elif a == "--portal": source = "portal"
+    elif a == "--pool" and hasNext: source = "pool/" & args[i+1]; inc i
+    elif a in ["--lines", "-n"] and hasNext:
+      lines = try: parseInt(args[i+1]) except ValueError: 0
+      lines = max(1, min(lines, 10000)); inc i
+    elif a == "--since" and hasNext: since = args[i+1]; inc i
+    elif a == "--grep" and hasNext: grep = args[i+1]; inc i
+    elif a in ["--level", "-l"] and hasNext: level = args[i+1]; inc i
+    elif a in ["--follow", "-f"]: follow = true
+    elif a == "--json": jsonOut = true
+    elif a in ["-h", "--help"]:
+      paasLogsHelp()
+      return 0
+    inc i
+  if publicKey == "":
+    stderr.writeLine("Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key")
+    return 1
+  if follow: return streamPaasLogs(source, grep, level, publicKey, secretKey)
+  if since == "":
+    since = readPaasCursor()
+    if since == "": since = "5m"
+  return fetchPaasLogs(source, lines, since, grep, jsonOut, level, publicKey, secretKey)
+
+proc cmdLogs(source: string, lines: int, since, grep: string, follow: bool, publicKey, secretKey: string) =
+  ## Library-style entry kept for compatibility: portal /logs/{source}.
+  let src = if source != "": source else: "all"
+  let rc = if follow: streamPaasLogs(src, grep, "", publicKey, secretKey)
+           else: fetchPaasLogs(src, (if lines > 0: min(lines, 10000) else: 100), (if since != "": since else: "5m"), grep, false, "", publicKey, secretKey)
+  if rc != 0: quit(rc)
 
 proc cmdHealth() =
   let cmd = fmt"""curl -s -X GET '{API_BASE}/health'"""
@@ -1693,23 +1934,18 @@ proc main() =
     cmdSnapshot(list, infoId, sessionId, serviceId, restoreId, deleteId, lockId, unlockId, cloneId, cloneType, name, ports, hot, publicKey, secretKey)
     return
 
+  if args[0] == "paas":
+    if args.len < 2:
+      stderr.writeLine("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.")
+      quit(1)
+    if args[1] != "logs":
+      stderr.writeLine("Error: Unknown paas command '" & args[1] & "'\nRun 'un paas' for available commands.")
+      quit(1)
+    quit(cmdPaasLogs(args[2 .. ^1], publicKey, secretKey))
+
   if args[0] == "logs":
-    var source, since, grep = ""
-    var lines = 0
-    var follow = false
-    var i = 1
-    while i < args.len:
-      case args[i]
-      of "--source": source = args[i+1]; inc i
-      of "--lines": lines = parseInt(args[i+1]); inc i
-      of "--since": since = args[i+1]; inc i
-      of "--grep": grep = args[i+1]; inc i
-      of "--follow", "-f": follow = true
-      of "-k": publicKey = args[i+1]; inc i
-      else: discard
-      inc i
-    cmdLogs(source, lines, since, grep, follow, publicKey, secretKey)
-    return
+    # Alias for `paas logs`
+    quit(cmdPaasLogs(args[1 .. ^1], publicKey, secretKey))
 
   if args[0] == "health":
     cmdHealth()

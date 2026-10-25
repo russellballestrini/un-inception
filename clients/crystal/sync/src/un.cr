@@ -70,7 +70,8 @@ RESET = "\033[0m"
 
 # API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com, no trailing slash)
 API_BASE = (ENV["UNSANDBOX_API_URL"]?.presence || "https://api.unsandbox.com").rstrip('/')
-PORTAL_BASE = "https://unsandbox.com"
+# Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)
+PORTAL_BASE = (ENV["UNSANDBOX_PORTAL_URL"]?.presence || "https://unsandbox.com").rstrip('/')
 MAX_ENV_CONTENT_SIZE = 65536
 LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
 
@@ -1304,86 +1305,251 @@ def cmd_snapshot(args)
 end
 
 def cmd_logs(args)
-  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
-
-  source = args[:logs_source]?.as?(String) || "all"
-  lines = args[:logs_lines]?.as?(Int32) || 100
-  since = args[:logs_since]?.as?(String) || "1h"
-  grep_pattern = args[:logs_grep]?.as?(String)
-
-  endpoint = "/paas/logs?source=#{source}&lines=#{lines}&since=#{since}"
-  if grep_pattern && !grep_pattern.empty?
-    endpoint += "&grep=#{URI.encode_path(grep_pattern)}"
+  opts = PaasLogsOpts.new
+  opts.source = args[:logs_source]?.as?(String) || "all"
+  if n = args[:logs_lines]?.as?(Int32)
+    opts.lines = n.clamp(1, 10000)
   end
+  opts.since = args[:logs_since]?.as?(String)
+  opts.grep = args[:logs_grep]?.as?(String)
+  opts.follow = args[:logs_follow]?.as?(Bool) || false
+  public_key, secret_key = get_api_keys(args[:api_key]?.as?(String), args_public_key: args[:public_key]?.as?(String), account: args[:account]?.as?(Int32))
+  exit paas_logs_run(opts, public_key, secret_key || "")
+end
 
-  if args[:logs_follow]?.as?(Bool)
-    # Streaming logs via SSE
-    stream_endpoint = "/paas/logs/stream?source=#{source}"
-    if grep_pattern && !grep_pattern.empty?
-      stream_endpoint += "&grep=#{URI.encode_path(grep_pattern)}"
+# ---- un paas logs: portal GET /logs/{source}[/stream] (partner log access) ----
+
+class PaasLogsOpts
+  property source = "all"
+  property lines = 100
+  property since : String? = nil
+  property grep : String? = nil
+  property level : String? = nil
+  property follow = false
+  property json = false
+  property public_key : String? = nil
+  property secret_key : String? = nil
+  property account : Int32? = nil
+  property help = false
+end
+
+def paas_logs_parse(argv : Array(String)) : PaasLogsOpts
+  o = PaasLogsOpts.new
+  i = 0
+  nxt = ->{ i + 1 < argv.size ? (i += 1; argv[i]) : nil }
+  while i < argv.size
+    case argv[i]
+    when "-p"             then (v = nxt.call) && (o.public_key = v)
+    when "-k"             then (v = nxt.call) && (o.secret_key = v)
+    when "--account"      then (v = nxt.call) && (o.account = v.to_i32? || 0)
+    when "--source"       then (v = nxt.call) && (o.source = v)
+    when "--all"          then o.source = "all"
+    when "--api"          then o.source = "api"
+    when "--portal"       then o.source = "portal"
+    when "--pool"         then (v = nxt.call) && (o.source = "pool/#{v}")
+    when "--lines", "-n"  then (v = nxt.call) && (o.lines = (v.to_i? || 1).clamp(1, 10000))
+    when "--since"        then (v = nxt.call) && (o.since = v)
+    when "--grep"         then (v = nxt.call) && (o.grep = v)
+    when "--level", "-l"  then (v = nxt.call) && (o.level = v)
+    when "--follow", "-f" then o.follow = true
+    when "--json"         then o.json = true
+    when "-h", "--help"   then o.help = true
     end
+    i += 1
+  end
+  o
+end
 
-    url = URI.parse(PORTAL_BASE + stream_endpoint)
-    headers = HTTP::Headers{
-      "Accept" => "text/event-stream"
-    }
+def paas_logs_help
+  STDERR.puts <<-HELP
+  Usage: un paas logs [options]
 
-    # Add HMAC authentication headers
-    if secret_key && !secret_key.empty?
-      timestamp = Time.utc.to_unix.to_s
-      message = "#{timestamp}:GET:#{stream_endpoint}:"
-      signature = OpenSSL::HMAC.hexdigest(:sha256, secret_key, message)
-      headers["Authorization"] = "Bearer #{public_key}"
-      headers["X-Timestamp"] = timestamp
-      headers["X-Signature"] = signature
-    else
-      headers["Authorization"] = "Bearer #{public_key}"
+  Fetch or stream PaaS production logs.
+
+  Sources:
+    --all              All sources (default)
+    --api              API server logs
+    --portal           Portal server logs
+    --pool NODE        Pool node logs (e.g., cammy, ai)
+    --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+  Options:
+    --lines N, -n N    Number of lines (default: 100, max: 10000)
+    --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+    --grep PATTERN     Filter log lines by pattern
+    --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+    --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+    --json             Output raw JSON response
+    -p KEY             Public key
+    -k KEY             Secret key
+    -h                 Show this help
+
+  Requires a partner API key with log access enabled.
+  HELP
+end
+
+def paas_logs_query(lines : Int32?, since : String?, grep : String?, level : String?) : String
+  parts = [] of String
+  parts << "lines=#{lines}" if lines
+  {"since" => since, "grep" => grep, "level" => level}.each do |k, v|
+    parts << "#{k}=#{URI.encode_www_form(v, space_to_plus: false)}" if v && !v.empty?
+  end
+  parts.empty? ? "" : "?" + parts.join("&")
+end
+
+def paas_logs_headers(path : String, public_key : String, secret_key : String) : HTTP::Headers
+  timestamp = Time.utc.to_unix.to_s
+  HTTP::Headers{
+    "Authorization" => "Bearer #{public_key}",
+    "X-Timestamp"   => timestamp,
+    "X-Signature"   => OpenSSL::HMAC.hexdigest(:sha256, secret_key, "#{timestamp}:GET:#{path}:"),
+  }
+end
+
+def paas_log_cursor_path : String?
+  home = ENV["HOME"]?
+  home && !home.empty? ? File.join(home, ".unsandbox", "paas_log_cursor") : nil
+end
+
+def paas_log_cursor_read : String?
+  path = paas_log_cursor_path
+  return nil unless path && File.exists?(path)
+  ts = File.read(path).strip.to_i64?
+  return nil unless ts && ts > 0
+  "#{Math.max(Time.utc.to_unix - ts, 5)}s"
+rescue
+  nil
+end
+
+def paas_log_cursor_write
+  path = paas_log_cursor_path
+  return unless path
+  Dir.mkdir_p(File.dirname(path), 0o700)
+  File.write(path, "#{Time.utc.to_unix}\n")
+rescue
+end
+
+def paas_logs_tagged(source : String, line : String)
+  STDOUT.puts "\e[36m#{source.ljust(12)}\e[0m #{line}"
+  STDOUT.flush
+end
+
+def paas_logs_run(o : PaasLogsOpts, public_key : String, secret_key : String) : Int32
+  return paas_logs_stream(o, public_key, secret_key) if o.follow
+  path = "/logs/#{o.source}"
+  since = o.since || paas_log_cursor_read || "5m"
+  begin
+    response = HTTP::Client.get(URI.parse(PORTAL_BASE + path + paas_logs_query(o.lines, since, o.grep, o.level)), headers: paas_logs_headers(path, public_key, secret_key))
+  rescue ex
+    STDERR.puts "Error: Network error fetching logs: #{ex.message}"
+    return 1
+  end
+  if response.status_code != 200
+    err = (JSON.parse(response.body)["error"]?.try(&.as_s?) rescue nil)
+    STDERR.puts "Error: HTTP #{response.status_code}#{err ? " \u2014 #{err}" : ""}"
+    return 1
+  end
+  paas_log_cursor_write
+  if o.json
+    puts response.body
+    return 0
+  end
+  lines = (JSON.parse(response.body)["lines"]?.try(&.as_a?) rescue nil)
+  unless lines
+    STDERR.puts "Error: Invalid response format"
+    return 1
+  end
+  lines.each do |entry|
+    if str = entry.as_s?
+      puts str
+    elsif (h = entry.as_h?) && (line = h["line"]?.try(&.as_s?))
+      if src = h["source"]?.try(&.as_s?)
+        paas_logs_tagged(src, line)
+      else
+        puts line
+      end
     end
+  end
+  0
+end
 
+def paas_logs_stream(o : PaasLogsOpts, public_key : String, secret_key : String) : Int32
+  path = "/logs/#{o.source}/stream"
+  STDERR.puts "Streaming #{o.source} logs... (Ctrl+C to stop)"
+  delay = 2
+  last_recv : Time? = nil
+  reconnect = false
+  loop do
+    since = nil
+    if reconnect && (lr = last_recv)
+      since = "#{Math.max((Time.utc - lr).total_seconds.to_i + 5, 10)}s"
+    end
+    uri = URI.parse(PORTAL_BASE + path + paas_logs_query(nil, since, o.grep, o.level))
+    headers = paas_logs_headers(path, public_key, secret_key) # fresh signature per connection
+    headers["Accept"] = "text/event-stream"
+    status = 0
+    started = Time.utc
     begin
-      HTTP::Client.get(url, headers: headers) do |response|
-        if response.status_code == 200
+      client = HTTP::Client.new(uri)
+      client.read_timeout = 120.seconds
+      client.get(uri.request_target, headers: headers) do |response|
+        status = response.status_code
+        if status == 200
           response.body_io.each_line do |line|
-            if line.starts_with?("data: ")
-              data = line[6..]
-              begin
-                parsed = JSON.parse(data)
-                src = parsed["source"]?.try(&.as_s?) || "unknown"
-                msg = parsed["line"]?.try(&.as_s?) || data
-                puts "[#{src}] #{msg}"
-              rescue
-                puts line
+            next unless line.starts_with?("data: ")
+            payload = line[6..]
+            next if payload == ":keepalive"
+            last_recv = Time.utc
+            parsed = (JSON.parse(payload) rescue nil)
+            if parsed && (h = parsed.as_h?)
+              if msg = h["line"]?.try(&.as_s?)
+                if src = h["source"]?.try(&.as_s?)
+                  paas_logs_tagged(src, msg)
+                else
+                  puts msg
+                  STDOUT.flush
+                end
               end
+            else
+              puts payload
+              STDOUT.flush
             end
           end
-        else
-          STDERR.puts "#{RED}Error: HTTP #{response.status_code}#{RESET}"
-          STDERR.puts response.body_io.gets_to_end
-          exit 1
         end
       end
     rescue ex
-      STDERR.puts "#{RED}Error: #{ex.message}#{RESET}"
-      exit 1
+      status = 0 if status == 200 || status == 0
     end
-  else
-    # Batch fetch
-    result = api_request(endpoint, public_key, secret_key)
-    if logs = result["logs"]?.try(&.as_a?)
-      logs.each do |log|
-        src = log["source"]?.try(&.as_s?) || "unknown"
-        msg = log["line"]?.try(&.as_s?) || log.to_json
-        ts = log["timestamp"]?.try(&.as_s?) || ""
-        if ts.empty?
-          puts "[#{src}] #{msg}"
-        else
-          puts "[#{ts}] [#{src}] #{msg}"
-        end
-      end
-    else
-      puts result.to_pretty_json
+    delay = 2 if (Time.utc - started).total_seconds > 30
+    if status == 401 || status == 403
+      STDERR.puts "Error: HTTP #{status} (auth failed)"
+      return 1
     end
+    if status == 200 || status == 0 || status >= 500
+      sleep delay.seconds
+      delay = Math.min(delay * 2, 30)
+      reconnect = true
+      next
+    end
+    STDERR.puts "Error: HTTP #{status}"
+    return 1
   end
+  0
+end
+
+def paas_main(argv : Array(String))
+  rest = argv[0] == "paas" ? argv[1..] : argv
+  unless rest.first? == "logs"
+    STDERR.puts "Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs"
+    exit 1
+  end
+  o = paas_logs_parse(rest[1..])
+  if o.help
+    paas_logs_help
+    exit 0
+  end
+  public_key, secret_key = get_api_keys(o.secret_key, args_public_key: o.public_key, account: o.account)
+  exit paas_logs_run(o, public_key, secret_key || "")
 end
 
 def cmd_health(args)
@@ -1670,6 +1836,7 @@ def cmd_service(args)
 end
 
 def main
+  paas_main(ARGV.to_a) if ARGV.size >= 1 && (ARGV[0] == "paas" || ARGV[0] == "logs")
   args = {
     :source_file => nil,
     :api_key => nil,
@@ -1761,7 +1928,7 @@ def main
   } of Symbol => (String | Array(String) | Bool | Int32 | Nil)
 
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr languages [--json]\n       un.cr session [options]\n       un.cr service [options]\n       un.cr service env <action> <service_id> [options]\n       un.cr snapshot [options]\n       un.cr image [options]\n       un.cr logs [options]\n       un.cr key [options]\n       un.cr health\n       un.cr version\n\nService env commands:\n  env status <id>     Show vault status\n  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n  env export <id>     Export vault contents\n  env delete <id>     Delete vault"
+    opts.banner = "Usage: un.cr [options] <source_file>\n       un.cr languages [--json]\n       un.cr session [options]\n       un.cr service [options]\n       un.cr service env <action> <service_id> [options]\n       un.cr snapshot [options]\n       un.cr image [options]\n       un.cr paas logs [options]\n       un.cr key [options]\n       un.cr health\n       un.cr version\n\nService env commands:\n  env status <id>     Show vault status\n  env set <id>        Set vault (-e KEY=VALUE or --env-file FILE)\n  env export <id>     Export vault contents\n  env delete <id>     Delete vault"
 
     opts.on("-k API_KEY", "--api-key=API_KEY", "Secret/API key") { |k| args[:api_key] = k }
     opts.on("-p PUBLIC_KEY", "--public-key=PUBLIC_KEY", "Public key (use with -k for secret key)") { |k| args[:public_key] = k }

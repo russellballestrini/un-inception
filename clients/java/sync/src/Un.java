@@ -84,6 +84,19 @@ public class Un {
         }
         return base;
     }
+    /** Portal base (/logs, /keys/extend): UNSANDBOX_PORTAL_URL, default https://unsandbox.com. */
+    private static final String PORTAL_BASE = resolvePortalBase();
+
+    private static String resolvePortalBase() {
+        String base = System.getenv("UNSANDBOX_PORTAL_URL");
+        if (base == null || base.isEmpty()) {
+            base = "https://unsandbox.com";
+        }
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        return base;
+    }
     private static final int[] POLL_DELAYS_MS = {300, 450, 700, 900, 650, 1600, 2000};
     private static final long LANGUAGES_CACHE_TTL_MS = 3600 * 1000; // 1 hour
     private static final int DEFAULT_TIMEOUT_MS = 120000; // 2 minutes
@@ -2538,17 +2551,77 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
+        return logsFetch(source, lines, since, grep, null, publicKey, secretKey);
+    }
+
+    /**
+     * Fetch batch logs from the portal: GET {portal}/logs/{source}.
+     *
+     * @param level Optional minimum level (debug, info, notice, warning, err, crit)
+     */
+    public static Map<String, Object> logsFetch(
+        String source,
+        int lines,
+        String since,
+        String grep,
+        String level,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        StringBuilder path = new StringBuilder("/paas/logs?source=");
-        path.append(source != null ? source : "all");
-        path.append("&lines=").append(lines > 0 ? lines : 100);
-        if (since != null && !since.isEmpty()) {
-            path.append("&since=").append(since);
+        String[] res = logsFetchRaw(creds, source, lines, since, grep, level);
+        int code = Integer.parseInt(res[0]);
+        if (code != 200) {
+            throw new ApiException("HTTP " + code, code, res[1]);
         }
-        if (grep != null && !grep.isEmpty()) {
-            path.append("&grep=").append(java.net.URLEncoder.encode(grep, "UTF-8"));
+        return parseJson(res[1]);
+    }
+
+    /** Portal logs path: /logs/{source}[/stream]. */
+    private static String logsPath(String source, boolean stream) {
+        String src = (source == null || source.isEmpty()) ? "all" : source;
+        return "/logs/" + src + (stream ? "/stream" : "");
+    }
+
+    /** Query string from key/value pairs, percent-encoded, empty values skipped. */
+    private static String logsQuery(String... kv) throws UnsupportedEncodingException {
+        StringBuilder q = new StringBuilder();
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            if (kv[i + 1] == null || kv[i + 1].isEmpty()) continue;
+            q.append(q.length() == 0 ? '?' : '&').append(kv[i]).append('=')
+             .append(java.net.URLEncoder.encode(kv[i + 1], "UTF-8").replace("+", "%20"));
         }
-        return makeRequest("GET", path.toString(), creds[0], creds[1], null);
+        return q.toString();
+    }
+
+    /** Signed GET to the portal; HMAC covers the path only (server checks conn.request_path). */
+    private static HttpURLConnection portalGet(String[] creds, String path, String query, int readTimeout) throws IOException {
+        long timestamp = System.currentTimeMillis() / 1000;
+        HttpURLConnection conn = (HttpURLConnection) new URL(PORTAL_BASE + path + query).openConnection();
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(30000);
+        conn.setReadTimeout(readTimeout);
+        conn.setRequestProperty("Authorization", "Bearer " + creds[0]);
+        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
+        conn.setRequestProperty("X-Signature", signRequest(creds[1], timestamp, "GET", path, null));
+        conn.setRequestProperty("User-Agent", "un-java/2.0");
+        return conn;
+    }
+
+    private static String readAll(InputStream in) throws IOException {
+        if (in == null) return "";
+        try (InputStream is = in) {
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    /** Returns {status, body}. */
+    private static String[] logsFetchRaw(String[] creds, String source, int lines, String since, String grep, String level) throws IOException {
+        String q = logsQuery("lines", String.valueOf(lines > 0 ? lines : 100), "since", since, "grep", grep, "level", level);
+        HttpURLConnection conn = portalGet(creds, logsPath(source, false), q, DEFAULT_TIMEOUT_MS);
+        int code = conn.getResponseCode();
+        String body = readAll(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
+        return new String[] { String.valueOf(code), body };
     }
 
     /**
@@ -2584,49 +2657,227 @@ public class Un {
         String secretKey
     ) throws IOException {
         String[] creds = resolveCredentials(publicKey, secretKey);
-        StringBuilder path = new StringBuilder("/paas/logs/stream?source=");
-        path.append(source != null ? source : "all");
-        if (grep != null && !grep.isEmpty()) {
-            path.append("&grep=").append(java.net.URLEncoder.encode(grep, "UTF-8"));
-        }
+        return logsStreamOnce(creds, source, grep, null, null, callback) == 200;
+    }
 
-        String url = API_BASE + path.toString();
-        long timestamp = System.currentTimeMillis() / 1000;
-        String signature = signRequest(creds[1], timestamp, "GET", path.toString(), null);
-
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(30000);
-        conn.setReadTimeout(0); // No timeout for streaming
-
-        conn.setRequestProperty("Authorization", "Bearer " + creds[0]);
-        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
-        conn.setRequestProperty("X-Signature", signature);
-        conn.setRequestProperty("Accept", "text/event-stream");
-
-        int responseCode = conn.getResponseCode();
-        if (responseCode != 200) {
-            return false;
-        }
-
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            String currentSource = source != null ? source : "all";
-            while ((line = reader.readLine()) != null) {
-                if (line.startsWith("data: ")) {
-                    String data = line.substring(6);
-                    if (callback != null) {
-                        callback.onLogLine(currentSource, data);
-                    }
-                } else if (line.startsWith("event: ")) {
-                    currentSource = line.substring(7);
-                }
+    /** One SSE connection; returns HTTP status (0 on a network error). */
+    private static int logsStreamOnce(String[] creds, String source, String grep, String level, String since, LogCallback callback) {
+        try {
+            HttpURLConnection conn = portalGet(creds, logsPath(source, true), logsQuery("grep", grep, "level", level, "since", since), 0);
+            conn.setRequestProperty("Accept", "text/event-stream");
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                readAll(conn.getErrorStream());
+                return code;
             }
-            return true;
-        } catch (Exception e) {
-            return false;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (!line.startsWith("data:")) continue;
+                    String data = line.substring(5).trim();
+                    if (data.isEmpty() || data.equals(":keepalive") || callback == null) continue;
+                    String src = "";
+                    String text = data;
+                    if (data.startsWith("{")) {
+                        Map<String, Object> ev = parseJson(data);
+                        if (!(ev.get("line") instanceof String)) continue;
+                        text = (String) ev.get("line");
+                        src = ev.get("source") instanceof String ? (String) ev.get("source") : "";
+                    }
+                    callback.onLogLine(src, text);
+                }
+            } catch (IOException e) {
+                // dropped connection: caller reconnects
+            }
+            return 200;
+        } catch (IOException e) {
+            return 0;
         }
+    }
+
+    /**
+     * Stream logs until interrupted, reconnecting on drops (2 s backoff doubling
+     * to 30 s, since= overlap). Returns the HTTP status that ended the stream
+     * (401/403 or another 4xx).
+     */
+    public static int logsFollow(String[] creds, String source, String grep, String level, LogCallback callback) {
+        int delay = 2;
+        final long[] lastRecv = {0};
+        String since = null;
+        LogCallback cb = (src, l) -> { lastRecv[0] = System.currentTimeMillis() / 1000; callback.onLogLine(src, l); };
+        while (true) {
+            long start = System.currentTimeMillis() / 1000;
+            int code = logsStreamOnce(creds, source, grep, level, since, cb);
+            if (System.currentTimeMillis() / 1000 - start > 30) delay = 2;
+            if (code >= 400 && code < 500) return code;
+            try { Thread.sleep(delay * 1000L); } catch (InterruptedException e) { return 0; }
+            delay = Math.min(delay * 2, 30);
+            if (lastRecv[0] > 0) {
+                long gap = System.currentTimeMillis() / 1000 - lastRecv[0] + 5;
+                since = Math.max(gap, 10) + "s";
+            }
+        }
+    }
+
+    private static Path logCursorPath() {
+        String home = System.getProperty("user.home");
+        String env = System.getenv("HOME");
+        if (env != null && !env.isEmpty()) home = env;
+        return Paths.get(home, ".unsandbox", "paas_log_cursor");
+    }
+
+    private static String readLogCursor() {
+        try {
+            long ts = Long.parseLong(new String(Files.readAllBytes(logCursorPath()), StandardCharsets.UTF_8).trim());
+            if (ts <= 0) return null;
+            long ago = Math.max(System.currentTimeMillis() / 1000 - ts, 5);
+            return ago + "s";
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void writeLogCursor() {
+        try {
+            Path p = logCursorPath();
+            Files.createDirectories(p.getParent());
+            Files.write(p, ((System.currentTimeMillis() / 1000) + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            // cursor is best effort
+        }
+    }
+
+    private static void printPaasLogsHelp() {
+        System.err.print(
+            "Usage: un paas logs [options]\n\n" +
+            "Fetch or stream PaaS production logs.\n\n" +
+            "Sources:\n" +
+            "  --all              All sources (default)\n" +
+            "  --api              API server logs\n" +
+            "  --portal           Portal server logs\n" +
+            "  --pool NODE        Pool node logs (e.g., cammy, ai)\n" +
+            "  --source SOURCE    Source string (api, portal, pool/cammy, all)\n\n" +
+            "Options:\n" +
+            "  --lines N, -n N    Number of lines (default: 100, max: 10000)\n" +
+            "  --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)\n" +
+            "  --grep PATTERN     Filter log lines by pattern\n" +
+            "  --level LVL, -l    Min log level: debug, info, notice, warning, err, crit\n" +
+            "  --follow, -f       Follow logs in real-time (Ctrl+C to stop)\n" +
+            "  --json             Output raw JSON response\n" +
+            "  -p KEY             Public key\n" +
+            "  -k KEY             Secret key\n" +
+            "  -h                 Show this help\n\n" +
+            "Requires a partner API key with log access enabled.\n");
+    }
+
+    private static int clampLines(String v) {
+        int n;
+        try { n = Integer.parseInt(v); } catch (NumberFormatException e) { n = 0; }
+        return Math.max(1, Math.min(10000, n));
+    }
+
+    /** `un paas <command>`: currently `logs`. Returns the exit code. */
+    static int cmdPaas(String[] args) throws IOException {
+        if (args.length < 2) {
+            System.err.print("Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un paas <command> -h' for help on a specific command.\n");
+            return 1;
+        }
+        if (!args[1].equals("logs")) {
+            System.err.println("Error: Unknown paas command '" + args[1] + "'");
+            System.err.println("Run 'un paas' for available commands.");
+            return 1;
+        }
+        String source = "all", since = null, grep = null, level = null, pk = null, sk = null;
+        int lines = 100, account = -1;
+        boolean follow = false, json = false;
+        for (int i = 2; i < args.length; i++) {
+            String a = args[i];
+            boolean more = i + 1 < args.length;
+            if (a.equals("-p") && more) pk = args[++i];
+            else if (a.equals("-k") && more) sk = args[++i];
+            else if (a.equals("--account") && more) { try { account = Integer.parseInt(args[++i]); } catch (NumberFormatException e) { account = -1; } }
+            else if (a.equals("--source") && more) source = args[++i];
+            else if (a.equals("--all")) source = "all";
+            else if (a.equals("--api")) source = "api";
+            else if (a.equals("--portal")) source = "portal";
+            else if (a.equals("--pool") && more) source = "pool/" + args[++i];
+            else if ((a.equals("--lines") || a.equals("-n")) && more) lines = clampLines(args[++i]);
+            else if (a.equals("--since") && more) since = args[++i];
+            else if (a.equals("--grep") && more) grep = args[++i];
+            else if ((a.equals("--level") || a.equals("-l")) && more) level = args[++i];
+            else if (a.equals("--follow") || a.equals("-f")) follow = true;
+            else if (a.equals("--json")) json = true;
+            else if (a.equals("-h") || a.equals("--help")) { printPaasLogsHelp(); return 0; }
+        }
+        String[] creds;
+        try {
+            creds = resolveCredentials(pk, sk, account);
+        } catch (CredentialsException e) {
+            creds = null;
+        }
+        if (creds == null || creds[0] == null || creds[0].isEmpty()) {
+            System.err.print("Error: API credentials required.\n  Set UNSANDBOX_PUBLIC_KEY + UNSANDBOX_SECRET_KEY env vars, or\n  Use -p PUBLIC_KEY -k SECRET_KEY flags, or\n  Create ~/.unsandbox/accounts.csv with: public_key,secret_key\n");
+            return 1;
+        }
+        if (follow) {
+            System.err.println("Streaming " + source + " logs... (Ctrl+C to stop)");
+            int code = logsFollow(creds, source, grep, level, (src, l) -> {
+                if (src.isEmpty()) System.out.println(l);
+                else System.out.println(String.format("\033[36m%-12s\033[0m %s", src, l));
+                System.out.flush();
+            });
+            if (code == 401 || code == 403) System.err.println("Error: HTTP " + code + " (auth failed)");
+            else if (code != 0) System.err.println("Error: HTTP " + code);
+            return 1;
+        }
+        if (since == null || since.isEmpty()) {
+            since = readLogCursor();
+            if (since == null) since = "5m";
+        }
+        String[] res;
+        try {
+            res = logsFetchRaw(creds, source, lines, since, grep, level);
+        } catch (IOException e) {
+            System.err.println("Error: Network error fetching logs: " + e.getMessage());
+            return 1;
+        }
+        int code = Integer.parseInt(res[0]);
+        if (code != 200) {
+            String msg = null;
+            try {
+                Object err = parseJson(res[1]).get("error");
+                if (err instanceof String) msg = (String) err;
+            } catch (Exception e) {
+                msg = null;
+            }
+            System.err.println("Error: HTTP " + code + (msg != null ? " \u2014 " + msg : ""));
+            return 1;
+        }
+        writeLogCursor();
+        if (json) {
+            System.out.println(res[1]);
+            return 0;
+        }
+        Map<String, Object> body;
+        try {
+            body = parseJson(res[1]);
+        } catch (Exception e) {
+            body = null;
+        }
+        if (body == null || !(body.get("lines") instanceof List)) {
+            System.err.println("Error: Invalid response format");
+            return 1;
+        }
+        for (Object e : (List<?>) body.get("lines")) {
+            if (e instanceof String) {
+                System.out.println((String) e);
+            } else if (e instanceof Map) {
+                Map<?, ?> m = (Map<?, ?>) e;
+                System.out.println(String.format("\033[36m%-12s\033[0m %s", String.valueOf(m.get("source")), String.valueOf(m.get("line"))));
+            }
+        }
+        return 0;
     }
 
     // ========================================================================
@@ -2892,6 +3143,11 @@ public class Un {
         if (args.length == 0) {
             printHelp();
             System.exit(0);
+        }
+
+        // paas has its own flags (-n, -l, -f mean lines/level/follow there)
+        if (args[0].equals("paas")) {
+            System.exit(cmdPaas(args));
         }
 
         // Parse global options
@@ -3952,7 +4208,7 @@ public class Un {
         if (state.equals("expired")) {
             System.out.println("Expired");
             System.out.println("Public Key: " + publicKey);
-            System.out.println("To renew: Visit https://unsandbox.com/keys/extend");
+            System.out.println("To renew: Visit " + PORTAL_BASE + "/keys/extend");
             System.exit(3);
         } else if (state.equals("suspended")) {
             System.out.println("Suspended");

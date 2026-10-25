@@ -63,7 +63,6 @@ defmodule Un do
   @yellow "\e[33m"
   @reset "\e[0m"
 
-  @portal_base "https://unsandbox.com"
   @languages_cache_ttl 3600
   @version "4.2.0"
 
@@ -913,51 +912,331 @@ defmodule Un do
   end
 
   # ============================================================================
-  # PaaS Logs Functions (2)
+  # PaaS Logs Functions (2) — portal: GET {PORTAL}/logs/{source}[/stream]
   # ============================================================================
 
   @doc """
-  Fetch batch logs from portal.
+  Fetch batch logs from the portal (`UNSANDBOX_PORTAL_URL`, default
+  https://unsandbox.com). Returns the raw JSON response body.
 
   ## Options
     * `:source` - "all", "api", "portal", "pool/cammy", "pool/ai"
     * `:lines` - Number of lines (1-10000)
     * `:since` - Time window ("1m", "5m", "1h", "1d")
     * `:grep` - Filter pattern
+    * `:level` - Minimum level (debug, info, notice, warning, err, crit)
   """
   @spec logs_fetch(keyword()) :: String.t()
   def logs_fetch(opts \\ []) do
-    source = Keyword.get(opts, :source, "all")
-    lines = Keyword.get(opts, :lines, 100)
-    since = Keyword.get(opts, :since, "1h")
-    grep = Keyword.get(opts, :grep)
-
-    grep_param = if grep, do: "&grep=#{URI.encode(grep)}", else: ""
-    api_get("/logs?source=#{source}&lines=#{lines}&since=#{since}#{grep_param}", opts)
+    {_code, body} =
+      portal_logs_get(Keyword.get(opts, :source, "all"), Keyword.get(opts, :lines, 100),
+        Keyword.get(opts, :since, "5m"), Keyword.get(opts, :grep), Keyword.get(opts, :level), opts)
+    body
   end
 
   @doc """
-  Stream logs via SSE. This is a blocking operation that calls the callback for each log line.
-  Note: Full SSE streaming requires WebSocket support; this implementation provides basic fetch.
+  Stream logs via SSE (`/logs/{source}/stream`), calling `callback.(source, line)`
+  per log line. Reconnects with backoff; returns `{:error, code}` on 401/403.
   """
-  @spec logs_stream(keyword(), (String.t(), String.t() -> any())) :: :ok
+  @spec logs_stream(keyword(), (String.t() | nil, String.t() -> any())) :: :ok | {:error, integer()}
   def logs_stream(opts \\ [], callback) do
-    # For Elixir without external deps, we can't do true SSE streaming
-    # Instead, we poll with a short interval
-    source = Keyword.get(opts, :source, "all")
-    grep = Keyword.get(opts, :grep)
-    interval = Keyword.get(opts, :interval, 5000)
+    paas_stream_loop(Keyword.get(opts, :source, "all"), Keyword.get(opts, :grep),
+      Keyword.get(opts, :level), callback, opts, 2, false, 0)
+  end
 
-    grep_param = if grep, do: "&grep=#{URI.encode(grep)}", else: ""
-
-    Stream.repeatedly(fn ->
-      response = api_get("/logs?source=#{source}&lines=50&since=10s#{grep_param}", opts)
-      callback.(source, response)
-      Process.sleep(interval)
+  defp pct_encode(s) do
+    s |> to_string() |> :binary.bin_to_list()
+    |> Enum.map_join(fn c ->
+      if c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?-, ?_, ?., ?~],
+        do: <<c>>, else: "%" <> String.pad_leading(Integer.to_string(c, 16), 2, "0")
     end)
-    |> Stream.run()
+  end
 
-    :ok
+  defp logs_query(pairs) do
+    parts = for {k, v} <- pairs, v not in [nil, ""], do: "#{k}=#{pct_encode(v)}"
+    if parts == [], do: "", else: "?" <> Enum.join(parts, "&")
+  end
+
+  # curl argv for a signed portal GET. HMAC covers "ts:GET:<path>:" (path only,
+  # no query) — the portal verifies conn.request_path. Only the derived
+  # signature reaches curl; the secret stays in this process.
+  defp portal_curl_args(path, url, extra, opts) do
+    {public_key, secret_key} = get_api_keys_from_opts(opts)
+    auth =
+      if secret_key do
+        ts = Integer.to_string(System.os_time(:second))
+        ["-H", "Authorization: Bearer #{public_key}", "-H", "X-Timestamp: #{ts}",
+         "-H", "X-Signature: #{make_signature(secret_key, ts, "GET", path, "")}"]
+      else
+        ["-H", "Authorization: Bearer #{public_key}"]
+      end
+    ["-s" | extra] ++ ["-H", "User-Agent: un-cli/2.0"] ++ auth ++ ["-w", "\n__UN_HTTP__%{http_code}\n", url]
+  end
+
+  defp curl_exe do
+    System.find_executable("curl") ||
+      (IO.puts(:stderr, "Error: curl not found"); System.halt(1))
+  end
+
+  # {http_code, body} for a batch logs request (code 0 on network failure)
+  defp portal_logs_get(source, lines, since, grep, level, opts) do
+    path = "/logs/#{source}"
+    url = portal_base() <> path <>
+      logs_query([{"lines", to_string(lines)}, {"since", since}, {"grep", grep}, {"level", level}])
+    {out, _} = System.cmd(curl_exe(), portal_curl_args(path, url, [], opts))
+    case :binary.split(out, "\n__UN_HTTP__", [:global]) do
+      [_ | _] = parts when length(parts) >= 2 ->
+        code_str = List.last(parts)
+        body = parts |> Enum.drop(-1) |> Enum.join("\n__UN_HTTP__")
+        {case Integer.parse(String.trim(code_str)) do {n, _} -> n; :error -> 0 end, body}
+      _ -> {0, out}
+    end
+  end
+
+  # One SSE connection; returns {http_code, last_recv_unix}
+  defp paas_stream_once(source, grep, level, callback, opts, since_arg, last_recv) do
+    path = "/logs/#{source}/stream"
+    url = portal_base() <> path <> logs_query([{"grep", grep}, {"level", level}, {"since", since_arg}])
+    args = portal_curl_args(path, url, ["-N", "--http1.1", "-H", "Accept: text/event-stream", "-Y", "1", "-y", "120"], opts)
+    port = Port.open({:spawn_executable, curl_exe()}, [:binary, :exit_status, :use_stdio, {:line, 1_048_576}, args: args])
+    paas_stream_read(port, callback, [], 0, last_recv)
+  end
+
+  defp paas_stream_read(port, callback, part, code, last_recv) do
+    receive do
+      {^port, {:data, {:noeol, d}}} -> paas_stream_read(port, callback, [d | part], code, last_recv)
+      {^port, {:data, {:eol, d}}} ->
+        line = IO.iodata_to_binary(Enum.reverse([d | part]))
+        case line do
+          "__UN_HTTP__" <> c ->
+            paas_stream_read(port, callback, [], parse_code(c), last_recv)
+          "data: " <> payload ->
+            case sse_payload(payload) do
+              :skip -> paas_stream_read(port, callback, [], code, last_recv)
+              {src, l} ->
+                callback.(src, l)
+                paas_stream_read(port, callback, [], code, System.os_time(:second))
+            end
+          _ -> paas_stream_read(port, callback, [], code, last_recv)
+        end
+      {^port, {:exit_status, _}} ->
+        case IO.iodata_to_binary(Enum.reverse(part)) do
+          "__UN_HTTP__" <> c -> {parse_code(c), last_recv}
+          _ -> {code, last_recv}
+        end
+    end
+  end
+
+  defp parse_code(c), do: (case Integer.parse(String.trim(c)) do {n, _} -> n; :error -> 0 end)
+
+  defp sse_payload(":keepalive"), do: :skip
+  defp sse_payload(payload) do
+    case (try do mini_json(payload) rescue _ -> nil end) do
+      %{"line" => l} = m -> {Map.get(m, "source"), l}
+      %{} -> :skip   # timeout / exit / error notices
+      _ -> {nil, payload}
+    end
+  end
+
+  defp paas_stream_loop(source, grep, level, callback, opts, delay, reconnect?, last_recv) do
+    since_arg =
+      if reconnect? and last_recv > 0,
+        do: "#{max(10, System.os_time(:second) - last_recv + 5)}s", else: nil
+    t0 = System.os_time(:second)
+    {code, last} = paas_stream_once(source, grep, level, callback, opts, since_arg, last_recv)
+    d0 = if System.os_time(:second) - t0 > 30, do: 2, else: delay
+    cond do
+      code in [401, 403] -> {:error, code}
+      code == 200 or code == 0 or code >= 500 ->
+        if Keyword.get(opts, :reconnect, true) do
+          Process.sleep(d0 * 1000)
+          paas_stream_loop(source, grep, level, callback, opts, min(30, d0 * 2), true, last)
+        else
+          :ok
+        end
+      true -> {:error, code}
+    end
+  end
+
+  # Minimal JSON decoder (Jason stays optional): maps, lists, strings, numbers, literals
+  defp mini_json(s) do
+    {v, _} = jv(String.trim_leading(s))
+    v
+  end
+  defp jws(s), do: String.trim_leading(s)
+  defp jv("{" <> r), do: jobj(jws(r), %{})
+  defp jv("[" <> r), do: jarr(jws(r), [])
+  defp jv("\"" <> r), do: jstr(r, [])
+  defp jv("true" <> r), do: {true, r}
+  defp jv("false" <> r), do: {false, r}
+  defp jv("null" <> r), do: {nil, r}
+  defp jv(s) do
+    [n] = Regex.run(~r/^-?[0-9.eE+-]+/, s)
+    {(case Integer.parse(n) do {i, ""} -> i; _ -> String.to_float(n) end), binary_part(s, byte_size(n), byte_size(s) - byte_size(n))}
+  end
+  defp jobj("}" <> r, m), do: {m, r}
+  defp jobj("," <> r, m), do: jobj(jws(r), m)
+  defp jobj("\"" <> r, m) do
+    {k, r1} = jstr(r, [])
+    ":" <> r2 = jws(r1)
+    {v, r3} = jv(jws(r2))
+    jobj(jws(r3), Map.put(m, k, v))
+  end
+  defp jarr("]" <> r, a), do: {Enum.reverse(a), r}
+  defp jarr("," <> r, a), do: jarr(jws(r), a)
+  defp jarr(s, a) do
+    {v, r} = jv(s)
+    jarr(jws(r), [v | a])
+  end
+  defp jstr("\"" <> r, a), do: {a |> Enum.reverse() |> IO.iodata_to_binary(), r}
+  defp jstr("\\u" <> <<h::binary-size(4), r::binary>>, a), do: jstr(r, [<<String.to_integer(h, 16)::utf8>> | a])
+  defp jstr("\\" <> <<c, r::binary>>, a) do
+    ch = case c do ?n -> "\n"; ?t -> "\t"; ?r -> "\r"; ?b -> "\b"; ?f -> "\f"; _ -> <<c>> end
+    jstr(r, [ch | a])
+  end
+  defp jstr(<<c, r::binary>>, a), do: jstr(r, [<<c>> | a])
+
+  # ~/.unsandbox/paas_log_cursor: Unix time of the last successful fetch
+  defp paas_cursor_path do
+    case System.get_env("HOME") do
+      nil -> nil
+      h -> Path.join([h, ".unsandbox", "paas_log_cursor"])
+    end
+  end
+
+  defp paas_read_cursor do
+    with p when p != nil <- paas_cursor_path(),
+         {:ok, b} <- File.read(p),
+         {ts, _} when ts > 0 <- Integer.parse(String.trim(b)) do
+      "#{max(5, System.os_time(:second) - ts)}s"
+    else
+      _ -> nil
+    end
+  end
+
+  defp paas_write_cursor do
+    case paas_cursor_path() do
+      nil -> :ok
+      p ->
+        dir = Path.dirname(p)
+        unless File.dir?(dir), do: (File.mkdir_p(dir); File.chmod(dir, 0o700))
+        File.write(p, "#{System.os_time(:second)}\n")
+    end
+  end
+
+  # ============================================================================
+  # paas logs CLI (mirrors the C client)
+  # ============================================================================
+
+  defp paas_command(["logs" | rest]), do: paas_logs_command(rest)
+  defp paas_command([]) do
+    IO.puts(:stderr, "Usage: un.ex paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun 'un.ex paas <command> -h' for help on a specific command.")
+    System.halt(1)
+  end
+  defp paas_command([cmd | _]) do
+    IO.puts(:stderr, "Error: Unknown paas command '#{cmd}'\nRun 'un.ex paas' for available commands.")
+    System.halt(1)
+  end
+
+  defp paas_logs_parse([], o), do: o
+  defp paas_logs_parse(["-p", v | r], o), do: paas_logs_parse(r, Map.put(o, :public_key, v))
+  defp paas_logs_parse(["-k", v | r], o), do: paas_logs_parse(r, Map.put(o, :secret_key, v))
+  defp paas_logs_parse(["--source", v | r], o), do: paas_logs_parse(r, Map.put(o, :source, v))
+  defp paas_logs_parse(["--all" | r], o), do: paas_logs_parse(r, Map.put(o, :source, "all"))
+  defp paas_logs_parse(["--api" | r], o), do: paas_logs_parse(r, Map.put(o, :source, "api"))
+  defp paas_logs_parse(["--portal" | r], o), do: paas_logs_parse(r, Map.put(o, :source, "portal"))
+  defp paas_logs_parse(["--pool", v | r], o), do: paas_logs_parse(r, Map.put(o, :source, "pool/" <> v))
+  defp paas_logs_parse([f, v | r], o) when f in ["--lines", "-n"] do
+    n = case Integer.parse(v) do {i, _} -> i; :error -> 0 end
+    paas_logs_parse(r, Map.put(o, :lines, n |> max(1) |> min(10000)))
+  end
+  defp paas_logs_parse(["--since", v | r], o), do: paas_logs_parse(r, Map.put(o, :since, v))
+  defp paas_logs_parse(["--grep", v | r], o), do: paas_logs_parse(r, Map.put(o, :grep, v))
+  defp paas_logs_parse([f, v | r], o) when f in ["--level", "-l"], do: paas_logs_parse(r, Map.put(o, :level, v))
+  defp paas_logs_parse([f | r], o) when f in ["--follow", "-f"], do: paas_logs_parse(r, Map.put(o, :follow, true))
+  defp paas_logs_parse(["--json" | r], o), do: paas_logs_parse(r, Map.put(o, :json, true))
+  defp paas_logs_parse([f | r], o) when f in ["-h", "--help"], do: paas_logs_parse(r, Map.put(o, :help, true))
+  defp paas_logs_parse([_ | r], o), do: paas_logs_parse(r, o)
+
+  defp paas_logs_help do
+    IO.puts(:stderr, """
+    Usage: un.ex paas logs [options]
+
+    Fetch or stream PaaS production logs.
+
+    Sources:
+      --all              All sources (default)
+      --api              API server logs
+      --portal           Portal server logs
+      --pool NODE        Pool node logs (e.g., cammy, ai)
+      --source SOURCE    Source string (api, portal, pool/cammy, all)
+
+    Options:
+      --lines N, -n N    Number of lines (default: 100, max: 10000)
+      --since TIME       Time window: 1m, 5m, 15m, 1h, 6h, 1d (default: 5m)
+      --grep PATTERN     Filter log lines by pattern
+      --level LVL, -l    Min log level: debug, info, notice, warning, err, crit
+      --follow, -f       Follow logs in real-time (Ctrl+C to stop)
+      --json             Output raw JSON response
+      -p KEY             Public key
+      -k KEY             Secret key
+      -h                 Show this help
+
+    Portal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com)
+    Requires a partner API key with log access enabled.\
+    """)
+  end
+
+  defp paas_print_tagged(nil, l), do: IO.puts(l)
+  defp paas_print_tagged(src, l) do
+    if System.get_env("NO_COLOR"),
+      do: IO.puts("#{String.pad_trailing(src, 12)} #{l}"),
+      else: IO.puts("\e[36m#{String.pad_trailing(src, 12)}\e[0m #{l}")
+  end
+
+  defp paas_logs_command(args) do
+    o = paas_logs_parse(args, %{})
+    if o[:help], do: (paas_logs_help(); System.halt(0))
+    # -p/-k count only as a pair; otherwise use the normal credential chain
+    kopts = if o[:public_key] && o[:secret_key], do: [public_key: o[:public_key], secret_key: o[:secret_key]], else: []
+    source = Map.get(o, :source, "all")
+    if o[:follow] do
+      IO.puts(:stderr, "Streaming #{source} logs... (Ctrl+C to stop)")
+      case paas_stream_loop(source, o[:grep], o[:level], &paas_print_tagged/2, kopts, 2, false, 0) do
+        {:error, c} when c in [401, 403] -> IO.puts(:stderr, "Error: HTTP #{c} (auth failed)"); System.halt(1)
+        {:error, c} -> IO.puts(:stderr, "Error: HTTP #{c}"); System.halt(1)
+        _ -> System.halt(0)
+      end
+    else
+      since = o[:since] || paas_read_cursor() || "5m"
+      {code, body} = portal_logs_get(source, Map.get(o, :lines, 100), since, o[:grep], o[:level], kopts)
+      cond do
+        code == 0 ->
+          IO.puts(:stderr, "Error: Network error fetching logs"); System.halt(1)
+        code != 200 ->
+          err = case (try do mini_json(body) rescue _ -> nil end) do
+            %{"error" => e} when is_binary(e) and e != "" -> " — " <> e
+            _ -> ""
+          end
+          IO.puts(:stderr, "Error: HTTP #{code}#{err}"); System.halt(1)
+        true -> :ok
+      end
+      paas_write_cursor()
+      if o[:json], do: (IO.puts(body); System.halt(0))
+      case (try do mini_json(body) rescue _ -> nil end) do
+        %{"lines" => lines} = m when is_list(lines) ->
+          all? = Map.has_key?(m, "sources")
+          Enum.each(lines, fn
+            %{"line" => l} = e when all? -> paas_print_tagged(Map.get(e, "source"), l)
+            %{"line" => l} -> IO.puts(l)
+            l when is_binary(l) -> IO.puts(l)
+            _ -> :ok
+          end)
+          System.halt(0)
+        _ ->
+          IO.puts(:stderr, "Error: Invalid response format"); System.halt(1)
+      end
+    end
   end
 
   # ============================================================================
@@ -1113,6 +1392,7 @@ defmodule Un do
   defp dispatch(["image" | rest]), do: image_command(rest)
   defp dispatch(["key" | rest]), do: key_command(rest)
   defp dispatch(["languages" | rest]), do: languages_command(rest)
+  defp dispatch(["paas" | rest]), do: paas_command(rest)
   defp dispatch(args), do: execute_command(args)
 
   defp extract_account_arg([], acc, rest_acc), do: {acc, Enum.reverse(rest_acc)}
@@ -1138,6 +1418,7 @@ defmodule Un do
     IO.puts("       un.ex [--account N] image [options]")
     IO.puts("       un.ex [--account N] key [--extend]")
     IO.puts("       un.ex languages [--json]")
+    IO.puts("       un.ex [--account N] paas logs [options]")
     IO.puts("")
     IO.puts("Global options:")
     IO.puts("  --account N    Use accounts.csv row N (bypasses env vars)")
@@ -1805,7 +2086,7 @@ defmodule Un do
     {public_key, secret_key} = get_api_keys()
 
     if extend do
-      open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
+      open_browser("#{portal_base()}/keys/extend?pk=#{public_key}")
     else
       {code, resp} = key_validate_post(public_key, secret_key)
       display_key_result(code, resp, public_key)
@@ -1902,7 +2183,7 @@ defmodule Un do
       "expired" ->
         IO.puts("#{@red}Expired#{@reset}")
         IO.puts("Public Key: #{public_key}")
-        IO.puts("#{@yellow}To renew: Visit #{@portal_base}/keys/extend#{@reset}")
+        IO.puts("#{@yellow}To renew: Visit #{portal_base()}/keys/extend#{@reset}")
         System.halt(3)
 
       "suspended" ->
@@ -2026,6 +2307,15 @@ defmodule Un do
   defp get_api_key do
     {public_key, _} = get_api_keys()
     public_key
+  end
+
+  # Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash
+  defp portal_base do
+    case System.get_env("UNSANDBOX_PORTAL_URL") do
+      nil -> "https://unsandbox.com"
+      "" -> "https://unsandbox.com"
+      url -> String.trim_trailing(url, "/")
+    end
   end
 
   # API base URL: UNSANDBOX_API_URL (default https://api.unsandbox.com), no trailing slash
