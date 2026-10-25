@@ -1822,7 +1822,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
 
 void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
     string auth_headers = build_auth_headers("POST", "/keys/validate", "", public_key, secret_key);
-    string cmd = "curl -s -X POST '" + PORTAL_BASE + "/keys/validate' "
+    string cmd = "curl -s -X POST '" + API_BASE + "/keys/validate' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers;
 

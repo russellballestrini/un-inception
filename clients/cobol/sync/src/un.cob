@@ -1222,12 +1222,17 @@
 
        VALIDATE-KEY.
       *> Build curl command to validate API key
-           STRING "curl -s -X POST "
-               FUNCTION TRIM(WS-PORTAL-BASE)
-               "/keys/validate "
+      *> Signed POST $UN_API/keys/validate (UNSB_SK/UNSB_HMAC come
+      *> from GET-CREDENTIALS through the environment)
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:POST:/keys/validate:{}"" | "
+               "sh -c ""$UNSB_HMAC""); "
+               "curl -s -X POST $UN_API/keys/validate "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -o /tmp/unsandbox_key_resp.json; "
+               "' -H 'X-Timestamp: '$TS "
+               "-H 'X-Signature: '$SIG "
+               "-d '{}' -o /tmp/unsandbox_key_resp.json; "
                "STATUS=$?; "
                "if [ $STATUS -ne 0 ]; then "
                "echo -e '\x1b[31mInvalid\x1b[0m'; "

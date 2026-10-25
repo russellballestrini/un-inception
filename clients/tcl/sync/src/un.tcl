@@ -829,7 +829,7 @@ namespace eval Un {
     # ============================================================================
 
     proc validate_keys {{public_key ""} {secret_key ""}} {
-        variable PORTAL_BASE
+        variable API_BASE
 
         lassign [get_credentials $public_key $secret_key] pk sk
 
@@ -843,7 +843,7 @@ namespace eval Un {
             lappend headers X-Signature $signature
         }
 
-        set token [::http::geturl "$PORTAL_BASE/keys/validate" -method POST -headers $headers -timeout 30000]
+        set token [::http::geturl "$API_BASE/keys/validate" -method POST -headers $headers -timeout 30000]
         set ncode [::http::ncode $token]
         set response [::http::data $token]
         ::http::cleanup $token

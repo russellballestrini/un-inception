@@ -1480,7 +1480,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     import std.datetime;
 
     string authHeaders = buildAuthHeaders("POST", "/keys/validate", "", publicKey, secretKey);
-    string cmd = format(`curl -s -w '\n%%{http_code}' -X POST '%s/keys/validate' -H 'Content-Type: application/json' %s`, PORTAL_BASE, authHeaders);
+    string cmd = format(`curl -s -w '\n%%{http_code}' -X POST '%s/keys/validate' -H 'Content-Type: application/json' %s`, API_BASE, authHeaders);
     string response = execCurl(cmd);
 
     auto lines = response.split("\n");

@@ -1184,7 +1184,7 @@ sub logs-stream(
 sub validate-keys(Str :$public-key, Str :$secret-key) returns Hash is export {
     my ($pk, $sk) = get-credentials(:$public-key, :$secret-key);
 
-    my $url = "{$PORTAL_BASE}/keys/validate";
+    my $url = "{$API_BASE}/keys/validate";
     my $timestamp = now.Int;
     my $signature = sign-request($sk, $timestamp, 'POST', '/keys/validate', '');
 
@@ -2009,8 +2009,8 @@ sub cmd-key(@args, Int :$account-index = -1) {
         }
     }
 
-    # Validate key (using portal endpoint)
-    my $url = $PORTAL_BASE ~ "/keys/validate";
+    # Validate key (API endpoint)
+    my $url = $API_BASE ~ "/keys/validate";
     my @curl-args = 'curl', '-s', '-X', 'POST';
     @curl-args.append: $url;
     @curl-args.append: '-H', 'Content-Type: application/json';

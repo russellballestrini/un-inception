@@ -715,7 +715,7 @@ sub validate_keys {
     my ($pk, $sk) = get_credentials(%opts);
 
     my $ua = LWP::UserAgent->new(timeout => 30);
-    my $url = "$PORTAL_BASE/keys/validate";
+    my $url = "$API_BASE/keys/validate";
     my $req = HTTP::Request->new('POST', $url);
 
     $req->header('Authorization' => "Bearer $pk");

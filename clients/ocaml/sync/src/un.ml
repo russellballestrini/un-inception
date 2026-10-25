@@ -711,27 +711,6 @@ let api_post_with_sudo ?public_key ?secret_key endpoint json =
   else
     SudoSuccess body
 
-(** Make authenticated POST request to portal *)
-let portal_post ?public_key ?secret_key endpoint json =
-  let (pk, sk) = get_credentials ?public_key ?secret_key () in
-  let auth_headers = build_auth_headers pk sk "POST" endpoint json in
-  let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
-  let oc = open_out tmp_file in
-  output_string oc json;
-  close_out oc;
-  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
-    portal_base endpoint auth_headers tmp_file in
-  let ic = Unix.open_process_in cmd in
-  let rec read_all acc =
-    try let line = input_line ic in read_all (acc ^ line ^ "\n")
-    with End_of_file -> acc
-  in
-  let output = read_all "" in
-  let _ = Unix.close_process_in ic in
-  Sys.remove tmp_file;
-  check_clock_drift output;
-  output
-
 (* ============================================================================
    Library API - Core Execution Functions
    ============================================================================ *)
@@ -1485,7 +1464,7 @@ let image_clone ?public_key ?secret_key image_id ?name ?description () =
 
 (** Validate API keys *)
 let validate_keys ?public_key ?secret_key () =
-  portal_post ?public_key ?secret_key "/keys/validate" "{}"
+  api_post ?public_key ?secret_key "/keys/validate" "{}"
 
 (* ============================================================================
    CLI - Legacy curl-based functions for CLI
@@ -1502,10 +1481,6 @@ let curl_get api_key endpoint =
 let curl_delete api_key endpoint =
   let (public_key, secret_key) = get_api_keys () in
   api_delete ~public_key ~secret_key endpoint
-
-let portal_curl_post api_key endpoint json =
-  let (public_key, secret_key) = get_api_keys () in
-  portal_post ~public_key ~secret_key endpoint json
 
 let curl_put_text endpoint body =
   let (public_key, secret_key) = get_api_keys () in
@@ -1782,7 +1757,7 @@ let display_key_info response extend =
 (* Validate key command *)
 let validate_key api_key extend =
   let json = "{}" in
-  let response = portal_curl_post api_key "/keys/validate" json in
+  let response = curl_post api_key "/keys/validate" json in
   display_key_info response extend
 
 (* Key command *)

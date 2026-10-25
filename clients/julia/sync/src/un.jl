@@ -825,12 +825,20 @@ function cmd_service(args)
     exit(1)
 end
 
-function validate_key(api_key::String)
-    url = PORTAL_BASE * "/keys/validate"
-    headers = [
-        "Authorization" => "Bearer $api_key",
-        "Content-Type" => "application/json"
-    ]
+# Headers for POST /keys/validate with body "{}", HMAC-signed when we hold a secret.
+function key_validate_headers(public_key::String, secret_key)
+    headers = ["Authorization" => "Bearer $public_key", "Content-Type" => "application/json"]
+    if secret_key !== nothing && !isempty(secret_key)
+        ts = Int64(floor(time()))
+        push!(headers, "X-Timestamp" => string(ts))
+        push!(headers, "X-Signature" => compute_signature(secret_key, ts, "POST", "/keys/validate", "{}"))
+    end
+    return headers
+end
+
+function validate_key(api_key::String, secret_key=nothing)
+    url = API_BASE * "/keys/validate"
+    headers = key_validate_headers(api_key, secret_key)
 
     try
         response = HTTP.post(url, headers, "{}", readtimeout=300)
@@ -1133,17 +1141,13 @@ function cmd_key(args)
         cmd_key_rotate(args)
     end
     (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
-    # For portal validation, we still use public_key as bearer token
     api_key = public_key
 
     # Handle --extend flag
     if args["extend"]
         # Validate key to get public key
-        url = PORTAL_BASE * "/keys/validate"
-        headers = [
-            "Authorization" => "Bearer $api_key",
-            "Content-Type" => "application/json"
-        ]
+        url = API_BASE * "/keys/validate"
+        headers = key_validate_headers(api_key, secret_key)
 
         try
             response = HTTP.post(url, headers, "{}", readtimeout=300)
@@ -1186,7 +1190,7 @@ function cmd_key(args)
     end
 
     # Default: validate and display key info
-    exit(validate_key(api_key))
+    exit(validate_key(api_key, secret_key))
 end
 
 # First positional token of argv, skipping global options and their values.
@@ -2850,7 +2854,7 @@ function validate_keys(;
         get_api_keys(nothing)
     end
 
-    url = PORTAL_BASE * "/keys/validate"
+    url = API_BASE * "/keys/validate"
     timestamp = Int64(floor(time()))
     body = "{}"
     signature = compute_signature(sk, timestamp, "POST", "/keys/validate", body)

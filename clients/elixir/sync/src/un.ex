@@ -248,7 +248,7 @@ defmodule Un do
     do_wait_job(job_id, poll_delays, 0, max_polls, opts)
   end
 
-  defp do_wait_job(job_id, poll_delays, poll_count, max_polls, opts) when poll_count >= max_polls do
+  defp do_wait_job(job_id, _poll_delays, poll_count, max_polls, _opts) when poll_count >= max_polls do
     %{success: false, stdout: "", stderr: "Max polls exceeded", exit_code: 1, job_id: job_id, language: nil, execution_time: nil}
   end
 
@@ -969,7 +969,7 @@ defmodule Un do
   """
   @spec validate_keys(keyword()) :: key_info()
   def validate_keys(opts \\ []) do
-    response = portal_post("/keys/validate", "{}", opts)
+    response = api_post("/keys/validate", "{}", opts)
     %{
       valid: extract_json_value(response, "status") == "valid",
       tier: extract_json_value(response, "tier"),
@@ -1044,21 +1044,6 @@ defmodule Un do
     File.rm(tmp_file)
     status_code = String.trim(output) |> String.to_integer()
     status_code >= 200 and status_code < 300
-  end
-
-  defp portal_post(endpoint, json, opts) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
-
-    {public_key, secret_key} = get_api_keys_from_opts(opts)
-    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
-
-    args = ["-s", "-X", "POST", "#{@portal_base}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
-    check_clock_drift(output)
-    output
   end
 
   defp get_api_keys_from_opts(opts) do
@@ -1681,12 +1666,17 @@ defmodule Un do
     Path.join([home, ".unsandbox", "languages.json"])
   end
 
+  # Jason is optional: resolve it at runtime so builds without it compile
+  # cleanly. Without Jason this raises UndefinedFunctionError, which callers
+  # rescue into manual JSON parsing (same behaviour as a direct call).
+  defp jason_decode(data), do: apply(:"Elixir.Jason", :decode, [data])
+
   defp load_languages_cache do
     cache_path = get_languages_cache_path()
 
     case File.read(cache_path) do
       {:ok, content} ->
-        case Jason.decode(content) do
+        case jason_decode(content) do
           {:ok, data} ->
             timestamp = Map.get(data, "timestamp", 0)
             now = System.system_time(:second)
@@ -1813,11 +1803,11 @@ defmodule Un do
 
   defp validate_key(api_key, extend: extend) do
     json = "{}"
-    response = portal_curl_post(api_key, "/keys/validate", json)
+    response = curl_post(api_key, "/keys/validate", json)
 
     # Try to use Jason if available, otherwise fall back to manual parsing
     try do
-      case Jason.decode(response) do
+      case jason_decode(response) do
         {:ok, data} ->
           display_key_info(data, extend)
 
@@ -2279,7 +2269,7 @@ defmodule Un do
     "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"}"
   end
 
-  defp curl_post(api_key, endpoint, json) do
+  defp curl_post(_api_key, endpoint, json) do
     tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
     File.write!(tmp_file, json)
 
@@ -2314,27 +2304,7 @@ defmodule Un do
     end
   end
 
-  defp portal_curl_post(api_key, endpoint, json) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
-
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
-
-    args = [
-      "-s", "-X", "POST",
-      "#{@portal_base}#{endpoint}",
-      "-H", "Content-Type: application/json"
-    ] ++ headers ++ ["-d", "@#{tmp_file}"]
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
-    check_clock_drift(output)
-    output
-  end
-
-  defp curl_get(api_key, endpoint) do
+  defp curl_get(_api_key, endpoint) do
     {public_key, secret_key} = get_api_keys()
     headers = build_auth_headers(public_key, secret_key, "GET", endpoint, "")
 
@@ -2349,7 +2319,7 @@ defmodule Un do
     output
   end
 
-  defp curl_delete(api_key, endpoint) do
+  defp curl_delete(_api_key, endpoint) do
     {public_key, secret_key} = get_api_keys()
     headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
 
@@ -2364,7 +2334,7 @@ defmodule Un do
     output
   end
 
-  defp curl_patch(api_key, endpoint, json) do
+  defp curl_patch(_api_key, endpoint, json) do
     tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
     File.write!(tmp_file, json)
 
@@ -2475,7 +2445,7 @@ defmodule Un do
 
   defp get_opt([], _long, _short, default), do: default
 
-  defp get_opt([arg, value | rest], long, short, _default) when arg == long or arg == short do
+  defp get_opt([arg, value | _rest], long, short, _default) when arg == long or arg == short do
     value
   end
 
@@ -2581,7 +2551,7 @@ defmodule Un do
   end
 
   # Curl with 428 handling for destructive operations
-  defp curl_delete_with_sudo(api_key, endpoint) do
+  defp curl_delete_with_sudo(_api_key, endpoint) do
     {public_key, secret_key} = get_api_keys()
     headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
 
@@ -2605,7 +2575,7 @@ defmodule Un do
     end
   end
 
-  defp curl_post_with_sudo(api_key, endpoint, json) do
+  defp curl_post_with_sudo(_api_key, endpoint, json) do
     tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
     File.write!(tmp_file, json)
 

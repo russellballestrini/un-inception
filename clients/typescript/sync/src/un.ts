@@ -504,9 +504,10 @@ function apiRequestWithSudo(endpoint: string, method: string = "GET", data: any 
   });
 }
 
-function portalRequest(endpoint: string, method: string = "GET", data: any = null, keys: ApiKeys): Promise<any> {
+// Signed API request that resolves non-2xx bodies instead of exiting (key validation).
+function apiRequestSoft(endpoint: string, method: string = "GET", data: any = null, keys: ApiKeys): Promise<any> {
   return new Promise((resolve, reject) => {
-    const url = new URL(PORTAL_BASE + endpoint);
+    const url = new URL(API_BASE + endpoint);
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const body = data ? JSON.stringify(data) : '';
     const message = `${timestamp}:${method}:${url.pathname}${url.search}:${body}`;
@@ -521,7 +522,8 @@ function portalRequest(endpoint: string, method: string = "GET", data: any = nul
         'Authorization': `Bearer ${keys.publicKey}`,
         'X-Timestamp': timestamp,
         'X-Signature': signature,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(body))
       },
       timeout: 30000
     };
@@ -1103,7 +1105,7 @@ function openBrowser(url: string): void {
 
 async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
   try {
-    const result = await portalRequest("/keys/validate", "POST", {}, keys);
+    const result = await apiRequestSoft("/keys/validate", "POST", {}, keys);
 
     // Handle --extend flag first
     if (shouldExtend) {

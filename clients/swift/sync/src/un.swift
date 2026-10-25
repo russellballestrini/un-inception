@@ -1435,11 +1435,11 @@ func getVersion() -> [String: String] {
 
 // MARK: - Key Validation
 
-/// Validate API keys against the portal
+/// Validate API keys (POST /keys/validate on our API base)
 func validateKeys(publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
 
-    let url = URL(string: "\(PORTAL_BASE)/keys/validate")!
+    let url = URL(string: "\(API_BASE)/keys/validate")!
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 30

@@ -368,38 +368,6 @@
       (exit 1))
     output))
 
-(define (curl-post-portal api-key endpoint json-data)
-  (let* ((tmp-file (write-temp-file json-data))
-         (keys (get-api-keys))
-         (public-key (car keys))
-         (secret-key (cadr keys))
-         (auth-headers (build-auth-headers public-key secret-key "POST" endpoint json-data))
-         (cmd (string-append "curl -s -X POST " portal-base endpoint
-                            " -H 'Content-Type: application/json' "
-                            (string-join auth-headers " ")
-                            " -d @" tmp-file))
-         (port (open-input-pipe cmd))
-         (output (let loop ((lines '()))
-                   (let ((line (read-line port)))
-                     (if (eof-object? line)
-                         (string-join (reverse lines) "\n")
-                         (loop (cons line lines)))))))
-    (close-pipe port)
-    (delete-file tmp-file)
-    ;; Check for clock drift errors
-    (when (and (string-contains output "timestamp")
-               (or (string-contains output "401")
-                   (string-contains output "expired")
-                   (string-contains output "invalid")))
-      (format (current-error-port) "~aError: Request timestamp expired (must be within 5 minutes of server time)~a\n" red reset)
-      (format (current-error-port) "~aYour computer's clock may have drifted.~a\n" yellow reset)
-      (format (current-error-port) "~aCheck your system time and sync with NTP if needed:~a\n" yellow reset)
-      (format (current-error-port) "~a  Linux:   sudo ntpdate -s time.nist.gov~a\n" yellow reset)
-      (format (current-error-port) "~a  macOS:   sudo sntp -sS time.apple.com~a\n" yellow reset)
-      (format (current-error-port) "~a  Windows: w32tm /resync~a\n" yellow reset)
-      (exit 1))
-    output))
-
 (define (curl-put-text api-key endpoint content)
   "PUT request with text/plain content type (for vault)"
   (let* ((tmp-file (write-temp-file content))
@@ -704,7 +672,7 @@
 
 (define (validate-key-cmd extend)
   (let* ((api-key (get-api-key))
-         (response (curl-post-portal api-key "/keys/validate" "{}"))
+         (response (curl-post api-key "/keys/validate" "{}"))
          (status (json-extract-string response "status"))
          (public-key (json-extract-string response "public_key"))
          (tier (json-extract-string response "tier"))

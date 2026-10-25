@@ -75,7 +75,7 @@ function Test-Functional {
     # Test key validation
     Write-Host "Testing key validation..."
     try {
-        $result = Invoke-Api -Endpoint "/keys/validate" -Method "POST" -BaseUrl $PORTAL_BASE
+        $result = Invoke-Api -Endpoint "/keys/validate" -Method "POST"
         Write-TestResult "ValidateKeys" ($null -ne $result)
     } catch {
         Write-TestResult "ValidateKeys" $false $_.Exception.Message

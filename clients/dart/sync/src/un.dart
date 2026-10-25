@@ -1608,7 +1608,7 @@ Future<void> cmdKey(Args args) async {
   final secretKey = keys[1];
 
   try {
-    final result = await apiRequestCurl('/keys/validate', 'POST', null, publicKey, secretKey, baseUrl: portalBase);
+    final result = await apiRequestCurl('/keys/validate', 'POST', null, publicKey, secretKey);
 
     // Handle --extend flag
     if (args.keyExtend) {

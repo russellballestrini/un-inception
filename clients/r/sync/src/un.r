@@ -1486,7 +1486,7 @@ validate_keys <- function(public_key = NULL, secret_key = NULL) {
 
     response <- tryCatch({
         POST(
-            paste0(PORTAL_BASE, "/keys/validate"),
+            paste0(API_BASE, "/keys/validate"),
             add_headers(
                 "Authorization" = paste("Bearer", creds$public_key),
                 "X-Timestamp" = as.character(timestamp),
@@ -2236,7 +2236,7 @@ cmd_key <- function(args) {
 
     if (!is.null(args$extend) && args$extend) {
         # First validate to get public_key
-        url <- paste0(PORTAL_BASE, "/keys/validate")
+        url <- paste0(API_BASE, "/keys/validate")
         headers <- add_headers(
             `Content-Type` = "application/json",
             `Authorization` = paste("Bearer", public_key)
@@ -2277,7 +2277,7 @@ cmd_key <- function(args) {
     }
 
     # Validate key
-    url <- paste0(PORTAL_BASE, "/keys/validate")
+    url <- paste0(API_BASE, "/keys/validate")
     headers <- add_headers(
         `Content-Type` = "application/json",
         `Authorization` = paste("Bearer", public_key)

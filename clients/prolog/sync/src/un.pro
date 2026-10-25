@@ -541,12 +541,12 @@ validate_key(Extend) :-
     (   Extend = true
     ->  % Build command for --extend mode
         format(atom(Cmd),
-            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; PUBLIC_KEY=$(echo "$RESP" | jq -r ".public_key // \\"N/A\\""); xdg-open "~w/keys/extend?pk=$PUBLIC_KEY" 2>/dev/null',
-            [PortalBase, PublicKey, PortalBase])
+            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; PUBLIC_KEY=$(echo "$RESP" | jq -r ".public_key // \\"N/A\\""); xdg-open "~w/keys/extend?pk=$PUBLIC_KEY" 2>/dev/null',
+            [PublicKey, PortalBase])
     ;   % Build command for normal validation
         format(atom(Cmd),
-            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST ~w/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_key_resp.json; STATUS=$?; if [ $STATUS -ne 0 ]; then echo -e "\\x1b[31mInvalid\\x1b[0m"; exit 1; fi; RESP=$(cat /tmp/unsandbox_key_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_key_resp.json; exit 1; fi; EXPIRED=$(jq -r ".expired // false" /tmp/unsandbox_key_resp.json); if [ "$EXPIRED" = "true" ]; then echo -e "\\x1b[31mExpired\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expired: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo -e "\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m"; rm -f /tmp/unsandbox_key_resp.json; exit 1; else echo -e "\\x1b[32mValid\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Status: $(jq -r ".status // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expires: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Time Remaining: $(jq -r ".time_remaining // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Rate Limit: $(jq -r ".rate_limit // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Burst: $(jq -r ".burst // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Concurrency: $(jq -r ".concurrency // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; fi; rm -f /tmp/unsandbox_key_resp.json',
-            [PortalBase, PublicKey])
+            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_key_resp.json; STATUS=$?; if [ $STATUS -ne 0 ]; then echo -e "\\x1b[31mInvalid\\x1b[0m"; exit 1; fi; RESP=$(cat /tmp/unsandbox_key_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_key_resp.json; exit 1; fi; EXPIRED=$(jq -r ".expired // false" /tmp/unsandbox_key_resp.json); if [ "$EXPIRED" = "true" ]; then echo -e "\\x1b[31mExpired\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expired: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo -e "\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m"; rm -f /tmp/unsandbox_key_resp.json; exit 1; else echo -e "\\x1b[32mValid\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Status: $(jq -r ".status // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expires: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Time Remaining: $(jq -r ".time_remaining // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Rate Limit: $(jq -r ".rate_limit // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Burst: $(jq -r ".burst // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Concurrency: $(jq -r ".concurrency // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; fi; rm -f /tmp/unsandbox_key_resp.json',
+            [PublicKey])
     ),
     signed_shell(SecretKey, Cmd, 0).
 
@@ -755,10 +755,15 @@ parse_spawn_args(['--ports', P|Rest], Name, _, NameOut, PortsOut) :- !,
 parse_spawn_args([_|Rest], Name, Ports, NameOut, PortsOut) :-
     parse_spawn_args(Rest, Name, Ports, NameOut, PortsOut).
 
+% Run Goal; if it fails (its request already reported the error), exit 1
+% instead of letting Prolog backtrack into some other command's clause.
+or_halt(Goal) :- ( call(Goal) -> true ; halt(1) ).
+
 % Handle session subcommand
-handle_session(['--list'|_]) :- session_list.
-handle_session(['-l'|_]) :- session_list.
-handle_session(['--kill', SessionId|_]) :- session_kill(SessionId).
+handle_session(['--list'|_]) :- !, session_list.
+handle_session(['-l'|_]) :- !, session_list.
+handle_session(['--kill', SessionId|_]) :- !, or_halt(session_kill(SessionId)).
+handle_session(['--destroy', SessionId|_]) :- !, or_halt(session_kill(SessionId)).
 handle_session(Args) :-
     parse_session_args(Args, '', [], Shell, InputFiles),
     session_create(Shell, InputFiles).
@@ -829,15 +834,16 @@ parse_service_args([], _, _, _, _, _, InputFiles, _, _, Action, InputFiles) :-
     ;   write(user_error, 'Error: Use --list, --info, --logs, --freeze, --unfreeze, --destroy, --name, or env\n'),
         halt(1)
     ).
-parse_service_args(['--list'|_], _, _, _, _, _, _, _, _, _, _) :- service_list.
-parse_service_args(['-l'|_], _, _, _, _, _, _, _, _, _, _) :- service_list.
-parse_service_args(['--info', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_info(ServiceId).
-parse_service_args(['--logs', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_logs(ServiceId).
-parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_sleep(ServiceId).
-parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_wake(ServiceId).
-parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- service_destroy(ServiceId).
+parse_service_args(['--list'|_], _, _, _, _, _, _, _, _, _, _) :- !, service_list.
+parse_service_args(['-l'|_], _, _, _, _, _, _, _, _, _, _) :- !, service_list.
+parse_service_args(['--info', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- !, service_info(ServiceId).
+parse_service_args(['--logs', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- !, service_logs(ServiceId).
+parse_service_args(['--freeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- !, service_sleep(ServiceId).
+parse_service_args(['--unfreeze', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- !, service_wake(ServiceId).
+parse_service_args(['--destroy', ServiceId|_], _, _, _, _, _, _, _, _, _, _) :- !, or_halt(service_destroy(ServiceId)).
 parse_service_args(['--resize', ServiceId, '--vcpu', VcpuAtom|_], _, _, _, _, _, _, _, _, _, _) :-
     atom_number(VcpuAtom, Vcpu),
+    !,
     (   Vcpu >= 1, Vcpu =< 8
     ->  service_resize(ServiceId, Vcpu)
     ;   write(user_error, '\x1b[31mError: vCPU must be between 1 and 8\x1b[0m\n'),
@@ -845,15 +851,18 @@ parse_service_args(['--resize', ServiceId, '--vcpu', VcpuAtom|_], _, _, _, _, _,
     ).
 parse_service_args(['--resize', ServiceId, '-v', VcpuAtom|_], _, _, _, _, _, _, _, _, _, _) :-
     atom_number(VcpuAtom, Vcpu),
+    !,
     (   Vcpu >= 1, Vcpu =< 8
     ->  service_resize(ServiceId, Vcpu)
     ;   write(user_error, '\x1b[31mError: vCPU must be between 1 and 8\x1b[0m\n'),
         halt(1)
     ).
 parse_service_args(['--resize', _|_], _, _, _, _, _, _, _, _, _, _) :-
+    !,
     write(user_error, '\x1b[31mError: --resize requires --vcpu or -v\x1b[0m\n'),
     halt(1).
 parse_service_args(['--set-unfreeze-on-demand', ServiceId, EnabledAtom|_], _, _, _, _, _, _, _, _, _, _) :-
+    !,
     (   (EnabledAtom = 'true' ; EnabledAtom = '1')
     ->  service_set_unfreeze_on_demand(ServiceId, true)
     ;   (EnabledAtom = 'false' ; EnabledAtom = '0')
@@ -862,6 +871,7 @@ parse_service_args(['--set-unfreeze-on-demand', ServiceId, EnabledAtom|_], _, _,
         halt(1)
     ).
 parse_service_args(['--dump-bootstrap', ServiceId|Rest], _, _, _, _, _, _, _, _, _, _) :-
+    !,
     (   Rest = ['--dump-file', DumpFile|_]
     ->  service_dump_bootstrap(ServiceId, DumpFile)
     ;   service_dump_bootstrap(ServiceId, '')
@@ -938,10 +948,10 @@ main(Argv) :-
     setenv('UN_API', ApiBase),
 
     % Parse --account N global flag if present
-    (   Argv = ['--account', NStr|Rest]
+    (   Argv = ['--account', NStr|AfterAccount]
     ->  (   atom_number(NStr, N), integer(N)
         ->  nb_setval(account_index, N),
-            ActualArgv = Rest
+            ActualArgv = AfterAccount
         ;   write(user_error, 'Error: --account requires an integer argument\n'),
             halt(1)
         )

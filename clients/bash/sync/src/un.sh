@@ -794,7 +794,7 @@ validate_keys() {
         signature=$(hmac_sign "$sk" "$timestamp:POST:/keys/validate:")
     fi
 
-    curl -s -X POST "$PORTAL_BASE/keys/validate" \
+    curl -s -X POST "$API_BASE/keys/validate" \
         -H "Authorization: Bearer $pk" \
         -H "Content-Type: application/json" \
         ${signature:+-H "X-Timestamp: $timestamp" -H "X-Signature: $signature"}
