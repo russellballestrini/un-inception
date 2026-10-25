@@ -76,6 +76,7 @@ import Crypto.Hash (SHA256(..), hashWith)
 import Numeric (showHex)
 import Data.Time.Clock.POSIX (getPOSIXTime, posixSecondsToUTCTime)
 import Data.Time.Clock (diffUTCTime)
+import Data.Time.Format (formatTime, defaultTimeLocale)
 import qualified Data.Time.Clock
 import qualified System.Posix.Files
 import qualified System.Posix.Process
@@ -1814,111 +1815,105 @@ keyCommand opts = do
     then extendKey apiKey
     else validateKey apiKey
 
--- Validate API key and show status
+-- POST /keys/validate, empty body, signed; headers reach curl on stdin (-K -)
+keyValidatePost :: String -> Maybe String -> IO (Int, String)
+keyValidatePost publicKey mSecret = do
+  let path = "/keys/validate"
+  authHeaders <- buildAuthHeaders publicKey mSecret "POST" path ""
+  let pairs ("-H" : h : rest) = h : pairs rest
+      pairs (_ : rest) = pairs rest
+      pairs [] = []
+      headers = ["Content-Type: application/json"] ++ pairs authHeaders
+      config = unlines [ "header = " ++ curlConfigQuote h | h <- headers ]
+  (ec, out, _) <- readProcessWithExitCode "curl"
+    [ "-s", "-X", "POST", "-w", "\n%{http_code}", "-K", "-", apiBase ++ path ] config
+  let allLines = lines out
+      (bodyLines, statusLines) = splitAt (length allLines - 1) allLines
+      code = case statusLines of
+        [st] | not (null (filter isDigit st)) -> read (filter isDigit st)
+        _ -> 0
+  return (if ec /= ExitSuccess && code == 0 then 0 else code, intercalate "\n" bodyLines)
+
+-- Validate API key and show status (CLI_SPEC.md "un key output")
 validateKey :: String -> IO ()
-validateKey apiKey = do
-  let url = apiBase ++ "/keys/validate"
-  (exitCode, stdout, stderr) <- curlPost apiKey url "{}"
-
-  -- Check if valid:false appears in response
-  let isInvalid = "\"valid\":false" `isPrefixOf` dropWhile (/= 'v') stdout
-
-  if exitCode /= ExitSuccess || isInvalid
-    then do
-      -- Parse error response
-      let reason = extractJsonString stdout "reason"
-      case reason of
-        Just "expired" -> do
-          putStrLn $ red ++ "Expired" ++ reset ++ "\n"
-
-          -- Show key details
-          case extractJsonString stdout "public_key" of
-            Just pk -> putStrLn $ "Public Key:          " ++ pk
-            Nothing -> return ()
-
-          case extractJsonString stdout "tier" of
-            Just tier -> putStrLn $ "Tier:                " ++ tier
-            Nothing -> return ()
-
-          case extractJsonString stdout "expired_at_datetime" of
-            Just expiredAt -> do
-              putStr $ "Expired:             " ++ expiredAt
-              case extractJsonString stdout "expired_ago" of
-                Just ago -> putStrLn $ " (" ++ ago ++ ")"
-                Nothing -> putStrLn ""
-            Nothing -> return ()
-
-          putStrLn ""
-          putStrLn $ yellow ++ "To renew:" ++ reset ++ " Visit https://unsandbox.com/keys/extend"
-          exitFailure
-
-        Just "invalid_key" -> do
-          putStrLn $ red ++ "Invalid" ++ reset ++ ": key not found"
-          exitFailure
-
-        Just "suspended" -> do
-          putStrLn $ red ++ "Suspended" ++ reset ++ ": key has been suspended"
-          exitFailure
-
-        _ -> do
-          putStrLn $ red ++ "Invalid key" ++ reset
-          exitFailure
-    else do
-      -- Parse valid response
-      putStrLn $ green ++ "Valid" ++ reset ++ "\n"
-
-      case extractJsonString stdout "public_key" of
-        Just pk -> putStrLn $ "Public Key:          " ++ pk
-        Nothing -> return ()
-
-      case extractJsonString stdout "tier" of
-        Just tier -> putStrLn $ "Tier:                " ++ tier
-        Nothing -> return ()
-
-      case extractJsonString stdout "status" of
-        Just status -> putStrLn $ "Status:              " ++ status
-        Nothing -> return ()
-
-      case extractJsonString stdout "valid_through_datetime" of
-        Just validThrough -> putStrLn $ "Expires:             " ++ validThrough
-        Nothing -> return ()
-
-      case extractJsonString stdout "valid_for_human" of
-        Just validFor -> putStrLn $ "Time Remaining:      " ++ validFor
-        Nothing -> return ()
-
-      case extractJsonString stdout "rate_per_minute" of
-        Just rate -> putStrLn $ "Rate Limit:          " ++ rate ++ "/min"
-        Nothing -> return ()
-
-      case extractJsonString stdout "burst" of
-        Just burst -> putStrLn $ "Burst:               " ++ burst
-        Nothing -> return ()
-
-      case extractJsonString stdout "concurrency" of
-        Just conc -> putStrLn $ "Concurrency:         " ++ conc
-        Nothing -> return ()
+validateKey _ = do
+  (publicKey, mSecret) <- getApiKeys
+  (code, resp) <- keyValidatePost publicKey mSecret
+  let strField f = case jsonFieldRaw resp f of
+        Just ('"':v) -> Just (takeWhile (/= '"') v)
+        _ -> Nothing
+      intField f = case jsonFieldRaw resp f of
+        Just v@(c:_) | isDigit c || c == '-' ->
+          let n = takeWhile (\x -> isDigit x || x == '-') v in Just (read n :: Integer)
+        _ -> Nothing
+  (state, reason) <- case code of
+    200 -> do
+      let st = case strField "status" of
+            Just x -> x
+            Nothing -> case jsonFieldRaw resp "valid" of
+              Just v | "true" `isPrefixOf` v -> "active"
+              _ -> "invalid"
+      return (st, "status " ++ st)
+    401 -> do
+      let err = maybe "unauthorized" id (strField "error")
+          st | err `elem` [":expired", "expired"] = "expired"
+             | err `elem` [":suspended", "suspended"] = "suspended"
+             | otherwise = "invalid"
+      return (st, err)
+    0 -> do
+      hPutStrLn stderr $ red ++ "Error: request to " ++ apiBase ++ "/keys/validate failed" ++ reset
+      exitWith (ExitFailure 1)
+    _ -> do
+      let msg = maybe (maybe "" id (strField "message")) id (strField "error")
+      hPutStrLn stderr $ red ++ "Error: HTTP " ++ show code ++ " " ++ msg ++ reset
+      exitWith (ExitFailure 4)
+  case state of
+    "active" -> do
+      now <- getPOSIXTime
+      let nowS = floor now :: Integer
+          (expires, remaining) = case intField "valid_through" of
+            Nothing -> ("N/A", "N/A")
+            Just vt ->
+              let secs = vt `div` 1000
+                  exp' = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ"
+                           (posixSecondsToUTCTime (fromIntegral secs))
+                  left = secs - nowS
+                  rem' = if left <= 0 then "expired"
+                         else show (left `div` 86400) ++ "d " ++ show ((left `mod` 86400) `div` 3600)
+                              ++ "h " ++ show ((left `mod` 3600) `div` 60) ++ "m"
+              in (exp', rem')
+      putStrLn $ green ++ "Valid" ++ reset
+      putStrLn $ "Public Key: " ++ publicKey
+      putStrLn $ "Tier: " ++ maybe "N/A" show (intField "tier")
+      putStrLn $ "Status: " ++ maybe "N/A" id (strField "status")
+      putStrLn $ "Expires: " ++ expires
+      putStrLn $ "Time Remaining: " ++ remaining
+    "expired" -> do
+      putStrLn $ red ++ "Expired" ++ reset
+      putStrLn $ "Public Key: " ++ publicKey
+      putStrLn $ yellow ++ "To renew: Visit " ++ portalBase ++ "/keys/extend" ++ reset
+      exitWith (ExitFailure 3)
+    "suspended" -> do
+      putStrLn $ red ++ "Suspended" ++ reset
+      putStrLn $ "Public Key: " ++ publicKey
+      exitWith (ExitFailure 3)
+    _ -> do
+      putStrLn $ red ++ "Invalid" ++ reset
+      putStrLn $ "Public Key: " ++ publicKey
+      putStrLn $ "Reason: " ++ reason
+      exitWith (ExitFailure 3)
 
 -- Extend key (open browser to extend page)
 extendKey :: String -> IO ()
-extendKey apiKey = do
-  let url = apiBase ++ "/keys/validate"
-  (exitCode, stdout, _) <- curlPost apiKey url "{}"
-
-  case extractJsonString stdout "public_key" of
-    Nothing -> do
-      hPutStrLn stderr "Error: Invalid key or could not retrieve public key"
-      exitFailure
-    Just publicKey -> do
-      let extendUrl = portalBase ++ "/keys/extend?pk=" ++ publicKey
-      putStrLn "Opening extension page in browser..."
-      putStrLn $ "If browser doesn't open, visit: " ++ extendUrl
-
-      -- Try to open URL in browser (Linux-specific)
-      _ <- readProcessWithExitCode "sh"
-        ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]
-        ""
-      return ()
+extendKey _ = do
+  (publicKey, _) <- getApiKeys
+  let extendUrl = portalBase ++ "/keys/extend?pk=" ++ publicKey
+  putStrLn "Opening extension page in browser..."
+  putStrLn $ "If browser doesn't open, visit: " ++ extendUrl
+  _ <- readProcessWithExitCode "sh"
+    ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]
+    ""
+  return ()
 
 -- ============================================================================
 -- un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)

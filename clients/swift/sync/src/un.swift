@@ -2690,21 +2690,79 @@ func handleKeyRotate(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
     }
 }
 
-/// Handle key command
+/// Handle key command: display per CLI_SPEC.md "`un key` output".
+/// The payload carries no public key: print the one we signed with.
 func handleKeyCommand(_ pk: String, _ sk: String) throws {
-    let result = try validateKeys(publicKey: pk, secretKey: sk)
+    var result: [String: Any] = [:]
+    var state = "invalid"
+    var reason = "unauthorized"
+    do {
+        result = try validateKeys(publicKey: pk, secretKey: sk)
+        if let st = result["status"] as? String {
+            state = st
+        } else {
+            state = (result["valid"] as? Bool ?? false) ? "active" : "invalid"
+        }
+        reason = "status \(state)"
+    } catch UnsandboxError.apiError(let code, let body) {
+        let json = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        if code == 401 {
+            reason = json?["error"] as? String ?? "unauthorized"
+            switch reason {
+            case ":expired", "expired": state = "expired"
+            case ":suspended", "suspended": state = "suspended"
+            default: state = "invalid"
+            }
+        } else {
+            let msg = json?["error"] as? String ?? json?["message"] as? String ?? body
+            fputs("Error: HTTP \(code) \(msg)\n", stderr)
+            exit(4)
+        }
+    } catch {
+        fputs("Error: \(error)\n", stderr)
+        exit(1)
+    }
 
-    print("Public key: \(pk)")
-    print("Valid: \(result["valid"] as? Bool ?? false)")
-    if let tier = result["tier"] as? String {
-        print("Tier: \(tier)")
-    }
-    if let expiresAt = result["expires_at"] as? String {
-        print("Expires: \(expiresAt)")
-    }
-    if let reason = result["reason"] as? String {
+    switch state {
+    case "active":
+        break
+    case "expired":
+        print("Expired")
+        print("Public Key: \(pk)")
+        print("To renew: Visit \(PORTAL_BASE)/keys/extend")
+        exit(3)
+    case "suspended":
+        print("Suspended")
+        print("Public Key: \(pk)")
+        exit(3)
+    default:
+        print("Invalid")
+        print("Public Key: \(pk)")
         print("Reason: \(reason)")
+        exit(3)
     }
+
+    var tier = "N/A"
+    if let t = result["tier"] as? NSNumber { tier = "\(t.int64Value)" } else if let t = result["tier"] as? String { tier = t }
+    let status = result["status"] as? String ?? "N/A"
+    var expires = "N/A"
+    var remaining = "N/A"
+    if let vt = result["valid_through"] as? NSNumber {
+        let secs = vt.int64Value / 1000
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
+        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        expires = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(secs)))
+        let left = secs - Int64(Date().timeIntervalSince1970)
+        remaining = left <= 0 ? "expired" : "\(left / 86400)d \(left % 86400 / 3600)h \(left % 3600 / 60)m"
+    }
+    print("Valid")
+    print("Public Key: \(pk)")
+    print("Tier: \(tier)")
+    print("Status: \(status)")
+    print("Expires: \(expires)")
+    print("Time Remaining: \(remaining)")
 }
 
 /// Handle languages command

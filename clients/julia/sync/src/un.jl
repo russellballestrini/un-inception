@@ -43,6 +43,7 @@ using JSON
 using Base64
 using ArgParse
 using Printf
+using Dates
 using SHA
 
 # Extension to language mapping
@@ -825,13 +826,13 @@ function cmd_service(args)
     exit(1)
 end
 
-# Headers for POST /keys/validate with body "{}", HMAC-signed when we hold a secret.
+# Headers for POST /keys/validate with an empty body, HMAC-signed when we hold a secret.
 function key_validate_headers(public_key::String, secret_key)
     headers = ["Authorization" => "Bearer $public_key", "Content-Type" => "application/json"]
     if secret_key !== nothing && !isempty(secret_key)
         ts = Int64(floor(time()))
         push!(headers, "X-Timestamp" => string(ts))
-        push!(headers, "X-Signature" => compute_signature(secret_key, ts, "POST", "/keys/validate", "{}"))
+        push!(headers, "X-Signature" => compute_signature(secret_key, ts, "POST", "/keys/validate", ""))
     end
     return headers
 end
@@ -840,84 +841,68 @@ function validate_key(api_key::String, secret_key=nothing)
     url = API_BASE * "/keys/validate"
     headers = key_validate_headers(api_key, secret_key)
 
-    try
-        response = HTTP.post(url, headers, "{}", readtimeout=300)
-        data = JSON.parse(String(response.body))
-
-        # Check if valid
-        if get(data, "valid", false)
-            # Print valid key info
-            println("$(GREEN)Valid$(RESET)\n")
-            println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
-            println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
-            println(@sprintf("%-20s %s", "Status:", get(data, "status", "N/A")))
-            println(@sprintf("%-20s %s", "Expires:", get(data, "valid_through_datetime", "N/A")))
-            println(@sprintf("%-20s %s", "Time Remaining:", get(data, "valid_for_human", "N/A")))
-            println(@sprintf("%-20s %s/min", "Rate Limit:", get(data, "rate_per_minute", "N/A")))
-            println(@sprintf("%-20s %s", "Burst:", get(data, "burst", "N/A")))
-            println(@sprintf("%-20s %s", "Concurrency:", get(data, "concurrency", "N/A")))
-            return 0
-        else
-            # Handle invalid response
-            reason = get(data, "reason", "unknown")
-            if reason == "expired"
-                println("$(RED)Expired$(RESET)\n")
-                println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
-                println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
-                expired_at = get(data, "expired_at_datetime", "N/A")
-                expired_ago = get(data, "expired_ago", "")
-                if !isempty(expired_ago)
-                    println(@sprintf("%-20s %s (%s)", "Expired:", expired_at, expired_ago))
-                else
-                    println(@sprintf("%-20s %s", "Expired:", expired_at))
-                end
-                renew_url = get(data, "renew_url", "https://unsandbox.com/pricing")
-                println("\n$(YELLOW)To renew:$(RESET) Visit $renew_url")
-            elseif reason == "invalid_key"
-                println("$(RED)Invalid$(RESET): key not found")
-            elseif reason == "suspended"
-                println("$(RED)Suspended$(RESET): key has been suspended")
-            else
-                println("$(RED)Invalid$(RESET): $reason")
-            end
-            return 1
-        end
+    response = try
+        HTTP.post(url, headers, "", readtimeout=300, status_exception=false, retry=false)
     catch e
-        if isa(e, HTTP.ExceptionRequest.StatusError)
-            # Parse error response from body
-            try
-                data = JSON.parse(String(e.response.body))
-                reason = get(data, "reason", "unknown")
-
-                if reason == "expired"
-                    println("$(RED)Expired$(RESET)\n")
-                    println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
-                    println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
-                    expired_at = get(data, "expired_at_datetime", "N/A")
-                    expired_ago = get(data, "expired_ago", "")
-                    if !isempty(expired_ago)
-                        println(@sprintf("%-20s %s (%s)", "Expired:", expired_at, expired_ago))
-                    else
-                        println(@sprintf("%-20s %s", "Expired:", expired_at))
-                    end
-                    renew_url = get(data, "renew_url", "https://unsandbox.com/pricing")
-                    println("\n$(YELLOW)To renew:$(RESET) Visit $renew_url")
-                elseif reason == "invalid_key"
-                    println("$(RED)Invalid$(RESET): key not found")
-                elseif reason == "suspended"
-                    println("$(RED)Suspended$(RESET): key has been suspended")
-                else
-                    println("$(RED)Invalid$(RESET): $reason")
-                end
-            catch
-                println(stderr, "$(RED)Error: HTTP $(e.status)$(RESET)")
-            end
-            return 1
-        else
-            println(stderr, "$(RED)Error: Request failed: $e$(RESET)")
-            return 1
-        end
+        println(stderr, "$(RED)Error: request to $url failed: $e$(RESET)")
+        return 1
     end
+    code = response.status
+    data = try
+        d = JSON.parse(String(response.body))
+        d isa AbstractDict ? d : Dict{String,Any}()
+    catch
+        Dict{String,Any}()
+    end
+
+    if code == 200
+        state = string(get(data, "status", get(data, "valid", false) == true ? "active" : "invalid"))
+        reason = "status $state"
+    elseif code == 401
+        reason = string(get(data, "error", "unauthorized"))
+        state = reason in (":expired", "expired") ? "expired" :
+                reason in (":suspended", "suspended") ? "suspended" : "invalid"
+    else
+        msg = get(data, "error", get(data, "message", nothing))
+        println(stderr, "$(RED)Error: HTTP $code$(msg === nothing ? "" : " $msg")$(RESET)")
+        return 4
+    end
+
+    if state == "expired"
+        println("$(RED)Expired$(RESET)")
+        println("Public Key: $api_key")
+        println("$(YELLOW)To renew: Visit https://unsandbox.com/keys/extend$(RESET)")
+        return 3
+    elseif state == "suspended"
+        println("$(RED)Suspended$(RESET)")
+        println("Public Key: $api_key")
+        return 3
+    elseif state != "active"
+        println("$(RED)Invalid$(RESET)")
+        println("Public Key: $api_key")
+        println("Reason: $reason")
+        return 3
+    end
+
+    expires = "N/A"
+    remaining = "N/A"
+    vt = get(data, "valid_through", nothing)
+    if vt isa Real
+        secs = Int64(fld(Int64(round(vt)), 1000))
+        expires = Dates.format(Dates.unix2datetime(secs), "yyyy-mm-ddTHH:MM:SS") * "Z"
+        left = secs - Int64(floor(time()))
+        remaining = left <= 0 ? "expired" :
+            "$(div(left, 86400))d $(div(rem(left, 86400), 3600))h $(div(rem(left, 3600), 60))m"
+    end
+    tier = get(data, "tier", nothing)
+    status = get(data, "status", nothing)
+    println("$(GREEN)Valid$(RESET)")
+    println("Public Key: $api_key")
+    println("Tier: $(tier === nothing ? "N/A" : tier)")
+    println("Status: $(status === nothing ? "N/A" : status)")
+    println("Expires: $expires")
+    println("Time Remaining: $remaining")
+    return 0
 end
 
 function get_languages_cache_path()::String
@@ -1145,20 +1130,7 @@ function cmd_key(args)
 
     # Handle --extend flag
     if args["extend"]
-        # Validate key to get public key
-        url = API_BASE * "/keys/validate"
-        headers = key_validate_headers(api_key, secret_key)
-
         try
-            response = HTTP.post(url, headers, "{}", readtimeout=300)
-            data = JSON.parse(String(response.body))
-
-            public_key = get(data, "public_key", nothing)
-            if public_key === nothing
-                println(stderr, "$(RED)Error: Invalid key or could not retrieve public key$(RESET)")
-                exit(1)
-            end
-
             # Build extend URL
             extend_url = "$(PORTAL_BASE)/keys/extend?pk=$(public_key)"
 

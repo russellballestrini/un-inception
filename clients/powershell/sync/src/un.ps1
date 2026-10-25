@@ -795,57 +795,102 @@ function Invoke-Key {
     param($Args)
 
     $extend = $Args -contains "--extend"
+    $publicKey, $secretKey = Get-ApiKeys
 
+    if ($extend) {
+        $url = "$PORTAL_BASE/keys/extend?pk=$publicKey"
+        Write-Host "`e[34mOpening browser to extend key...`e[0m"
+        if ($IsWindows) {
+            Start-Process $url
+        } elseif ($IsMacOS) {
+            & open $url
+        } elseif ($IsLinux) {
+            & xdg-open $url
+        } else {
+            Write-Host "`e[33mPlease open manually: $url`e[0m"
+        }
+        return
+    }
+
+    # POST /keys/validate, signed in-process; read the status even on 401
+    $path = "/keys/validate"
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds(30)
+    $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, "$API_BASE$path")
+    $req.Content = New-Object System.Net.Http.StringContent("", [System.Text.Encoding]::UTF8, "application/json")
+    $req.Content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new("application/json")
+    $req.Headers.TryAddWithoutValidation("Authorization", "Bearer $publicKey") | Out-Null
+    if ($secretKey) {
+        $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($secretKey)
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("${timestamp}:POST:${path}:"))
+        $req.Headers.Add("X-Timestamp", "$timestamp")
+        $req.Headers.Add("X-Signature", [System.BitConverter]::ToString($hash).Replace("-", "").ToLower())
+    }
     try {
-        $result = Invoke-Api -Endpoint "/keys/validate" -Method "POST"
-
-        # Handle --extend flag
-        if ($extend) {
-            $publicKey = $result.public_key
-            if ($publicKey) {
-                $url = "$PORTAL_BASE/keys/extend?pk=$publicKey"
-                Write-Host "`e[34mOpening browser to extend key...`e[0m"
-                if ($IsWindows) {
-                    Start-Process $url
-                } elseif ($IsMacOS) {
-                    & open $url
-                } elseif ($IsLinux) {
-                    & xdg-open $url
-                } else {
-                    Write-Host "`e[33mPlease open manually: $url`e[0m"
-                }
-                return
-            } else {
-                Write-Error "Error: Could not retrieve public key"
-                exit 1
-            }
-        }
-
-        # Check if key is expired
-        if ($result.expired) {
-            Write-Host "`e[31mExpired`e[0m"
-            Write-Host "Public Key: $($result.public_key ?? 'N/A')"
-            Write-Host "Tier: $($result.tier ?? 'N/A')"
-            Write-Host "Expired: $($result.expires_at ?? 'N/A')"
-            Write-Host "`e[33mTo renew: Visit $PORTAL_BASE/keys/extend`e[0m"
-            exit 1
-        }
-
-        # Valid key
-        Write-Host "`e[32mValid`e[0m"
-        Write-Host "Public Key: $($result.public_key ?? 'N/A')"
-        Write-Host "Tier: $($result.tier ?? 'N/A')"
-        Write-Host "Status: $($result.status ?? 'N/A')"
-        Write-Host "Expires: $($result.expires_at ?? 'N/A')"
-        Write-Host "Time Remaining: $($result.time_remaining ?? 'N/A')"
-        Write-Host "Rate Limit: $($result.rate_limit ?? 'N/A')"
-        Write-Host "Burst: $($result.burst ?? 'N/A')"
-        Write-Host "Concurrency: $($result.concurrency ?? 'N/A')"
+        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $code = [int]$resp.StatusCode
     } catch {
-        Write-Host "`e[31mInvalid`e[0m"
-        Write-Host "Reason: $($_.Exception.Message)"
+        [Console]::Error.WriteLine("Error: request to $API_BASE$path failed: $($_.Exception.Message)")
         exit 1
     }
+    $result = $null
+    try { $result = $text | ConvertFrom-Json } catch {}
+    if ($null -eq $result -or $result -isnot [psobject]) { $result = [pscustomobject]@{} }
+
+    if ($code -eq 200) {
+        $state = if ($null -ne $result.status) { "$($result.status)" } elseif ($result.valid -eq $true) { "active" } else { "invalid" }
+        $reason = "status $state"
+    } elseif ($code -eq 401) {
+        $reason = if ($null -ne $result.error) { "$($result.error)" } else { "unauthorized" }
+        $state = if ($reason -in @(":expired", "expired")) { "expired" } elseif ($reason -in @(":suspended", "suspended")) { "suspended" } else { "invalid" }
+    } else {
+        $msg = if ($null -ne $result.error) { " $($result.error)" } elseif ($null -ne $result.message) { " $($result.message)" } else { "" }
+        [Console]::Error.WriteLine("Error: HTTP $code$msg")
+        exit 4
+    }
+
+    switch ($state) {
+        "active" { }
+        "expired" {
+            Write-Host "`e[31mExpired`e[0m"
+            Write-Host "Public Key: $publicKey"
+            Write-Host "`e[33mTo renew: Visit $PORTAL_BASE/keys/extend`e[0m"
+            exit 3
+        }
+        "suspended" {
+            Write-Host "`e[31mSuspended`e[0m"
+            Write-Host "Public Key: $publicKey"
+            exit 3
+        }
+        default {
+            Write-Host "`e[31mInvalid`e[0m"
+            Write-Host "Public Key: $publicKey"
+            Write-Host "Reason: $reason"
+            exit 3
+        }
+    }
+
+    $expires = "N/A"
+    $remaining = "N/A"
+    if ($null -ne $result.valid_through) {
+        $secs = [long][math]::Floor([double]$result.valid_through / 1000)
+        $expires = [DateTimeOffset]::FromUnixTimeSeconds($secs).UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
+        $left = $secs - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        if ($left -le 0) {
+            $remaining = "expired"
+        } else {
+            $remaining = "{0}d {1}h {2}m" -f [math]::Floor($left / 86400), [math]::Floor(($left % 86400) / 3600), [math]::Floor(($left % 3600) / 60)
+        }
+    }
+    Write-Host "`e[32mValid`e[0m"
+    Write-Host "Public Key: $publicKey"
+    Write-Host "Tier: $(if ($null -ne $result.tier) { $result.tier } else { 'N/A' })"
+    Write-Host "Status: $(if ($null -ne $result.status) { $result.status } else { 'N/A' })"
+    Write-Host "Expires: $expires"
+    Write-Host "Time Remaining: $remaining"
 }
 
 function Invoke-Image {

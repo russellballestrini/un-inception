@@ -3249,17 +3249,70 @@ def _handle_image_command(args, public_key: str, secret_key: str):
 
 
 def _handle_key_command(public_key: str, secret_key: str):
-    """Handle key validation command."""
-    result = validate_keys(public_key, secret_key)
+    """Handle key validation command (CLI_SPEC.md: `un key` output)."""
+    public_key, secret_key = _resolve_credentials(public_key, secret_key)
+    timestamp = int(time.time())
+    headers = {
+        "Authorization": f"Bearer {public_key}",
+        "X-Timestamp": str(timestamp),
+        "X-Signature": _sign_request(secret_key, timestamp, "POST", "/keys/validate", ""),
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(f"{API_BASE}/keys/validate", headers=headers, data="", timeout=30)
+    except requests.RequestException as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
 
-    print(f"Public key: {public_key}")
-    print(f"Valid: {result.get('valid', False)}")
-    if result.get('tier'):
-        print(f"Tier: {result.get('tier')}")
-    if result.get('expires_at'):
-        print(f"Expires: {result.get('expires_at')}")
-    if result.get('reason'):
-        print(f"Reason: {result.get('reason')}")
+    if response.status_code == 200:
+        state = result.get("status") or ("active" if result.get("valid") else "invalid")
+        reason = f"status {state}"
+    elif response.status_code == 401:
+        reason = str(result.get("error") or "unauthorized")
+        state = {":expired": "expired", "expired": "expired",
+                 ":suspended": "suspended", "suspended": "suspended"}.get(reason, "invalid")
+    else:
+        msg = result.get("error") or result.get("message") or response.text
+        print(f"Error: HTTP {response.status_code} {msg}", file=sys.stderr)
+        sys.exit(4)
+
+    if state != "active":
+        if state == "expired":
+            print("Expired")
+            print(f"Public Key: {public_key}")
+            print(f"To renew: Visit {PORTAL_BASE}/keys/extend")
+        elif state == "suspended":
+            print("Suspended")
+            print(f"Public Key: {public_key}")
+        else:
+            print("Invalid")
+            print(f"Public Key: {public_key}")
+            print(f"Reason: {reason}")
+        sys.exit(3)
+
+    expires = remaining = "N/A"
+    vt = result.get("valid_through")
+    if isinstance(vt, (int, float)):
+        secs = int(vt // 1000)
+        expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(secs))
+        left = secs - int(time.time())
+        if left <= 0:
+            remaining = "expired"
+        else:
+            remaining = f"{left // 86400}d {left % 86400 // 3600}h {left % 3600 // 60}m"
+    tier = result.get("tier")
+    print("Valid")
+    print(f"Public Key: {public_key}")
+    print(f"Tier: {tier if tier is not None else 'N/A'}")
+    print(f"Status: {result.get('status') or 'N/A'}")
+    print(f"Expires: {expires}")
+    print(f"Time Remaining: {remaining}")
 
 
 def _credentials_csv_path(args) -> Optional[Path]:

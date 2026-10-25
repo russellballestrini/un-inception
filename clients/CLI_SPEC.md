@@ -284,6 +284,52 @@ un key --rotate                   # Rotate this key's secret (sudo OTP), update 
 un key --rotate --otp CODE        # Finish a rotation started without a terminal
 ```
 
+### `un key` output
+
+`POST /keys/validate` on the API base, empty body, HMAC-signed
+(`timestamp:POST:/keys/validate:`). Response handling:
+
+- **200** — our key validated. Payload (fields we display; others such as
+  `rate_per_minute`, `burst`, `concurrency`, `api_key_id` may follow and get ignored):
+
+  | Field | Type | Meaning |
+  |-------|------|---------|
+  | `valid` | bool | `true` |
+  | `status` | string | `"active"` (the API answers 401 for any other state today) |
+  | `tier` | int | key tier |
+  | `valid_through` | int | expiry, **milliseconds** since the Unix epoch |
+
+  The payload carries **no public key and no `expires_at` / `time_remaining`** (those
+  came from an older portal endpoint). Print our own public key (the one we signed
+  with) and derive expiry from `valid_through`:
+
+  ```
+  Valid
+  Public Key: unsb-pk-xxxx-xxxx-xxxx-xxxx
+  Tier: 5
+  Status: active
+  Expires: 2027-06-19T12:45:27Z
+  Time Remaining: 236d 4h 12m
+  ```
+
+  `Expires` = `valid_through` as UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SSZ`, whole seconds).
+  `Time Remaining` = `valid_through` minus now, floored: `<days>d <hours>h <minutes>m`;
+  `expired` when zero or negative. Print `N/A` for `Tier`, `Status`, `Expires` or `Time
+  Remaining` only when the payload lacks its source field. Exit 0.
+  A 200 whose `status` differs from `"active"` gets handled like the matching 401 below
+  (`expired` → Expired, `suspended` → Suspended, anything else → Invalid with
+  `Reason: status <status>`).
+- **401** `{"error": ..., "valid": false}` — our key failed. Map `error`:
+  - `":expired"` (or `"expired"`) → print `Expired`, `Public Key: <pk>`,
+    `To renew: Visit https://unsandbox.com/keys/extend`.
+  - `":suspended"` (or `"suspended"`) → print `Suspended`, `Public Key: <pk>`.
+  - anything else (`"Invalid API key"`, `":invalid_signature"`, missing headers, ...) →
+    print `Invalid`, `Public Key: <pk>`, `Reason: <error>`.
+
+  Exit 3 (authentication error) for all three.
+- Other non-2xx: `Error: <message>` to stderr, exit 4. No response: `Error: <message>`,
+  exit 1.
+
 ### `un key --rotate`
 
 Replaces the key's secret. Anyone holding the current secret may rotate it; if

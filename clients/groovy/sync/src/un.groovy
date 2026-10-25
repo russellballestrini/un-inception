@@ -2271,8 +2271,11 @@ def rewriteAccountsCsv(File path, String publicKey, String newSecret) {
 
 /** POST /keys/self/rotate-secret with body {}; returns [status, json map]. */
 def rotatePost(String publicKey, String secretKey, String otp, String challenge) {
-    def path = '/keys/self/rotate-secret'
-    def body = '{}'
+    return signedPost(publicKey, secretKey, '/keys/self/rotate-secret', '{}', otp, challenge)
+}
+
+/** Signed POST; returns [status, json map] for any status (non-2xx bodies included). */
+def signedPost(String publicKey, String secretKey, String path, String body, String otp, String challenge) {
     def timestamp = (System.currentTimeMillis() / 1000) as long
     def connection = new URL("${API_BASE}${path}").openConnection() as java.net.HttpURLConnection
     connection.requestMethod = 'POST'
@@ -2393,73 +2396,69 @@ def cmdKeyRotate(args) {
 def cmdKey(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
-    def curlCmd = ['curl', '-s', '-X', 'POST', "${API_BASE}/keys/validate",
-                   '-H', 'Content-Type: application/json']
-
-    if (secretKey) {
-        def timestamp = (System.currentTimeMillis() / 1000) as long
-        def message = "${timestamp}:POST:/keys/validate:{}"
-
-        def mac = Mac.getInstance("HmacSHA256")
-        mac.init(new SecretKeySpec(secretKey.getBytes("UTF-8"), "HmacSHA256"))
-        def signature = mac.doFinal(message.getBytes("UTF-8")).encodeHex().toString()
-
-        curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-        curlCmd += ['-H', "X-Timestamp: ${timestamp}"]
-        curlCmd += ['-H', "X-Signature: ${signature}"]
-    } else {
-        curlCmd += ['-H', "Authorization: Bearer ${publicKey}"]
-    }
-
-    curlCmd += ['-d', '{}']
-
-    def proc = curlCmd.execute()
-    def output = proc.text
-    proc.waitFor()
-
-    if (proc.exitValue() != 0) {
-        println("${RED}Invalid${RESET}")
-        System.err.println("${RED}Error: Failed to validate key${RESET}")
-        System.exit(1)
-    }
-
-    def result = new JsonSlurper().parseText(output)
-
-    def fetchedPublicKey = result.public_key ?: 'N/A'
-    def tier = result.tier ?: 'N/A'
-    def status = result.status ?: 'N/A'
-    def expiresAt = result.expires_at ?: 'N/A'
-    def timeRemaining = result.time_remaining ?: 'N/A'
-    def rateLimit = result.rate_limit ?: 'N/A'
-    def burst = result.burst ?: 'N/A'
-    def concurrency = result.concurrency ?: 'N/A'
-    def expired = result.expired ?: false
-
-    if (args.keyExtend && fetchedPublicKey != 'N/A') {
-        def extendUrl = "${PORTAL_BASE}/keys/extend?pk=${fetchedPublicKey}"
+    if (args.keyExtend) {
         println("${BLUE}Opening browser to extend key...${RESET}")
-        openBrowser(extendUrl)
+        openBrowser("${PORTAL_BASE}/keys/extend?pk=${publicKey}")
         return
     }
 
-    if (expired) {
-        println("${RED}Expired${RESET}")
-        println("Public Key: ${fetchedPublicKey}")
-        println("Tier: ${tier}")
-        println("Expired: ${expiresAt}")
-        println("${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}")
+    def resp
+    try {
+        resp = signedPost(publicKey, secretKey, '/keys/validate', '', null, null)
+    } catch (IOException e) {
+        System.err.println("${RED}Error: ${e.message}${RESET}")
         System.exit(1)
+    }
+    int code = resp[0]
+    def result = resp[1]
+    String state
+    String reason
+    if (code == 200) {
+        state = result.status != null ? result.status.toString() : (result.valid == true ? 'active' : 'invalid')
+        reason = "status ${state}"
+    } else if (code == 401) {
+        reason = result.error != null ? result.error.toString() : 'unauthorized'
+        state = (reason in [':expired', 'expired']) ? 'expired' : ((reason in [':suspended', 'suspended']) ? 'suspended' : 'invalid')
+    } else {
+        def msg = result.error ?: result.message
+        System.err.println("${RED}Error: HTTP ${code}${msg ? ' ' + msg : ''}${RESET}")
+        System.exit(4)
+    }
+
+    if (state == 'expired') {
+        println("${RED}Expired${RESET}")
+        println("Public Key: ${publicKey}")
+        println("${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}")
+        System.exit(3)
+    } else if (state == 'suspended') {
+        println("${RED}Suspended${RESET}")
+        println("Public Key: ${publicKey}")
+        System.exit(3)
+    } else if (state != 'active') {
+        println("${RED}Invalid${RESET}")
+        println("Public Key: ${publicKey}")
+        println("Reason: ${reason}")
+        System.exit(3)
+    }
+
+    def tier = result.tier != null ? (result.tier instanceof Number ? (result.tier as long).toString() : result.tier.toString()) : 'N/A'
+    def status = result.status != null ? result.status.toString() : 'N/A'
+    def expires = 'N/A'
+    def remaining = 'N/A'
+    if (result.valid_through instanceof Number) {
+        long secs = ((result.valid_through as long) / 1000) as long
+        expires = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
+            .withZone(java.time.ZoneOffset.UTC).format(java.time.Instant.ofEpochSecond(secs))
+        long left = secs - ((System.currentTimeMillis() / 1000) as long)
+        remaining = left <= 0 ? 'expired' : "${(left / 86400) as long}d ${((left % 86400) / 3600) as long}h ${((left % 3600) / 60) as long}m"
     }
 
     println("${GREEN}Valid${RESET}")
-    println("Public Key: ${fetchedPublicKey}")
+    println("Public Key: ${publicKey}")
     println("Tier: ${tier}")
     println("Status: ${status}")
-    println("Expires: ${expiresAt}")
-    println("Time Remaining: ${timeRemaining}")
-    println("Rate Limit: ${rateLimit}")
-    println("Burst: ${burst}")
-    println("Concurrency: ${concurrency}")
+    println("Expires: ${expires}")
+    println("Time Remaining: ${remaining}")
 }
 
 def cmdService(args) {

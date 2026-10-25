@@ -6853,157 +6853,100 @@ static int validate_api_key(const UnsandboxCredentials *creds) {
         return 1;
     }
 
-    if (http_code != 200) {
-        // Parse error response
-        if (response.data) {
-            char *error = extract_json_string(response.data, "error");
-            char *reason = extract_json_string(response.data, "reason");
-            if (error) {
-                printf("\033[31mInvalid\033[0m: %s\n", error);
-                free(error);
-            } else if (reason) {
-                if (strcmp(reason, "invalid_key") == 0) {
-                    printf("\033[31mInvalid\033[0m: key not found\n");
-                } else if (strcmp(reason, "expired") == 0) {
-                    printf("\033[31mExpired\033[0m\n\n");
+    // Response handling per CLI_SPEC.md "`un key` output". The payload carries no
+    // public key: we print the one we signed with.
+    const char *pk = creds->public_key;
+    const char *body = response.data ? response.data : "";
+    char *state = NULL;   // malloc'd
+    char *reason = NULL;  // malloc'd
 
-                    // Show key details if available
-                    char *public_key = extract_json_string(response.data, "public_key");
-                    long long tier = extract_json_number(response.data, "tier");
-                    char *expired_at = extract_json_string(response.data, "expired_at_datetime");
-                    char *expired_ago = extract_json_string(response.data, "expired_ago");
-                    char *renew_url = extract_json_string(response.data, "renew_url");
-
-                    if (public_key) {
-                        printf("%-20s %s\n", "Public Key:", public_key);
-                        free(public_key);
-                    }
-                    if (tier >= 0) {
-                        printf("%-20s %lld\n", "Tier:", tier);
-                    }
-                    if (expired_at) {
-                        printf("%-20s %s", "Expired:", expired_at);
-                        if (expired_ago) {
-                            printf(" (%s)", expired_ago);
-                        }
-                        printf("\n");
-                        free(expired_at);
-                    }
-                    if (expired_ago) free(expired_ago);
-
-                    printf("\n\033[33mTo renew:\033[0m Visit %s\n",
-                           renew_url ? renew_url : "https://unsandbox.com/pricing");
-                    if (renew_url) free(renew_url);
-                } else if (strcmp(reason, "suspended") == 0) {
-                    printf("\033[31mSuspended\033[0m: key has been suspended\n");
-                } else {
-                    printf("\033[31mInvalid\033[0m: %s\n", reason);
+    if (http_code >= 200 && http_code < 300) {
+        state = extract_json_string(body, "status");
+        if (!state) {
+            // No status: fall back on "valid": true
+            int valid = 0;
+            const char *v = strstr(body, "\"valid\"");
+            if (v) {
+                v += 7;
+                while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+                if (*v == ':') {
+                    v++;
+                    while (*v == ' ' || *v == '\t' || *v == '\n' || *v == '\r') v++;
+                    valid = (strncmp(v, "true", 4) == 0);
                 }
-                free(reason);
-            } else {
-                printf("\033[31mInvalid\033[0m: HTTP %ld\n", http_code);
             }
+            state = strdup(valid ? "active" : "invalid");
         }
+        size_t rl = strlen(state) + 8;
+        reason = malloc(rl);
+        if (reason) snprintf(reason, rl, "status %s", state);
+    } else if (http_code == 401) {
+        reason = extract_json_string(body, "error");
+        if (!reason) reason = strdup("unauthorized");
+        if (strcmp(reason, ":expired") == 0 || strcmp(reason, "expired") == 0)
+            state = strdup("expired");
+        else if (strcmp(reason, ":suspended") == 0 || strcmp(reason, "suspended") == 0)
+            state = strdup("suspended");
+        else
+            state = strdup("invalid");
+    } else {
+        char *msg = extract_json_string(body, "error");
+        if (!msg) msg = extract_json_string(body, "message");
+        fprintf(stderr, "Error: HTTP %ld %s\n", http_code, msg ? msg : body);
+        free(msg);
         free(response.data);
-        return 1;
+        return 4;
     }
 
-    // Check for valid:false in 200 response
-    const char *valid_check = strstr(response.data, "\"valid\":false");
-    if (valid_check) {
-        char *reason = extract_json_string(response.data, "reason");
-        if (reason) {
-            if (strcmp(reason, "invalid_key") == 0) {
-                printf("\033[31mInvalid\033[0m: key not found\n");
-            } else if (strcmp(reason, "expired") == 0) {
-                printf("\033[31mExpired\033[0m\n\n");
-
-                // Show key details if available
-                char *public_key = extract_json_string(response.data, "public_key");
-                long long tier = extract_json_number(response.data, "tier");
-                char *expired_at = extract_json_string(response.data, "expired_at_datetime");
-                char *expired_ago = extract_json_string(response.data, "expired_ago");
-                char *renew_url = extract_json_string(response.data, "renew_url");
-
-                if (public_key) {
-                    printf("%-20s %s\n", "Public Key:", public_key);
-                    free(public_key);
-                }
-                if (tier >= 0) {
-                    printf("%-20s %lld\n", "Tier:", tier);
-                }
-                if (expired_at) {
-                    printf("%-20s %s", "Expired:", expired_at);
-                    if (expired_ago) {
-                        printf(" (%s)", expired_ago);
-                    }
-                    printf("\n");
-                    free(expired_at);
-                }
-                if (expired_ago) free(expired_ago);
-
-                printf("\n\033[33mTo renew:\033[0m Visit %s\n",
-                       renew_url ? renew_url : "https://unsandbox.com/pricing");
-                if (renew_url) free(renew_url);
-            } else if (strcmp(reason, "suspended") == 0) {
-                printf("\033[31mSuspended\033[0m: key has been suspended\n");
-            } else {
-                printf("\033[31mInvalid\033[0m: %s\n", reason);
-            }
-            free(reason);
+    if (!state || strcmp(state, "active") != 0) {
+        int rc = 3;
+        if (state && strcmp(state, "expired") == 0) {
+            printf("\033[31mExpired\033[0m\n");
+            printf("Public Key: %s\n", pk);
+            printf("\033[33mTo renew:\033[0m Visit https://unsandbox.com/keys/extend\n");
+        } else if (state && strcmp(state, "suspended") == 0) {
+            printf("\033[31mSuspended\033[0m\n");
+            printf("Public Key: %s\n", pk);
         } else {
-            printf("\033[31mInvalid key\033[0m\n");
+            printf("\033[31mInvalid\033[0m\n");
+            printf("Public Key: %s\n", pk);
+            printf("Reason: %s\n", reason ? reason : "unknown");
         }
+        free(state);
+        free(reason);
         free(response.data);
-        return 1;
+        return rc;
+    }
+    free(reason);
+
+    char tier[32] = "N/A";
+    long long t = extract_json_number(body, "tier");
+    if (t >= 0) snprintf(tier, sizeof(tier), "%lld", t);
+
+    char expires[32] = "N/A", remaining[64] = "N/A";
+    long long vt = extract_json_number(body, "valid_through");
+    if (vt >= 0) {
+        time_t secs = (time_t)(vt / 1000);
+        struct tm tmv;
+        if (gmtime_r(&secs, &tmv))
+            strftime(expires, sizeof(expires), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+        long long left = (long long)secs - (long long)time(NULL);
+        if (left <= 0)
+            snprintf(remaining, sizeof(remaining), "expired");
+        else
+            snprintf(remaining, sizeof(remaining), "%lldd %lldh %lldm",
+                     left / 86400, left % 86400 / 3600, left % 3600 / 60);
     }
 
-    // Parse valid response
-    if (!response.data) {
-        fprintf(stderr, "Error: Empty response\n");
-        return 1;
-    }
+    printf("\033[32mValid\033[0m\n");
+    printf("Public Key: %s\n", pk);
+    printf("Tier: %s\n", tier);
+    printf("Status: %s\n", state);
+    printf("Expires: %s\n", expires);
+    printf("Time Remaining: %s\n", remaining);
 
-    // Check if valid
-    const char *valid_str = strstr(response.data, "\"valid\":");
-    int valid = 0;
-    if (valid_str) {
-        valid = (strstr(valid_str, "true") == valid_str + 8);
-    }
-
-    if (!valid) {
-        printf("\033[31mInvalid key\033[0m\n");
-        free(response.data);
-        return 1;
-    }
-
-    // Extract fields
-    long long tier = extract_json_number(response.data, "tier");
-    char *status = extract_json_string(response.data, "status");
-    char *valid_through = extract_json_string(response.data, "valid_through_datetime");
-    char *valid_for = extract_json_string(response.data, "valid_for_human");
-    char *public_key = extract_json_string(response.data, "public_key");
-    long long rate_per_minute = extract_json_number(response.data, "rate_per_minute");
-    long long burst = extract_json_number(response.data, "burst");
-    long long concurrency = extract_json_number(response.data, "concurrency");
-
-    // Display key info
-    printf("\033[32mValid\033[0m\n\n");
-    printf("%-20s %s\n", "Public Key:", public_key ? public_key : "N/A");
-    printf("%-20s %lld\n", "Tier:", tier);
-    printf("%-20s %s\n", "Status:", status ? status : "N/A");
-    printf("%-20s %s\n", "Expires:", valid_through ? valid_through : "N/A");
-    printf("%-20s %s\n", "Time Remaining:", valid_for ? valid_for : "N/A");
-    printf("%-20s %lld/min\n", "Rate Limit:", rate_per_minute);
-    printf("%-20s %lld\n", "Burst:", burst);
-    printf("%-20s %lld\n", "Concurrency:", concurrency);
-
-    if (status) free(status);
-    if (valid_through) free(valid_through);
-    if (valid_for) free(valid_for);
-    if (public_key) free(public_key);
+    free(state);
     free(response.data);
-
     return 0;
 }
 

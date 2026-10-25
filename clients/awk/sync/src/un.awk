@@ -1084,8 +1084,16 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     print response
 }
 
-function validate_key(do_extend    , timestamp, sig_headers, signature, sig_input, sig_cmd) {
+function validate_key(do_extend    , timestamp, sig_headers, signature, sig_input, cmd, response, line, code, nl, arr, state, reason, pk, url, vt, secs, left, expires, remaining, tier, status) {
     get_api_keys()
+    pk = GLOBAL_PUBLIC_KEY
+
+    if (do_extend) {
+        url = PORTAL_BASE "/keys/extend?pk=" pk
+        print BLUE "Opening browser to: " url RESET
+        system("xdg-open '" url "' 2>/dev/null || open '" url "' 2>/dev/null &")
+        return
+    }
 
     timestamp = systime()
     sig_headers = ""
@@ -1095,85 +1103,80 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
         sig_headers = "-H 'X-Timestamp: " timestamp "' -H 'X-Signature: " signature "' "
     }
 
-    # Call curl to validate key
-    cmd = "curl -s -X POST '" API_BASE "/keys/validate' " \
+    # Call curl to validate key; last line carries the HTTP status
+    cmd = "curl -s -w '\\n%{http_code}' -X POST '" API_BASE "/keys/validate' " \
           "-H 'Content-Type: application/json' " \
-          "-H 'Authorization: Bearer " GLOBAL_PUBLIC_KEY "' " \
+          "-H 'Authorization: Bearer " pk "' " \
           sig_headers
 
     response = ""
+    code = ""
     while ((cmd | getline line) > 0) {
-        response = response line
+        if (code != "") response = response code
+        code = line
     }
     close(cmd)
 
-    # Parse expired status (simple regex check)
-    if (match(response, /"expired":true/)) {
-        print RED "Expired" RESET
-
-        # Extract public_key if present
-        if (match(response, /"public_key":"([^"]+)"/, arr)) {
-            public_key = arr[1]
-            print "Public Key: " public_key
-        }
-
-        # Extract tier
-        if (match(response, /"tier":"([^"]+)"/, arr)) {
-            print "Tier: " arr[1]
-        }
-
-        # Extract expires_at
-        if (match(response, /"expires_at":"([^"]+)"/, arr)) {
-            print "Expired: " arr[1]
-        }
-
-        print YELLOW "To renew: Visit https://unsandbox.com/keys/extend" RESET
-
-        if (do_extend && public_key) {
-            url = PORTAL_BASE "/keys/extend?pk=" public_key
-            print ""
-            print BLUE "Opening browser to: " url RESET
-            system("xdg-open '" url "' 2>/dev/null || open '" url "' 2>/dev/null &")
-        }
+    if (code !~ /^[0-9]+$/ || code == "000") {
+        print RED "Error: request to " API_BASE "/keys/validate failed" RESET > "/dev/stderr"
         exit 1
     }
 
-    # Valid key
+    if (code == "200") {
+        if (match(response, /"status" *: *"([^"]*)"/, arr)) state = arr[1]
+        else if (match(response, /"valid" *: *true/)) state = "active"
+        else state = "invalid"
+        reason = "status " state
+    } else if (code == "401") {
+        reason = "unauthorized"
+        if (match(response, /"error" *: *"([^"]*)"/, arr)) reason = arr[1]
+        if (reason == ":expired" || reason == "expired") state = "expired"
+        else if (reason == ":suspended" || reason == "suspended") state = "suspended"
+        else state = "invalid"
+    } else {
+        reason = ""
+        if (match(response, /"error" *: *"([^"]*)"/, arr)) reason = " " arr[1]
+        else if (match(response, /"message" *: *"([^"]*)"/, arr)) reason = " " arr[1]
+        print RED "Error: HTTP " code reason RESET > "/dev/stderr"
+        exit 4
+    }
+
+    if (state == "expired") {
+        print RED "Expired" RESET
+        print "Public Key: " pk
+        print YELLOW "To renew: Visit https://unsandbox.com/keys/extend" RESET
+        exit 3
+    }
+    if (state == "suspended") {
+        print RED "Suspended" RESET
+        print "Public Key: " pk
+        exit 3
+    }
+    if (state != "active") {
+        print RED "Invalid" RESET
+        print "Public Key: " pk
+        print "Reason: " reason
+        exit 3
+    }
+
+    tier = "N/A"; status = "N/A"; expires = "N/A"; remaining = "N/A"
+    if (match(response, /"tier" *: *"?([^", }]+)"?/, arr)) tier = arr[1]
+    if (match(response, /"status" *: *"([^"]*)"/, arr)) status = arr[1]
+    if (match(response, /"valid_through" *: *([0-9]+)/, arr)) {
+        vt = arr[1]
+        secs = int(vt / 1000)
+        expires = strftime("%Y-%m-%dT%H:%M:%SZ", secs, 1)
+        left = secs - systime()
+        if (left <= 0) remaining = "expired"
+        else remaining = int(left / 86400) "d " int((left % 86400) / 3600) "h " int((left % 3600) / 60) "m"
+    }
+
     print GREEN "Valid" RESET
-
-    # Extract and display fields
-    if (match(response, /"public_key":"([^"]+)"/, arr)) {
-        public_key = arr[1]
-        print "Public Key: " public_key
-    }
-    if (match(response, /"tier":"([^"]+)"/, arr)) {
-        print "Tier: " arr[1]
-    }
-    if (match(response, /"status":"([^"]+)"/, arr)) {
-        print "Status: " arr[1]
-    }
-    if (match(response, /"expires_at":"([^"]+)"/, arr)) {
-        print "Expires: " arr[1]
-    }
-    if (match(response, /"time_remaining":"([^"]+)"/, arr)) {
-        print "Time Remaining: " arr[1]
-    }
-    if (match(response, /"rate_limit":"?([^",}]+)"?/, arr)) {
-        print "Rate Limit: " arr[1]
-    }
-    if (match(response, /"burst":"?([^",}]+)"?/, arr)) {
-        print "Burst: " arr[1]
-    }
-    if (match(response, /"concurrency":"?([^",}]+)"?/, arr)) {
-        print "Concurrency: " arr[1]
-    }
-
-    if (do_extend && public_key) {
-        url = PORTAL_BASE "/keys/extend?pk=" public_key
-        print ""
-        print BLUE "Opening browser to: " url RESET
-        system("xdg-open '" url "' 2>/dev/null || open '" url "' 2>/dev/null &")
-    }
+    print "Public Key: " pk
+    print "Tier: " tier
+    print "Status: " status
+    print "Expires: " expires
+    print "Time Remaining: " remaining
 }
 
 # Alias for validate_key for API parity

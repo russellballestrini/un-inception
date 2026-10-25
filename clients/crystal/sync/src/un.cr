@@ -921,7 +921,20 @@ def cmd_key(args)
     "Content-Type" => "application/json"
   }
 
-  body = "{}"
+  body = ""
+
+  if args[:extend]?.as?(Bool)
+    extend_url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
+    puts "#{BLUE}Opening browser to extend key...#{RESET}"
+    ["xdg-open", "open"].each do |browser|
+      if system("which #{browser} > /dev/null 2>&1")
+        system("#{browser} '#{extend_url}' > /dev/null 2>&1 &")
+        break
+      end
+    end
+    puts extend_url
+    return
+  end
 
   # Add HMAC authentication headers if secret_key is provided
   if secret_key && !secret_key.empty?
@@ -938,72 +951,72 @@ def cmd_key(args)
     headers["Authorization"] = "Bearer #{public_key}"
   end
 
-  begin
-    response = HTTP::Client.post(url, headers: headers, body: body)
-    result = JSON.parse(response.body)
-
-    status = result["status"]?.try(&.as_s?) || "unknown"
-    public_key = result["public_key"]?.try(&.as_s?) || "N/A"
-    tier = result["tier"]?.try(&.as_s?) || "N/A"
-
-    case status
-    when "valid"
-      puts "#{GREEN}Valid#{RESET}"
-      puts "Public Key: #{public_key}"
-      puts "Tier: #{tier}"
-      if expires_at = result["expires_at"]?.try(&.as_s?)
-        puts "Expires: #{expires_at}"
-      end
-
-      # Handle --extend flag
-      if args[:extend]?.as?(Bool)
-        extend_url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
-        puts "\n#{BLUE}Opening browser to extend key...#{RESET}"
-        # Try common browser commands
-        ["xdg-open", "open", "firefox", "chromium", "google-chrome"].each do |browser|
-          if system("which #{browser} > /dev/null 2>&1")
-            system("#{browser} '#{extend_url}' > /dev/null 2>&1 &")
-            break
-          end
-        end
-        puts extend_url
-      end
-
-    when "expired"
-      puts "#{RED}Expired#{RESET}"
-      puts "Public Key: #{public_key}"
-      puts "Tier: #{tier}"
-      if expired_at = result["expires_at"]?.try(&.as_s?)
-        puts "Expired: #{expired_at}"
-      end
-      puts "#{YELLOW}To renew: Visit #{PORTAL_BASE}/keys/extend#{RESET}"
-
-      # Handle --extend flag for expired keys
-      if args[:extend]?.as?(Bool)
-        extend_url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
-        puts "\n#{BLUE}Opening browser to renew key...#{RESET}"
-        ["xdg-open", "open", "firefox", "chromium", "google-chrome"].each do |browser|
-          if system("which #{browser} > /dev/null 2>&1")
-            system("#{browser} '#{extend_url}' > /dev/null 2>&1 &")
-            break
-          end
-        end
-        puts extend_url
-      end
-
-    when "invalid"
-      puts "#{RED}Invalid#{RESET}"
-      STDERR.puts "#{RED}Error: API key is not valid#{RESET}"
-      exit 1
-
-    else
-      puts "#{YELLOW}Unknown status: #{status}#{RESET}"
-    end
-
+  # Display per CLI_SPEC.md "`un key` output": the API returns no public key,
+  # so we print ours; expiry derives from valid_through (ms since epoch).
+  response = begin
+    HTTP::Client.post(url, headers: headers, body: body)
   rescue ex
     STDERR.puts "#{RED}Error: Failed to validate key: #{ex.message}#{RESET}"
     exit 1
   end
+  result = (JSON.parse(response.body) rescue JSON.parse("{}"))
+  result = JSON.parse("{}") unless result.as_h?
+
+  state = "invalid"
+  reason = ""
+  case response.status_code
+  when 200
+    state = result["status"]?.try(&.as_s?) || (result["valid"]?.try(&.as_bool?) ? "active" : "invalid")
+    reason = "status #{state}"
+  when 401
+    reason = result["error"]?.try(&.as_s?) || "unauthorized"
+    state = case reason
+            when ":expired", "expired"     then "expired"
+            when ":suspended", "suspended" then "suspended"
+            else                                "invalid"
+            end
+  else
+    msg = result["error"]?.try(&.as_s?) || result["message"]?.try(&.as_s?) || ""
+    STDERR.puts "#{RED}Error: HTTP #{response.status_code} #{msg}#{RESET}"
+    exit 4
+  end
+
+  case state
+  when "active"
+    # fall through to the details below
+  when "expired"
+    puts "#{RED}Expired#{RESET}"
+    puts "Public Key: #{public_key}"
+    puts "#{YELLOW}To renew: Visit #{PORTAL_BASE}/keys/extend#{RESET}"
+    exit 3
+  when "suspended"
+    puts "#{RED}Suspended#{RESET}"
+    puts "Public Key: #{public_key}"
+    exit 3
+  else
+    puts "#{RED}Invalid#{RESET}"
+    puts "Public Key: #{public_key}"
+    puts "Reason: #{reason}"
+    exit 3
+  end
+
+  tier = result["tier"]?.try { |t| t.raw.nil? ? nil : t.to_s } || "N/A"
+  status = result["status"]?.try(&.as_s?) || "N/A"
+  expires = "N/A"
+  remaining = "N/A"
+  if vt = result["valid_through"]?.try { |v| v.as_i64? || v.as_f?.try(&.to_i64) }
+    secs = vt // 1000
+    expires = Time.unix(secs).to_utc.to_s("%Y-%m-%dT%H:%M:%SZ")
+    left = secs - Time.utc.to_unix
+    remaining = left <= 0 ? "expired" : "#{left // 86400}d #{left % 86400 // 3600}h #{left % 3600 // 60}m"
+  end
+
+  puts "#{GREEN}Valid#{RESET}"
+  puts "Public Key: #{public_key}"
+  puts "Tier: #{tier}"
+  puts "Status: #{status}"
+  puts "Expires: #{expires}"
+  puts "Time Remaining: #{remaining}"
 end
 
 def cmd_image(args)

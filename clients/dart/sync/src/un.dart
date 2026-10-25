@@ -1607,57 +1607,91 @@ Future<void> cmdKey(Args args) async {
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
+  // Handle --extend flag
+  if (args.keyExtend) {
+    final url = '$portalBase/keys/extend?pk=$publicKey';
+    print('${blue}Opening browser to extend key...$reset');
+    if (Platform.isMacOS) {
+      await Process.run('open', [url]);
+    } else if (Platform.isLinux) {
+      await Process.run('xdg-open', [url]);
+    } else if (Platform.isWindows) {
+      await Process.run('cmd', ['/c', 'start', url]);
+    } else {
+      print('${yellow}Please open manually: $url$reset');
+    }
+    return;
+  }
+
+  int code;
+  String text;
   try {
-    final result = await apiRequestCurl('/keys/validate', 'POST', null, publicKey, secretKey);
-
-    // Handle --extend flag
-    if (args.keyExtend) {
-      final publicKey = result['public_key'] as String?;
-      if (publicKey != null) {
-        final url = '$portalBase/keys/extend?pk=$publicKey';
-        print('${blue}Opening browser to extend key...$reset');
-        if (Platform.isMacOS) {
-          await Process.run('open', [url]);
-        } else if (Platform.isLinux) {
-          await Process.run('xdg-open', [url]);
-        } else if (Platform.isWindows) {
-          await Process.run('cmd', ['/c', 'start', url]);
-        } else {
-          print('${yellow}Please open manually: $url$reset');
-        }
-        return;
-      } else {
-        stderr.writeln('${red}Error: Could not retrieve public key$reset');
-        exit(1);
-      }
-    }
-
-    // Check if key is expired
-    final expired = result['expired'] as bool? ?? false;
-    if (expired) {
-      print('${red}Expired$reset');
-      print('Public Key: ${result['public_key'] ?? 'N/A'}');
-      print('Tier: ${result['tier'] ?? 'N/A'}');
-      print('Expired: ${result['expires_at'] ?? 'N/A'}');
-      print('${yellow}To renew: Visit $portalBase/keys/extend$reset');
-      exit(1);
-    }
-
-    // Valid key
-    print('${green}Valid$reset');
-    print('Public Key: ${result['public_key'] ?? 'N/A'}');
-    print('Tier: ${result['tier'] ?? 'N/A'}');
-    print('Status: ${result['status'] ?? 'N/A'}');
-    print('Expires: ${result['expires_at'] ?? 'N/A'}');
-    print('Time Remaining: ${result['time_remaining'] ?? 'N/A'}');
-    print('Rate Limit: ${result['rate_limit'] ?? 'N/A'}');
-    print('Burst: ${result['burst'] ?? 'N/A'}');
-    print('Concurrency: ${result['concurrency'] ?? 'N/A'}');
+    (code, text) = await apiRequestCurlWithStatus('/keys/validate', 'POST', null, publicKey, secretKey);
   } catch (e) {
-    print('${red}Invalid$reset');
-    print('Reason: $e');
+    stderr.writeln('${red}Error: request to $apiBase/keys/validate failed: $e$reset');
     exit(1);
   }
+  if (code == 0) {
+    stderr.writeln('${red}Error: request to $apiBase/keys/validate failed$reset');
+    exit(1);
+  }
+  Map<String, dynamic> result = {};
+  try {
+    final d = jsonDecode(text);
+    if (d is Map<String, dynamic>) result = d;
+  } catch (_) {}
+
+  String state;
+  String reason;
+  if (code == 200) {
+    state = result['status']?.toString() ?? (result['valid'] == true ? 'active' : 'invalid');
+    reason = 'status $state';
+  } else if (code == 401) {
+    reason = result['error']?.toString() ?? 'unauthorized';
+    state = (reason == ':expired' || reason == 'expired')
+        ? 'expired'
+        : (reason == ':suspended' || reason == 'suspended') ? 'suspended' : 'invalid';
+  } else {
+    final msg = result['error'] ?? result['message'];
+    stderr.writeln('${red}Error: HTTP $code${msg != null ? ' $msg' : ''}$reset');
+    exit(4);
+  }
+
+  if (state == 'expired') {
+    print('${red}Expired$reset');
+    print('Public Key: $publicKey');
+    print('${yellow}To renew: Visit $portalBase/keys/extend$reset');
+    exit(3);
+  } else if (state == 'suspended') {
+    print('${red}Suspended$reset');
+    print('Public Key: $publicKey');
+    exit(3);
+  } else if (state != 'active') {
+    print('${red}Invalid$reset');
+    print('Public Key: $publicKey');
+    print('Reason: $reason');
+    exit(3);
+  }
+
+  var expires = 'N/A';
+  var remaining = 'N/A';
+  final vt = result['valid_through'];
+  if (vt is num) {
+    final secs = vt.toInt() ~/ 1000;
+    final dt = DateTime.fromMillisecondsSinceEpoch(secs * 1000, isUtc: true);
+    String two(int n) => n.toString().padLeft(2, '0');
+    expires = '${dt.year.toString().padLeft(4, '0')}-${two(dt.month)}-${two(dt.day)}T${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}Z';
+    final left = secs - DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    remaining = left <= 0
+        ? 'expired'
+        : '${left ~/ 86400}d ${(left % 86400) ~/ 3600}h ${(left % 3600) ~/ 60}m';
+  }
+  print('${green}Valid$reset');
+  print('Public Key: $publicKey');
+  print('Tier: ${result['tier'] ?? 'N/A'}');
+  print('Status: ${result['status'] ?? 'N/A'}');
+  print('Expires: $expires');
+  print('Time Remaining: $remaining');
 }
 
 Args parseArgs(List<String> argv) {

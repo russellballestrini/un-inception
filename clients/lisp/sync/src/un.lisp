@@ -648,55 +648,86 @@
   "Open URL in default browser"
   (uiop:run-program (list "xdg-open" url) :ignore-error-status t))
 
+(defun json-int-field (json field)
+  "Integer value of FIELD in JSON, or nil."
+  (let ((raw (parse-json-field json field)))
+    (when raw (ignore-errors (parse-integer raw :junk-allowed t)))))
+
 (defun validate-key (extend-flag)
-  (let* ((api-key (get-api-key))
-         (response (curl-post api-key "/keys/validate" "{}"))
-         (status (parse-json-field response "status"))
-         (public-key (parse-json-field response "public_key"))
-         (tier (parse-json-field response "tier"))
-         (expires-at (parse-json-field response "expires_at")))
-
-    (cond
-      ((string= status "valid")
-       (format t "~aValid~a~%" *green* *reset*)
-       (when public-key (format t "Public Key: ~a~%" public-key))
-       (when tier (format t "Tier: ~a~%" tier))
-       (when expires-at (format t "Expires: ~a~%" expires-at))
-       (let ((time-remaining (parse-json-field response "time_remaining"))
-             (rate-limit (parse-json-field response "rate_limit"))
-             (burst (parse-json-field response "burst"))
-             (concurrency (parse-json-field response "concurrency")))
-         (when time-remaining (format t "Time Remaining: ~a~%" time-remaining))
-         (when rate-limit (format t "Rate Limit: ~a~%" rate-limit))
-         (when burst (format t "Burst: ~a~%" burst))
-         (when concurrency (format t "Concurrency: ~a~%" concurrency)))
-       (when extend-flag
-         (if public-key
-             (let ((extend-url (format nil "~a/keys/extend?pk=~a" *portal-base* public-key)))
-               (format t "~aOpening browser to extend key...~a~%" *blue* *reset*)
-               (open-browser extend-url))
-             (format t "~aError: No public_key in response~a~%" *red* *reset*))))
-
-      ((string= status "expired")
-       (format t "~aExpired~a~%" *red* *reset*)
-       (when public-key (format t "Public Key: ~a~%" public-key))
-       (when tier (format t "Tier: ~a~%" tier))
-       (when expires-at (format t "Expired: ~a~%" expires-at))
-       (format t "~aTo renew: Visit ~a/keys/extend~a~%" *yellow* *portal-base* *reset*)
-       (when extend-flag
-         (if public-key
-             (let ((extend-url (format nil "~a/keys/extend?pk=~a" *portal-base* public-key)))
-               (format t "~aOpening browser to extend key...~a~%" *blue* *reset*)
-               (open-browser extend-url))
-             (format t "~aError: No public_key in response~a~%" *red* *reset*))))
-
-      ((string= status "invalid")
-       (format t "~aInvalid~a~%" *red* *reset*)
-       (format t "Response: ~a~%" response))
-
-      (t
-       (format t "~aUnknown status~a~%" *red* *reset*)
-       (format t "Response: ~a~%" response)))))
+  "un key: POST /keys/validate (empty body, signed); display per CLI_SPEC.md."
+  (destructuring-bind (public-key secret-key) (get-api-keys)
+    (when extend-flag
+      (format t "~aOpening browser to extend key...~a~%" *blue* *reset*)
+      (open-browser (format nil "~a/keys/extend?pk=~a" *portal-base* public-key))
+      (return-from validate-key))
+    (let* ((result (parse-response-with-status
+                    (run-curl (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "POST"
+                                            (format nil "~a/keys/validate" *api-base*)
+                                            "-H" "Content-Type: application/json")
+                                      (build-auth-headers public-key secret-key "POST" "/keys/validate" "")))))
+           (response (car result))
+           (code (cdr result))
+           (state nil)
+           (reason nil))
+      (cond
+        ((= code 200)
+         (setf state (or (parse-json-field response "status")
+                         (if (equal (parse-json-field response "valid") "true") "active" "invalid"))
+               reason (format nil "status ~a" state)))
+        ((= code 401)
+         (let ((err (or (parse-json-field response "error") "unauthorized")))
+           (setf reason err
+                 state (cond ((member err '(":expired" "expired") :test #'string=) "expired")
+                             ((member err '(":suspended" "suspended") :test #'string=) "suspended")
+                             (t "invalid")))))
+        ((= code 0)
+         (format *error-output* "~aError: request to ~a/keys/validate failed~a~%" *red* *api-base* *reset*)
+         (uiop:quit 1))
+        (t
+         (format *error-output* "~aError: HTTP ~a ~a~a~%" *red* code
+                 (or (parse-json-field response "error") (parse-json-field response "message") "") *reset*)
+         (uiop:quit 4)))
+      (cond
+        ((string= state "active")
+         (let* ((tier (json-int-field response "tier"))
+                (status (parse-json-field response "status"))
+                (vt (json-int-field response "valid_through"))
+                (expires "N/A")
+                (remaining "N/A"))
+           (when vt
+             (let* ((secs (floor vt 1000))
+                    (left (- secs (- (get-universal-time) 2208988800))))
+               (multiple-value-bind (sec min hour day mon year)
+                   (decode-universal-time (+ secs 2208988800) 0)
+                 (setf expires (format nil "~4,'0d-~2,'0d-~2,'0dT~2,'0d:~2,'0d:~2,'0dZ" year mon day hour min sec)))
+               (setf remaining
+                     (if (<= left 0)
+                         "expired"
+                         (format nil "~ad ~ah ~am" (floor left 86400) (floor (mod left 86400) 3600)
+                                 (floor (mod left 3600) 60))))))
+           (format t "~aValid~a~%" *green* *reset*)
+           (format t "Public Key: ~a~%" public-key)
+           (format t "Tier: ~a~%" (or tier "N/A"))
+           (format t "Status: ~a~%" (or status "N/A"))
+           (format t "Expires: ~a~%" expires)
+           (format t "Time Remaining: ~a~%" remaining)))
+        ((string= state "expired")
+         (format t "~aExpired~a~%" *red* *reset*)
+         (format t "Public Key: ~a~%" public-key)
+         (format t "~aTo renew: Visit ~a/keys/extend~a~%" *yellow* *portal-base* *reset*)
+         (finish-output)
+         (uiop:quit 3))
+        ((string= state "suspended")
+         (format t "~aSuspended~a~%" *red* *reset*)
+         (format t "Public Key: ~a~%" public-key)
+         (finish-output)
+         (uiop:quit 3))
+        (t
+         (format t "~aInvalid~a~%" *red* *reset*)
+         (format t "Public Key: ~a~%" public-key)
+         (format t "Reason: ~a~%" reason)
+         (finish-output)
+         (uiop:quit 3))))))
 
 (defun key-cmd (extend-flag)
   (validate-key extend-flag))

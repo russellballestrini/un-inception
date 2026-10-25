@@ -1820,86 +1820,113 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
     cout << exec_curl(cmd) << endl;
 }
 
+static string json_string_field(const string& json, const string& key);
+
+// Extract a JSON number (integer part) for key; false when absent or null.
+static bool json_number_field(const string& json, const string& key, long long& out) {
+    string needle = "\"" + key + "\"";
+    for (size_t p = json.find(needle); p != string::npos; p = json.find(needle, p + 1)) {
+        size_t q = p + needle.size();
+        while (q < json.size() && isspace(static_cast<unsigned char>(json[q]))) q++;
+        if (q >= json.size() || json[q] != ':') continue;
+        q++;
+        while (q < json.size() && isspace(static_cast<unsigned char>(json[q]))) q++;
+        if (q >= json.size() || !(isdigit(static_cast<unsigned char>(json[q])) || json[q] == '-')) return false;
+        out = atoll(json.c_str() + q);
+        return true;
+    }
+    return false;
+}
+
+// un key — response handling per CLI_SPEC.md "`un key` output".
 void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
+    if (extend) {
+        string url = PORTAL_BASE + "/keys/extend?pk=" + public_key;
+        cout << "Opening browser to extend key..." << endl;
+        string browser_cmd = "xdg-open '" + url + "' 2>/dev/null || open '" + url + "' 2>/dev/null";
+        if (system(browser_cmd.c_str()) != 0) {}
+        return;
+    }
+
     string auth_headers = build_auth_headers("POST", "/keys/validate", "", public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/keys/validate' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers;
 
-    string result = exec_curl(cmd);
+    auto res = exec_curl_with_status(cmd);
+    const string& body = res.first;
+    int code = res.second;
 
-    // Parse JSON response
-    size_t status_pos = result.find("\"status\":\"");
-    size_t public_key_pos = result.find("\"public_key\":\"");
-    size_t tier_pos = result.find("\"tier\":\"");
-    size_t expires_pos = result.find("\"expires_at\":\"");
-
-    if (status_pos == string::npos) {
-        cerr << RED << "Error: Invalid API response" << RESET << endl;
+    string state, reason;
+    if (code >= 200 && code < 300) {
+        state = json_string_field(body, "status");
+        if (state.empty()) {
+            size_t v = body.find("\"valid\"");
+            bool valid = false;
+            if (v != string::npos) {
+                size_t q = body.find(':', v);
+                if (q != string::npos) {
+                    q++;
+                    while (q < body.size() && isspace(static_cast<unsigned char>(body[q]))) q++;
+                    valid = body.compare(q, 4, "true") == 0;
+                }
+            }
+            state = valid ? "active" : "invalid";
+        }
+        reason = "status " + state;
+    } else if (code == 401) {
+        reason = json_string_field(body, "error");
+        if (reason.empty()) reason = "unauthorized";
+        if (reason == ":expired" || reason == "expired") state = "expired";
+        else if (reason == ":suspended" || reason == "suspended") state = "suspended";
+        else state = "invalid";
+    } else if (code == 0) {
+        cerr << RED << "Error: request to " << API_BASE << "/keys/validate failed" << RESET << endl;
         exit(1);
-    }
-
-    // Extract status
-    status_pos += 10;
-    size_t status_end = result.find("\"", status_pos);
-    string status = result.substr(status_pos, status_end - status_pos);
-
-    // Extract public_key from response
-    string resp_public_key;
-    if (public_key_pos != string::npos) {
-        public_key_pos += 14;
-        size_t pk_end = result.find("\"", public_key_pos);
-        resp_public_key = result.substr(public_key_pos, pk_end - public_key_pos);
-    }
-
-    // Extract tier
-    string tier;
-    if (tier_pos != string::npos) {
-        tier_pos += 8;
-        size_t tier_end = result.find("\"", tier_pos);
-        tier = result.substr(tier_pos, tier_end - tier_pos);
-    }
-
-    // Extract expires_at
-    string expires_at;
-    if (expires_pos != string::npos) {
-        expires_pos += 14;
-        size_t expires_end = result.find("\"", expires_pos);
-        expires_at = result.substr(expires_pos, expires_end - expires_pos);
-    }
-
-    if (status == "valid") {
-        cout << GREEN << "Valid" << RESET << endl;
-        if (!resp_public_key.empty()) {
-            cout << "Public Key: " << resp_public_key << endl;
-        }
-        if (!tier.empty()) {
-            cout << "Tier: " << tier << endl;
-        }
-        if (!expires_at.empty()) {
-            cout << "Expires: " << expires_at << endl;
-        }
-    } else if (status == "expired") {
-        cout << RED << "Expired" << RESET << endl;
-        if (!resp_public_key.empty()) {
-            cout << "Public Key: " << resp_public_key << endl;
-        }
-        if (!tier.empty()) {
-            cout << "Tier: " << tier << endl;
-        }
-        if (!expires_at.empty()) {
-            cout << "Expired: " << expires_at << endl;
-        }
-        cout << YELLOW << "To renew: Visit " << PORTAL_BASE << "/keys/extend" << RESET << endl;
-
-        if (extend && !resp_public_key.empty()) {
-            string url = PORTAL_BASE + "/keys/extend?pk=" + resp_public_key;
-            string browser_cmd = "xdg-open '" + url + "' 2>/dev/null || open '" + url + "' 2>/dev/null";
-            system(browser_cmd.c_str());
-        }
     } else {
-        cout << RED << "Invalid" << RESET << endl;
+        string msg = json_string_field(body, "error");
+        if (msg.empty()) msg = json_string_field(body, "message");
+        if (msg.empty()) msg = body;
+        cerr << RED << "Error: HTTP " << code << " " << msg << RESET << endl;
+        exit(4);
     }
+
+    if (state == "expired") {
+        cout << RED << "Expired" << RESET << endl;
+        cout << "Public Key: " << public_key << endl;
+        cout << YELLOW << "To renew: Visit " << PORTAL_BASE << "/keys/extend" << RESET << endl;
+        exit(3);
+    } else if (state == "suspended") {
+        cout << RED << "Suspended" << RESET << endl;
+        cout << "Public Key: " << public_key << endl;
+        exit(3);
+    } else if (state != "active") {
+        cout << RED << "Invalid" << RESET << endl;
+        cout << "Public Key: " << public_key << endl;
+        cout << "Reason: " << reason << endl;
+        exit(3);
+    }
+
+    string tier = "N/A", status = json_string_field(body, "status"), expires = "N/A", remaining = "N/A";
+    if (status.empty()) status = "N/A";
+    long long n = 0;
+    if (json_number_field(body, "tier", n)) tier = to_string(n);
+    if (json_number_field(body, "valid_through", n)) {
+        time_t secs = static_cast<time_t>(n / 1000);
+        struct tm tmv;
+        char buf[32];
+        if (gmtime_r(&secs, &tmv) && strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tmv)) expires = buf;
+        long long left = static_cast<long long>(secs) - static_cast<long long>(time(nullptr));
+        if (left <= 0) remaining = "expired";
+        else remaining = to_string(left / 86400) + "d " + to_string(left % 86400 / 3600) + "h " + to_string(left % 3600 / 60) + "m";
+    }
+
+    cout << GREEN << "Valid" << RESET << endl;
+    cout << "Public Key: " << public_key << endl;
+    cout << "Tier: " << tier << endl;
+    cout << "Status: " << status << endl;
+    cout << "Expires: " << expires << endl;
+    cout << "Time Remaining: " << remaining << endl;
 }
 
 // ---------------------------------------------------------------------------

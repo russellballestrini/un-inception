@@ -670,57 +670,99 @@
                     (newline))
                   langs))))
 
+(define (key-json-string json key)
+  (let ((m (string-match (string-append "\"" key "\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]*)\"") json)))
+    (and m (match:substring m 1))))
+
+(define (key-json-int json key)
+  (let ((m (string-match (string-append "\"" key "\"[ \t\r\n]*:[ \t\r\n]*(-?[0-9]+)") json)))
+    (and m (string->number (match:substring m 1)))))
+
+(define (key-validate-post public-key secret-key)
+  "POST /keys/validate, empty body, signed. Headers via a 0600 file. Returns (body . http-code)."
+  (let* ((path "/keys/validate")
+         (timestamp (number->string (current-time)))
+         (hdr-file (format #f "/tmp/un_scm_key_~a_~a" (getpid) (random 999999)))
+         (headers (string-append
+                   "Authorization: Bearer " public-key "\n"
+                   "Content-Type: application/json\n"
+                   (if secret-key
+                       (string-append "X-Timestamp: " timestamp "\n"
+                                      "X-Signature: " (make-signature secret-key timestamp "POST" path "") "\n")
+                       ""))))
+    (write-private-file hdr-file headers)
+    (let* ((port (open-pipe* OPEN_READ "curl" "-s" "-w" "\n%{http_code}" "-X" "POST"
+                             (string-append api-base path)
+                             "-H" (string-append "@" hdr-file)))
+           (output (read-file-port port)))
+      (close-pipe port)
+      (delete-file hdr-file)
+      (parse-http-response-with-code output))))
+
 (define (validate-key-cmd extend)
-  (let* ((api-key (get-api-key))
-         (response (curl-post api-key "/keys/validate" "{}"))
-         (status (json-extract-string response "status"))
-         (public-key (json-extract-string response "public_key"))
-         (tier (json-extract-string response "tier"))
-         (valid-through (json-extract-string response "valid_through_datetime"))
-         (valid-for (json-extract-string response "valid_for_human"))
-         (rate-limit (json-extract-string response "rate_per_minute"))
-         (burst (json-extract-string response "burst"))
-         (concurrency (json-extract-string response "concurrency"))
-         (expired-at (json-extract-string response "expired_at_datetime")))
-
-    (cond
-      ;; Valid key
-      ((and status (string=? status "valid"))
-       (format #t "~aValid~a\n\n" green reset)
-       (when public-key (format #t "Public Key:          ~a\n" public-key))
-       (when tier (format #t "Tier:                ~a\n" tier))
-       (format #t "Status:              valid\n")
-       (when valid-through (format #t "Expires:             ~a\n" valid-through))
-       (when valid-for (format #t "Time Remaining:      ~a\n" valid-for))
-       (when rate-limit (format #t "Rate Limit:          ~a/min\n" rate-limit))
-       (when burst (format #t "Burst:               ~a\n" burst))
-       (when concurrency (format #t "Concurrency:         ~a\n" concurrency))
-       (when extend
-         (if public-key
-             (let ((url (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
-               (format #t "~aOpening browser to extend key...~a\n" blue reset)
-               (open-browser url))
-             (format #t "~aError: No public_key in response~a\n" red reset))))
-
-      ;; Expired key
-      ((and status (string=? status "expired"))
-       (format #t "~aExpired~a\n\n" red reset)
-       (when public-key (format #t "Public Key:          ~a\n" public-key))
-       (when tier (format #t "Tier:                ~a\n" tier))
-       (when expired-at (format #t "Expired:             ~a\n" expired-at))
-       (format #t "\n~aTo renew:~a Visit ~a/keys/extend\n" yellow reset portal-base)
-       (when extend
-         (if public-key
-             (let ((url (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
-               (format #t "~aOpening browser...~a\n" blue reset)
-               (open-browser url))
-             (format #t "~aError: No public_key in response~a\n" red reset))))
-
-      ;; Invalid or error
-      (else
-       (format #t "~aInvalid~a\n" red reset)
-       (display response)
-       (newline)))))
+  (let* ((keys (get-api-keys))
+         (public-key (car keys))
+         (secret-key (cadr keys)))
+    (if extend
+        (begin
+          (format #t "~aOpening browser to extend key...~a\n" blue reset)
+          (open-browser (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
+        (let* ((result (key-validate-post public-key secret-key))
+               (response (car result))
+               (code (cdr result))
+               (state #f)
+               (reason #f))
+          (cond
+           ((= code 200)
+            (set! state (or (key-json-string response "status")
+                            (if (string-match "\"valid\"[ \t]*:[ \t]*true" response) "active" "invalid")))
+            (set! reason (string-append "status " state)))
+           ((= code 401)
+            (let ((err (or (key-json-string response "error") "unauthorized")))
+              (set! reason err)
+              (set! state (cond ((member err '(":expired" "expired")) "expired")
+                                ((member err '(":suspended" "suspended")) "suspended")
+                                (else "invalid")))))
+           ((= code 0)
+            (format (current-error-port) "~aError: request to ~a/keys/validate failed~a\n" red api-base reset)
+            (exit 1))
+           (else
+            (format (current-error-port) "~aError: HTTP ~a ~a~a\n" red code
+                    (or (key-json-string response "error") (key-json-string response "message") "") reset)
+            (exit 4)))
+          (cond
+           ((string=? state "active")
+            (let* ((tier (key-json-int response "tier"))
+                   (status (key-json-string response "status"))
+                   (vt (key-json-int response "valid_through"))
+                   (secs (and vt (quotient vt 1000)))
+                   (left (and secs (- secs (current-time))))
+                   (expires (if secs (strftime "%Y-%m-%dT%H:%M:%SZ" (gmtime secs)) "N/A"))
+                   (remaining (cond ((not left) "N/A")
+                                    ((<= left 0) "expired")
+                                    (else (format #f "~ad ~ah ~am" (quotient left 86400)
+                                                  (quotient (remainder left 86400) 3600)
+                                                  (quotient (remainder left 3600) 60))))))
+              (format #t "~aValid~a\n" green reset)
+              (format #t "Public Key: ~a\n" public-key)
+              (format #t "Tier: ~a\n" (or tier "N/A"))
+              (format #t "Status: ~a\n" (or status "N/A"))
+              (format #t "Expires: ~a\n" expires)
+              (format #t "Time Remaining: ~a\n" remaining)))
+           ((string=? state "expired")
+            (format #t "~aExpired~a\n" red reset)
+            (format #t "Public Key: ~a\n" public-key)
+            (format #t "~aTo renew: Visit ~a/keys/extend~a\n" yellow portal-base reset)
+            (exit 3))
+           ((string=? state "suspended")
+            (format #t "~aSuspended~a\n" red reset)
+            (format #t "Public Key: ~a\n" public-key)
+            (exit 3))
+           (else
+            (format #t "~aInvalid~a\n" red reset)
+            (format #t "Public Key: ~a\n" public-key)
+            (format #t "Reason: ~a\n" reason)
+            (exit 3)))))))
 
 (define (execute-cmd file)
   (let* ((api-key (get-api-key))

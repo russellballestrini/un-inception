@@ -265,62 +265,83 @@ class Un
     {
         var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
-        var result = ApiRequest("/keys/validate", "POST", null, publicKey, secretKey);
-
-        if (!result.ContainsKey("valid"))
+        if (args.KeyExtend)
         {
-            Console.Error.WriteLine($"{RED}Error: Invalid response from server{RESET}");
+            string url = $"{PORTAL_BASE}/keys/extend?pk={publicKey}";
+            Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
+            OpenBrowser(url);
+            return;
+        }
+
+        int code;
+        Dictionary<string, object> result;
+        try
+        {
+            (code, result) = SignedPost(publicKey, secretKey ?? "", "/keys/validate", "", null, null);
+        }
+        catch (WebException ex)
+        {
+            Console.Error.WriteLine($"{RED}Error: {ex.Message}{RESET}");
             Environment.Exit(1);
+            return;
         }
 
-        bool isValid = (bool)result["valid"];
-        bool isExpired = result.ContainsKey("expired") && (bool)result["expired"];
-
-        if (isValid && !isExpired)
+        string state, reason;
+        if (code == 200)
         {
-            Console.WriteLine($"{GREEN}Valid{RESET}");
-            if (result.ContainsKey("public_key"))
-            {
-                Console.WriteLine($"Public Key: {result["public_key"]}");
-            }
-            if (result.ContainsKey("tier"))
-            {
-                Console.WriteLine($"Tier: {result["tier"]}");
-            }
-            if (result.ContainsKey("expires_at"))
-            {
-                Console.WriteLine($"Expires: {result["expires_at"]}");
-            }
+            state = Field(result, "status") ?? (result.ContainsKey("valid") && result["valid"] is bool v && v ? "active" : "invalid");
+            reason = $"status {state}";
         }
-        else if (isExpired)
+        else if (code == 401)
         {
-            Console.WriteLine($"{RED}Expired{RESET}");
-            if (result.ContainsKey("public_key"))
-            {
-                Console.WriteLine($"Public Key: {result["public_key"]}");
-            }
-            if (result.ContainsKey("tier"))
-            {
-                Console.WriteLine($"Tier: {result["tier"]}");
-            }
-            if (result.ContainsKey("expired_at"))
-            {
-                Console.WriteLine($"Expired: {result["expired_at"]}");
-            }
-            Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
-
-            if (args.KeyExtend && result.ContainsKey("public_key"))
-            {
-                string extendPk = (string)result["public_key"];
-                string url = $"{PORTAL_BASE}/keys/extend?pk={extendPk}";
-                Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
-                OpenBrowser(url);
-            }
+            reason = Field(result, "error") ?? "unauthorized";
+            state = (reason == ":expired" || reason == "expired") ? "expired"
+                : (reason == ":suspended" || reason == "suspended") ? "suspended" : "invalid";
         }
         else
         {
-            Console.WriteLine($"{RED}Invalid{RESET}");
+            string msg = Field(result, "error") ?? Field(result, "message");
+            Console.Error.WriteLine($"{RED}Error: HTTP {code}{(msg != null ? " " + msg : "")}{RESET}");
+            Environment.Exit(4);
+            return;
         }
+
+        if (state == "expired")
+        {
+            Console.WriteLine($"{RED}Expired{RESET}");
+            Console.WriteLine($"Public Key: {publicKey}");
+            Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
+            Environment.Exit(3);
+        }
+        else if (state == "suspended")
+        {
+            Console.WriteLine($"{RED}Suspended{RESET}");
+            Console.WriteLine($"Public Key: {publicKey}");
+            Environment.Exit(3);
+        }
+        else if (state != "active")
+        {
+            Console.WriteLine($"{RED}Invalid{RESET}");
+            Console.WriteLine($"Public Key: {publicKey}");
+            Console.WriteLine($"Reason: {reason}");
+            Environment.Exit(3);
+        }
+
+        string expires = "N/A", remaining = "N/A";
+        if (result.ContainsKey("valid_through") && (result["valid_through"] is int || result["valid_through"] is long || result["valid_through"] is double))
+        {
+            long secs = Convert.ToInt64(result["valid_through"]) / 1000;
+            expires = DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+            long left = secs - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            remaining = left <= 0 ? "expired" : $"{left / 86400}d {left % 86400 / 3600}h {left % 3600 / 60}m";
+        }
+
+        Console.WriteLine($"{GREEN}Valid{RESET}");
+        Console.WriteLine($"Public Key: {publicKey}");
+        Console.WriteLine($"Tier: {Field(result, "tier") ?? "N/A"}");
+        Console.WriteLine($"Status: {Field(result, "status") ?? "N/A"}");
+        Console.WriteLine($"Expires: {expires}");
+        Console.WriteLine($"Time Remaining: {remaining}");
     }
 
     [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
@@ -408,8 +429,12 @@ class Un
     // POST /keys/self/rotate-secret with body {}; returns (status, json).
     static (int, Dictionary<string, object>) RotatePost(string publicKey, string secretKey, string otp, string challenge)
     {
-        const string path = "/keys/self/rotate-secret";
-        const string body = "{}";
+        return SignedPost(publicKey, secretKey, "/keys/self/rotate-secret", "{}", otp, challenge);
+    }
+
+    // Signed POST; returns (status, json) for any status (non-2xx bodies included).
+    static (int, Dictionary<string, object>) SignedPost(string publicKey, string secretKey, string path, string body, string otp, string challenge)
+    {
         HttpWebRequest request = (HttpWebRequest)WebRequest.Create(API_BASE + path);
         request.Method = "POST";
         request.ContentType = "application/json";
@@ -1523,7 +1548,7 @@ class Un
             int numStart = i;
             while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '.' || json[i] == '-')) i++;
             string num = json.Substring(numStart, i - numStart);
-            return Tuple.Create((object)(num.Contains(".") ? (object)double.Parse(num) : int.Parse(num)), i);
+            return Tuple.Create((object)(num.Contains(".") ? (object)double.Parse(num, System.Globalization.CultureInfo.InvariantCulture) : (int.TryParse(num, out int iv) ? (object)iv : (object)long.Parse(num))), i);
         }
         else if (json.Substring(i).StartsWith("true"))
         {
@@ -2833,7 +2858,7 @@ public static class Unsandbox
             int numStart = i;
             while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '.' || json[i] == '-')) i++;
             string num = json.Substring(numStart, i - numStart);
-            return Tuple.Create((object)(num.Contains(".") ? (object)double.Parse(num) : int.Parse(num)), i);
+            return Tuple.Create((object)(num.Contains(".") ? (object)double.Parse(num, System.Globalization.CultureInfo.InvariantCulture) : (int.TryParse(num, out int iv) ? (object)iv : (object)long.Parse(num))), i);
         }
         else if (json.Substring(i).StartsWith("true")) return Tuple.Create((object)true, i + 4);
         else if (json.Substring(i).StartsWith("false")) return Tuple.Create((object)false, i + 5);

@@ -1708,62 +1708,111 @@ let execute_command file env_vars artifacts out_dir network vcpu =
   in
   exit exit_code
 
-(* Display key info *)
-let display_key_info response extend =
-  let status = extract_json_value response "status" in
-  let public_key = extract_json_value response "public_key" in
-  let tier = extract_json_value response "tier" in
-  let valid_through = extract_json_value response "valid_through_datetime" in
-  let valid_for = extract_json_value response "valid_for_human" in
-  let rate_limit = extract_json_value response "rate_per_minute" in
-  let burst = extract_json_value response "burst" in
-  let concurrency = extract_json_value response "concurrency" in
-  let expired_at = extract_json_value response "expired_at_datetime" in
+(** POST /keys/validate, empty body, signed; returns (http_code, body).
+    Headers travel in a 0600 temp file. *)
+let key_validate_post public_key secret_key =
+  let endpoint = "/keys/validate" in
+  let timestamp = string_of_int (int_of_float (Unix.time ())) in
+  let signature = make_signature secret_key timestamp "POST" endpoint "" in
+  let headers =
+    Printf.sprintf "Authorization: Bearer %s\nX-Timestamp: %s\nX-Signature: %s\nContent-Type: application/json\n"
+      public_key timestamp signature in
+  let hdr_file = Filename.temp_file "un_ocaml_hdr" ".txt" in
+  let oc = open_out_gen [Open_wronly; Open_creat; Open_trunc; Open_binary] 0o600 hdr_file in
+  Unix.chmod hdr_file 0o600;
+  output_string oc headers;
+  close_out oc;
+  let cmd = Printf.sprintf "curl -s -w '\\n%%{http_code}' -X POST '%s%s' -H @%s"
+      api_base endpoint (Filename.quote hdr_file) in
+  let ic = Unix.open_process_in cmd in
+  let rec read_all acc =
+    try let line = input_line ic in read_all (line :: acc)
+    with End_of_file -> acc
+  in
+  let rev_lines = read_all [] in
+  let _ = Unix.close_process_in ic in
+  (try Sys.remove hdr_file with _ -> ());
+  match rev_lines with
+  | code :: rest ->
+    ((try int_of_string (String.trim code) with Failure _ -> 0), String.concat "\n" (List.rev rest))
+  | [] -> (0, "")
 
-  match status with
-  | Some "valid" ->
-    Printf.printf "%sValid%s\n\n" green reset;
-    (match public_key with Some pk -> Printf.printf "Public Key:          %s\n" pk | None -> ());
-    (match tier with Some t -> Printf.printf "Tier:                %s\n" t | None -> ());
-    Printf.printf "Status:              valid\n";
-    (match valid_through with Some exp -> Printf.printf "Expires:             %s\n" exp | None -> ());
-    (match valid_for with Some vf -> Printf.printf "Time Remaining:      %s\n" vf | None -> ());
-    (match rate_limit with Some r -> Printf.printf "Rate Limit:          %s/min\n" r | None -> ());
-    (match burst with Some b -> Printf.printf "Burst:               %s\n" b | None -> ());
-    (match concurrency with Some c -> Printf.printf "Concurrency:         %s\n" c | None -> ());
-    if extend then
-      (match public_key with
-       | Some pk -> open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base pk)
-       | None -> ())
-  | Some "expired" ->
-    Printf.printf "%sExpired%s\n\n" red reset;
-    (match public_key with Some pk -> Printf.printf "Public Key:          %s\n" pk | None -> ());
-    (match tier with Some t -> Printf.printf "Tier:                %s\n" t | None -> ());
-    (match expired_at with Some exp -> Printf.printf "Expired:             %s\n" exp | None -> ());
-    Printf.printf "\n%sTo renew:%s Visit %s/keys/extend\n" yellow reset portal_base;
-    if extend then
-      (match public_key with
-       | Some pk -> open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base pk)
-       | None -> ())
-  | Some "invalid" ->
-    Printf.printf "%sInvalid%s\n" red reset
-  | Some s ->
-    Printf.printf "%sUnknown status: %s%s\n" red s reset;
-    Printf.printf "%s\n" response
-  | None ->
-    Printf.printf "%sError: Could not parse response%s\n" red reset;
-    Printf.printf "%s\n" response
-
-(* Validate key command *)
-let validate_key api_key extend =
-  let json = "{}" in
-  let response = curl_post api_key "/keys/validate" json in
-  display_key_info response extend
+(* Display key info (CLI_SPEC.md "un key output") *)
+let display_key_result code response public_key =
+  let state, reason =
+    match code with
+    | 200 ->
+      let st = match extract_json_value response "status" with
+        | Some s -> s
+        | None ->
+          (try ignore (Str.search_forward (Str.regexp "\"valid\"[ \t]*:[ \t]*true") response 0); "active"
+           with Not_found -> "invalid") in
+      (st, "status " ^ st)
+    | 401 ->
+      let err = match extract_json_value response "error" with Some e -> e | None -> "unauthorized" in
+      let st = match err with
+        | ":expired" | "expired" -> "expired"
+        | ":suspended" | "suspended" -> "suspended"
+        | _ -> "invalid" in
+      (st, err)
+    | 0 ->
+      Printf.eprintf "%sError: request to %s/keys/validate failed%s\n" red api_base reset;
+      exit 1
+    | _ ->
+      let msg = match extract_json_value response "error" with
+        | Some e -> e
+        | None -> (match extract_json_value response "message" with Some m -> m | None -> "") in
+      Printf.eprintf "%sError: HTTP %d %s%s\n" red code msg reset;
+      exit 4
+  in
+  match state with
+  | "active" ->
+    let tier = match extract_json_int response "tier" with Some t -> string_of_int t | None -> "N/A" in
+    let status = match extract_json_value response "status" with Some s -> s | None -> "N/A" in
+    let expires, remaining =
+      match extract_json_int response "valid_through" with
+      | None -> ("N/A", "N/A")
+      | Some vt ->
+        let secs = vt / 1000 in
+        let tm = Unix.gmtime (float_of_int secs) in
+        let exp = Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02dZ"
+            (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
+            tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec in
+        let left = secs - int_of_float (Unix.time ()) in
+        let rem = if left <= 0 then "expired"
+          else Printf.sprintf "%dd %dh %dm" (left / 86400) (left mod 86400 / 3600) (left mod 3600 / 60) in
+        (exp, rem)
+    in
+    Printf.printf "%sValid%s\n" green reset;
+    Printf.printf "Public Key: %s\n" public_key;
+    Printf.printf "Tier: %s\n" tier;
+    Printf.printf "Status: %s\n" status;
+    Printf.printf "Expires: %s\n" expires;
+    Printf.printf "Time Remaining: %s\n" remaining
+  | "expired" ->
+    Printf.printf "%sExpired%s\n" red reset;
+    Printf.printf "Public Key: %s\n" public_key;
+    Printf.printf "%sTo renew: Visit %s/keys/extend%s\n" yellow portal_base reset;
+    exit 3
+  | "suspended" ->
+    Printf.printf "%sSuspended%s\n" red reset;
+    Printf.printf "Public Key: %s\n" public_key;
+    exit 3
+  | _ ->
+    Printf.printf "%sInvalid%s\n" red reset;
+    Printf.printf "Public Key: %s\n" public_key;
+    Printf.printf "Reason: %s\n" reason;
+    exit 3
 
 (* Key command *)
 let key_command extend =
-  let api_key = get_api_key () in
-  validate_key api_key extend
+  let (public_key, secret_key) = get_api_keys () in
+  if extend then
+    open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base public_key)
+  else begin
+    let code, response = key_validate_post public_key secret_key in
+    display_key_result code response public_key
+  end
 
 (* ============================================================================
    Key rotation: un key --rotate [--otp CODE]  (see CLI_SPEC.md)

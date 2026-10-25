@@ -43,7 +43,7 @@
 #   un.nim session --list
 #   un.nim service --name web --ports 8080
 
-import os, strutils, osproc, strformat, times, terminal, tables
+import os, strutils, osproc, strformat, times, terminal, tables, json
 from posix import nil
 
 const
@@ -880,80 +880,74 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
   quit(1)
 
 proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
+  if extend:
+    let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={publicKey}"
+    echo BLUE & "Opening browser to extend key..." & RESET
+    discard execProcess(fmt"xdg-open '{extendUrl}'")
+    return
+  # Display per CLI_SPEC.md "`un key` output": the API returns no public key,
+  # so we print ours; expiry derives from valid_through (ms since epoch).
   let authHeaders = buildAuthHeaders("POST", "/keys/validate", "", publicKey, secretKey)
-  let cmd = fmt"""curl -s -X POST '{API_BASE}/keys/validate' {authHeaders}"""
-  let response = execCurl(cmd)
-
-  # Parse JSON response manually (simple approach)
-  if response.contains("\"status\":\"valid\""):
-    echo GREEN & "Valid" & RESET
-    # Extract and display key info
-    if response.contains("\"public_key\":"):
-      let pkStart = response.find("\"public_key\":\"") + 14
-      let pkEnd = response.find("\"", pkStart)
-      if pkEnd > pkStart:
-        let pubKey = response[pkStart..<pkEnd]
-        echo "Public Key: " & pubKey
-        if extend:
-          let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={pubKey}"
-          echo BLUE & "Opening browser to extend key..." & RESET
-          discard execProcess(fmt"xdg-open '{extendUrl}'")
-
-    # Extract tier
-    if response.contains("\"tier\":"):
-      let tierStart = response.find("\"tier\":\"") + 8
-      let tierEnd = response.find("\"", tierStart)
-      if tierEnd > tierStart:
-        echo "Tier: " & response[tierStart..<tierEnd]
-
-    # Extract expires_at
-    if response.contains("\"expires_at\":"):
-      let expiresStart = response.find("\"expires_at\":\"") + 14
-      let expiresEnd = response.find("\"", expiresStart)
-      if expiresEnd > expiresStart:
-        echo "Expires: " & response[expiresStart..<expiresEnd]
-
-  elif response.contains("\"status\":\"expired\""):
+  let cmd = "curl -s -w '\\n%{http_code}' -X POST '" & API_BASE & "/keys/validate' " & authHeaders
+  let (rawOut, rc) = execCmdEx(cmd)
+  let raw = rawOut.strip(leading = false, chars = {'\n', '\r'})  # execCmdEx appends a newline
+  let nl = raw.rfind('\n')
+  if rc != 0 or nl < 0:
+    stderr.writeLine(RED & "Error: request to " & API_BASE & "/keys/validate failed" & RESET)
+    quit(1)
+  let code = raw[nl+1..^1].strip()
+  var kr = newJObject()
+  try:
+    let parsed = parseJson(raw[0..<nl])
+    if parsed.kind == JObject: kr = parsed
+  except CatchableError:
+    discard
+  var state = "invalid"
+  var reason = ""
+  if code == "200":
+    state = if kr.hasKey("status"): kr["status"].getStr() elif kr{"valid"}.getBool(): "active" else: "invalid"
+    reason = "status " & state
+  elif code == "401":
+    reason = if kr.hasKey("error"): kr["error"].getStr() else: "unauthorized"
+    state = case reason
+      of ":expired", "expired": "expired"
+      of ":suspended", "suspended": "suspended"
+      else: "invalid"
+  else:
+    stderr.writeLine(RED & "Error: HTTP " & code & " " & kr{"error"}.getStr() & RESET)
+    quit(4)
+  case state
+  of "active": discard
+  of "expired":
     echo RED & "Expired" & RESET
-
-    # Extract and display key info
-    var pubKey = ""
-    if response.contains("\"public_key\":"):
-      let pkStart = response.find("\"public_key\":\"") + 14
-      let pkEnd = response.find("\"", pkStart)
-      if pkEnd > pkStart:
-        pubKey = response[pkStart..<pkEnd]
-        echo "Public Key: " & pubKey
-
-    # Extract tier
-    if response.contains("\"tier\":"):
-      let tierStart = response.find("\"tier\":\"") + 8
-      let tierEnd = response.find("\"", tierStart)
-      if tierEnd > tierStart:
-        echo "Tier: " & response[tierStart..<tierEnd]
-
-    # Extract expires_at
-    if response.contains("\"expires_at\":"):
-      let expiresStart = response.find("\"expires_at\":\"") + 14
-      let expiresEnd = response.find("\"", expiresStart)
-      if expiresEnd > expiresStart:
-        echo "Expired: " & response[expiresStart..<expiresEnd]
-
-    echo ""
+    echo "Public Key: " & publicKey
     echo YELLOW & "To renew: Visit " & PORTAL_BASE & "/keys/extend" & RESET
-
-    if extend and pubKey != "":
-      let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={pubKey}"
-      echo BLUE & "Opening browser to extend key..." & RESET
-      discard execProcess(fmt"xdg-open '{extendUrl}'")
-
+    quit(3)
+  of "suspended":
+    echo RED & "Suspended" & RESET
+    echo "Public Key: " & publicKey
+    quit(3)
   else:
     echo RED & "Invalid" & RESET
-    if response.contains("\"error\":"):
-      let errStart = response.find("\"error\":\"") + 9
-      let errEnd = response.find("\"", errStart)
-      if errEnd > errStart:
-        echo "Error: " & response[errStart..<errEnd]
+    echo "Public Key: " & publicKey
+    echo "Reason: " & reason
+    quit(3)
+  let tier = if kr.hasKey("tier") and kr["tier"].kind != JNull: ($kr["tier"]).strip(chars = {'"'}) else: "N/A"
+  let status = if kr.hasKey("status"): kr["status"].getStr() else: "N/A"
+  var expires = "N/A"
+  var remaining = "N/A"
+  if kr.hasKey("valid_through") and kr["valid_through"].kind in {JInt, JFloat}:
+    let vt = if kr["valid_through"].kind == JInt: kr["valid_through"].getBiggestInt() else: int64(kr["valid_through"].getFloat())
+    let secs = vt div 1000
+    expires = fromUnix(secs).utc.format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    let left = secs - getTime().toUnix()
+    remaining = if left <= 0: "expired" else: $(left div 86400) & "d " & $(left mod 86400 div 3600) & "h " & $(left mod 3600 div 60) & "m"
+  echo GREEN & "Valid" & RESET
+  echo "Public Key: " & publicKey
+  echo "Tier: " & tier
+  echo "Status: " & status
+  echo "Expires: " & expires
+  echo "Time Remaining: " & remaining
 
 proc cmdLanguages(jsonOutput: bool, publicKey: string, secretKey: string) =
   # Try to load from cache first

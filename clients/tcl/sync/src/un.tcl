@@ -829,6 +829,16 @@ namespace eval Un {
     # ============================================================================
 
     proc validate_keys {{public_key ""} {secret_key ""}} {
+        lassign [validate_keys_raw $public_key $secret_key] ncode response
+        if {$ncode == 200} {
+            return [::json::json2dict $response]
+        }
+        set_error "Key validation failed ($ncode)"
+        error "Key validation failed"
+    }
+
+    # POST /keys/validate; returns {http_code body} whatever the status.
+    proc validate_keys_raw {{public_key ""} {secret_key ""}} {
         variable API_BASE
 
         lassign [get_credentials $public_key $secret_key] pk sk
@@ -847,12 +857,7 @@ namespace eval Un {
         set ncode [::http::ncode $token]
         set response [::http::data $token]
         ::http::cleanup $token
-
-        if {$ncode == 200} {
-            return [::json::json2dict $response]
-        }
-        set_error "Key validation failed ($ncode)"
-        error "Key validation failed"
+        return [list $ncode $response]
     }
 
     # ============================================================================
@@ -899,34 +904,92 @@ namespace eval Un {
             return
         }
 
-        set result [validate_keys]
-        set pk [dict get $result public_key]
+        if {[catch {get_credentials} creds]} {
+            puts stderr "${RED}Error: no credentials found${RESET}"
+            exit 3
+        }
+        set pk [lindex $creds 0]
 
-        if {$extend && $pk ne ""} {
+        if {$extend} {
             set url "$PORTAL_BASE/keys/extend?pk=$pk"
             puts "${YELLOW}Opening browser to extend key...${RESET}"
             catch {exec xdg-open $url &}
             return
         }
 
-        if {[dict exists $result expired] && [dict get $result expired]} {
-            puts "${RED}Expired${RESET}"
-            puts "Public Key: $pk"
-            puts "Tier: [dict get $result tier]"
-            puts "${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}"
+        if {[catch {validate_keys_raw} raw]} {
+            puts stderr "${RED}Error: $raw${RESET}"
             exit 1
+        }
+        lassign $raw ncode response
+        set result {}
+        catch {set result [::json::json2dict $response]}
+
+        if {$ncode == 200} {
+            if {[dict exists $result status]} {
+                set state [dict get $result status]
+            } elseif {[dict exists $result valid] && [dict get $result valid]} {
+                set state active
+            } else {
+                set state invalid
+            }
+            set reason "status $state"
+        } elseif {$ncode == 401} {
+            set reason unauthorized
+            if {[dict exists $result error]} { set reason [dict get $result error] }
+            switch -exact -- $reason {
+                :expired - expired { set state expired }
+                :suspended - suspended { set state suspended }
+                default { set state invalid }
+            }
+        } else {
+            set msg ""
+            if {[dict exists $result error]} { set msg " [dict get $result error]" } elseif {[dict exists $result message]} { set msg " [dict get $result message]" }
+            puts stderr "${RED}Error: HTTP $ncode$msg${RESET}"
+            exit 4
+        }
+
+        switch -exact -- $state {
+            active {}
+            expired {
+                puts "${RED}Expired${RESET}"
+                puts "Public Key: $pk"
+                puts "${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}"
+                exit 3
+            }
+            suspended {
+                puts "${RED}Suspended${RESET}"
+                puts "Public Key: $pk"
+                exit 3
+            }
+            default {
+                puts "${RED}Invalid${RESET}"
+                puts "Public Key: $pk"
+                puts "Reason: $reason"
+                exit 3
+            }
+        }
+
+        set tier "N/A"; set status "N/A"; set expires "N/A"; set remaining "N/A"
+        if {[dict exists $result tier]} { set tier [dict get $result tier] }
+        if {[dict exists $result status]} { set status [dict get $result status] }
+        if {[dict exists $result valid_through] && [string is double -strict [dict get $result valid_through]]} {
+            set secs [expr {wide([dict get $result valid_through]) / 1000}]
+            set expires [clock format $secs -format "%Y-%m-%dT%H:%M:%SZ" -gmt 1]
+            set left [expr {$secs - [clock seconds]}]
+            if {$left <= 0} {
+                set remaining "expired"
+            } else {
+                set remaining "[expr {$left / 86400}]d [expr {$left % 86400 / 3600}]h [expr {$left % 3600 / 60}]m"
+            }
         }
 
         puts "${GREEN}Valid${RESET}"
         puts "Public Key: $pk"
-        puts "Tier: [dict get $result tier]"
-        puts "Status: [dict get $result status]"
-        if {[dict exists $result expires_at]} {
-            puts "Expires: [dict get $result expires_at]"
-        }
-        if {[dict exists $result time_remaining]} {
-            puts "Time Remaining: [dict get $result time_remaining]"
-        }
+        puts "Tier: $tier"
+        puts "Status: $status"
+        puts "Expires: $expires"
+        puts "Time Remaining: $remaining"
     }
 
     proc cmd_session {args} {

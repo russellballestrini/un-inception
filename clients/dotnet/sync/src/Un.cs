@@ -225,45 +225,83 @@ void CmdSession(Args args)
 void CmdKey(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
-    var result = ApiRequest("/keys/validate", HttpMethod.Post, null, publicKey, secretKey);
 
-    if (!result.TryGetValue("valid", out var validObj) || validObj is not JsonElement validEl)
+    if (args.KeyExtend)
     {
-        Console.Error.WriteLine($"{RED}Error: Invalid response from server{RESET}");
+        var url = $"{PORTAL_BASE}/keys/extend?pk={publicKey}";
+        Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
+        OpenBrowser(url);
+        return;
+    }
+
+    int code;
+    JsonElement result;
+    try
+    {
+        (code, result) = SignedPost(publicKey, secretKey ?? "", "/keys/validate", "", null, null);
+    }
+    catch (HttpRequestException ex)
+    {
+        Console.Error.WriteLine($"{RED}Error: {ex.Message}{RESET}");
         Environment.Exit(1);
         return;
     }
 
-    var isValid = validEl.GetBoolean();
-    var isExpired = result.TryGetValue("expired", out var expObj) && expObj is JsonElement expEl && expEl.GetBoolean();
-
-    if (isValid && !isExpired)
+    string state, reason;
+    if (code == 200)
     {
-        Console.WriteLine($"{GREEN}Valid{RESET}");
-        if (result.TryGetValue("public_key", out var pk) && pk is JsonElement pkEl) Console.WriteLine($"Public Key: {pkEl.GetString()}");
-        if (result.TryGetValue("tier", out var tier) && tier is JsonElement tierEl) Console.WriteLine($"Tier: {tierEl.GetString()}");
-        if (result.TryGetValue("expires_at", out var exp) && exp is JsonElement expAtEl) Console.WriteLine($"Expires: {expAtEl.GetString()}");
+        state = JsonField(result, "status") ?? (result.TryGetProperty("valid", out var v) && v.ValueKind == JsonValueKind.True ? "active" : "invalid");
+        reason = $"status {state}";
     }
-    else if (isExpired)
+    else if (code == 401)
     {
-        Console.WriteLine($"{RED}Expired{RESET}");
-        string? pkStr = null;
-        if (result.TryGetValue("public_key", out var pk) && pk is JsonElement pkEl) { pkStr = pkEl.GetString(); Console.WriteLine($"Public Key: {pkStr}"); }
-        if (result.TryGetValue("tier", out var tier) && tier is JsonElement tierEl) Console.WriteLine($"Tier: {tierEl.GetString()}");
-        if (result.TryGetValue("expired_at", out var expAt) && expAt is JsonElement expAtEl) Console.WriteLine($"Expired: {expAtEl.GetString()}");
-        Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
-
-        if (args.KeyExtend && !string.IsNullOrEmpty(pkStr))
-        {
-            var url = $"{PORTAL_BASE}/keys/extend?pk={pkStr}";
-            Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
-            OpenBrowser(url);
-        }
+        reason = JsonField(result, "error") ?? "unauthorized";
+        state = reason is ":expired" or "expired" ? "expired" : reason is ":suspended" or "suspended" ? "suspended" : "invalid";
     }
     else
     {
-        Console.WriteLine($"{RED}Invalid{RESET}");
+        var msg = JsonField(result, "error") ?? JsonField(result, "message");
+        Console.Error.WriteLine($"{RED}Error: HTTP {code}{(msg != null ? " " + msg : "")}{RESET}");
+        Environment.Exit(4);
+        return;
     }
+
+    if (state == "expired")
+    {
+        Console.WriteLine($"{RED}Expired{RESET}");
+        Console.WriteLine($"Public Key: {publicKey}");
+        Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
+        Environment.Exit(3);
+    }
+    else if (state == "suspended")
+    {
+        Console.WriteLine($"{RED}Suspended{RESET}");
+        Console.WriteLine($"Public Key: {publicKey}");
+        Environment.Exit(3);
+    }
+    else if (state != "active")
+    {
+        Console.WriteLine($"{RED}Invalid{RESET}");
+        Console.WriteLine($"Public Key: {publicKey}");
+        Console.WriteLine($"Reason: {reason}");
+        Environment.Exit(3);
+    }
+
+    string expires = "N/A", remaining = "N/A";
+    if (result.TryGetProperty("valid_through", out var vt) && vt.ValueKind == JsonValueKind.Number)
+    {
+        long secs = (long)vt.GetDouble() / 1000;
+        expires = DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+        long left = secs - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        remaining = left <= 0 ? "expired" : $"{left / 86400}d {left % 86400 / 3600}h {left % 3600 / 60}m";
+    }
+
+    Console.WriteLine($"{GREEN}Valid{RESET}");
+    Console.WriteLine($"Public Key: {publicKey}");
+    Console.WriteLine($"Tier: {JsonField(result, "tier") ?? "N/A"}");
+    Console.WriteLine($"Status: {JsonField(result, "status") ?? "N/A"}");
+    Console.WriteLine($"Expires: {expires}");
+    Console.WriteLine($"Time Remaining: {remaining}");
 }
 
 // The accounts.csv the CLI's credentials came from, or null (env vars / legacy key).
@@ -332,10 +370,12 @@ bool RewriteAccountsCsv(string path, string publicKey, string newSecret)
 }
 
 // POST /keys/self/rotate-secret with body {}; returns (status, json).
-(int Status, JsonElement Data) RotatePost(string publicKey, string secretKey, string? otp, string? challenge)
+(int Status, JsonElement Data) RotatePost(string publicKey, string secretKey, string? otp, string? challenge) =>
+    SignedPost(publicKey, secretKey, "/keys/self/rotate-secret", "{}", otp, challenge);
+
+// Signed POST; returns (status, json) for any status (non-2xx bodies included).
+(int Status, JsonElement Data) SignedPost(string publicKey, string secretKey, string path, string body, string? otp, string? challenge)
 {
-    const string path = "/keys/self/rotate-secret";
-    const string body = "{}";
     using var request = new HttpRequestMessage(HttpMethod.Post, path);
     request.Content = new StringContent(body, Encoding.UTF8, "application/json");
     request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");

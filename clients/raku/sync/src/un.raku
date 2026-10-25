@@ -2009,9 +2009,15 @@ sub cmd-key(@args, Int :$account-index = -1) {
         }
     }
 
-    # Validate key (API endpoint)
+    if $extend {
+        say "{$BLUE}Opening browser to extend key...{$RESET}";
+        CORE::<&run>('xdg-open', "$PORTAL_BASE/keys/extend?pk=$public-key");
+        return;
+    }
+
+    # Validate key (API endpoint); curl appends the HTTP status as a last line
     my $url = $API_BASE ~ "/keys/validate";
-    my @curl-args = 'curl', '-s', '-X', 'POST';
+    my @curl-args = 'curl', '-s', '-w', "\n%\{http_code\}", '-X', 'POST';
     @curl-args.append: $url;
     @curl-args.append: '-H', 'Content-Type: application/json';
     @curl-args.append: '-H', "Authorization: Bearer $public-key";
@@ -2023,40 +2029,65 @@ sub cmd-key(@args, Int :$account-index = -1) {
     @curl-args.append: '-H', "X-Signature: $signature";
 
     my $proc = CORE::<&run>(|@curl-args, :out, :err);
-    my $body = $proc.out.slurp;
-
-    my %result = from-json($body);
-
-    if $extend {
-        my $pk = %result<public_key>;
-        if $pk {
-            say "{$BLUE}Opening browser to extend key...{$RESET}";
-            CORE::<&run>('xdg-open', "$PORTAL_BASE/keys/extend?pk=$pk");
-            return;
-        } else {
-            note "{$RED}Error: Could not retrieve public key{$RESET}";
-            exit 1;
-        }
-    }
-
-    if %result<expired> {
-        say "{$RED}Expired{$RESET}";
-        say "Public Key: {%result<public_key> // 'N/A'}";
-        say "Tier: {%result<tier> // 'N/A'}";
-        say "Expired: {%result<expires_at> // 'N/A'}";
-        say "{$YELLOW}To renew: Visit https://unsandbox.com/keys/extend{$RESET}";
+    my $raw = $proc.out.slurp;
+    my $nl = $raw.rindex("\n");
+    my $code = ($nl.defined ?? $raw.substr($nl + 1) !! $raw).trim;
+    my $body = $nl.defined ?? $raw.substr(0, $nl) !! '';
+    if $code !~~ /^\d+$/ || $code eq '000' {
+        note "{$RED}Error: request to $url failed{$RESET}";
         exit 1;
     }
 
+    my %result;
+    try { my $j = from-json($body); %result = $j if $j ~~ Associative; }
+
+    my ($state, $reason);
+    if $code eq '200' {
+        $state = %result<status> // (%result<valid> ?? 'active' !! 'invalid');
+        $reason = "status $state";
+    } elsif $code eq '401' {
+        $reason = %result<error> // 'unauthorized';
+        $state = $reason eq ':expired' | 'expired' ?? 'expired'
+              !! $reason eq ':suspended' | 'suspended' ?? 'suspended' !! 'invalid';
+    } else {
+        my $msg = %result<error> // %result<message>;
+        note "{$RED}Error: HTTP $code{$msg.defined ?? " $msg" !! ''}{$RESET}";
+        exit 4;
+    }
+
+    if $state eq 'expired' {
+        say "{$RED}Expired{$RESET}";
+        say "Public Key: $public-key";
+        say "{$YELLOW}To renew: Visit https://unsandbox.com/keys/extend{$RESET}";
+        exit 3;
+    }
+    if $state eq 'suspended' {
+        say "{$RED}Suspended{$RESET}";
+        say "Public Key: $public-key";
+        exit 3;
+    }
+    if $state ne 'active' {
+        say "{$RED}Invalid{$RESET}";
+        say "Public Key: $public-key";
+        say "Reason: $reason";
+        exit 3;
+    }
+
+    my $expires = 'N/A';
+    my $remaining = 'N/A';
+    if %result<valid_through> ~~ Real {
+        my $secs = (%result<valid_through> / 1000).floor;
+        $expires = DateTime.new($secs).Str;
+        my $left = $secs - now.Int;
+        $remaining = $left <= 0 ?? 'expired'
+            !! "{$left div 86400}d {($left % 86400) div 3600}h {($left % 3600) div 60}m";
+    }
     say "{$GREEN}Valid{$RESET}";
-    say "Public Key: {%result<public_key> // 'N/A'}";
+    say "Public Key: $public-key";
     say "Tier: {%result<tier> // 'N/A'}";
     say "Status: {%result<status> // 'N/A'}";
-    say "Expires: {%result<expires_at> // 'N/A'}";
-    say "Time Remaining: {%result<time_remaining> // 'N/A'}";
-    say "Rate Limit: {%result<rate_limit> // 'N/A'}";
-    say "Burst: {%result<burst> // 'N/A'}";
-    say "Concurrency: {%result<concurrency> // 'N/A'}";
+    say "Expires: $expires";
+    say "Time Remaining: $remaining";
 }
 
 sub cmd-image(@args, Int :$account-index = -1) {

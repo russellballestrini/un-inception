@@ -2235,45 +2235,10 @@ cmd_key <- function(args) {
     secret_key <- keys$secret_key
 
     if (!is.null(args$extend) && args$extend) {
-        # First validate to get public_key
-        url <- paste0(API_BASE, "/keys/validate")
-        headers <- add_headers(
-            `Content-Type` = "application/json",
-            `Authorization` = paste("Bearer", public_key)
-        )
-
-        # Add HMAC signature if secret_key is present
-        if (secret_key != "") {
-            timestamp <- as.integer(Sys.time())
-            sig_input <- paste0(timestamp, ":POST:/keys/validate:")
-            signature <- hmac(secret_key, sig_input, algo = "sha256")
-            headers <- add_headers(
-                `Content-Type` = "application/json",
-                `Authorization` = paste("Bearer", public_key),
-                `X-Timestamp` = as.character(timestamp),
-                `X-Signature` = signature
-            )
-        }
-
-        tryCatch({
-            response <- POST(url, headers, encode = "json", timeout(10))
-            response_text <- content(response, "text", encoding = "UTF-8")
-            check_clock_drift(response_text)
-            result <- fromJSON(response_text)
-
-            if (!is.null(result$public_key)) {
-                extend_url <- paste0(PORTAL_BASE, "/keys/extend?pk=", result$public_key)
-                cat(sprintf("Opening: %s\n", extend_url))
-                system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", extend_url, extend_url, extend_url))
-            } else {
-                cat(sprintf("%sError: Could not retrieve public key%s\n", RED, RESET), file = stderr())
-                quit(status = 1)
-            }
-        }, error = function(e) {
-            cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
-            quit(status = 1)
-        })
-        return()
+        extend_url <- paste0(PORTAL_BASE, "/keys/extend?pk=", public_key)
+        cat(sprintf("Opening: %s\n", extend_url))
+        system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", extend_url, extend_url, extend_url))
+        return(invisible(NULL))
     }
 
     # Validate key
@@ -2296,36 +2261,62 @@ cmd_key <- function(args) {
         )
     }
 
-    tryCatch({
-        response <- POST(url, headers, encode = "json", timeout(10))
-        response_text <- content(response, "text", encoding = "UTF-8")
-        check_clock_drift(response_text)
-        result <- fromJSON(response_text)
-
-        status <- if (!is.null(result$status)) result$status else "Unknown"
-
-        if (status == "valid") {
-            cat(sprintf("%sValid%s\n", GREEN, RESET))
-            cat(sprintf("Public Key: %s\n", if (!is.null(result$public_key)) result$public_key else "N/A"))
-            cat(sprintf("Tier: %s\n", if (!is.null(result$tier)) result$tier else "N/A"))
-            if (!is.null(result$expires_at)) {
-                cat(sprintf("Expires: %s\n", result$expires_at))
-            }
-        } else if (status == "expired") {
-            cat(sprintf("%sExpired%s\n", RED, RESET))
-            cat(sprintf("Public Key: %s\n", if (!is.null(result$public_key)) result$public_key else "N/A"))
-            cat(sprintf("Tier: %s\n", if (!is.null(result$tier)) result$tier else "N/A"))
-            if (!is.null(result$expires_at)) {
-                cat(sprintf("Expired: %s\n", result$expires_at))
-            }
-            cat(sprintf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", YELLOW, RESET))
-        } else {
-            cat(sprintf("%sInvalid%s\n", RED, RESET))
-        }
-    }, error = function(e) {
+    response <- tryCatch(POST(url, headers, timeout(10)), error = function(e) {
         cat(sprintf("%sError: Request failed: %s%s\n", RED, e$message, RESET), file = stderr())
         quit(status = 1)
     })
+    code <- status_code(response)
+    response_text <- content(response, "text", encoding = "UTF-8")
+    result <- tryCatch(fromJSON(response_text), error = function(e) list())
+    if (!is.list(result)) result <- list()
+
+    if (code == 200) {
+        state <- if (!is.null(result$status)) result$status else if (isTRUE(result$valid)) "active" else "invalid"
+        reason <- paste("status", state)
+    } else if (code == 401) {
+        reason <- if (!is.null(result$error)) result$error else "unauthorized"
+        state <- if (reason %in% c(":expired", "expired")) "expired" else if (reason %in% c(":suspended", "suspended")) "suspended" else "invalid"
+    } else {
+        msg <- if (!is.null(result$error)) paste0(" ", result$error) else if (!is.null(result$message)) paste0(" ", result$message) else ""
+        cat(sprintf("%sError: HTTP %d%s%s\n", RED, code, msg, RESET), file = stderr())
+        quit(status = 4)
+    }
+
+    if (state == "expired") {
+        cat(sprintf("%sExpired%s\n", RED, RESET))
+        cat(sprintf("Public Key: %s\n", public_key))
+        cat(sprintf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", YELLOW, RESET))
+        quit(status = 3)
+    } else if (state == "suspended") {
+        cat(sprintf("%sSuspended%s\n", RED, RESET))
+        cat(sprintf("Public Key: %s\n", public_key))
+        quit(status = 3)
+    } else if (state != "active") {
+        cat(sprintf("%sInvalid%s\n", RED, RESET))
+        cat(sprintf("Public Key: %s\n", public_key))
+        cat(sprintf("Reason: %s\n", reason))
+        quit(status = 3)
+    }
+
+    expires <- "N/A"
+    remaining <- "N/A"
+    if (is.numeric(result$valid_through)) {
+        secs <- floor(result$valid_through / 1000)
+        expires <- format(as.POSIXct(secs, origin = "1970-01-01", tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+        left <- secs - floor(as.numeric(Sys.time()))
+        if (left <= 0) {
+            remaining <- "expired"
+        } else {
+            remaining <- sprintf("%dd %dh %dm", as.integer(left %/% 86400), as.integer((left %% 86400) %/% 3600), as.integer((left %% 3600) %/% 60))
+        }
+    }
+    cat(sprintf("%sValid%s\n", GREEN, RESET))
+    cat(sprintf("Public Key: %s\n", public_key))
+    cat(sprintf("Tier: %s\n", if (!is.null(result$tier)) format(result$tier) else "N/A"))
+    cat(sprintf("Status: %s\n", if (!is.null(result$status)) result$status else "N/A"))
+    cat(sprintf("Expires: %s\n", expires))
+    cat(sprintf("Time Remaining: %s\n", remaining))
+    invisible(NULL)
 }
 
 cmd_snapshot <- function(args) {

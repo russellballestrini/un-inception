@@ -1149,7 +1149,7 @@ func CloneSnapshot(creds *Credentials, snapshotID, cloneType string, opts *Clone
 // ValidateKeys validates the API credentials with the server.
 // Returns account information if valid, error if invalid.
 func ValidateKeys(creds *Credentials) (map[string]interface{}, error) {
-	return makeRequest("POST", "/keys/validate", creds, map[string]interface{}{})
+	return makeRequest("POST", "/keys/validate", creds, nil)
 }
 
 // ============================================================================
@@ -3140,18 +3140,100 @@ func runImage(creds *Credentials, args []string, opts *CLIOptions) int {
 	return ExitInvalidArgs
 }
 
-// runKey handles the key command
+// runKey handles the key command (CLI_SPEC.md "`un key` output").
 func runKey(creds *Credentials) int {
-	result, err := ValidateKeys(creds)
-	if err != nil {
-		return cliError(err.Error(), ExitAuthError)
+	result, status, body, err := makeRequestWithSudo("POST", "/keys/validate", creds, nil, "", "")
+	if err != nil && status == 0 {
+		return cliError(err.Error(), ExitGeneralError)
+	}
+	state, reason := "", ""
+	switch {
+	case status >= 200 && status < 300:
+		if result == nil {
+			return cliError(err.Error(), ExitAPIError)
+		}
+		if st, ok := result["status"].(string); ok {
+			state = st
+		} else if v, _ := result["valid"].(bool); v {
+			state = "active"
+		} else {
+			state = "invalid"
+		}
+		reason = "status " + state
+	case status == 401:
+		var eb map[string]interface{}
+		_ = json.Unmarshal(body, &eb)
+		reason, _ = eb["error"].(string)
+		if reason == "" {
+			reason = "unauthorized"
+		}
+		switch reason {
+		case ":expired", "expired":
+			state = "expired"
+		case ":suspended", "suspended":
+			state = "suspended"
+		default:
+			state = "invalid"
+		}
+	default:
+		msg := strings.TrimSpace(string(body))
+		var eb map[string]interface{}
+		if json.Unmarshal(body, &eb) == nil {
+			if m, ok := eb["error"].(string); ok {
+				msg = m
+			} else if m, ok := eb["message"].(string); ok {
+				msg = m
+			}
+		}
+		return cliError(fmt.Sprintf("HTTP %d %s", status, msg), ExitAPIError)
 	}
 
-	fmt.Println("API key is valid")
-	if account, ok := result["account"].(map[string]interface{}); ok {
-		jsonOut, _ := json.MarshalIndent(account, "", "  ")
-		fmt.Println(string(jsonOut))
+	pk := creds.PublicKey
+	switch state {
+	case "active":
+	case "expired":
+		fmt.Println("Expired")
+		fmt.Printf("Public Key: %s\n", pk)
+		fmt.Println("To renew: Visit https://unsandbox.com/keys/extend")
+		return ExitAuthError
+	case "suspended":
+		fmt.Println("Suspended")
+		fmt.Printf("Public Key: %s\n", pk)
+		return ExitAuthError
+	default:
+		fmt.Println("Invalid")
+		fmt.Printf("Public Key: %s\n", pk)
+		fmt.Printf("Reason: %s\n", reason)
+		return ExitAuthError
 	}
+
+	tier, statusStr, expires, remaining := "N/A", "N/A", "N/A", "N/A"
+	if t, ok := result["tier"]; ok && t != nil {
+		if f, ok := t.(float64); ok {
+			tier = strconv.FormatInt(int64(f), 10)
+		} else {
+			tier = fmt.Sprint(t)
+		}
+	}
+	if st, ok := result["status"].(string); ok {
+		statusStr = st
+	}
+	if vt, ok := result["valid_through"].(float64); ok {
+		secs := int64(vt) / 1000
+		expires = time.Unix(secs, 0).UTC().Format("2006-01-02T15:04:05Z")
+		left := secs - time.Now().Unix()
+		if left <= 0 {
+			remaining = "expired"
+		} else {
+			remaining = fmt.Sprintf("%dd %dh %dm", left/86400, left%86400/3600, left%3600/60)
+		}
+	}
+	fmt.Println("Valid")
+	fmt.Printf("Public Key: %s\n", pk)
+	fmt.Printf("Tier: %s\n", tier)
+	fmt.Printf("Status: %s\n", statusStr)
+	fmt.Printf("Expires: %s\n", expires)
+	fmt.Printf("Time Remaining: %s\n", remaining)
 	return ExitSuccess
 }
 

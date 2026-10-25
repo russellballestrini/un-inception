@@ -720,60 +720,28 @@ warnings !
 
 \ Key validate
 : validate-key ( extend-flag -- )
-    get-api-key
+    get-api-key 2drop  \ ( extend-flag ) -- the script re-reads our public key
     script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw
     get-public-key r@ write-file throw
     s\" '" r@ write-line throw
     r@ write-sk
-    s\" PORTAL_BASE='" r@ write-file throw
-    portal-base r@ write-file throw
-    s\" '" r@ write-line throw
-    s\" BODY='{}'" r@ write-line throw
-    s\" TIMESTAMP=$(date +%s)" r@ write-line throw
-    s\" MESSAGE=\"$TIMESTAMP:POST:/keys/validate:$BODY\"" r@ write-line throw
-    s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
-
-    \ Check if extend flag is set
-    0= if
-        \ Normal validation
-        s\" curl -s -X POST $UN_API/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\" -o /tmp/unsandbox_key_resp.json" r@ write-line throw
-        s\" STATUS=$?" r@ write-line throw
-        s\" if [ $STATUS -ne 0 ]; then" r@ write-line throw
-        s\"   echo -e '\\x1b[31mInvalid\\x1b[0m'" r@ write-line throw
-        s\"   exit 1" r@ write-line throw
-        s\" fi" r@ write-line throw
-        s\" EXPIRED=$(jq -r '.expired // false' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\" if [ \"$EXPIRED\" = \"true\" ]; then" r@ write-line throw
-        s\"   echo -e '\\x1b[31mExpired\\x1b[0m'" r@ write-line throw
-        s\"   echo 'Public Key: '$(jq -r '.public_key // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Tier: '$(jq -r '.tier // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Expired: '$(jq -r '.expires_at // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo -e '\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m'" r@ write-line throw
-        s\"   rm -f /tmp/unsandbox_key_resp.json" r@ write-line throw
-        s\"   exit 1" r@ write-line throw
-        s\" else" r@ write-line throw
-        s\"   echo -e '\\x1b[32mValid\\x1b[0m'" r@ write-line throw
-        s\"   echo 'Public Key: '$(jq -r '.public_key // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Tier: '$(jq -r '.tier // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Status: '$(jq -r '.status // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Expires: '$(jq -r '.expires_at // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Time Remaining: '$(jq -r '.time_remaining // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Rate Limit: '$(jq -r '.rate_limit // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Burst: '$(jq -r '.burst // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\"   echo 'Concurrency: '$(jq -r '.concurrency // \"N/A\"' /tmp/unsandbox_key_resp.json)" r@ write-line throw
-        s\" fi" r@ write-line throw
-        s\" rm -f /tmp/unsandbox_key_resp.json" r@ write-line throw
-    else
-        \ Extend mode
-        s\" RESP=$(curl -s -X POST $UN_API/keys/validate -H 'Content-Type: application/json' -H \"Authorization: Bearer $PUBLIC_KEY\" -H \"X-Timestamp: $TIMESTAMP\" -H \"X-Signature: $SIGNATURE\" -d \"$BODY\")" r@ write-line throw
-        s\" FETCHED_PUBLIC_KEY=$(echo \"$RESP\" | jq -r '.public_key // \"N/A\"')" r@ write-line throw
-        s\" xdg-open \"$PORTAL_BASE/keys/extend?pk=$FETCHED_PUBLIC_KEY\" 2>/dev/null" r@ write-line throw
+    \ Display per CLI_SPEC.md "un key output": the API returns no public key
+    \ (we print ours); expiry derives from valid_through (ms). Empty body.
+    if
+        s\" xdg-open \"https://unsandbox.com/keys/extend?pk=$PUBLIC_KEY\" 2>/dev/null; exit 0" r@ write-line throw
     then
-
+    s\" TS=$(date +%s); SIG=$(printf %s \"$TS:POST:/keys/validate:\" | unsb_hmac); PK=$PUBLIC_KEY" r@ write-line throw
+    s\" raw=$(curl -s -w '\\n%{http_code}' -X POST \"$UN_API/keys/validate\" -H \"Authorization: Bearer $PK\" -H \"X-Timestamp: $TS\" -H \"X-Signature: $SIG\") || { echo 'Error: request to /keys/validate failed' >&2; exit 1; }" r@ write-line throw
+    s\" code=$(printf '%s\\n' \"$raw\" | tail -n 1); resp=$(printf '%s\\n' \"$raw\" | sed '$d')" r@ write-line throw
+    s\" case \"$code\" in 200) st=$(printf '%s' \"$resp\" | jq -r '.status // (if .valid then \"active\" else \"invalid\" end)'); reason=\"status $st\";; 401) reason=$(printf '%s' \"$resp\" | jq -r '.error // \"unauthorized\"'); case \"$reason\" in :expired|expired) st=expired;; :suspended|suspended) st=suspended;; *) st=invalid;; esac;; *) echo \"Error: HTTP $code\" >&2; exit 4;; esac" r@ write-line throw
+    s\" case \"$st\" in active) ;; expired) printf '\\033[31mExpired\\033[0m\\nPublic Key: %s\\n\\033[33mTo renew: Visit https://unsandbox.com/keys/extend\\033[0m\\n' \"$PK\"; exit 3;; suspended) printf '\\033[31mSuspended\\033[0m\\nPublic Key: %s\\n' \"$PK\"; exit 3;; *) printf '\\033[31mInvalid\\033[0m\\nPublic Key: %s\\nReason: %s\\n' \"$PK\" \"$reason\"; exit 3;; esac" r@ write-line throw
+    s\" tier=$(printf '%s' \"$resp\" | jq -r '.tier // \"N/A\"'); status=$(printf '%s' \"$resp\" | jq -r '.status // \"N/A\"'); vt=$(printf '%s' \"$resp\" | jq -r '.valid_through // empty | floor'); exp=N/A; rem=N/A" r@ write-line throw
+    s\" if [ -n \"$vt\" ]; then s=$((vt / 1000)); exp=$(date -u -d \"@$s\" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r \"$s\" +%Y-%m-%dT%H:%M:%SZ); l=$((s - $(date +%s))); if [ \"$l\" -le 0 ]; then rem=expired; else rem=\"$((l / 86400))d $((l % 86400 / 3600))h $((l % 3600 / 60))m\"; fi; fi" r@ write-line throw
+    s\" printf '\\033[32mValid\\033[0m\\nPublic Key: %s\\nTier: %s\\nStatus: %s\\nExpires: %s\\nTime Remaining: %s\\n' \"$PK\" \"$tier\" \"$status\" \"$exp\" \"$rem\"" r@ write-line throw
     r> close-file throw
-    script-run
+    script-run $? 8 rshift 255 and (bye)
 ;
 
 \ Handle key subcommand

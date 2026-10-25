@@ -228,6 +228,49 @@ void saveLanguagesCache(string response) {
     }
 }
 
+// Request bodies never get pasted into a shell string (a ' in the body broke
+// the quoting). Each body goes into a 0600 file inside a private 0700 mktemp
+// dir; curl reads it with --data-binary @file (exact bytes, so the HMAC over
+// the body still matches). runShell deletes every pending body after the call.
+string[] pendingBodyDirs;
+
+string shellQuote(string s) {
+    return "'" ~ s.replace("'", `'\''`) ~ "'";
+}
+
+string bodyFile(string body) {
+    import core.sys.posix.stdlib : mkdtemp;
+    import core.sys.posix.sys.stat : umask, chmod;
+    import std.file : tempDir;
+    import std.string : toStringz, fromStringz;
+    char[] tmpl = (buildPath(tempDir(), "un-d.XXXXXX") ~ "\0").dup;
+    auto old = umask(octal!"077");
+    scope(exit) umask(old);
+    if (mkdtemp(tmpl.ptr) is null) {
+        stderr.writefln("%sError: cannot create a private temp directory%s", RED, RESET);
+        exit(1);
+    }
+    string dir = fromStringz(tmpl.ptr).idup;
+    chmod(dir.toStringz, octal!"700");
+    pendingBodyDirs ~= dir;
+    string f = buildPath(dir, "body");
+    std.file.write(f, body);
+    chmod(f.toStringz, octal!"600");
+    return shellQuote(f);
+}
+
+void cleanupBodies() {
+    foreach (d; pendingBodyDirs) {
+        try { std.file.rmdirRecurse(d); } catch (Exception e) {}
+    }
+    pendingBodyDirs = [];
+}
+
+auto runShell(string cmd) {
+    scope(exit) cleanupBodies();
+    return executeShell(cmd);
+}
+
 string buildAuthHeaders(string method, string path, string body, string publicKey, string secretKey) {
     if (secretKey.empty) {
         // Legacy mode: use public_key as bearer token
@@ -244,7 +287,7 @@ string buildAuthHeaders(string method, string path, string body, string publicKe
 }
 
 string execCurl(string cmd) {
-    auto result = executeShell(cmd);
+    auto result = runShell(cmd);
     string output = result.output;
 
     // Check for timestamp authentication errors
@@ -272,7 +315,7 @@ struct CurlResult {
 CurlResult execCurlWithStatus(string cmd) {
     // Modify cmd to include status code output
     string fullCmd = cmd ~ " -w '\\n%{http_code}'";
-    auto result = executeShell(fullCmd);
+    auto result = runShell(fullCmd);
     string output = result.output.strip();
 
     // Find the last line (status code)
@@ -341,7 +384,7 @@ bool handleSudoChallenge(string method, string path, string bodyContent, string 
     if (method == "DELETE") {
         cmd = format(`curl -s -X DELETE '%s%s' %s`, API_BASE, path, authHeaders);
     } else if (method == "POST") {
-        cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, bodyContent);
+        cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(bodyContent));
     } else {
         cmd = format(`curl -s -X %s '%s%s' %s`, method, API_BASE, path, authHeaders);
     }
@@ -372,7 +415,7 @@ bool execDestructiveCurl(string method, string path, string bodyContent, string 
     if (method == "DELETE") {
         cmd = format(`curl -s -X DELETE '%s%s' %s`, API_BASE, path, authHeaders);
     } else if (method == "POST" && !bodyContent.empty) {
-        cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, bodyContent);
+        cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(bodyContent));
     } else if (method == "POST") {
         cmd = format(`curl -s -X POST '%s%s' %s`, API_BASE, path, authHeaders);
     } else {
@@ -403,14 +446,9 @@ bool execDestructiveCurl(string method, string path, string bodyContent, string 
 }
 
 bool execCurlPut(string endpoint, string body, string publicKey, string secretKey) {
-    import std.file : write, remove;
-    import std.random : uniform;
-    string tmpFile = format("/tmp/un_d_%d.txt", uniform(0, 999999));
-    write(tmpFile, body);
     string authHeaders = buildAuthHeaders("PUT", endpoint, body, publicKey, secretKey);
-    string cmd = format(`curl -s -o /dev/null -w '%%{http_code}' -X PUT '%s%s' -H 'Content-Type: text/plain' %s -d @%s`, API_BASE, endpoint, authHeaders, tmpFile);
-    auto result = executeShell(cmd);
-    remove(tmpFile);
+    string cmd = format(`curl -s -o /dev/null -w '%%{http_code}' -X PUT '%s%s' -H 'Content-Type: text/plain' %s --data-binary @%s`, API_BASE, endpoint, authHeaders, bodyFile(body));
+    auto result = runShell(cmd);
     try {
         int status = to!int(result.output.strip());
         return status >= 200 && status < 300;
@@ -464,7 +502,7 @@ immutable string SDK_VERSION = "4.2.0";
 string execute(string language, string code, string publicKey, string secretKey) {
     string body_ = format(`{"language":"%s","code":"%s"}`, escapeJson(language), escapeJson(code));
     string authHeaders = buildAuthHeaders("POST", "/execute", body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -472,7 +510,7 @@ string execute(string language, string code, string publicKey, string secretKey)
 string executeAsync(string language, string code, string publicKey, string secretKey) {
     string body_ = format(`{"language":"%s","code":"%s","async":true}`, escapeJson(language), escapeJson(code));
     string authHeaders = buildAuthHeaders("POST", "/execute", body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -544,7 +582,7 @@ string sessionCreate(string shell, string network, string publicKey, string secr
     if (!network.empty) body_ ~= format(`,"network":"%s"`, network);
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", "/sessions", body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -573,7 +611,7 @@ string sessionBoost(string sessionId, int vcpu, string publicKey, string secretK
     string path = format("/sessions/%s/boost", sessionId);
     string body_ = vcpu > 0 ? format(`{"vcpu":%d}`, vcpu) : "{}";
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -588,7 +626,7 @@ string sessionExecute(string sessionId, string command, string publicKey, string
     string path = format("/sessions/%s/shell", sessionId);
     string body_ = format(`{"command":"%s"}`, escapeJson(command));
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -613,7 +651,7 @@ string serviceCreate(string name, string ports, string bootstrap, string network
     if (!network.empty) body_ ~= format(`,"network":"%s"`, network);
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", "/services", body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -656,7 +694,7 @@ string serviceRedeploy(string serviceId, string bootstrap, string publicKey, str
     string path = format("/services/%s/redeploy", serviceId);
     string body_ = bootstrap.empty ? "{}" : format(`{"bootstrap":"%s"}`, escapeJson(bootstrap));
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -673,7 +711,7 @@ string serviceExecute(string serviceId, string command, int timeoutMs, string pu
     if (timeoutMs > 0) body_ ~= format(`,"timeout":%d`, timeoutMs);
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -681,7 +719,7 @@ string serviceResize(string serviceId, int vcpu, string publicKey, string secret
     string path = format("/services/%s/resize", serviceId);
     string body_ = format(`{"vcpu":%d}`, vcpu);
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -705,7 +743,7 @@ string snapshotSession(string sessionId, string name, bool hot, string publicKey
     if (!name.empty) body_ ~= format(`"name":"%s",`, escapeJson(name));
     body_ ~= format(`"hot":%s}`, hot ? "true" : "false");
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -715,7 +753,7 @@ string snapshotService(string serviceId, string name, bool hot, string publicKey
     if (!name.empty) body_ ~= format(`"name":"%s",`, escapeJson(name));
     body_ ~= format(`"hot":%s}`, hot ? "true" : "false");
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -755,7 +793,7 @@ string snapshotClone(string snapshotId, string cloneType, string name, string po
     if (!shell.empty) body_ ~= format(`,"shell":"%s"`, shell);
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -780,7 +818,7 @@ string imagePublish(string sourceType, string sourceId, string name, string desc
     if (!description.empty) body_ ~= format(`,"description":"%s"`, escapeJson(description));
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", "/images", body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/images' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s/images' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -809,7 +847,7 @@ string imageSetVisibility(string imageId, string visibility, string publicKey, s
     string path = format("/images/%s/visibility", imageId);
     string body_ = format(`{"visibility":"%s"}`, visibility);
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -817,7 +855,7 @@ string imageGrantAccess(string imageId, string trustedKey, string publicKey, str
     string path = format("/images/%s/grant", imageId);
     string body_ = format(`{"trusted_api_key":"%s"}`, trustedKey);
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -825,7 +863,7 @@ string imageRevokeAccess(string imageId, string trustedKey, string publicKey, st
     string path = format("/images/%s/revoke", imageId);
     string body_ = format(`{"trusted_api_key":"%s"}`, trustedKey);
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -840,7 +878,7 @@ string imageTransfer(string imageId, string toApiKey, string publicKey, string s
     string path = format("/images/%s/transfer", imageId);
     string body_ = format(`{"to_api_key":"%s"}`, toApiKey);
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -855,7 +893,7 @@ string imageSpawn(string imageId, string name, string ports, string bootstrap, s
     import std.array : join;
     body_ ~= fields.join(",") ~ "}";
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -868,7 +906,7 @@ string imageCloneFn(string imageId, string name, string description, string publ
     import std.array : join;
     body_ ~= fields.join(",") ~ "}";
     string authHeaders = buildAuthHeaders("POST", path, body_, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, path, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
@@ -899,7 +937,7 @@ string hmacSign(string secretKey, string message) {
 
 bool healthCheck() {
     string cmd = format(`curl -s -o /dev/null -w '%%{http_code}' '%s/health' 2>/dev/null`, API_BASE);
-    auto result = executeShell(cmd);
+    auto result = runShell(cmd);
     try {
         return to!int(result.output.strip()) == 200;
     } catch (Exception e) {
@@ -993,7 +1031,7 @@ void cmdServiceEnv(string action, string target, string[] svcEnvs, string svcEnv
         string path = format("/services/%s/env", target);
         string authHeaders = buildAuthHeaders("DELETE", path, "", publicKey, secretKey);
         string cmd = format(`curl -s -o /dev/null -w '%%{http_code}' -X DELETE '%s/services/%s/env' %s`, API_BASE, target, authHeaders);
-        auto result = executeShell(cmd);
+        auto result = runShell(cmd);
         try {
             int status = to!int(result.output.strip());
             if (status >= 200 && status < 300) {
@@ -1042,7 +1080,7 @@ void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network
     json ~= "}";
 
     string authHeaders = buildAuthHeaders("POST", "/execute", json, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
+    string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(json));
     string result = execCurl(cmd);
 
     writeln(result);
@@ -1075,7 +1113,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
 
     writefln("%sCreating session...%s", YELLOW, RESET);
     string authHeaders = buildAuthHeaders("POST", "/sessions", json, publicKey, secretKey);
-    string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
+    string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(json));
     writeln(execCurl(cmd));
 }
 
@@ -1139,7 +1177,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         string json = format(`{"unfreeze_on_demand":%s}`, unfreezeOnDemandEnabled ? "true" : "false");
         string path = format("/services/%s", unfreezeOnDemand);
         string authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X PATCH '%s/services/%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, unfreezeOnDemand, authHeaders, json);
+        string cmd = format(`curl -s -X PATCH '%s/services/%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, unfreezeOnDemand, authHeaders, bodyFile(json));
         execCurl(cmd);
         string status = unfreezeOnDemandEnabled ? "enabled" : "disabled";
         writefln("%sUnfreeze-on-demand %s for service: %s%s", GREEN, status, unfreezeOnDemand, RESET);
@@ -1160,7 +1198,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         string json = format(`{"vcpu":%d}`, resizeVcpu);
         string path = format("/services/%s", resize);
         string authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X PATCH '%s/services/%s' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, resize, authHeaders, json);
+        string cmd = format(`curl -s -X PATCH '%s/services/%s' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, resize, authHeaders, bodyFile(json));
         execCurl(cmd);
         int ram = resizeVcpu * 2;
         writefln("%sService resized to %d vCPU, %d GB RAM%s", GREEN, resizeVcpu, ram, RESET);
@@ -1171,7 +1209,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         string json = format(`{"command":"%s"}`, escapeJson(command));
         string path = format("/services/%s/execute", execute);
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, execute, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, execute, authHeaders, bodyFile(json));
         string result = execCurl(cmd);
 
         // Simple JSON parsing for stdout/stderr
@@ -1203,7 +1241,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         string json = `{"command":"cat /tmp/bootstrap.sh"}`;
         string path = format("/services/%s/execute", dumpBootstrap);
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, dumpBootstrap, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/services/%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, dumpBootstrap, authHeaders, bodyFile(json));
         string result = execCurl(cmd);
 
         import std.algorithm : findSplitAfter;
@@ -1264,7 +1302,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
 
         writefln("%sCreating service...%s", YELLOW, RESET);
         string authHeaders = buildAuthHeaders("POST", "/services", json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(json));
         string response = execCurl(cmd);
         writeln(response);
 
@@ -1316,7 +1354,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
         string path = format("/images/%s/lock", lock);
         string json = "{}";
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/images/%s/lock' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, lock, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/images/%s/lock' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, lock, authHeaders, bodyFile(json));
         execCurl(cmd);
         writefln("%sImage locked: %s%s", GREEN, lock, RESET);
         return;
@@ -1340,7 +1378,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
         json ~= "}";
         string path = "/images/publish";
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/images/publish' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/images/publish' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(json));
         writefln("%sImage published%s", GREEN, RESET);
         writeln(execCurl(cmd));
         return;
@@ -1354,7 +1392,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
         string json = format(`{"visibility":"%s"}`, visibility);
         string path = format("/images/%s/visibility", visibilityId);
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/images/%s/visibility' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, visibilityId, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/images/%s/visibility' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, visibilityId, authHeaders, bodyFile(json));
         execCurl(cmd);
         writefln("%sImage visibility set to: %s%s", GREEN, visibility, RESET);
         return;
@@ -1374,7 +1412,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
         json ~= "}";
         string path = format("/images/%s/spawn", spawn);
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/images/%s/spawn' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, spawn, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/images/%s/spawn' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, spawn, authHeaders, bodyFile(json));
         writefln("%sService spawned from image%s", GREEN, RESET);
         writeln(execCurl(cmd));
         return;
@@ -1388,7 +1426,7 @@ void cmdImage(bool list, string info, string del, string lock, string unlock,
         json ~= "}";
         string path = format("/images/%s/clone", clone);
         string authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey);
-        string cmd = format(`curl -s -X POST '%s/images/%s/clone' -H 'Content-Type: application/json' %s -d '%s'`, API_BASE, clone, authHeaders, json);
+        string cmd = format(`curl -s -X POST '%s/images/%s/clone' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, clone, authHeaders, bodyFile(json));
         writefln("%sImage cloned%s", GREEN, RESET);
         writeln(execCurl(cmd));
         return;
@@ -1451,11 +1489,11 @@ void cmdLanguages(bool jsonOutput, string publicKey, string secretKey) {
 
 void openBrowser(string url) {
     version(linux) {
-        executeShell("xdg-open \"" ~ url ~ "\" 2>/dev/null &");
+        runShell("xdg-open \"" ~ url ~ "\" 2>/dev/null &");
     } else version(OSX) {
-        executeShell("open \"" ~ url ~ "\"");
+        runShell("open \"" ~ url ~ "\"");
     } else version(Windows) {
-        executeShell("start \"\" \"" ~ url ~ "\"");
+        runShell("start \"\" \"" ~ url ~ "\"");
     } else {
         stderr.writefln("%sError: Unsupported platform for browser opening%s", RED, RESET);
     }
@@ -1479,95 +1517,93 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     import std.json;
     import std.datetime;
 
+    if (extend) {
+        string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ publicKey;
+        writefln("%sOpening browser to extend key...%s", GREEN, RESET);
+        openBrowser(extendURL);
+        return;
+    }
+
+    // POST /keys/validate, empty body, signed; see CLI_SPEC.md "un key output".
     string authHeaders = buildAuthHeaders("POST", "/keys/validate", "", publicKey, secretKey);
     string cmd = format(`curl -s -w '\n%%{http_code}' -X POST '%s/keys/validate' -H 'Content-Type: application/json' %s`, API_BASE, authHeaders);
-    string response = execCurl(cmd);
-
-    auto lines = response.split("\n");
-    string body = lines.length > 1 ? lines[0..$-1].join("\n") : response;
-    string statusCode = lines.length > 1 ? lines[$-1] : "200";
+    auto res = runShell(cmd);
+    string response = res.output;
+    long nl = response.lastIndexOf('\n');
+    string body = nl >= 0 ? response[0 .. nl] : "";
+    int code = 0;
+    try { code = std.conv.to!int((nl >= 0 ? response[nl + 1 .. $] : response).strip()); } catch (Exception e) {}
+    if (code == 0) {
+        stderr.writefln("%sError: request to %s/keys/validate failed%s", RED, API_BASE, RESET);
+        exit(1);
+    }
 
     JSONValue result;
-    try {
-        result = parseJSON(body);
-    } catch (Exception e) {
-        stderr.writefln("%sError parsing response: %s%s", RED, e.msg, RESET);
-        exit(1);
+    try { result = parseJSON(body); } catch (Exception e) { result = JSONValue((JSONValue[string]).init); }
+    string field(string k) {
+        if (result.type != JSONType.object || !(k in result)) return "";
+        auto v = result[k];
+        switch (v.type) {
+            case JSONType.string: return v.str;
+            case JSONType.integer: return std.conv.to!string(v.integer);
+            case JSONType.uinteger: return std.conv.to!string(v.uinteger);
+            case JSONType.float_: return std.conv.to!string(cast(long) v.floating);
+            case JSONType.true_: return "true";
+            case JSONType.false_: return "false";
+            default: return "";
+        }
     }
 
-    if (statusCode[0] == '4' || statusCode[0] == '5') {
-        // Invalid key
-        writefln("%sInvalid%s", RED, RESET);
-        if ("error" in result) {
-            writefln("Reason: %s", result["error"].str);
-        } else if ("message" in result) {
-            writefln("Reason: %s", result["message"].str);
-        }
-        exit(1);
-    }
-
-    bool valid = result["valid"].type == JSONType.true_;
-    bool expired = result["expired"].type == JSONType.true_;
-    string respPublicKey = "public_key" in result ? result["public_key"].str : "";
-    string tier = "tier" in result ? result["tier"].str : "";
-    string status = "status" in result ? result["status"].str : "";
-
-    if (expired) {
-        // Expired key
-        writefln("%sExpired%s", RED, RESET);
-        writefln("Public Key: %s", respPublicKey);
-        writefln("Tier: %s", tier);
-        if ("expires_at" in result) {
-            writefln("Expired: %s", result["expires_at"].str);
-        }
-        writefln("%sTo renew: Visit https://unsandbox.com/keys/extend%s", YELLOW, RESET);
-
-        if (extend) {
-            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ respPublicKey;
-            writefln("\n%sOpening browser to extend key...%s", GREEN, RESET);
-            openBrowser(extendURL);
-        }
-        exit(1);
-    }
-
-    if (valid) {
-        // Valid key
-        writefln("%sValid%s", GREEN, RESET);
-        writefln("Public Key: %s", respPublicKey);
-        writefln("Tier: %s", tier);
-        writefln("Status: %s", status);
-
-        if ("expires_at" in result) {
-            string expiresAt = result["expires_at"].str;
-            writefln("Expires: %s", expiresAt);
-
-            // Calculate time remaining (simplified - just show the date)
-            // Full datetime parsing would require additional complexity
-        }
-
-        if ("rate_limit" in result && result["rate_limit"].type != JSONType.null_) {
-            writefln("Rate Limit: %.0f req/min", result["rate_limit"].floating);
-        }
-        if ("burst" in result && result["burst"].type != JSONType.null_) {
-            writefln("Burst: %.0f req", result["burst"].floating);
-        }
-        if ("concurrency" in result && result["concurrency"].type != JSONType.null_) {
-            writefln("Concurrency: %.0f", result["concurrency"].floating);
-        }
-
-        if (extend) {
-            string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ respPublicKey;
-            writefln("\n%sOpening browser to extend key...%s", GREEN, RESET);
-            openBrowser(extendURL);
-        }
+    string state, reason;
+    if (code == 200) {
+        state = field("status");
+        if (state.empty) state = field("valid") == "true" ? "active" : "invalid";
+        reason = "status " ~ state;
+    } else if (code == 401) {
+        reason = field("error");
+        if (reason.empty) reason = "unauthorized";
+        if (reason == ":expired" || reason == "expired") state = "expired";
+        else if (reason == ":suspended" || reason == "suspended") state = "suspended";
+        else state = "invalid";
     } else {
-        // Invalid key
-        writefln("%sInvalid%s", RED, RESET);
-        if ("error" in result) {
-            writefln("Reason: %s", result["error"].str);
-        }
-        exit(1);
+        string msg = field("error");
+        if (msg.empty) msg = field("message");
+        stderr.writefln("%sError: HTTP %d %s%s", RED, code, msg, RESET);
+        exit(4);
     }
+
+    if (state == "expired") {
+        writefln("%sExpired%s", RED, RESET);
+        writefln("Public Key: %s", publicKey);
+        writefln("%sTo renew: Visit https://unsandbox.com/keys/extend%s", YELLOW, RESET);
+        exit(3);
+    } else if (state == "suspended") {
+        writefln("%sSuspended%s", RED, RESET);
+        writefln("Public Key: %s", publicKey);
+        exit(3);
+    } else if (state != "active") {
+        writefln("%sInvalid%s", RED, RESET);
+        writefln("Public Key: %s", publicKey);
+        writefln("Reason: %s", reason);
+        exit(3);
+    }
+
+    string tier = field("tier"), status = field("status"), vt = field("valid_through");
+    string expires = "N/A", remaining = "N/A";
+    if (!vt.empty) {
+        long secs = std.conv.to!long(vt) / 1000;
+        auto t = SysTime.fromUnixTime(secs, UTC());
+        expires = format("%04d-%02d-%02dT%02d:%02d:%02dZ", t.year, cast(int) t.month, t.day, t.hour, t.minute, t.second);
+        long left = secs - Clock.currTime.toUnixTime();
+        remaining = left <= 0 ? "expired"
+            : format("%dd %dh %dm", left / 86400, left % 86400 / 3600, left % 3600 / 60);
+    }
+    writefln("%sValid%s", GREEN, RESET);
+    writefln("Public Key: %s", publicKey);
+    writefln("Tier: %s", tier.empty ? "N/A" : tier);
+    writefln("Status: %s", status.empty ? "N/A" : status);
+    writefln("Expires: %s", expires);
+    writefln("Time Remaining: %s", remaining);
 }
 
 // Load a row from an accounts.csv file (format: public_key,secret_key per line).
@@ -1642,8 +1678,8 @@ CurlResult rotateSecretPost(string publicKey, string secretKey, string otp, stri
     if (!otp.empty) {
         authHeaders ~= format(" -H 'X-Sudo-OTP: %s' -H 'X-Sudo-Challenge: %s'", otp, challenge);
     }
-    string cmd = format(`curl -s --max-time 120 -X POST '%s%s' -H 'Content-Type: application/json' %s -d '%s'`,
-                        API_BASE, path, authHeaders, body_);
+    string cmd = format(`curl -s --max-time 120 -X POST '%s%s' -H 'Content-Type: application/json' %s --data-binary @%s`,
+                        API_BASE, path, authHeaders, bodyFile(body_));
     return execCurlWithStatus(cmd);
 }
 

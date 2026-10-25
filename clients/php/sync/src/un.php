@@ -3330,14 +3330,67 @@ class Unsandbox {
      * @param array $opts Global options
      */
     private function cliHandleKey(array $opts): void {
-        $result = $this->validateKeys();
-        echo "API Key Valid: " . ($result['valid'] ? 'yes' : 'no') . "\n";
-        if (isset($result['account_id'])) {
-            echo "Account ID: " . $result['account_id'] . "\n";
+        // `un key` output per CLI_SPEC.md: no public key in the payload, so print
+        // the one we signed with; expiry comes from valid_through (ms).
+        [$pk, $sk] = $this->resolveCredentials(null, null);
+        $code = 200;
+        try {
+            $result = $this->makeRequest('POST', '/keys/validate', $pk, $sk, null);
+        } catch (ApiException $e) {
+            if ($e->getCode() === 0) {
+                fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
+                exit(1);
+            }
+            $code = $e->getCode();
+            $result = $e->getResponse() ?? [];
         }
-        if (isset($result['email'])) {
-            echo "Email: " . $result['email'] . "\n";
+        if (!is_array($result)) {
+            $result = [];
         }
+
+        if ($code === 200) {
+            $state = $result['status'] ?? (!empty($result['valid']) ? 'active' : 'invalid');
+            $reason = "status {$state}";
+        } elseif ($code === 401) {
+            $reason = (string)($result['error'] ?? 'unauthorized');
+            $map = [':expired' => 'expired', 'expired' => 'expired', ':suspended' => 'suspended', 'suspended' => 'suspended'];
+            $state = $map[$reason] ?? 'invalid';
+        } else {
+            fwrite(STDERR, "Error: HTTP {$code} " . ($result['error'] ?? $result['message'] ?? '') . "\n");
+            exit(4);
+        }
+
+        if ($state !== 'active') {
+            if ($state === 'expired') {
+                echo "Expired\n";
+                echo "Public Key: {$pk}\n";
+                echo "To renew: Visit https://unsandbox.com/keys/extend\n";
+            } elseif ($state === 'suspended') {
+                echo "Suspended\n";
+                echo "Public Key: {$pk}\n";
+            } else {
+                echo "Invalid\n";
+                echo "Public Key: {$pk}\n";
+                echo "Reason: {$reason}\n";
+            }
+            exit(3);
+        }
+
+        $expires = 'N/A';
+        $remaining = 'N/A';
+        if (isset($result['valid_through']) && is_numeric($result['valid_through'])) {
+            $secs = intdiv((int)$result['valid_through'], 1000);
+            $expires = gmdate('Y-m-d\\TH:i:s\\Z', $secs);
+            $left = $secs - time();
+            $remaining = $left <= 0 ? 'expired'
+                : intdiv($left, 86400) . 'd ' . intdiv($left % 86400, 3600) . 'h ' . intdiv($left % 3600, 60) . 'm';
+        }
+        echo "Valid\n";
+        echo "Public Key: {$pk}\n";
+        echo "Tier: " . (isset($result['tier']) ? $result['tier'] : 'N/A') . "\n";
+        echo "Status: " . ($result['status'] ?? 'N/A') . "\n";
+        echo "Expires: {$expires}\n";
+        echo "Time Remaining: {$remaining}\n";
     }
 
     /**

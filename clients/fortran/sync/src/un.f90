@@ -2205,6 +2205,8 @@ contains
         integer :: i, stat
         logical :: extend_mode, rotate_mode
         character(len=32) :: portal_base
+        character(len=:), allocatable :: script
+        character(len=1), parameter :: nl = achar(10)
 
         portal_base = 'https://unsandbox.com'
         extend_mode = .false.
@@ -2235,82 +2237,42 @@ contains
             return
         end if
 
-        ! Key validation: signed POST $UN_API/keys/validate (get_credentials
-        ! already exported UNSB_SK/UNSB_HMAC for the shell)
-
+        ! Key validation: signed POST $UN_API/keys/validate, empty body (get_credentials
+        ! already exported UNSB_SK/UNSB_HMAC for the shell). Display per CLI_SPEC.md
+        ! "`un key` output": the API returns no public key, so we print ours.
         if (extend_mode) then
-            write(full_cmd, '(*(A))') &
-                'TS=$(date +%s); SIG=$(printf %s "$TS:POST:/keys/validate:{}" | sh -c "$UNSB_HMAC"); ' // &
-                'resp=$(curl -s -X POST "$UN_API/keys/validate" -H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
-                '-H "Content-Type: application/json" ', &
-                '-H "Authorization: Bearer ', trim(public_key), '" ', &
-                '-d "{}"); ', &
-                'status=$(echo "$resp" | jq -r ".status // empty"); ', &
-                'public_key=$(echo "$resp" | jq -r ".public_key // empty"); ', &
-                'tier=$(echo "$resp" | jq -r ".tier // empty"); ', &
-                'expires_at=$(echo "$resp" | jq -r ".expires_at // empty"); ', &
-                'time_remaining=$(echo "$resp" | jq -r ".time_remaining // empty"); ', &
-                'rate_limit=$(echo "$resp" | jq -r ".rate_limit // empty"); ', &
-                'burst=$(echo "$resp" | jq -r ".burst // empty"); ', &
-                'concurrency=$(echo "$resp" | jq -r ".concurrency // empty"); ', &
-                'if [ "$status" = "valid" ]; then ', &
-                'echo -e "\x1b[32mValid\x1b[0m"; ', &
-                'echo "Public Key: $public_key"; ', &
-                'echo "Tier: $tier"; ', &
-                'echo "Status: $status"; ', &
-                'echo "Expires: $expires_at"; ', &
-                '[ -n "$time_remaining" ] && echo "Time Remaining: $time_remaining"; ', &
-                '[ -n "$rate_limit" ] && echo "Rate Limit: $rate_limit"; ', &
-                '[ -n "$burst" ] && echo "Burst: $burst"; ', &
-                '[ -n "$concurrency" ] && echo "Concurrency: $concurrency"; ', &
-                'echo -e "\x1b[34mOpening browser to extend key...\x1b[0m"; ', &
-                'xdg-open "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null || ', &
-                'sensible-browser "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null &; ', &
-                'elif [ "$status" = "expired" ]; then ', &
-                'echo -e "\x1b[31mExpired\x1b[0m"; ', &
-                'echo "Public Key: $public_key"; ', &
-                'echo "Tier: $tier"; ', &
-                'echo "Expired: $expires_at"; ', &
-                'echo -e "\x1b[33mTo renew: Visit ', trim(portal_base), '/keys/extend\x1b[0m"; ', &
-                'echo -e "\x1b[34mOpening browser to extend key...\x1b[0m"; ', &
-                'xdg-open "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null || ', &
-                'sensible-browser "', trim(portal_base), '/keys/extend?pk=$public_key" 2>/dev/null &; ', &
-                'else echo -e "\x1b[31mInvalid\x1b[0m"; fi'
-        else
-            write(full_cmd, '(*(A))') &
-                'TS=$(date +%s); SIG=$(printf %s "$TS:POST:/keys/validate:{}" | sh -c "$UNSB_HMAC"); ' // &
-                'resp=$(curl -s -X POST "$UN_API/keys/validate" -H "X-Timestamp: $TS" -H "X-Signature: $SIG" ', &
-                '-H "Content-Type: application/json" ', &
-                '-H "Authorization: Bearer ', trim(public_key), '" ', &
-                '-d "{}"); ', &
-                'status=$(echo "$resp" | jq -r ".status // empty"); ', &
-                'public_key=$(echo "$resp" | jq -r ".public_key // empty"); ', &
-                'tier=$(echo "$resp" | jq -r ".tier // empty"); ', &
-                'expires_at=$(echo "$resp" | jq -r ".expires_at // empty"); ', &
-                'time_remaining=$(echo "$resp" | jq -r ".time_remaining // empty"); ', &
-                'rate_limit=$(echo "$resp" | jq -r ".rate_limit // empty"); ', &
-                'burst=$(echo "$resp" | jq -r ".burst // empty"); ', &
-                'concurrency=$(echo "$resp" | jq -r ".concurrency // empty"); ', &
-                'if [ "$status" = "valid" ]; then ', &
-                'echo -e "\x1b[32mValid\x1b[0m"; ', &
-                'echo "Public Key: $public_key"; ', &
-                'echo "Tier: $tier"; ', &
-                'echo "Status: $status"; ', &
-                'echo "Expires: $expires_at"; ', &
-                '[ -n "$time_remaining" ] && echo "Time Remaining: $time_remaining"; ', &
-                '[ -n "$rate_limit" ] && echo "Rate Limit: $rate_limit"; ', &
-                '[ -n "$burst" ] && echo "Burst: $burst"; ', &
-                '[ -n "$concurrency" ] && echo "Concurrency: $concurrency"; ', &
-                'elif [ "$status" = "expired" ]; then ', &
-                'echo -e "\x1b[31mExpired\x1b[0m"; ', &
-                'echo "Public Key: $public_key"; ', &
-                'echo "Tier: $tier"; ', &
-                'echo "Expired: $expires_at"; ', &
-                'echo -e "\x1b[33mTo renew: Visit ', trim(portal_base), '/keys/extend\x1b[0m"; ', &
-                'else echo -e "\x1b[31mInvalid\x1b[0m"; fi'
+            write(full_cmd, '(*(A))') 'echo "Opening browser to extend key..."; xdg-open "', &
+                trim(portal_base), '/keys/extend?pk=', trim(public_key), '" 2>/dev/null &'
+            call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
+            return
         end if
 
-        call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
+        script = 'PK=''' // trim(public_key) // '''' // nl // &
+            'TS=$(date +%s); SIG=$(printf %s "$TS:POST:/keys/validate:" | sh -c "$UNSB_HMAC")' // nl // &
+            'raw=$(curl -s -w ''\n%{http_code}'' -X POST "$UN_API/keys/validate" -H "Authorization: Bea' // &
+            'rer $PK" -H "X-Timestamp: $TS" -H "X-Signature: $SIG") || { echo ''Error: request to /keys' // &
+            '/validate failed'' >&2; exit 1; }' // nl // &
+            'code=$(printf ''%s\n'' "$raw" | tail -n 1); resp=$(printf ''%s\n'' "$raw" | sed ''$d'')' // nl // &
+            'case "$code" in 200) st=$(printf ''%s'' "$resp" | jq -r ''.status // (if .valid then "acti' // &
+            've" else "invalid" end)''); reason="status $st";; 401) reason=$(printf ''%s'' "$resp" | jq' // &
+            ' -r ''.error // "unauthorized"''); case "$reason" in :expired|expired) st=expired;; :suspe' // &
+            'nded|suspended) st=suspended;; *) st=invalid;; esac;; *) echo "Error: HTTP $code" >&2; exi' // &
+            't 4;; esac' // nl // &
+            'case "$st" in active) ;; expired) printf ''\033[31mExpired\033[0m\nPublic Key: %s\n\033[33' // &
+            'mTo renew: Visit https://unsandbox.com/keys/extend\033[0m\n'' "$PK"; exit 3;; suspended) p' // &
+            'rintf ''\033[31mSuspended\033[0m\nPublic Key: %s\n'' "$PK"; exit 3;; *) printf ''\033[31mI' // &
+            'nvalid\033[0m\nPublic Key: %s\nReason: %s\n'' "$PK" "$reason"; exit 3;; esac' // nl // &
+            'tier=$(printf ''%s'' "$resp" | jq -r ''.tier // "N/A"''); status=$(printf ''%s'' "$resp" |' // &
+            ' jq -r ''.status // "N/A"''); vt=$(printf ''%s'' "$resp" | jq -r ''.valid_through // empty' // &
+            ' | floor''); exp=N/A; rem=N/A' // nl // &
+            'if [ -n "$vt" ]; then s=$((vt / 1000)); exp=$(date -u -d "@$s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/' // &
+            'null || date -u -r "$s" +%Y-%m-%dT%H:%M:%SZ); l=$((s - $(date +%s))); if [ "$l" -le 0 ]; t' // &
+            'hen rem=expired; else rem="$((l / 86400))d $((l % 86400 / 3600))h $((l % 3600 / 60))m"; fi' // &
+            '; fi' // nl // &
+            'printf ''\033[32mValid\033[0m\nPublic Key: %s\nTier: %s\nStatus: %s\nExpires: %s\nTime Rem' // &
+            'aining: %s\n'' "$PK" "$tier" "$status" "$exp" "$rem"' // nl
+        call execute_command_line(script, wait=.true., exitstat=stat)
+        if (stat /= 0) call exit(stat)
     end subroutine handle_key
 
     !--------------------------------------------------------------------------

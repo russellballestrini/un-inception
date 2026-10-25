@@ -1221,79 +1221,74 @@
            MOVE WS-EXIT-CODE TO RETURN-CODE.
 
        VALIDATE-KEY.
-      *> Build curl command to validate API key
-      *> Signed POST $UN_API/keys/validate (UNSB_SK/UNSB_HMAC come
-      *> from GET-CREDENTIALS through the environment)
-           STRING "TS=$(date +%s); "
-               "SIG=$(printf %s ""$TS:POST:/keys/validate:{}"" | "
-               "sh -c ""$UNSB_HMAC""); "
-               "curl -s -X POST $UN_API/keys/validate "
-               "-H 'Content-Type: application/json' "
-               "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -H 'X-Timestamp: '$TS "
-               "-H 'X-Signature: '$SIG "
-               "-d '{}' -o /tmp/unsandbox_key_resp.json; "
-               "STATUS=$?; "
-               "if [ $STATUS -ne 0 ]; then "
-               "echo -e '\x1b[31mInvalid\x1b[0m'; "
-               "exit 1; "
-               "fi; "
-               "EXPIRED=$(jq -r '.expired // false' "
-               "/tmp/unsandbox_key_resp.json); "
-               "PUBLIC_KEY=$(jq -r '.public_key // ""N/A""' "
-               "/tmp/unsandbox_key_resp.json); "
-               DELIMITED BY SIZE INTO WS-CURL-CMD
-           END-STRING.
-
+      *> Signed POST $UN_API/keys/validate, empty body (UNSB_SK/UNSB_HMAC
+      *> come from GET-CREDENTIALS through the environment). Display per
+      *> CLI_SPEC.md "un key output": the API returns no public key, so
+      *> we print ours; expiry derives from valid_through (ms).
            IF WS-EXTEND-FLAG = "true"
-               STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "xdg-open '"
-                   FUNCTION TRIM(WS-PORTAL-BASE)
-                   "/keys/extend?pk='""$PUBLIC_KEY"" 2>/dev/null; "
+               MOVE SPACES TO WS-CURL-CMD
+               STRING "xdg-open '" FUNCTION TRIM(WS-PORTAL-BASE)
+                   "/keys/extend?pk=" FUNCTION TRIM(WS-API-KEY)
+                   "' 2>/dev/null"
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
-           ELSE
-               STRING FUNCTION TRIM(WS-CURL-CMD)
-                   "if [ ""$EXPIRED"" = ""true"" ]; then "
-                   "echo -e '\x1b[31mExpired\x1b[0m'; "
-                   "echo 'Public Key: '$PUBLIC_KEY; "
-                   "echo 'Tier: '$(jq -r '.tier // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Expired: '$(jq -r '.expires_at // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo -e '\x1b[33mTo renew: Visit "
-                   "https://unsandbox.com/keys/extend\x1b[0m'; "
-                   "rm -f /tmp/unsandbox_key_resp.json; "
-                   "exit 1; "
-                   "else "
-                   "echo -e '\x1b[32mValid\x1b[0m'; "
-                   "echo 'Public Key: '$PUBLIC_KEY; "
-                   "echo 'Tier: '$(jq -r '.tier // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Status: '$(jq -r '.status // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Expires: '$(jq -r '.expires_at // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Time Remaining: '$(jq -r "
-                   "'.time_remaining // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Rate Limit: '$(jq -r '.rate_limit // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Burst: '$(jq -r '.burst // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "echo 'Concurrency: '$(jq -r '.concurrency // ""N/A""' "
-                   "/tmp/unsandbox_key_resp.json); "
-                   "fi; "
-                   DELIMITED BY SIZE INTO WS-CURL-CMD
-               END-STRING
+               CALL "SYSTEM" USING WS-CURL-CMD
+               EXIT PARAGRAPH
            END-IF.
-
-           STRING FUNCTION TRIM(WS-CURL-CMD)
-               "rm -f /tmp/unsandbox_key_resp.json"
-               DELIMITED BY SIZE INTO WS-CURL-CMD
+           MOVE SPACES TO WS-ROT-CMD.
+           STRING "PK='" FUNCTION TRIM(WS-API-KEY) "'"
+               X"0A"
+               "TS=$(date +%s); SIG=$(printf %s ""$TS:POST:/keys/validate"
+               ":"" | sh -c ""$UNSB_HMAC"")"
+               X"0A"
+               "raw=$(curl -s -w '\n%{http_code}' -X POST ""$UN_API/keys/"
+               "validate"" -H ""Authorization: Bearer $PK"" -H ""X-Timestamp"
+               ": $TS"" -H ""X-Signature: $SIG"") || { echo 'Error: request"
+               " to /keys/validate failed' >&2; exit 1; }"
+               X"0A"
+               "code=$(printf '%s\n' ""$raw"" | tail -n 1); resp=$(printf "
+               "'%s\n' ""$raw"" | sed '$d')"
+               X"0A"
+               "case ""$code"" in 200) st=$(printf '%s' ""$resp"" | jq -r '."
+               "status // (if .valid then ""active"" else ""invalid"" end)')"
+               "; reason=""status $st"";; 401) reason=$(printf '%s' ""$resp"
+               """ | jq -r '.error // ""unauthorized""'); case ""$reason"" in"
+               " :expired|expired) st=expired;; :suspended|suspended) st"
+               "=suspended;; *) st=invalid;; esac;; *) echo ""Error: HTTP"
+               " $code"" >&2; exit 4;; esac"
+               X"0A"
+               "case ""$st"" in active) ;; expired) printf '\033[31mExpire"
+               "d\033[0m\nPublic Key: %s\n\033[33mTo renew: Visit https:"
+               "//unsandbox.com/keys/extend\033[0m\n' ""$PK""; exit 3;; su"
+               "spended) printf '\033[31mSuspended\033[0m\nPublic Key: %"
+               "s\n' ""$PK""; exit 3;; *) printf '\033[31mInvalid\033[0m\n"
+               "Public Key: %s\nReason: %s\n' ""$PK"" ""$reason""; exit 3;; "
+               "esac"
+               X"0A"
+               "tier=$(printf '%s' ""$resp"" | jq -r '.tier // ""N/A""'); st"
+               "atus=$(printf '%s' ""$resp"" | jq -r '.status // ""N/A""'); "
+               "vt=$(printf '%s' ""$resp"" | jq -r '.valid_through // empt"
+               "y | floor'); exp=N/A; rem=N/A"
+               X"0A"
+               "if [ -n ""$vt"" ]; then s=$((vt / 1000)); exp=$(date -u -d"
+               " ""@$s"" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r ""$s"
+               """ +%Y-%m-%dT%H:%M:%SZ); l=$((s - $(date +%s))); if [ ""$l"
+               """ -le 0 ]; then rem=expired; else rem=""$((l / 86400))d $"
+               "((l % 86400 / 3600))h $((l % 3600 / 60))m""; fi; fi"
+               X"0A"
+               "printf '\033[32mValid\033[0m\nPublic Key: %s\nTier: %s\n"
+               "Status: %s\nExpires: %s\nTime Remaining: %s\n' ""$PK"" ""$t"
+               "ier"" ""$status"" ""$exp"" ""$rem"""
+               X"0A"
+               DELIMITED BY SIZE INTO WS-ROT-CMD
            END-STRING.
-
-           CALL "SYSTEM" USING WS-CURL-CMD.
+           CALL "SYSTEM" USING WS-ROT-CMD
+               RETURNING WS-EXIT-CODE.
+      *> SYSTEM hands back the raw wait status (exit code * 256)
+           IF WS-EXIT-CODE > 255
+               DIVIDE WS-EXIT-CODE BY 256 GIVING WS-EXIT-CODE
+           END-IF.
+           MOVE WS-EXIT-CODE TO RETURN-CODE.
 
        PARSE-SERVICE-RESIZE-ARGS.
       *> Parse -v argument for vcpu

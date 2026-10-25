@@ -3916,8 +3916,79 @@ public class Un {
     }
 
     private static void handleKey(String publicKey, String secretKey) throws Exception {
-        Map<String, Object> result = validateKeys(publicKey, secretKey);
-        printMap(result);
+        Object[] resp;
+        try {
+            resp = signedPost(publicKey, secretKey, "/keys/validate", "", null, null);
+        } catch (IOException e) {
+            System.err.println("Error: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
+        int code = (Integer) resp[0];
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) resp[1];
+        String state;
+        String reason;
+        if (code == 200) {
+            Object st = data.get("status");
+            state = st != null ? st.toString() : (Boolean.TRUE.equals(data.get("valid")) ? "active" : "invalid");
+            reason = "status " + state;
+        } else if (code == 401) {
+            Object err = data.get("error");
+            reason = err != null ? err.toString() : "unauthorized";
+            if (reason.equals(":expired") || reason.equals("expired")) {
+                state = "expired";
+            } else if (reason.equals(":suspended") || reason.equals("suspended")) {
+                state = "suspended";
+            } else {
+                state = "invalid";
+            }
+        } else {
+            Object msg = data.get("error") != null ? data.get("error") : data.get("message");
+            System.err.println("Error: HTTP " + code + (msg != null ? " " + msg : ""));
+            System.exit(4);
+            return;
+        }
+        if (state.equals("expired")) {
+            System.out.println("Expired");
+            System.out.println("Public Key: " + publicKey);
+            System.out.println("To renew: Visit https://unsandbox.com/keys/extend");
+            System.exit(3);
+        } else if (state.equals("suspended")) {
+            System.out.println("Suspended");
+            System.out.println("Public Key: " + publicKey);
+            System.exit(3);
+        } else if (!state.equals("active")) {
+            System.out.println("Invalid");
+            System.out.println("Public Key: " + publicKey);
+            System.out.println("Reason: " + reason);
+            System.exit(3);
+        }
+        Object tier = data.get("tier");
+        Object status = data.get("status");
+        String tierStr = "N/A";
+        if (tier instanceof Number) {
+            tierStr = String.valueOf(((Number) tier).longValue());
+        } else if (tier != null) {
+            tierStr = tier.toString();
+        }
+        String expires = "N/A";
+        String remaining = "N/A";
+        Object vt = data.get("valid_through");
+        if (vt instanceof Number) {
+            long secs = ((Number) vt).longValue() / 1000;
+            expires = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
+                .withZone(java.time.ZoneOffset.UTC).format(java.time.Instant.ofEpochSecond(secs));
+            long left = secs - System.currentTimeMillis() / 1000;
+            remaining = left <= 0 ? "expired"
+                : (left / 86400) + "d " + (left % 86400 / 3600) + "h " + (left % 3600 / 60) + "m";
+        }
+        System.out.println("Valid");
+        System.out.println("Public Key: " + publicKey);
+        System.out.println("Tier: " + tierStr);
+        System.out.println("Status: " + (status != null ? status.toString() : "N/A"));
+        System.out.println("Expires: " + expires);
+        System.out.println("Time Remaining: " + remaining);
     }
 
     /**
@@ -3993,8 +4064,11 @@ public class Un {
 
     /** POST /keys/self/rotate-secret with body {}; returns {status, body}. */
     private static Object[] rotatePost(String publicKey, String secretKey, String otp, String challenge) throws IOException {
-        String path = "/keys/self/rotate-secret";
-        String body = "{}";
+        return signedPost(publicKey, secretKey, "/keys/self/rotate-secret", "{}", otp, challenge);
+    }
+
+    /** Signed POST; returns {statusCode, parsed JSON map} for any status (non-2xx bodies included). */
+    private static Object[] signedPost(String publicKey, String secretKey, String path, String body, String otp, String challenge) throws IOException {
         long timestamp = System.currentTimeMillis() / 1000;
         HttpURLConnection conn = (HttpURLConnection) new URL(API_BASE + path).openConnection();
         conn.setRequestMethod("POST");

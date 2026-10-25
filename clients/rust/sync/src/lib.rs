@@ -358,6 +358,15 @@ pub struct KeysValid {
     /// Error message if invalid
     #[serde(default)]
     pub error: String,
+    /// Key status ("active" when valid)
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Key tier
+    #[serde(default)]
+    pub tier: Option<i64>,
+    /// Expiry, milliseconds since the Unix epoch
+    #[serde(default)]
+    pub valid_through: Option<i64>,
 }
 
 /// Options for creating a session
@@ -4404,31 +4413,103 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         return cmd_key_rotate(opts, &creds);
     }
 
-    match validate_keys(&creds) {
-        Ok(result) => {
-            if result.valid {
-                println!("API keys valid.");
-                println!("Account ID: {}", result.account_id);
-                if !result.email.is_empty() {
-                    println!("Email: {}", result.email);
-                }
-                if !result.plan.is_empty() {
-                    println!("Plan: {}", result.plan);
-                }
-                EXIT_SUCCESS
-            } else {
-                eprintln!("Error: Invalid API keys");
-                if !result.error.is_empty() {
-                    eprintln!("Details: {}", result.error);
-                }
-                EXIT_AUTH_ERROR
-            }
+    // Response handling per CLI_SPEC.md "`un key` output". The payload carries
+    // no public key: print the one we signed with.
+    let pk = &creds.public_key;
+    let (state, reason, result) = match validate_keys(&creds) {
+        Ok(r) => {
+            let st = r.status.clone().unwrap_or_else(|| if r.valid { "active".into() } else { "invalid".into() });
+            let reason = format!("status {}", st);
+            (st, reason, Some(r))
+        }
+        Err(UnsandboxError::ApiError { status: 401, message }) => {
+            let err = serde_json::from_str::<serde_json::Value>(&message)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|e| e.to_string()))
+                .unwrap_or_else(|| "unauthorized".to_string());
+            let st = match err.as_str() {
+                ":expired" | "expired" => "expired",
+                ":suspended" | "suspended" => "suspended",
+                _ => "invalid",
+            };
+            (st.to_string(), err, None)
+        }
+        Err(UnsandboxError::ApiError { status, message }) => {
+            let msg = serde_json::from_str::<serde_json::Value>(&message)
+                .ok()
+                .and_then(|v| {
+                    v.get("error").or_else(|| v.get("message")).and_then(|e| e.as_str()).map(|e| e.to_string())
+                })
+                .unwrap_or(message);
+            eprintln!("Error: HTTP {} {}", status, msg);
+            return EXIT_API_ERROR;
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            EXIT_API_ERROR
+            return EXIT_ERROR;
+        }
+    };
+
+    match state.as_str() {
+        "active" => {}
+        "expired" => {
+            println!("Expired");
+            println!("Public Key: {}", pk);
+            println!("To renew: Visit https://unsandbox.com/keys/extend");
+            return EXIT_AUTH_ERROR;
+        }
+        "suspended" => {
+            println!("Suspended");
+            println!("Public Key: {}", pk);
+            return EXIT_AUTH_ERROR;
+        }
+        _ => {
+            println!("Invalid");
+            println!("Public Key: {}", pk);
+            println!("Reason: {}", reason);
+            return EXIT_AUTH_ERROR;
         }
     }
+
+    let result = result.expect("200 result");
+    let tier = result.tier.map(|t| t.to_string()).unwrap_or_else(|| "N/A".into());
+    let status = result.status.clone().unwrap_or_else(|| "N/A".into());
+    let (expires, remaining) = match result.valid_through {
+        Some(ms) => {
+            let secs = ms.div_euclid(1000);
+            let left = secs - get_timestamp() as i64;
+            let remaining = if left <= 0 {
+                "expired".to_string()
+            } else {
+                format!("{}d {}h {}m", left / 86400, left % 86400 / 3600, left % 3600 / 60)
+            };
+            (iso8601_utc(secs), remaining)
+        }
+        None => ("N/A".to_string(), "N/A".to_string()),
+    };
+    println!("Valid");
+    println!("Public Key: {}", pk);
+    println!("Tier: {}", tier);
+    println!("Status: {}", status);
+    println!("Expires: {}", expires);
+    println!("Time Remaining: {}", remaining);
+    EXIT_SUCCESS
+}
+
+/// Unix seconds -> "YYYY-MM-DDTHH:MM:SSZ" (UTC), civil-from-days.
+fn iso8601_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86400);
+    let sod = secs.rem_euclid(86400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, sod / 3600, sod % 3600 / 60, sod % 60)
 }
 
 /// The accounts.csv the CLI's credentials came from, or None (flags / env vars).

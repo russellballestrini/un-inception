@@ -1927,8 +1927,91 @@ void cmdKey(NSArray* args) {
         return;
     }
 
+    // POST /keys/validate, empty body, HMAC-signed in-process (CLI_SPEC.md "un key output").
+    NSString* path = @"/keys/validate";
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[UN_API_BASE stringByAppendingString:path]]];
+    [request setHTTPMethod:@"POST"];
+    [request setTimeoutInterval:60];
+    [request setHTTPBody:[NSData data]];
+    long timestamp = (long)[[NSDate date] timeIntervalSince1970];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:[@"Bearer " stringByAppendingString:publicKey] forHTTPHeaderField:@"Authorization"];
+    if ([secretKey length] > 0) {
+        [request setValue:[NSString stringWithFormat:@"%ld", timestamp] forHTTPHeaderField:@"X-Timestamp"];
+        [request setValue:UNComputeSignature(secretKey, timestamp, @"POST", path, @"") forHTTPHeaderField:@"X-Signature"];
+    }
+    NSHTTPURLResponse* response = nil;
+    NSError* error = nil;
+    NSData* data = [NSURLConnection sendSynchronousRequest:request returningResponse:&response error:&error];
+    NSInteger code = response ? [response statusCode] : 0;
+    if (code == 0) {
+        fprintf(stderr, "%sError: %s%s\n", [RED UTF8String], [[error localizedDescription] ?: @"request failed" UTF8String], [RESET UTF8String]);
+        exit(1);
+    }
+    id parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSDictionary* result = [parsed isKindOfClass:[NSDictionary class]] ? parsed : @{};
+    NSString* (^field)(NSString*) = ^NSString*(NSString* k) {
+        id v = result[k];
+        if (!v || v == [NSNull null]) return nil;
+        if ([v isKindOfClass:[NSString class]]) return v;
+        if ([v isKindOfClass:[NSNumber class]]) return [NSString stringWithFormat:@"%lld", [v longLongValue]];
+        return nil;
+    };
+
+    NSString* state = nil;
+    NSString* reason = nil;
+    if (code == 200) {
+        state = field(@"status");
+        if (!state) state = [result[@"valid"] boolValue] ? @"active" : @"invalid";
+        reason = [@"status " stringByAppendingString:state];
+    } else if (code == 401) {
+        reason = field(@"error") ?: @"unauthorized";
+        if ([reason isEqualToString:@":expired"] || [reason isEqualToString:@"expired"]) state = @"expired";
+        else if ([reason isEqualToString:@":suspended"] || [reason isEqualToString:@"suspended"]) state = @"suspended";
+        else state = @"invalid";
+    } else {
+        NSString* msg = field(@"error") ?: field(@"message") ?: @"";
+        fprintf(stderr, "%sError: HTTP %ld %s%s\n", [RED UTF8String], (long)code, [msg UTF8String], [RESET UTF8String]);
+        exit(4);
+    }
+
+    if ([state isEqualToString:@"expired"]) {
+        printf("%sExpired%s\n", [RED UTF8String], [RESET UTF8String]);
+        printf("Public Key: %s\n", [publicKey UTF8String]);
+        printf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", [YELLOW UTF8String], [RESET UTF8String]);
+        exit(3);
+    } else if ([state isEqualToString:@"suspended"]) {
+        printf("%sSuspended%s\n", [RED UTF8String], [RESET UTF8String]);
+        printf("Public Key: %s\n", [publicKey UTF8String]);
+        exit(3);
+    } else if (![state isEqualToString:@"active"]) {
+        printf("%sInvalid%s\n", [RED UTF8String], [RESET UTF8String]);
+        printf("Public Key: %s\n", [publicKey UTF8String]);
+        printf("Reason: %s\n", [reason UTF8String]);
+        exit(3);
+    }
+
+    NSString* expires = @"N/A";
+    NSString* remaining = @"N/A";
+    NSString* vt = field(@"valid_through");
+    if (vt) {
+        long long secs = [vt longLongValue] / 1000;
+        time_t tt = (time_t)secs;
+        struct tm tmv;
+        gmtime_r(&tt, &tmv);
+        char buf[32];
+        strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+        expires = [NSString stringWithUTF8String:buf];
+        long long left = secs - (long long)time(NULL);
+        remaining = left <= 0 ? @"expired"
+            : [NSString stringWithFormat:@"%lldd %lldh %lldm", left / 86400, left % 86400 / 3600, left % 3600 / 60];
+    }
     printf("%sValid%s\n", [GREEN UTF8String], [RESET UTF8String]);
     printf("Public Key: %s\n", [publicKey UTF8String]);
+    printf("Tier: %s\n", [(field(@"tier") ?: @"N/A") UTF8String]);
+    printf("Status: %s\n", [(field(@"status") ?: @"N/A") UTF8String]);
+    printf("Expires: %s\n", [expires UTF8String]);
+    printf("Time Remaining: %s\n", [remaining UTF8String]);
 }
 
 void cmdImage(NSArray* args) {

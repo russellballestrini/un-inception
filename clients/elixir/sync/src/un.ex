@@ -1801,116 +1801,120 @@ defmodule Un do
     end
   end
 
-  defp validate_key(api_key, extend: extend) do
-    json = "{}"
-    response = curl_post(api_key, "/keys/validate", json)
+  defp validate_key(_api_key, extend: extend) do
+    {public_key, secret_key} = get_api_keys()
 
-    # Try to use Jason if available, otherwise fall back to manual parsing
-    try do
-      case jason_decode(response) do
-        {:ok, data} ->
-          display_key_info(data, extend)
+    if extend do
+      open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
+    else
+      {code, resp} = key_validate_post(public_key, secret_key)
+      display_key_result(code, resp, public_key)
+    end
+  end
 
-        {:error, _} ->
-          # Fallback if Jason is not available, parse manually
-          display_key_info_manual(response, extend)
+  # POST /keys/validate, empty body, signed; headers go through a 0600 file.
+  defp key_validate_post(public_key, secret_key) do
+    path = "/keys/validate"
+    timestamp = System.system_time(:second) |> Integer.to_string()
+
+    header_lines =
+      ["Authorization: Bearer #{public_key}", "Content-Type: application/json"] ++
+        if(secret_key,
+          do: ["X-Timestamp: #{timestamp}", "X-Signature: #{make_signature(secret_key, timestamp, "POST", path, "")}"],
+          else: []
+        )
+
+    hdr_file = Path.join(System.tmp_dir!(), "un_ex_key_#{System.pid()}_#{:rand.uniform(999_999_999)}.hdr")
+    File.write!(hdr_file, "", [:write, :exclusive])
+    File.chmod!(hdr_file, 0o600)
+    File.write!(hdr_file, Enum.join(header_lines, "\n") <> "\n")
+
+    args = ["-s", "-X", "POST", "-w", "\n%{http_code}", "-H", "@#{hdr_file}", "#{api_base()}#{path}"]
+    {output, exit_code} = System.cmd("curl", args)
+    File.rm(hdr_file)
+
+    if exit_code != 0 do
+      IO.puts(:stderr, "#{@red}Error: request to #{api_base()}#{path} failed#{@reset}")
+      System.halt(1)
+    end
+
+    {body_lines, [status]} = Enum.split(String.split(output, "\n"), -1)
+    code = case Integer.parse(String.trim(status)) do {n, _} -> n; :error -> 0 end
+    {code, Enum.join(body_lines, "\n")}
+  end
+
+  defp json_int(json_str, key) do
+    case Regex.run(~r/"#{key}"\s*:\s*(-?[0-9]+)/, json_str) do
+      [_, v] -> String.to_integer(v)
+      _ -> nil
+    end
+  end
+
+  defp display_key_result(code, resp, public_key) do
+    {state, reason} =
+      case code do
+        200 ->
+          st = extract_json_value(resp, "status") || if(String.contains?(resp, "\"valid\":true"), do: "active", else: "invalid")
+          {st, "status #{st}"}
+
+        401 ->
+          err = extract_json_value(resp, "error") || "unauthorized"
+          st = cond do
+            err in [":expired", "expired"] -> "expired"
+            err in [":suspended", "suspended"] -> "suspended"
+            true -> "invalid"
+          end
+          {st, err}
+
+        _ ->
+          msg = extract_json_value(resp, "error") || extract_json_value(resp, "message") || ""
+          IO.puts(:stderr, "#{@red}Error: HTTP #{code} #{msg}#{@reset}")
+          System.halt(4)
       end
-    rescue
-      UndefinedFunctionError ->
-        # If Jason module doesn't exist, use manual parsing
-        display_key_info_manual(response, extend)
-    end
-  end
 
-  defp display_key_info(data, extend) do
-    status = Map.get(data, "status")
-    public_key = Map.get(data, "public_key")
-    tier = Map.get(data, "tier")
-    expires_at = Map.get(data, "expires_at")
-    time_remaining = Map.get(data, "time_remaining")
-    rate_limit = Map.get(data, "rate_limit")
-    burst = Map.get(data, "burst")
-    concurrency = Map.get(data, "concurrency")
+    case state do
+      "active" ->
+        tier = json_int(resp, "tier")
+        status = extract_json_value(resp, "status")
+        vt = json_int(resp, "valid_through")
 
-    case status do
-      "valid" ->
+        {expires, remaining} =
+          if vt do
+            secs = div(vt, 1000)
+            exp = secs |> DateTime.from_unix!() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+            left = secs - System.system_time(:second)
+            left_s =
+              if left <= 0,
+                do: "expired",
+                else: "#{div(left, 86400)}d #{div(rem(left, 86400), 3600)}h #{div(rem(left, 3600), 60)}m"
+            {exp, left_s}
+          else
+            {"N/A", "N/A"}
+          end
+
         IO.puts("#{@green}Valid#{@reset}")
         IO.puts("Public Key: #{public_key}")
-        IO.puts("Tier: #{tier}")
-        IO.puts("Status: #{status}")
-        IO.puts("Expires: #{expires_at}")
-        if time_remaining, do: IO.puts("Time Remaining: #{time_remaining}")
-        if rate_limit, do: IO.puts("Rate Limit: #{rate_limit}")
-        if burst, do: IO.puts("Burst: #{burst}")
-        if concurrency, do: IO.puts("Concurrency: #{concurrency}")
-
-        if extend do
-          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
-        end
+        IO.puts("Tier: #{tier || "N/A"}")
+        IO.puts("Status: #{status || "N/A"}")
+        IO.puts("Expires: #{expires}")
+        IO.puts("Time Remaining: #{remaining}")
 
       "expired" ->
         IO.puts("#{@red}Expired#{@reset}")
         IO.puts("Public Key: #{public_key}")
-        IO.puts("Tier: #{tier}")
-        IO.puts("Expired: #{expires_at}")
         IO.puts("#{@yellow}To renew: Visit #{@portal_base}/keys/extend#{@reset}")
+        System.halt(3)
 
-        if extend do
-          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
-        end
-
-      "invalid" ->
-        IO.puts("#{@red}Invalid#{@reset}")
+      "suspended" ->
+        IO.puts("#{@red}Suspended#{@reset}")
+        IO.puts("Public Key: #{public_key}")
+        System.halt(3)
 
       _ ->
-        IO.puts("#{@red}Unknown status: #{status}#{@reset}")
-    end
-  end
-
-  defp display_key_info_manual(response, extend) do
-    # Simple manual parsing for JSON response
-    status = extract_json_value(response, "status")
-    public_key = extract_json_value(response, "public_key")
-    tier = extract_json_value(response, "tier")
-    expires_at = extract_json_value(response, "expires_at")
-    time_remaining = extract_json_value(response, "time_remaining")
-    rate_limit = extract_json_value(response, "rate_limit")
-    burst = extract_json_value(response, "burst")
-    concurrency = extract_json_value(response, "concurrency")
-
-    case status do
-      "valid" ->
-        IO.puts("#{@green}Valid#{@reset}")
-        IO.puts("Public Key: #{public_key}")
-        IO.puts("Tier: #{tier}")
-        IO.puts("Status: #{status}")
-        IO.puts("Expires: #{expires_at}")
-        if time_remaining, do: IO.puts("Time Remaining: #{time_remaining}")
-        if rate_limit, do: IO.puts("Rate Limit: #{rate_limit}")
-        if burst, do: IO.puts("Burst: #{burst}")
-        if concurrency, do: IO.puts("Concurrency: #{concurrency}")
-
-        if extend do
-          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
-        end
-
-      "expired" ->
-        IO.puts("#{@red}Expired#{@reset}")
-        IO.puts("Public Key: #{public_key}")
-        IO.puts("Tier: #{tier}")
-        IO.puts("Expired: #{expires_at}")
-        IO.puts("#{@yellow}To renew: Visit #{@portal_base}/keys/extend#{@reset}")
-
-        if extend do
-          open_browser("#{@portal_base}/keys/extend?pk=#{public_key}")
-        end
-
-      "invalid" ->
         IO.puts("#{@red}Invalid#{@reset}")
-
-      _ ->
-        IO.puts("#{@red}Unknown status: #{status}#{@reset}")
-        IO.puts(response)
+        IO.puts("Public Key: #{public_key}")
+        IO.puts("Reason: #{reason}")
+        System.halt(3)
     end
   end
 

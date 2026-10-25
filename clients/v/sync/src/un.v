@@ -398,84 +398,128 @@ fn cmd_service_env(action string, target string, svc_envs []string, svc_env_file
 	}
 }
 
+// Bare (unquoted) JSON value for key, e.g. a number: "" when absent or null.
+fn extract_json_bare(json string, key string) string {
+	search := '"${key}":'
+	start_idx := json.index(search) or { return '' }
+	mut start := start_idx + search.len
+	for start < json.len && json[start] == ` ` {
+		start++
+	}
+	mut end := start
+	for end < json.len && json[end] != `,` && json[end] != `}` && json[end] != ` ` {
+		end++
+	}
+	v := json[start..end]
+	return if v == 'null' { '' } else { v.trim('"') }
+}
+
+// Display per CLI_SPEC.md "`un key` output": the API returns no public key, so
+// we print ours; expiry derives from valid_through (ms since epoch).
 fn cmd_key(extend bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
-	body := '{}'
-	sig_prefix := signed_shell_prefix('POST', '/keys/validate', body, secret_key)
-	cmd := "${sig_prefix}curl -s -X POST '${api_base}/keys/validate' -H 'Content-Type: application/json' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\" --data-binary @BODYFILE"
-	result := exec_curl_body(cmd, body)
 
-	public_key := extract_json_string(result, 'public_key')
-	tier := extract_json_string(result, 'tier')
-	status := extract_json_string(result, 'status')
-	expires_at := extract_json_string(result, 'expires_at')
-	time_remaining := extract_json_string(result, 'time_remaining')
-	rate_limit := extract_json_string(result, 'rate_limit')
-	burst := extract_json_string(result, 'burst')
-	concurrency := extract_json_string(result, 'concurrency')
-	expired := extract_json_string(result, 'expired')
-
-	if extend && public_key != '' {
-		url := '${portal_base}/keys/extend?pk=${public_key}'
+	if extend {
+		url := '${portal_base}/keys/extend?pk=${pub_key}'
 		println('${blue}Opening browser to extend key...${reset}')
-
-		// Try xdg-open (Linux), open (macOS), or start (Windows)
-		mut opened := false
-		xdg_result := os.execute('xdg-open "${url}"')
-		if xdg_result.exit_code == 0 {
-			opened = true
-		}
-		if !opened {
-			mac_result := os.execute('open "${url}"')
-			if mac_result.exit_code == 0 {
-				opened = true
-			}
-		}
-		if !opened {
-			win_result := os.execute('cmd /c start "${url}"')
-			if win_result.exit_code != 0 {
+		if os.execute('xdg-open "${url}"').exit_code != 0 {
+			if os.execute('open "${url}"').exit_code != 0 {
 				eprintln('${red}Error: Could not open browser${reset}')
 			}
 		}
 		return
 	}
 
-	if expired == 'true' {
-		println('${red}Expired${reset}')
-		println('Public Key: ${public_key}')
-		println('Tier: ${tier}')
-		if expires_at != '' {
-			println('Expired: ${expires_at}')
-		}
-		println('${yellow}To renew: Visit https://unsandbox.com/keys/extend${reset}')
+	sig_prefix := signed_shell_prefix('POST', '/keys/validate', '', secret_key)
+	cmd := "${sig_prefix}curl -s -w '\\n%{http_code}' -X POST '${api_base}/keys/validate' -H 'Authorization: Bearer ${pub_key}' -H \"X-Timestamp: \$TIMESTAMP\" -H \"X-Signature: \$SIGNATURE\""
+	res := os.execute(cmd)
+	nl := res.output.last_index('\n') or { -1 }
+	if res.exit_code != 0 || nl < 0 {
+		eprintln('${red}Error: request to ${api_base}/keys/validate failed${reset}')
 		exit(1)
 	}
+	code := res.output[nl + 1..].trim_space()
+	// Tolerate pretty-printed JSON ("key": value) in the field helpers.
+	result := res.output[..nl].replace('": ', '":')
 
-	// Valid key
+	mut state := 'invalid'
+	mut reason := ''
+	if code == '200' {
+		st := extract_json_string(result, 'status')
+		state = if st != '' {
+			st
+		} else if extract_json_bare(result, 'valid') == 'true' {
+			'active'
+		} else {
+			'invalid'
+		}
+		reason = 'status ${state}'
+	} else if code == '401' {
+		reason = extract_json_string(result, 'error')
+		if reason == '' {
+			reason = 'unauthorized'
+		}
+		state = match reason {
+			':expired', 'expired' { 'expired' }
+			':suspended', 'suspended' { 'suspended' }
+			else { 'invalid' }
+		}
+	} else {
+		eprintln('${red}Error: HTTP ${code} ${extract_json_string(result, 'error')}${reset}')
+		exit(4)
+	}
+
+	match state {
+		'active' {}
+		'expired' {
+			println('${red}Expired${reset}')
+			println('Public Key: ${pub_key}')
+			println('${yellow}To renew: Visit ${portal_base}/keys/extend${reset}')
+			exit(3)
+		}
+		'suspended' {
+			println('${red}Suspended${reset}')
+			println('Public Key: ${pub_key}')
+			exit(3)
+		}
+		else {
+			println('${red}Invalid${reset}')
+			println('Public Key: ${pub_key}')
+			println('Reason: ${reason}')
+			exit(3)
+		}
+	}
+
+	mut tier := extract_json_bare(result, 'tier')
+	if tier == '' {
+		tier = 'N/A'
+	}
+	mut status := extract_json_string(result, 'status')
+	if status == '' {
+		status = 'N/A'
+	}
+	mut expires := 'N/A'
+	mut remaining := 'N/A'
+	vt_str := extract_json_bare(result, 'valid_through')
+	if vt_str != '' {
+		secs := i64(vt_str.f64()) / 1000
+		t := time.unix(secs)
+		expires = '${t.year:04d}-${t.month:02d}-${t.day:02d}T${t.hour:02d}:${t.minute:02d}:${t.second:02d}Z'
+		left := secs - time.now().unix()
+		remaining = if left <= 0 {
+			'expired'
+		} else {
+			'${left / 86400}d ${left % 86400 / 3600}h ${left % 3600 / 60}m'
+		}
+	}
+
 	println('${green}Valid${reset}')
-	println('Public Key: ${public_key}')
-	if tier != '' {
-		println('Tier: ${tier}')
-	}
-	if status != '' {
-		println('Status: ${status}')
-	}
-	if expires_at != '' {
-		println('Expires: ${expires_at}')
-	}
-	if time_remaining != '' {
-		println('Time Remaining: ${time_remaining}')
-	}
-	if rate_limit != '' {
-		println('Rate Limit: ${rate_limit}')
-	}
-	if burst != '' {
-		println('Burst: ${burst}')
-	}
-	if concurrency != '' {
-		println('Concurrency: ${concurrency}')
-	}
+	println('Public Key: ${pub_key}')
+	println('Tier: ${tier}')
+	println('Status: ${status}')
+	println('Expires: ${expires}')
+	println('Time Remaining: ${remaining}')
 }
 
 fn cmd_execute(source_file string, envs []string, artifacts bool, network string, vcpu int, api_key string) {

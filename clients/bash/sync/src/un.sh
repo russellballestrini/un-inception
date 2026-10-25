@@ -794,7 +794,7 @@ validate_keys() {
         signature=$(hmac_sign "$sk" "$timestamp:POST:/keys/validate:")
     fi
 
-    curl -s -X POST "$API_BASE/keys/validate" \
+    curl -s "$@" -X POST "$API_BASE/keys/validate" \
         -H "Authorization: Bearer $pk" \
         -H "Content-Type: application/json" \
         ${signature:+-H "X-Timestamp: $timestamp" -H "X-Signature: $signature"}
@@ -1033,33 +1033,78 @@ cmd_key() {
         return
     fi
 
-    local result
-    result=$(validate_keys)
+    local creds pk
+    creds=$(get_credentials) || exit 3
+    pk="${creds%%:*}"
 
-    local pk
-    pk=$(echo "$result" | jq -r '.public_key // empty')
-
-    if [ "$extend" -eq 1 ] && [ -n "$pk" ]; then
+    if [ "$extend" -eq 1 ]; then
         local url="$PORTAL_BASE/keys/extend?pk=$pk"
         echo -e "${BLUE}Opening browser to extend key...${RESET}"
         xdg-open "$url" 2>/dev/null || open "$url" 2>/dev/null &
         return
     fi
 
-    if echo "$result" | jq -e '.expired' >/dev/null 2>&1; then
-        echo -e "${RED}Expired${RESET}"
-        echo "Public Key: $pk"
-        echo "Tier: $(echo "$result" | jq -r '.tier // "N/A"')"
-        echo -e "${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}"
-        exit 1
+    local raw code result
+    raw=$(validate_keys -w '\n%{http_code}') || { echo -e "${RED}Error: request to $API_BASE/keys/validate failed${RESET}" >&2; exit 1; }
+    code="${raw##*$'\n'}"
+    result="${raw%$'\n'*}"
+
+    local state reason
+    case "$code" in
+        200)
+            state=$(echo "$result" | jq -r '.status // (if .valid then "active" else "invalid" end)' 2>/dev/null)
+            reason="status $state" ;;
+        401)
+            reason=$(echo "$result" | jq -r '.error // "unauthorized"' 2>/dev/null)
+            case "$reason" in
+                :expired|expired) state=expired ;;
+                :suspended|suspended) state=suspended ;;
+                *) state=invalid ;;
+            esac ;;
+        *)
+            echo -e "${RED}Error: HTTP $code $(echo "$result" | jq -r '.error // .message // empty' 2>/dev/null)${RESET}" >&2
+            exit 4 ;;
+    esac
+
+    case "$state" in
+        active) ;;
+        expired)
+            echo -e "${RED}Expired${RESET}"
+            echo "Public Key: $pk"
+            echo -e "${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}"
+            exit 3 ;;
+        suspended)
+            echo -e "${RED}Suspended${RESET}"
+            echo "Public Key: $pk"
+            exit 3 ;;
+        *)
+            echo -e "${RED}Invalid${RESET}"
+            echo "Public Key: $pk"
+            echo "Reason: $reason"
+            exit 3 ;;
+    esac
+
+    local tier status vt expires="N/A" remaining="N/A"
+    tier=$(echo "$result" | jq -r '.tier // "N/A"')
+    status=$(echo "$result" | jq -r '.status // "N/A"')
+    vt=$(echo "$result" | jq -r '.valid_through // empty | floor')
+    if [ -n "$vt" ]; then
+        local secs=$((vt / 1000)) left
+        expires=$(date -u -d "@$secs" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$secs" +%Y-%m-%dT%H:%M:%SZ)
+        left=$((secs - $(date +%s)))
+        if [ "$left" -le 0 ]; then
+            remaining="expired"
+        else
+            remaining="$((left / 86400))d $((left % 86400 / 3600))h $((left % 3600 / 60))m"
+        fi
     fi
 
     echo -e "${GREEN}Valid${RESET}"
     echo "Public Key: $pk"
-    echo "Tier: $(echo "$result" | jq -r '.tier // "N/A"')"
-    echo "Status: $(echo "$result" | jq -r '.status // "N/A"')"
-    echo "Expires: $(echo "$result" | jq -r '.expires_at // "N/A"')"
-    echo "Time Remaining: $(echo "$result" | jq -r '.time_remaining // "N/A"')"
+    echo "Tier: $tier"
+    echo "Status: $status"
+    echo "Expires: $expires"
+    echo "Time Remaining: $remaining"
 }
 
 cmd_session() {

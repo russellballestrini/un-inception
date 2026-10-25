@@ -596,50 +596,84 @@
                           (println (str green "Vault configured with environment variables" reset))
                           (println (str yellow "Warning: Failed to set vault" reset)))))))))))
 
+(defn- signed-post-http
+  "Signed POST via java.net (no subprocess); returns [http-code body] for any status."
+  [public-key secret-key endpoint body]
+  (let [timestamp (str (quot (System/currentTimeMillis) 1000))
+        conn (doto ^java.net.HttpURLConnection (.openConnection (java.net.URL. (str api-base endpoint)))
+               (.setRequestMethod "POST")
+               (.setConnectTimeout 30000)
+               (.setReadTimeout 30000)
+               (.setRequestProperty "Authorization" (str "Bearer " public-key))
+               (.setRequestProperty "Content-Type" "application/json")
+               (.setDoOutput true))]
+    (when secret-key
+      (.setRequestProperty conn "X-Timestamp" timestamp)
+      (.setRequestProperty conn "X-Signature" (make-signature secret-key timestamp "POST" endpoint body)))
+    (with-open [os (.getOutputStream conn)] (.write os (.getBytes ^String body "UTF-8")))
+    (let [code (.getResponseCode conn)
+          stream (if (< 199 code 300) (.getInputStream conn) (.getErrorStream conn))]
+      [code (if stream (slurp stream :encoding "UTF-8") "")])))
+
+(defn- fmt-expiry
+  "valid_through (ms since epoch, string) -> [ISO-8601 UTC, \"<d>d <h>h <m>m\"]"
+  [vt]
+  (if-let [ms (when vt (try (Long/parseLong vt) (catch Exception _ nil)))]
+    (let [secs (quot ms 1000)
+          left (- secs (quot (System/currentTimeMillis) 1000))]
+      [(.format (.withZone (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd'T'HH:mm:ss'Z'")
+                           java.time.ZoneOffset/UTC)
+                (java.time.Instant/ofEpochSecond secs))
+       (if (<= left 0) "expired"
+           (str (quot left 86400) "d " (quot (mod left 86400) 3600) "h " (quot (mod left 3600) 60) "m"))])
+    ["N/A" "N/A"]))
+
 (defn validate-key [api-key extend?]
-  (let [response (curl-post api-key "/keys/validate" "{}")
-        status (extract-field "status" response)
-        public-key (extract-field "public_key" response)
-        tier (extract-field "tier" response)
-        valid-through (extract-field "valid_through_datetime" response)
-        valid-for (extract-field "valid_for_human" response)
-        rate-limit (extract-field "rate_per_minute" response)
-        burst (extract-field "burst" response)
-        concurrency (extract-field "concurrency" response)
-        expired-at (extract-field "expired_at_datetime" response)]
-    (cond
-      (= status "valid")
-      (do
-        (println (str green "Valid" reset "\n"))
-        (when public-key (println (str "Public Key:          " public-key)))
-        (when tier (println (str "Tier:                " tier)))
-        (println "Status:              valid")
-        (when valid-through (println (str "Expires:             " valid-through)))
-        (when valid-for (println (str "Time Remaining:      " valid-for)))
-        (when rate-limit (println (str "Rate Limit:          " rate-limit "/min")))
-        (when burst (println (str "Burst:               " burst)))
-        (when concurrency (println (str "Concurrency:         " concurrency)))
-        (when extend?
-          (let [url (str portal-base "/keys/extend?pk=" public-key)]
-            (println (str blue "Opening browser to extend key..." reset))
-            (sh "xdg-open" url))))
-
-      (= status "expired")
-      (do
-        (println (str red "Expired" reset "\n"))
-        (when public-key (println (str "Public Key:          " public-key)))
-        (when tier (println (str "Tier:                " tier)))
-        (when expired-at (println (str "Expired:             " expired-at)))
-        (println (str "\n" yellow "To renew:" reset " Visit " portal-base "/keys/extend"))
-        (when extend?
-          (let [url (str portal-base "/keys/extend?pk=" public-key)]
-            (println (str blue "Opening browser..." reset))
-            (sh "xdg-open" url))))
-
-      :else
-      (do
-        (println (str red "Invalid" reset))
-        (println response)))))
+  (let [[public-key secret-key] (get-api-keys)]
+    (if extend?
+      (let [url (str portal-base "/keys/extend?pk=" public-key)]
+        (println (str blue "Opening browser to extend key..." reset))
+        (sh "xdg-open" url))
+      (let [[code response] (try (signed-post-http public-key secret-key "/keys/validate" "")
+                                 (catch java.io.IOException e
+                                   (binding [*out* *err*] (println (str red "Error: " (.getMessage e) reset)))
+                                   (System/exit 1)))
+            [state reason]
+            (cond
+              (= code 200) (let [st (or (extract-field "status" response)
+                                        (if (re-find #"\"valid\"\s*:\s*true" response) "active" "invalid"))]
+                             [st (str "status " st)])
+              (= code 401) (let [r (or (extract-field "error" response) "unauthorized")]
+                             [(cond (#{":expired" "expired"} r) "expired"
+                                    (#{":suspended" "suspended"} r) "suspended"
+                                    :else "invalid") r])
+              :else (do (binding [*out* *err*]
+                          (println (str red "Error: HTTP " code
+                                        (when-let [m (or (extract-field "error" response) (extract-field "message" response))] (str " " m))
+                                        reset)))
+                        (System/exit 4)))]
+        (case state
+          "active"
+          (let [[expires remaining] (fmt-expiry (extract-field "valid_through" response))]
+            (println (str green "Valid" reset))
+            (println (str "Public Key: " public-key))
+            (println (str "Tier: " (or (extract-field "tier" response) "N/A")))
+            (println (str "Status: " (or (extract-field "status" response) "N/A")))
+            (println (str "Expires: " expires))
+            (println (str "Time Remaining: " remaining)))
+          "expired"
+          (do (println (str red "Expired" reset))
+              (println (str "Public Key: " public-key))
+              (println (str yellow "To renew: Visit " portal-base "/keys/extend" reset))
+              (System/exit 3))
+          "suspended"
+          (do (println (str red "Suspended" reset))
+              (println (str "Public Key: " public-key))
+              (System/exit 3))
+          (do (println (str red "Invalid" reset))
+              (println (str "Public Key: " public-key))
+              (println (str "Reason: " reason))
+              (System/exit 3)))))))
 
 (defn key-command [extend?]
   (let [api-key (get-api-key)]

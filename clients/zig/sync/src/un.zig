@@ -1051,6 +1051,101 @@ fn postRotateSecret(allocator: std.mem.Allocator, public_key: []const u8, secret
     return try execCurlWithStatus(allocator, "POST", "/keys/self/rotate-secret", "{}", public_key, secret_key, "");
 }
 
+// JSON number for key ("key": 123), tolerating whitespace; null when absent.
+fn jsonNumberField(json: []const u8, key: []const u8) ?i64 {
+    var buf: [128]u8 = undefined;
+    const needle = std.fmt.bufPrint(&buf, "\"{s}\"", .{key}) catch return null;
+    var from: usize = 0;
+    while (mem.indexOfPos(u8, json, from, needle)) |p| {
+        from = p + 1;
+        var q = p + needle.len;
+        while (q < json.len and std.ascii.isWhitespace(json[q])) q += 1;
+        if (q >= json.len or json[q] != ':') continue;
+        q += 1;
+        while (q < json.len and std.ascii.isWhitespace(json[q])) q += 1;
+        var e = q;
+        if (e < json.len and json[e] == '-') e += 1;
+        while (e < json.len and std.ascii.isDigit(json[e])) e += 1;
+        return std.fmt.parseInt(i64, json[q..e], 10) catch null;
+    }
+    return null;
+}
+
+/// un key: POST /keys/validate, display per CLI_SPEC.md "`un key` output".
+/// The payload carries no public key: print the one we signed with.
+fn cmdKeyValidate(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8) !u8 {
+    const stdout = std.io.getStdOut().writer();
+    const res = try execCurlWithStatus(allocator, "POST", "/keys/validate", "", public_key, secret_key, "-H 'Content-Type: application/json'");
+    defer allocator.free(res.body);
+    const body = res.body;
+
+    var state: []const u8 = "invalid";
+    var reason_buf: [256]u8 = undefined;
+    var reason: []const u8 = "unauthorized";
+    if (res.status >= 200 and res.status < 300) {
+        if (jsonStringField(body, "status")) |st| {
+            state = st;
+        } else {
+            const v = mem.indexOf(u8, body, "\"valid\": true") != null or mem.indexOf(u8, body, "\"valid\":true") != null;
+            state = if (v) "active" else "invalid";
+        }
+        reason = std.fmt.bufPrint(&reason_buf, "status {s}", .{state}) catch "status";
+    } else if (res.status == 401) {
+        if (jsonStringField(body, "error")) |e| reason = e;
+        if (mem.eql(u8, reason, ":expired") or mem.eql(u8, reason, "expired")) {
+            state = "expired";
+        } else if (mem.eql(u8, reason, ":suspended") or mem.eql(u8, reason, "suspended")) {
+            state = "suspended";
+        } else {
+            state = "invalid";
+        }
+    } else if (res.status == 0) {
+        std.debug.print("{s}Error: request to {s}/keys/validate failed{s}\n", .{ RED, apiBase(), RESET });
+        return 1;
+    } else {
+        const msg = jsonStringField(body, "error") orelse (jsonStringField(body, "message") orelse body);
+        std.debug.print("{s}Error: HTTP {d} {s}{s}\n", .{ RED, res.status, msg, RESET });
+        return 4;
+    }
+
+    if (mem.eql(u8, state, "expired")) {
+        try stdout.print("{s}Expired{s}\nPublic Key: {s}\n{s}To renew: Visit {s}/keys/extend{s}\n", .{ RED, RESET, public_key, YELLOW, PORTAL_BASE, RESET });
+        return 3;
+    } else if (mem.eql(u8, state, "suspended")) {
+        try stdout.print("{s}Suspended{s}\nPublic Key: {s}\n", .{ RED, RESET, public_key });
+        return 3;
+    } else if (!mem.eql(u8, state, "active")) {
+        try stdout.print("{s}Invalid{s}\nPublic Key: {s}\nReason: {s}\n", .{ RED, RESET, public_key, reason });
+        return 3;
+    }
+
+    var tier_buf: [32]u8 = undefined;
+    const tier: []const u8 = if (jsonNumberField(body, "tier")) |t| (std.fmt.bufPrint(&tier_buf, "{d}", .{t}) catch "N/A") else "N/A";
+    const status = jsonStringField(body, "status") orelse "N/A";
+    var exp_buf: [32]u8 = undefined;
+    var rem_buf: [64]u8 = undefined;
+    var expires: []const u8 = "N/A";
+    var remaining: []const u8 = "N/A";
+    if (jsonNumberField(body, "valid_through")) |ms| {
+        const secs: i64 = @divFloor(ms, 1000);
+        const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(secs, 0)) };
+        const yd = es.getEpochDay().calculateYearDay();
+        const md = yd.calculateMonthDay();
+        const ds = es.getDaySeconds();
+        expires = std.fmt.bufPrint(&exp_buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+            yd.year, md.month.numeric(), md.day_index + 1, ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
+        }) catch "N/A";
+        const left: i64 = secs - std.time.timestamp();
+        if (left <= 0) {
+            remaining = "expired";
+        } else {
+            remaining = std.fmt.bufPrint(&rem_buf, "{d}d {d}h {d}m", .{ @divFloor(left, 86400), @divFloor(@mod(left, 86400), 3600), @divFloor(@mod(left, 3600), 60) }) catch "N/A";
+        }
+    }
+    try stdout.print("{s}Valid{s}\nPublic Key: {s}\nTier: {s}\nStatus: {s}\nExpires: {s}\nTime Remaining: {s}\n", .{ GREEN, RESET, public_key, tier, status, expires, remaining });
+    return 0;
+}
+
 /// un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
 fn cmdKeyRotate(allocator: std.mem.Allocator, public_key: []const u8, secret_key: []const u8, otp_flag: ?[]const u8, arg_pk: []const u8, arg_sk: []const u8, account_index: i64) !u8 {
     const stdout = std.io.getStdOut().writer();
@@ -1950,157 +2045,15 @@ pub fn main() !u8 {
         }
 
         if (extend) {
-            // First validate to get the public_key
-            const json_file = "/tmp/unsandbox_key_validate.json";
-            const auth_headers = try buildAuthCmd(allocator, "POST", "/keys/validate", "", public_key, secret_key);
-            defer allocator.free(auth_headers);
-            const cmd_validate = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ apiBase(), auth_headers, json_file });
-            defer allocator.free(cmd_validate);
-            _ = runShell(cmd_validate);
-
-            // Read the JSON response to extract public_key
-            const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
-                std.debug.print("\x1b[31mError reading validation response: {}\x1b[0m\n", .{err});
-                std.fs.cwd().deleteFile(json_file) catch {};
-                return 1;
-            };
-            defer allocator.free(json_content);
-            std.fs.cwd().deleteFile(json_file) catch {};
-
-            // Check for clock drift errors
-            if (mem.indexOf(u8, json_content, "timestamp") != null and
-                (mem.indexOf(u8, json_content, "401") != null or
-                 mem.indexOf(u8, json_content, "expired") != null or
-                 mem.indexOf(u8, json_content, "invalid") != null))
-            {
-                std.debug.print("\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m\n", .{});
-                std.debug.print("\x1b[33mYour computer's clock may have drifted.\x1b[0m\n", .{});
-                std.debug.print("\x1b[33mCheck your system time and sync with NTP if needed:\x1b[0m\n", .{});
-                std.debug.print("\x1b[33m  Linux:   sudo ntpdate -s time.nist.gov\x1b[0m\n", .{});
-                std.debug.print("\x1b[33m  macOS:   sudo sntp -sS time.apple.com\x1b[0m\n", .{});
-                std.debug.print("\x1b[33m  Windows: w32tm /resync\x1b[0m\n", .{});
-                return 1;
-            }
-
-            // Simple JSON parsing to find public_key (looking for "public_key":"value")
-            const pk_prefix = "\"public_key\":\"";
-            var public_key_value: ?[]const u8 = null;
-            if (mem.indexOf(u8, json_content, pk_prefix)) |start_idx| {
-                const value_start = start_idx + pk_prefix.len;
-                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
-                    public_key_value = json_content[value_start..end_idx];
-                }
-            }
-
-            if (public_key_value) |pk| {
-                const url = try std.fmt.allocPrint(allocator, "{s}/keys/extend?pk={s}", .{ PORTAL_BASE, pk });
-                defer allocator.free(url);
-                std.debug.print("\x1b[33mOpening browser to extend key...\x1b[0m\n", .{});
-                const open_cmd = try std.fmt.allocPrint(allocator, "xdg-open '{s}' 2>/dev/null || open '{s}' 2>/dev/null || start '{s}' 2>/dev/null", .{ url, url, url });
-                defer allocator.free(open_cmd);
-                _ = runShell(open_cmd);
-            } else {
-                std.debug.print("\x1b[31mError: Could not extract public_key from response\x1b[0m\n", .{});
-                return 1;
-            }
-        } else {
-            // Regular validation
-            const json_file = "/tmp/unsandbox_key_validate.json";
-            const auth_headers = try buildAuthCmd(allocator, "POST", "/keys/validate", "", public_key, secret_key);
-            defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/keys/validate' -H 'Content-Type: application/json' {s} -o {s}", .{ apiBase(), auth_headers, json_file });
-            defer allocator.free(cmd);
-            _ = runShell(cmd);
-
-            // Read and parse the response
-            const json_content = fs.cwd().readFileAlloc(allocator, json_file, 1024 * 1024) catch |err| {
-                std.debug.print("\x1b[31mError reading validation response: {}\x1b[0m\n", .{err});
-                std.fs.cwd().deleteFile(json_file) catch {};
-                return 1;
-            };
-            defer allocator.free(json_content);
-            std.fs.cwd().deleteFile(json_file) catch {};
-
-            // Check for clock drift errors
-            if (mem.indexOf(u8, json_content, "timestamp") != null and
-                (mem.indexOf(u8, json_content, "401") != null or
-                 mem.indexOf(u8, json_content, "expired") != null or
-                 mem.indexOf(u8, json_content, "invalid") != null))
-            {
-                std.debug.print("\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\x1b[0m\n", .{});
-                std.debug.print("\x1b[33mYour computer's clock may have drifted.\x1b[0m\n", .{});
-                std.debug.print("\x1b[33mCheck your system time and sync with NTP if needed:\x1b[0m\n", .{});
-                std.debug.print("\x1b[33m  Linux:   sudo ntpdate -s time.nist.gov\x1b[0m\n", .{});
-                std.debug.print("\x1b[33m  macOS:   sudo sntp -sS time.apple.com\x1b[0m\n", .{});
-                std.debug.print("\x1b[33m  Windows: w32tm /resync\x1b[0m\n", .{});
-                return 1;
-            }
-
-            // Simple JSON parsing (looking for specific fields)
-            const status_prefix = "\"status\":\"";
-            var status: ?[]const u8 = null;
-            if (mem.indexOf(u8, json_content, status_prefix)) |start_idx| {
-                const value_start = start_idx + status_prefix.len;
-                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
-                    status = json_content[value_start..end_idx];
-                }
-            }
-
-            if (status == null) {
-                std.debug.print("\x1b[31mError: Invalid response from server\x1b[0m\n", .{});
-                return 1;
-            }
-
-            // Extract other fields
-            var pub_key: ?[]const u8 = null;
-            var tier: ?[]const u8 = null;
-            var expires_at: ?[]const u8 = null;
-
-            const pk_prefix = "\"public_key\":\"";
-            if (mem.indexOf(u8, json_content, pk_prefix)) |start_idx| {
-                const value_start = start_idx + pk_prefix.len;
-                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
-                    pub_key = json_content[value_start..end_idx];
-                }
-            }
-
-            const tier_prefix = "\"tier\":\"";
-            if (mem.indexOf(u8, json_content, tier_prefix)) |start_idx| {
-                const value_start = start_idx + tier_prefix.len;
-                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
-                    tier = json_content[value_start..end_idx];
-                }
-            }
-
-            const expires_prefix = "\"expires_at\":\"";
-            if (mem.indexOf(u8, json_content, expires_prefix)) |start_idx| {
-                const value_start = start_idx + expires_prefix.len;
-                if (mem.indexOfPos(u8, json_content, value_start, "\"")) |end_idx| {
-                    expires_at = json_content[value_start..end_idx];
-                }
-            }
-
-            // Display results based on status
-            if (status) |s| {
-                if (mem.eql(u8, s, "valid")) {
-                    std.debug.print("\x1b[32mValid\x1b[0m\n", .{});
-                    if (pub_key) |pk| std.debug.print("Public Key: {s}\n", .{pk});
-                    if (tier) |t| std.debug.print("Tier: {s}\n", .{t});
-                    if (expires_at) |exp| std.debug.print("Expires: {s}\n", .{exp});
-                } else if (mem.eql(u8, s, "expired")) {
-                    std.debug.print("\x1b[31mExpired\x1b[0m\n", .{});
-                    if (pub_key) |pk| std.debug.print("Public Key: {s}\n", .{pk});
-                    if (tier) |t| std.debug.print("Tier: {s}\n", .{t});
-                    if (expires_at) |exp| std.debug.print("Expired: {s}\n", .{exp});
-                    std.debug.print("\x1b[33mTo renew: Visit {s}/keys/extend\x1b[0m\n", .{PORTAL_BASE});
-                } else if (mem.eql(u8, s, "invalid")) {
-                    std.debug.print("\x1b[31mInvalid\x1b[0m\n", .{});
-                } else {
-                    std.debug.print("Status: {s}\n", .{s});
-                }
-            }
+            const url = try std.fmt.allocPrint(allocator, "{s}/keys/extend?pk={s}", .{ PORTAL_BASE, public_key });
+            defer allocator.free(url);
+            std.debug.print("\x1b[33mOpening browser to extend key...\x1b[0m\n", .{});
+            const open_cmd = try std.fmt.allocPrint(allocator, "xdg-open '{s}' 2>/dev/null || open '{s}' 2>/dev/null || start '{s}' 2>/dev/null", .{ url, url, url });
+            defer allocator.free(open_cmd);
+            _ = runShell(open_cmd);
+            return 0;
         }
-        return 0;
+        return try cmdKeyValidate(allocator, public_key, secret_key);
     }
 
     // Execute mode - find source file (skip known flags and their values)

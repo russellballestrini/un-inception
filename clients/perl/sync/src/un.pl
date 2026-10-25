@@ -730,8 +730,8 @@ sub validate_keys {
     }
 
     my $res = $ua->request($req);
-    return decode_json($res->content) if $res->content;
-    return undef;
+    my $data = eval { $res->content ? decode_json($res->content) : undef };
+    return wantarray ? ($data, $res->code, $pk, $res) : $data;
 }
 
 # The accounts.csv our credentials came from, or undef (arguments / env vars).
@@ -1459,32 +1459,66 @@ sub cmd_key_rotate {
 sub cmd_key {
     my ($options) = @_;
     return cmd_key_rotate($options) if $options->{rotate};
-    my $result = Un::validate_keys();
 
     if ($options->{extend}) {
-        my $pk = $result->{public_key};
-        if ($pk) {
-            my $url = "$Un::PORTAL_BASE/keys/extend?pk=$pk";
-            print "${BLUE}Opening browser to extend key...${RESET}\n";
-            system("xdg-open '$url' 2>/dev/null || open '$url' 2>/dev/null &");
-        }
+        my ($pk) = Un::get_credentials();
+        my $url = "$Un::PORTAL_BASE/keys/extend?pk=$pk";
+        print "${BLUE}Opening browser to extend key...${RESET}\n";
+        system("xdg-open '$url' 2>/dev/null || open '$url' 2>/dev/null &");
         return;
     }
 
-    if ($result->{expired}) {
-        print "${RED}Expired${RESET}\n";
-        print "Public Key: " . ($result->{public_key} // 'N/A') . "\n";
-        print "Tier: " . ($result->{tier} // 'N/A') . "\n";
-        print "${YELLOW}To renew: Visit $Un::PORTAL_BASE/keys/extend${RESET}\n";
+    # `un key` output per CLI_SPEC.md: no public key in the payload, so print
+    # the one we signed with; expiry comes from valid_through (ms).
+    my ($result, $code, $pk, $res) = Un::validate_keys();
+    $result = {} unless ref $result eq 'HASH';
+    if (!defined $code || ($res->header('Client-Warning') // '') eq 'Internal response') {
+        print STDERR "${RED}Error: " . ($res ? $res->status_line : 'no response') . "${RESET}\n";
         exit 1;
     }
+    my ($state, $reason);
+    if ($code == 200) {
+        $state = $result->{status} // ($result->{valid} ? 'active' : 'invalid');
+        $reason = "status $state";
+    } elsif ($code == 401) {
+        $reason = $result->{error} // 'unauthorized';
+        $state = $reason =~ /^:?expired$/ ? 'expired' : $reason =~ /^:?suspended$/ ? 'suspended' : 'invalid';
+    } else {
+        print STDERR "${RED}Error: HTTP $code " . ($result->{error} // $result->{message} // '') . "${RESET}\n";
+        exit 4;
+    }
 
+    if ($state ne 'active') {
+        if ($state eq 'expired') {
+            print "${RED}Expired${RESET}\n";
+            print "Public Key: $pk\n";
+            print "${YELLOW}To renew: Visit $Un::PORTAL_BASE/keys/extend${RESET}\n";
+        } elsif ($state eq 'suspended') {
+            print "${RED}Suspended${RESET}\n";
+            print "Public Key: $pk\n";
+        } else {
+            print "${RED}Invalid${RESET}\n";
+            print "Public Key: $pk\n";
+            print "Reason: $reason\n";
+        }
+        exit 3;
+    }
+
+    my ($expires, $remaining) = ('N/A', 'N/A');
+    if (defined $result->{valid_through} && $result->{valid_through} =~ /^\d+(\.\d+)?$/) {
+        my $secs = int($result->{valid_through} / 1000);
+        my @t = gmtime($secs);
+        $expires = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ', $t[5] + 1900, $t[4] + 1, $t[3], $t[2], $t[1], $t[0]);
+        my $left = $secs - int(CORE::time());
+        $remaining = $left <= 0 ? 'expired'
+            : sprintf('%dd %dh %dm', int($left / 86400), int(($left % 86400) / 3600), int(($left % 3600) / 60));
+    }
     print "${GREEN}Valid${RESET}\n";
-    print "Public Key: " . ($result->{public_key} // 'N/A') . "\n";
+    print "Public Key: $pk\n";
     print "Tier: " . ($result->{tier} // 'N/A') . "\n";
     print "Status: " . ($result->{status} // 'N/A') . "\n";
-    print "Expires: " . ($result->{expires_at} // 'N/A') . "\n";
-    print "Time Remaining: " . ($result->{time_remaining} // 'N/A') . "\n";
+    print "Expires: $expires\n";
+    print "Time Remaining: $remaining\n";
 }
 
 sub cmd_languages {

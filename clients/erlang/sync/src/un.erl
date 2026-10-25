@@ -1412,63 +1412,110 @@ key_command(Args) ->
     end.
 
 key_command_validate(Args) ->
-    ApiKey = get_api_key(),
+    {PublicKey, SecretKey} = get_api_keys(),
     case has_extend_flag(Args) of
         true ->
-            validate_and_extend_key(ApiKey);
+            open_extend_page(PublicKey);
         false ->
-            validate_key(ApiKey)
+            {Code, Resp} = key_validate_post(PublicKey, SecretKey),
+            display_key_result(Code, Resp, PublicKey)
     end.
 
-validate_key(ApiKey) ->
-    Response = curl_post_data(ApiKey, "/keys/validate", "{}"),
-    parse_and_display_key_status(Response, false).
+%% POST /keys/validate, empty body, signed; headers go through a 0600 file.
+key_validate_post(PublicKey, SecretKey) ->
+    Path = "/keys/validate",
+    Timestamp = integer_to_list(erlang:system_time(second)),
+    SigLines = case SecretKey of
+        false -> [];
+        _ -> ["X-Timestamp: " ++ Timestamp,
+              "X-Signature: " ++ make_signature(SecretKey, Timestamp, "POST", Path, "")]
+    end,
+    HeaderLines = ["Authorization: Bearer " ++ PublicKey,
+                   "Content-Type: application/json"] ++ SigLines,
+    HdrFile = "/tmp/un_erl_key_" ++ os:getpid() ++ "_" ++ integer_to_list(rand:uniform(999999999)) ++ ".hdr",
+    ok = file:write_file(HdrFile, <<>>, [exclusive]),
+    ok = file:change_mode(HdrFile, 8#600),
+    ok = file:write_file(HdrFile, string:join(HeaderLines, "\n") ++ "\n"),
+    Cmd = "curl -s -X POST -w '\\n%{http_code}' -H @" ++ HdrFile ++
+          " '" ++ ?API_BASE ++ Path ++ "'",
+    Output = os:cmd(Cmd),
+    file:delete(HdrFile),
+    case lists:reverse(string:split(Output, "\n", all)) of
+        [StatusStr | BodyRev] ->
+            Code = try list_to_integer(string:trim(StatusStr)) catch _:_ -> 0 end,
+            {Code, string:join(lists:reverse(BodyRev), "\n")};
+        _ -> {0, Output}
+    end.
 
-validate_and_extend_key(ApiKey) ->
-    Response = curl_post_data(ApiKey, "/keys/validate", "{}"),
-    parse_and_display_key_status(Response, true).
+json_int_field(Json, Field) ->
+    case re:run(Json, "\"" ++ Field ++ "\"\\s*:\\s*(-?[0-9]+)", [{capture, [1], list}]) of
+        {match, [V]} -> list_to_integer(V);
+        nomatch -> undefined
+    end.
 
-parse_and_display_key_status(Response, ShouldExtend) ->
-    %% Parse JSON response (simple extraction for fields we need)
-    Status = extract_json_field(Response, "status"),
-    PublicKey = extract_json_field(Response, "public_key"),
-    Tier = extract_json_field(Response, "tier"),
-    ExpiresAt = extract_json_field(Response, "expires_at"),
-    TimeRemaining = extract_json_field(Response, "time_remaining"),
-    RateLimit = extract_json_field(Response, "rate_limit"),
-    Burst = extract_json_field(Response, "burst"),
-    Concurrency = extract_json_field(Response, "concurrency"),
-
-    case Status of
-        "valid" ->
+display_key_result(Code, Resp, PublicKey) ->
+    {State, Reason} =
+        case Code of
+            200 ->
+                St = case json_string_field(Resp, "status") of
+                    "" -> case string:str(Resp, "\"valid\":true") of 0 -> "invalid"; _ -> "active" end;
+                    S -> S
+                end,
+                {St, "status " ++ St};
+            401 ->
+                Err = case json_string_field(Resp, "error") of "" -> "unauthorized"; E -> E end,
+                St = case Err of
+                    ":expired" -> "expired"; "expired" -> "expired";
+                    ":suspended" -> "suspended"; "suspended" -> "suspended";
+                    _ -> "invalid"
+                end,
+                {St, Err};
+            0 ->
+                io:format(standard_error, "\033[31mError: request to ~s/keys/validate failed\033[0m~n", [?API_BASE]),
+                halt(1);
+            _ ->
+                Msg = case json_string_field(Resp, "error") of "" -> json_string_field(Resp, "message"); M -> M end,
+                io:format(standard_error, "\033[31mError: HTTP ~p ~s\033[0m~n", [Code, Msg]),
+                halt(4)
+        end,
+    case State of
+        "active" ->
+            Tier = case json_int_field(Resp, "tier") of undefined -> "N/A"; T -> integer_to_list(T) end,
+            Status = case json_string_field(Resp, "status") of "" -> "N/A"; S2 -> S2 end,
+            {Expires, Remaining} =
+                case json_int_field(Resp, "valid_through") of
+                    undefined -> {"N/A", "N/A"};
+                    Vt ->
+                        Secs = Vt div 1000,
+                        Exp = calendar:system_time_to_rfc3339(Secs, [{offset, "Z"}, {unit, second}]),
+                        Left = Secs - erlang:system_time(second),
+                        Rem = if
+                            Left =< 0 -> "expired";
+                            true -> lists:flatten(io_lib:format("~bd ~bh ~bm",
+                                        [Left div 86400, (Left rem 86400) div 3600, (Left rem 3600) div 60]))
+                        end,
+                        {Exp, Rem}
+                end,
             io:format("\033[32mValid\033[0m~n"),
             io:format("Public Key: ~s~n", [PublicKey]),
             io:format("Tier: ~s~n", [Tier]),
             io:format("Status: ~s~n", [Status]),
-            io:format("Expires: ~s~n", [ExpiresAt]),
-            if TimeRemaining =/= "" -> io:format("Time Remaining: ~s~n", [TimeRemaining]); true -> ok end,
-            if RateLimit =/= "" -> io:format("Rate Limit: ~s~n", [RateLimit]); true -> ok end,
-            if Burst =/= "" -> io:format("Burst: ~s~n", [Burst]); true -> ok end,
-            if Concurrency =/= "" -> io:format("Concurrency: ~s~n", [Concurrency]); true -> ok end,
-            if ShouldExtend ->
-                open_extend_page(PublicKey);
-            true -> ok
-            end;
+            io:format("Expires: ~s~n", [Expires]),
+            io:format("Time Remaining: ~s~n", [Remaining]);
         "expired" ->
             io:format("\033[31mExpired\033[0m~n"),
             io:format("Public Key: ~s~n", [PublicKey]),
-            io:format("Tier: ~s~n", [Tier]),
-            io:format("Expired: ~s~n", [ExpiresAt]),
-            io:format("\033[33mTo renew: Visit https://unsandbox.com/keys/extend\033[0m~n"),
-            if ShouldExtend ->
-                open_extend_page(PublicKey);
-            true -> ok
-            end;
-        "invalid" ->
-            io:format("\033[31mInvalid\033[0m~n"),
-            io:format("The API key is not valid.~n");
+            io:format("\033[33mTo renew: Visit ~s/keys/extend\033[0m~n", [?PORTAL_BASE]),
+            halt(3);
+        "suspended" ->
+            io:format("\033[31mSuspended\033[0m~n"),
+            io:format("Public Key: ~s~n", [PublicKey]),
+            halt(3);
         _ ->
-            io:format("~s~n", [Response])
+            io:format("\033[31mInvalid\033[0m~n"),
+            io:format("Public Key: ~s~n", [PublicKey]),
+            io:format("Reason: ~s~n", [Reason]),
+            halt(3)
     end.
 
 open_extend_page(PublicKey) ->

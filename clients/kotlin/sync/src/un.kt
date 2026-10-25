@@ -657,21 +657,11 @@ fun cmdImage(args: Args) {
 }
 
 fun cmdKey(args: Args) {
-    val (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
-
-    val result = validateKey(publicKey, secretKey)
-    val valid = result["valid"] as? Boolean ?: false
-    val expired = result["expired"] as? Boolean ?: false
-    val pubKey = result["public_key"] as? String ?: ""
-    val tier = result["tier"] as? String ?: ""
-    val expiresAt = result["expires_at"] as? String ?: ""
+    val (publicKeyOpt, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
+    val publicKey = publicKeyOpt ?: ""
 
     if (args.keyExtend) {
-        if (pubKey.isEmpty()) {
-            System.err.println("${RED}Error: Could not retrieve public key${RESET}")
-            exitProcess(1)
-        }
-        val extendUrl = "$PORTAL_BASE/keys/extend?pk=$pubKey"
+        val extendUrl = "$PORTAL_BASE/keys/extend?pk=$publicKey"
         println("${YELLOW}Opening browser to extend key...${RESET}")
         println(extendUrl)
 
@@ -691,21 +681,82 @@ fun cmdKey(args: Args) {
         return
     }
 
-    if (expired) {
-        println("${RED}Status: Expired${RESET}")
-        println("Public Key: $pubKey")
-        println("Tier: $tier")
-        println("Expired: $expiresAt")
-        println("${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}")
-    } else if (valid) {
-        println("${GREEN}Status: Valid${RESET}")
-        println("Public Key: $pubKey")
-        println("Tier: $tier")
-        println("Expires: $expiresAt")
-    } else {
-        println("${RED}Status: Invalid${RESET}")
+    val (code, result) = try {
+        signedPost(publicKey, secretKey, "/keys/validate", "", null, null)
+    } catch (e: java.io.IOException) {
+        System.err.println("${RED}Error: ${e.message}${RESET}")
         exitProcess(1)
     }
+    val state: String
+    val reason: String
+    when (code) {
+        200 -> {
+            val st = result["status"]
+            state = if (st is String && st != "null") st else if (result["valid"] == true) "active" else "invalid"
+            reason = "status $state"
+        }
+        401 -> {
+            val err = result["error"]
+            reason = if (err is String && err != "null") err else "unauthorized"
+            state = when (reason) {
+                ":expired", "expired" -> "expired"
+                ":suspended", "suspended" -> "suspended"
+                else -> "invalid"
+            }
+        }
+        else -> {
+            val msg = (result["error"] ?: result["message"])?.toString()
+            System.err.println("${RED}Error: HTTP $code${if (msg != null) " $msg" else ""}${RESET}")
+            exitProcess(4)
+        }
+    }
+
+    when (state) {
+        "active" -> {}
+        "expired" -> {
+            println("${RED}Expired${RESET}")
+            println("Public Key: $publicKey")
+            println("${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}")
+            exitProcess(3)
+        }
+        "suspended" -> {
+            println("${RED}Suspended${RESET}")
+            println("Public Key: $publicKey")
+            exitProcess(3)
+        }
+        else -> {
+            println("${RED}Invalid${RESET}")
+            println("Public Key: $publicKey")
+            println("Reason: $reason")
+            exitProcess(3)
+        }
+    }
+
+    val tierV = result["tier"]
+    val tier = when (tierV) {
+        null, "null" -> "N/A"
+        is Number -> tierV.toLong().toString()
+        else -> tierV.toString()
+    }
+    val statusV = result["status"]
+    val status = if (statusV == null || statusV == "null") "N/A" else statusV.toString()
+    var expires = "N/A"
+    var remaining = "N/A"
+    val vt = result["valid_through"]
+    if (vt is Number) {
+        val secs = vt.toLong() / 1000
+        expires = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'")
+            .withZone(java.time.ZoneOffset.UTC).format(java.time.Instant.ofEpochSecond(secs))
+        val left = secs - System.currentTimeMillis() / 1000
+        remaining = if (left <= 0) "expired" else "${left / 86400}d ${left % 86400 / 3600}h ${left % 3600 / 60}m"
+    }
+
+    println("${GREEN}Valid${RESET}")
+    println("Public Key: $publicKey")
+    println("Tier: $tier")
+    println("Status: $status")
+    println("Expires: $expires")
+    println("Time Remaining: $remaining")
 }
 
 // The accounts.csv the CLI's credentials came from, or null (flags / env vars).
@@ -755,9 +806,11 @@ fun rewriteAccountsCsv(path: File, publicKey: String, newSecret: String): Boolea
 }
 
 // POST /keys/self/rotate-secret with body {}; returns (status, json).
-fun rotatePost(publicKey: String, secretKey: String, otp: String?, challenge: String?): Pair<Int, Map<String, Any>> {
-    val path = "/keys/self/rotate-secret"
-    val body = "{}"
+fun rotatePost(publicKey: String, secretKey: String, otp: String?, challenge: String?): Pair<Int, Map<String, Any>> =
+    signedPost(publicKey, secretKey, "/keys/self/rotate-secret", "{}", otp, challenge)
+
+// Signed POST; returns (status, json map) for any status (non-2xx bodies included).
+fun signedPost(publicKey: String, secretKey: String, path: String, body: String, otp: String?, challenge: String?): Pair<Int, Map<String, Any>> {
     val timestamp = System.currentTimeMillis() / 1000
     val connection = URL(API_BASE + path).openConnection() as HttpURLConnection
     connection.requestMethod = "POST"
@@ -887,7 +940,7 @@ fun validateKey(publicKey: String?, secretKey: String): Map<String, Any> {
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = method
-    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("Authorization", "Bearer $publicKey")
     connection.setRequestProperty("X-Timestamp", timestamp.toString())
     connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "application/json")
@@ -972,6 +1025,12 @@ fun getApiKeys(argsKey: String?, accountIndex: Int = -1): Pair<String?, String> 
         System.err.println("${RED}Error: UNSANDBOX_SECRET_KEY or UNSANDBOX_API_KEY not set${RESET}")
         exitProcess(1)
     }
+    // HMAC auth needs the public key as the Bearer; never fall back to
+    // sending the secret itself over the wire.
+    if (publicKey.isNullOrEmpty()) {
+        System.err.println("${RED}Error: UNSANDBOX_PUBLIC_KEY not set (HMAC signing needs the public key)${RESET}")
+        exitProcess(1)
+    }
 
     return Pair(publicKey, secretKey)
 }
@@ -1005,7 +1064,7 @@ fun apiRequest(endpoint: String, method: String, data: Map<String, Any>?, public
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = method
-    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("Authorization", "Bearer $publicKey")
     connection.setRequestProperty("X-Timestamp", timestamp.toString())
     connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "application/json")
@@ -1056,7 +1115,7 @@ fun apiRequestWithSudo(endpoint: String, method: String, data: Map<String, Any>?
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = method
-    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("Authorization", "Bearer $publicKey")
     connection.setRequestProperty("X-Timestamp", timestamp.toString())
     connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "application/json")
@@ -1114,7 +1173,7 @@ fun apiRequestPatch(endpoint: String, data: Map<String, Any>, publicKey: String?
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = "PATCH"
-    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("Authorization", "Bearer $publicKey")
     connection.setRequestProperty("X-Timestamp", timestamp.toString())
     connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "application/json")
@@ -1151,7 +1210,7 @@ fun apiRequestText(endpoint: String, method: String, body: String, publicKey: St
     val connection = url.openConnection() as HttpURLConnection
 
     connection.requestMethod = method
-    connection.setRequestProperty("Authorization", "Bearer ${publicKey ?: secretKey}")
+    connection.setRequestProperty("Authorization", "Bearer $publicKey")
     connection.setRequestProperty("X-Timestamp", timestamp.toString())
     connection.setRequestProperty("X-Signature", signature)
     connection.setRequestProperty("Content-Type", "text/plain")
@@ -1402,7 +1461,7 @@ fun parseJsonValue(json: String, start: Int): Pair<Any, Int> {
             val numStart = i
             while (i < json.length && (json[i].isDigit() || json[i] == '.' || json[i] == '-')) i++
             val num = json.substring(numStart, i)
-            Pair(if (num.contains(".")) num.toDouble() else num.toInt(), i)
+            Pair(if (num.contains(".")) num.toDouble() else (num.toIntOrNull() ?: num.toLongOrNull() ?: num.toDouble()), i)
         }
         json.startsWith("true", i) -> Pair(true, i + 4)
         json.startsWith("false", i) -> Pair(false, i + 5)

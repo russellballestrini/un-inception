@@ -3022,23 +3022,69 @@ module Un
 
       return cli_key_rotate(options) if options[:rotate]
 
-      creds = { public_key: options[:public_key], secret_key: options[:secret_key] }
-
-      begin
-        result = validate_keys(**creds)
-        puts "Valid: #{result['valid']}"
-        puts "Account: #{result['account'] || result['account_id']}" if result['account'] || result['account_id']
-        puts "Email: #{result['email']}" if result['email']
-        puts "Plan: #{result['plan']}" if result['plan']
-        puts "Credits: #{result['credits']}" if result['credits']
+      # `un key` output per CLI_SPEC.md: no public key in the payload, so print
+      # the one we signed with; expiry comes from valid_through (ms).
+      pk, sk = resolve_credentials(options[:public_key], options[:secret_key])
+      code = 200
+      result = begin
+        make_request('POST', '/keys/validate', pk, sk, nil)
       rescue APIError => e
-        if e.status_code == 401 || e.status_code == 403
-          puts 'Valid: false'
-          puts "Error: #{e.message}"
-          exit(EXIT_AUTH_ERROR)
+        raise if e.status_code.nil? || e.status_code.zero?
+        code = e.status_code
+        begin
+          JSON.parse(e.response_body.to_s)
+        rescue JSON::ParserError
+          {}
         end
-        raise
       end
+      result = {} unless result.is_a?(Hash)
+
+      if code == 200
+        state = result['status'] || (result['valid'] ? 'active' : 'invalid')
+        reason = "status #{state}"
+      elsif code == 401
+        reason = (result['error'] || 'unauthorized').to_s
+        state = case reason
+                when ':expired', 'expired' then 'expired'
+                when ':suspended', 'suspended' then 'suspended'
+                else 'invalid'
+                end
+      else
+        $stderr.puts "Error: HTTP #{code} #{result['error'] || result['message']}"
+        exit(EXIT_API_ERROR)
+      end
+
+      if state != 'active'
+        case state
+        when 'expired'
+          puts 'Expired'
+          puts "Public Key: #{pk}"
+          puts 'To renew: Visit https://unsandbox.com/keys/extend'
+        when 'suspended'
+          puts 'Suspended'
+          puts "Public Key: #{pk}"
+        else
+          puts 'Invalid'
+          puts "Public Key: #{pk}"
+          puts "Reason: #{reason}"
+        end
+        exit(EXIT_AUTH_ERROR)
+      end
+
+      expires = 'N/A'
+      remaining = 'N/A'
+      if result['valid_through'].is_a?(Numeric)
+        secs = (result['valid_through'] / 1000).floor
+        expires = Time.at(secs).utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+        left = secs - Time.now.to_i
+        remaining = left <= 0 ? 'expired' : "#{left / 86_400}d #{left % 86_400 / 3600}h #{left % 3600 / 60}m"
+      end
+      puts 'Valid'
+      puts "Public Key: #{pk}"
+      puts "Tier: #{result['tier'].nil? ? 'N/A' : result['tier']}"
+      puts "Status: #{result['status'] || 'N/A'}"
+      puts "Expires: #{expires}"
+      puts "Time Remaining: #{remaining}"
     end
 
     # The accounts.csv the CLI's credentials came from, or nil (flags / env vars).

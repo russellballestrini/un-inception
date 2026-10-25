@@ -801,91 +801,102 @@ let openBrowser (url: string) =
     with ex ->
         eprintfn "%sError opening browser: %s%s" red ex.Message reset
 
-let cmdKey (args: Args) =
-    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
-
-    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
-
-    let request = WebRequest.Create(apiBase + "/keys/validate") :?> HttpWebRequest
+// Signed POST; returns (status, raw JSON body) for any status (non-2xx bodies included).
+let signedPost (publicKey: string) (secretKey: string) (path: string) (body: string) (otp: string option) (challenge: string) =
+    let request = WebRequest.Create(apiBase + path) :?> HttpWebRequest
     request.Method <- "POST"
     request.ContentType <- "application/json"
+    request.Timeout <- 120000
+    let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+    use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
+    let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(sprintf "%d:POST:%s:%s" timestamp path body))
     request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
-    if not (String.IsNullOrEmpty(secretKey)) then
-        let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-        use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
-        let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(sprintf "%d:POST:/keys/validate:{}" timestamp))
-        request.Headers.Add("X-Timestamp", timestamp.ToString())
-        request.Headers.Add("X-Signature", BitConverter.ToString(hash).Replace("-", "").ToLower())
-    request.Timeout <- 30000
-    let validateBody = Encoding.UTF8.GetBytes("{}")
-    request.ContentLength <- int64 validateBody.Length
-    using (request.GetRequestStream()) (fun stream -> stream.Write(validateBody, 0, validateBody.Length))
-
+    request.Headers.Add("X-Timestamp", timestamp.ToString())
+    request.Headers.Add("X-Signature", BitConverter.ToString(hash).Replace("-", "").ToLower())
+    match otp with
+    | Some code ->
+        request.Headers.Add("X-Sudo-OTP", code)
+        request.Headers.Add("X-Sudo-Challenge", challenge)
+    | None -> ()
+    let bytes = Encoding.UTF8.GetBytes(body)
+    request.ContentLength <- int64 bytes.Length
+    using (request.GetRequestStream()) (fun stream -> stream.Write(bytes, 0, bytes.Length))
     try
         use response = request.GetResponse() :?> HttpWebResponse
         use reader = new StreamReader(response.GetResponseStream())
-        let responseText = reader.ReadToEnd()
-        let result = parseJson responseText
-
-        let resultPublicKey = match result.TryFind "public_key" with | Some v -> v.ToString() | None -> "N/A"
-        let tier = match result.TryFind "tier" with | Some v -> v.ToString() | None -> "N/A"
-        let status = match result.TryFind "status" with | Some v -> v.ToString() | None -> "N/A"
-        let expiresAt = match result.TryFind "expires_at" with | Some v -> v.ToString() | None -> "N/A"
-        let timeRemaining = match result.TryFind "time_remaining" with | Some v -> v.ToString() | None -> "N/A"
-        let rateLimit = match result.TryFind "rate_limit" with | Some v -> v.ToString() | None -> "N/A"
-        let burst = match result.TryFind "burst" with | Some v -> v.ToString() | None -> "N/A"
-        let concurrency = match result.TryFind "concurrency" with | Some v -> v.ToString() | None -> "N/A"
-        let expired = match result.TryFind "expired" with | Some v -> v.ToString() = "True" | None -> false
-
-        if args.KeyExtend && resultPublicKey <> "N/A" then
-            let extendUrl = sprintf "%s/keys/extend?pk=%s" portalBase resultPublicKey
-            printfn "%sOpening browser to extend key...%s" blue reset
-            openBrowser extendUrl
-        elif expired then
-            printfn "%sExpired%s" red reset
-            printfn "Public Key: %s" resultPublicKey
-            printfn "Tier: %s" tier
-            printfn "Expired: %s" expiresAt
-            printfn "%sTo renew: Visit https://unsandbox.com/keys/extend%s" yellow reset
-            exit 1
-        else
-            printfn "%sValid%s" green reset
-            printfn "Public Key: %s" resultPublicKey
-            printfn "Tier: %s" tier
-            printfn "Status: %s" status
-            printfn "Expires: %s" expiresAt
-            printfn "Time Remaining: %s" timeRemaining
-            printfn "Rate Limit: %s" rateLimit
-            printfn "Burst: %s" burst
-            printfn "Concurrency: %s" concurrency
+        (int response.StatusCode, reader.ReadToEnd())
     with
-    | :? WebException as ex ->
-        printfn "%sInvalid%s" red reset
-        let errorMsg =
-            if ex.Response <> null then
-                use reader = new StreamReader(ex.Response.GetResponseStream())
-                let body = reader.ReadToEnd()
-                try
-                    let errorResult = parseJson body
-                    match errorResult.TryFind "error" with
-                    | Some err -> err.ToString()
-                    | None -> body
-                with _ -> body
+    | :? WebException as ex when ex.Response <> null ->
+        let httpResponse = ex.Response :?> HttpWebResponse
+        use reader = new StreamReader(httpResponse.GetResponseStream())
+        (int httpResponse.StatusCode, reader.ReadToEnd())
+
+let cmdKey (args: Args) =
+    let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
+
+    if args.KeyExtend then
+        printfn "%sOpening browser to extend key...%s" blue reset
+        openBrowser (sprintf "%s/keys/extend?pk=%s" portalBase publicKey)
+    else
+        ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
+        let (code, text) =
+            try
+                signedPost publicKey (if isNull secretKey then "" else secretKey) "/keys/validate" "" None ""
+            with
+            | :? WebException as ex ->
+                eprintfn "%sError: %s%s" red ex.Message reset
+                exit 1
+        let field key =
+            match extractJsonValue text key with
+            | Some v when v <> "" && v <> "null" -> Some v
+            | _ -> None
+        let (state, reason) =
+            if code = 200 then
+                let st = defaultArg (field "status") (if text.Contains("\"valid\":true") || text.Contains("\"valid\": true") then "active" else "invalid")
+                (st, "status " + st)
+            elif code = 401 then
+                let r = defaultArg (field "error") "unauthorized"
+                let st =
+                    match r with
+                    | ":expired" | "expired" -> "expired"
+                    | ":suspended" | "suspended" -> "suspended"
+                    | _ -> "invalid"
+                (st, r)
             else
-                ex.Message
-
-        // Check for clock drift error
-        if errorMsg.Contains("timestamp") && (errorMsg.Contains("401") || errorMsg.Contains("expired") || errorMsg.Contains("invalid")) then
-            eprintfn "%sError: Request timestamp expired (must be within 5 minutes of server time)%s" red reset
-            eprintfn "%sYour computer's clock may have drifted.%s" yellow reset
-            eprintfn "Check your system time and sync with NTP if needed:"
-            eprintfn "  Linux:   sudo ntpdate -s time.nist.gov"
-            eprintfn "  macOS:   sudo sntp -sS time.apple.com"
-            eprintfn "  Windows: w32tm /resync%s" reset
-            exit 1
-
-        printfn "Reason: %s" errorMsg
-        exit 1
+                let msg = match field "error" with | Some m -> " " + m | None -> (match field "message" with | Some m -> " " + m | None -> "")
+                eprintfn "%sError: HTTP %d%s%s" red code msg reset
+                exit 4
+        match state with
+        | "active" -> ()
+        | "expired" ->
+            printfn "%sExpired%s" red reset
+            printfn "Public Key: %s" publicKey
+            printfn "%sTo renew: Visit https://unsandbox.com/keys/extend%s" yellow reset
+            exit 3
+        | "suspended" ->
+            printfn "%sSuspended%s" red reset
+            printfn "Public Key: %s" publicKey
+            exit 3
+        | _ ->
+            printfn "%sInvalid%s" red reset
+            printfn "Public Key: %s" publicKey
+            printfn "Reason: %s" reason
+            exit 3
+        let mutable expires = "N/A"
+        let mutable remaining = "N/A"
+        match field "valid_through" |> Option.bind (fun v -> match Int64.TryParse v with | true, n -> Some n | _ -> None) with
+        | Some ms ->
+            let secs = ms / 1000L
+            expires <- DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture)
+            let left = secs - DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+            remaining <- if left <= 0L then "expired" else sprintf "%dd %dh %dm" (left / 86400L) (left % 86400L / 3600L) (left % 3600L / 60L)
+        | None -> ()
+        printfn "%sValid%s" green reset
+        printfn "Public Key: %s" publicKey
+        printfn "Tier: %s" (defaultArg (field "tier") "N/A")
+        printfn "Status: %s" (defaultArg (field "status") "N/A")
+        printfn "Expires: %s" expires
+        printfn "Time Remaining: %s" remaining
 
 [<System.Runtime.InteropServices.DllImport("libc", SetLastError = true)>]
 extern int chmod(string path, uint32 mode)
@@ -956,35 +967,7 @@ let rewriteAccountsCsv (path: string) (publicKey: string) (newSecret: string) =
 
 // POST /keys/self/rotate-secret with body {}; returns (status, raw JSON body).
 let rotatePost (publicKey: string) (secretKey: string) (otp: string option) (challenge: string) =
-    let path = "/keys/self/rotate-secret"
-    let body = "{}"
-    let request = WebRequest.Create(apiBase + path) :?> HttpWebRequest
-    request.Method <- "POST"
-    request.ContentType <- "application/json"
-    request.Timeout <- 120000
-    let timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-    use hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secretKey))
-    let hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(sprintf "%d:POST:%s:%s" timestamp path body))
-    request.Headers.Add("Authorization", sprintf "Bearer %s" publicKey)
-    request.Headers.Add("X-Timestamp", timestamp.ToString())
-    request.Headers.Add("X-Signature", BitConverter.ToString(hash).Replace("-", "").ToLower())
-    match otp with
-    | Some code ->
-        request.Headers.Add("X-Sudo-OTP", code)
-        request.Headers.Add("X-Sudo-Challenge", challenge)
-    | None -> ()
-    let bytes = Encoding.UTF8.GetBytes(body)
-    request.ContentLength <- int64 bytes.Length
-    using (request.GetRequestStream()) (fun stream -> stream.Write(bytes, 0, bytes.Length))
-    try
-        use response = request.GetResponse() :?> HttpWebResponse
-        use reader = new StreamReader(response.GetResponseStream())
-        (int response.StatusCode, reader.ReadToEnd())
-    with
-    | :? WebException as ex when ex.Response <> null ->
-        let httpResponse = ex.Response :?> HttpWebResponse
-        use reader = new StreamReader(httpResponse.GetResponseStream())
-        (int httpResponse.StatusCode, reader.ReadToEnd())
+    signedPost publicKey secretKey "/keys/self/rotate-secret" "{}" otp challenge
 
 // un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md).
 let cmdKeyRotate (args: Args) =

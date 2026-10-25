@@ -3028,15 +3028,79 @@ async function handleImage(opts) {
  */
 async function handleKey(opts) {
   const [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
+  const urlPath = '/keys/validate';
+  const timestamp = Math.floor(Date.now() / 1000);
+  let status;
+  let data = {};
   try {
-    const result = await validateKeys(pk, sk);
-    console.log('API Key Status:');
-    console.log(JSON.stringify(result, null, 2));
+    const response = await fetch(`${API_BASE}${urlPath}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${pk}`,
+        'X-Timestamp': timestamp.toString(),
+        'X-Signature': await signRequest(sk, timestamp, 'POST', urlPath, ''),
+        'Content-Type': 'application/json',
+        'User-Agent': 'un-js/2.0',
+      },
+      body: '',
+      signal: AbortSignal.timeout(30000),
+    });
+    status = response.status;
+    try { data = JSON.parse(await response.text()) || {}; } catch (e) { data = {}; }
   } catch (err) {
-    // If validate endpoint doesn't exist, just show that credentials were resolved
-    console.log(`Public Key: ${pk}`);
-    console.log('Key validation endpoint returned error - key may still be valid.');
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
   }
+  printKeyResult(status, data, pk);
+}
+
+/**
+ * Print a /keys/validate answer per CLI_SPEC.md (`un key` output); exits non-zero
+ * unless our key validated.
+ */
+function printKeyResult(status, data, pk) {
+  let state;
+  let reason;
+  if (status === 200) {
+    state = data.status || (data.valid ? 'active' : 'invalid');
+    reason = `status ${state}`;
+  } else if (status === 401) {
+    reason = String(data.error || 'unauthorized');
+    state = { ':expired': 'expired', 'expired': 'expired', ':suspended': 'suspended', 'suspended': 'suspended' }[reason] || 'invalid';
+  } else {
+    console.error(`Error: HTTP ${status} ${data.error || data.message || ''}`.trim());
+    process.exit(4);
+  }
+  if (state !== 'active') {
+    if (state === 'expired') {
+      console.log('Expired');
+      console.log(`Public Key: ${pk}`);
+      console.log('To renew: Visit https://unsandbox.com/keys/extend');
+    } else if (state === 'suspended') {
+      console.log('Suspended');
+      console.log(`Public Key: ${pk}`);
+    } else {
+      console.log('Invalid');
+      console.log(`Public Key: ${pk}`);
+      console.log(`Reason: ${reason}`);
+    }
+    process.exit(3);
+  }
+  let expires = 'N/A';
+  let remaining = 'N/A';
+  if (typeof data.valid_through === 'number') {
+    const secs = Math.floor(data.valid_through / 1000);
+    expires = new Date(secs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const left = secs - Math.floor(Date.now() / 1000);
+    remaining = left <= 0 ? 'expired'
+      : `${Math.floor(left / 86400)}d ${Math.floor((left % 86400) / 3600)}h ${Math.floor((left % 3600) / 60)}m`;
+  }
+  console.log('Valid');
+  console.log(`Public Key: ${pk}`);
+  console.log(`Tier: ${data.tier !== undefined && data.tier !== null ? data.tier : 'N/A'}`);
+  console.log(`Status: ${data.status || 'N/A'}`);
+  console.log(`Expires: ${expires}`);
+  console.log(`Time Remaining: ${remaining}`);
 }
 
 /**

@@ -804,7 +804,8 @@ end
 -- Key Validation
 -- ============================================================================
 
-function Un.validate_keys(opts)
+-- POST /keys/validate; returns HTTP status (or nil) and the raw body.
+function Un.validate_keys_raw(opts)
     opts = opts or {}
     local pk, sk = Un.get_credentials(opts)
 
@@ -832,8 +833,12 @@ function Un.validate_keys(opts)
         sink = ltn12.sink.table(resp_body)
     })
 
+    return status, table.concat(resp_body)
+end
+
+function Un.validate_keys(opts)
+    local status, response_text = Un.validate_keys_raw(opts)
     if status == 200 then
-        local response_text = table.concat(resp_body)
         local ok, result = pcall(json.decode, response_text)
         if ok then return result end
     end
@@ -1118,21 +1123,64 @@ if arg and arg[0] then
             cli_key_rotate(otp)
             os.exit(0)
         end
-        local result = Un.validate_keys()
-        if result then
-            if result.expired then
-                print(RED .. "Expired" .. RESET)
-            else
-                print(GREEN .. "Valid" .. RESET)
-            end
-            print("Public Key: " .. (result.public_key or "N/A"))
-            print("Tier: " .. (result.tier or "N/A"))
-            if result.expires_at then
-                print("Expires: " .. result.expires_at)
-            end
-        else
-            print(RED .. "Error: " .. Un.last_error() .. RESET)
+        local pk = Un.get_credentials({})
+        local status, text = Un.validate_keys_raw()
+        if type(status) ~= "number" then
+            io.stderr:write(RED .. "Error: request to " .. Un.API_BASE .. "/keys/validate failed" .. RESET .. "\n")
+            os.exit(1)
         end
+        local okj, result = pcall(json.decode, text or "")
+        if not okj or type(result) ~= "table" then result = {} end
+        local function str(v)
+            if type(v) == "number" and v == math.floor(v) then return string.format("%d", v) end
+            return tostring(v)
+        end
+        local state, reason
+        if status == 200 then
+            state = result.status or (result.valid and "active" or "invalid")
+            reason = "status " .. str(state)
+        elseif status == 401 then
+            reason = result.error or "unauthorized"
+            if reason == ":expired" or reason == "expired" then state = "expired"
+            elseif reason == ":suspended" or reason == "suspended" then state = "suspended"
+            else state = "invalid" end
+        else
+            local msg = result.error or result.message
+            io.stderr:write(RED .. "Error: HTTP " .. status .. (msg and (" " .. str(msg)) or "") .. RESET .. "\n")
+            os.exit(4)
+        end
+        if state == "expired" then
+            print(RED .. "Expired" .. RESET)
+            print("Public Key: " .. pk)
+            print(YELLOW .. "To renew: Visit https://unsandbox.com/keys/extend" .. RESET)
+            os.exit(3)
+        elseif state == "suspended" then
+            print(RED .. "Suspended" .. RESET)
+            print("Public Key: " .. pk)
+            os.exit(3)
+        elseif state ~= "active" then
+            print(RED .. "Invalid" .. RESET)
+            print("Public Key: " .. pk)
+            print("Reason: " .. str(reason))
+            os.exit(3)
+        end
+        local expires, remaining = "N/A", "N/A"
+        if type(result.valid_through) == "number" then
+            local secs = math.floor(result.valid_through / 1000)
+            expires = os.date("!%Y-%m-%dT%H:%M:%SZ", secs)
+            local left = secs - os.time()
+            if left <= 0 then
+                remaining = "expired"
+            else
+                remaining = string.format("%dd %dh %dm", math.floor(left / 86400), math.floor(left % 86400 / 3600), math.floor(left % 3600 / 60))
+            end
+        end
+        print(GREEN .. "Valid" .. RESET)
+        print("Public Key: " .. pk)
+        print("Tier: " .. (result.tier ~= nil and str(result.tier) or "N/A"))
+        print("Status: " .. (result.status ~= nil and str(result.status) or "N/A"))
+        print("Expires: " .. expires)
+        print("Time Remaining: " .. remaining)
     elseif cmd == "session" then
         i = 2
         local action = nil

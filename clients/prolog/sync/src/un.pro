@@ -533,22 +533,49 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
         [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, PublicKey]),
     signed_shell(SecretKey, Cmd, 0).
 
-% Key validate
-validate_key(Extend) :-
+% Key validate: POST /keys/validate (empty body, signed), display per
+% CLI_SPEC.md "un key output". Public key and secret reach bash via env only.
+validate_key(true) :-
+    get_public_key(PublicKey),
+    portal_base(PortalBase),
+    format(atom(Url), '~w/keys/extend?pk=~w', [PortalBase, PublicKey]),
+    format('Opening browser to extend key...~n'),
+    catch(process_create(path('xdg-open'), [Url], [stdout(null), stderr(null)]), _, true).
+validate_key(false) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
-    portal_base(PortalBase),
-    (   Extend = true
-    ->  % Build command for --extend mode
-        format(atom(Cmd),
-            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; exit 1; fi; PUBLIC_KEY=$(echo "$RESP" | jq -r ".public_key // \\"N/A\\""); xdg-open "~w/keys/extend?pk=$PUBLIC_KEY" 2>/dev/null',
-            [PublicKey, PortalBase])
-    ;   % Build command for normal validation
-        format(atom(Cmd),
-            'BODY=\'{}\'; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/keys/validate:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/keys/validate -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_key_resp.json; STATUS=$?; if [ $STATUS -ne 0 ]; then echo -e "\\x1b[31mInvalid\\x1b[0m"; exit 1; fi; RESP=$(cat /tmp/unsandbox_key_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_key_resp.json; exit 1; fi; EXPIRED=$(jq -r ".expired // false" /tmp/unsandbox_key_resp.json); if [ "$EXPIRED" = "true" ]; then echo -e "\\x1b[31mExpired\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expired: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo -e "\\x1b[33mTo renew: Visit https://unsandbox.com/keys/extend\\x1b[0m"; rm -f /tmp/unsandbox_key_resp.json; exit 1; else echo -e "\\x1b[32mValid\\x1b[0m"; echo "Public Key: $(jq -r ".public_key // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Tier: $(jq -r ".tier // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Status: $(jq -r ".status // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Expires: $(jq -r ".expires_at // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Time Remaining: $(jq -r ".time_remaining // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Rate Limit: $(jq -r ".rate_limit // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Burst: $(jq -r ".burst // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; echo "Concurrency: $(jq -r ".concurrency // \\"N/A\\"" /tmp/unsandbox_key_resp.json)"; fi; rm -f /tmp/unsandbox_key_resp.json',
-            [PublicKey])
-    ),
-    signed_shell(SecretKey, Cmd, 0).
+    setenv('UN_PK', PublicKey),
+    setenv('UN_SK', SecretKey),
+    key_script(Script),
+    process_create(path(bash), ['-c', Script],
+                   [stdin(std), stdout(std), stderr(std), process(Pid)]),
+    process_wait(Pid, Status),
+    (   Status = exit(Code) -> halt(Code) ; halt(1) ).
+
+key_script(Script) :-
+    hmac_prelude(Prelude),
+    atomic_list_concat([
+    'A=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ "${A%/}" != "$A" ]; do A=${A%/}; done',
+    'E=$(printf "\\033"); P=/keys/validate; TS=$(date +%s); SIG=$(hmac "$UN_SK" "$TS:POST:$P:")',
+    'R=$(curl -s -w "\\n%{http_code}" -X POST "$A$P" -H "Content-Type: application/json" -H "Authorization: Bearer $UN_PK" -H "X-Timestamp: $TS" -H "X-Signature: $SIG") || { echo "Error: request to $A$P failed" >&2; exit 1; }',
+    'C=$(printf "%s\\n" "$R" | tail -n1); B=$(printf "%s\\n" "$R" | head -n -1)',
+    'case "$C" in',
+    '  200) ST=$(printf %s "$B" | jq -r ".status // empty"); if [ -z "$ST" ]; then if printf %s "$B" | jq -e ".valid == true" >/dev/null; then ST=active; else ST=invalid; fi; fi; RS="status $ST" ;;',
+    '  401) RS=$(printf %s "$B" | jq -r ".error // empty" 2>/dev/null); RS=${RS:-unauthorized}; case "$RS" in :expired|expired) ST=expired ;; :suspended|suspended) ST=suspended ;; *) ST=invalid ;; esac ;;',
+    '  *) echo "Error: HTTP $C $(printf %s "$B" | jq -r ".error // .message // empty" 2>/dev/null)" >&2; exit 4 ;;',
+    'esac',
+    'case "$ST" in',
+    '  active) ;;',
+    '  expired) echo "$E[31mExpired$E[0m"; echo "Public Key: $UN_PK"; echo "$E[33mTo renew: Visit https://unsandbox.com/keys/extend$E[0m"; exit 3 ;;',
+    '  suspended) echo "$E[31mSuspended$E[0m"; echo "Public Key: $UN_PK"; exit 3 ;;',
+    '  *) echo "$E[31mInvalid$E[0m"; echo "Public Key: $UN_PK"; echo "Reason: $RS"; exit 3 ;;',
+    'esac',
+    'T=$(printf %s "$B" | jq -r ".tier // empty"); S=$(printf %s "$B" | jq -r ".status // empty"); VT=$(printf %s "$B" | jq -r ".valid_through // empty | floor")',
+    'EX=N/A; RM=N/A',
+    'if [ -n "$VT" ]; then SEC=$((VT / 1000)); EX=$(date -u -d "@$SEC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$SEC" +%Y-%m-%dT%H:%M:%SZ); L=$((SEC - $(date +%s))); if [ "$L" -le 0 ]; then RM=expired; else RM="$((L / 86400))d $((L % 86400 / 3600))h $((L % 3600 / 60))m"; fi; fi',
+    'echo "$E[32mValid$E[0m"; echo "Public Key: $UN_PK"; echo "Tier: ${T:-N/A}"; echo "Status: ${S:-N/A}"; echo "Expires: $EX"; echo "Time Remaining: $RM"'
+    ], '\n', Body),
+    atomic_list_concat([Prelude, Body], '\n', Script).
 
 % Read languages cache
 read_languages_cache(Languages) :-

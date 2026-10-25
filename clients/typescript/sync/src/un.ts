@@ -1103,48 +1103,100 @@ function openBrowser(url: string): void {
   });
 }
 
-async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
-  try {
-    const result = await apiRequestSoft("/keys/validate", "POST", {}, keys);
-
-    // Handle --extend flag first
-    if (shouldExtend) {
-      const public_key = result.public_key;
-      if (public_key) {
-        const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(public_key)}`;
-        console.log(`${BLUE}Opening browser to extend key...${RESET}`);
-        openBrowser(extendUrl);
-        return;
-      } else {
-        console.error(`${RED}Error: Could not retrieve public key${RESET}`);
-        process.exit(1);
-      }
-    }
-
-    // Check if key is expired
-    if (result.expired) {
-      console.log(`${RED}Expired${RESET}`);
-      console.log(`Public Key: ${result.public_key || 'N/A'}`);
-      console.log(`Tier: ${result.tier || 'N/A'}`);
-      console.log(`Expired: ${result.expires_at || 'N/A'}`);
-      console.log(`${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}`);
+function keyValidatePost(keys: ApiKeys): Promise<{ status: number; data: any }> {
+  return new Promise((resolve) => {
+    const endpoint = '/keys/validate';
+    const url = new URL(API_BASE + endpoint);
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const signature = crypto.createHmac('sha256', keys.secretKey)
+      .update(`${timestamp}:POST:${endpoint}:`).digest('hex');
+    const req = transport(url).request({
+      hostname: url.hostname,
+      port: url.port || undefined,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${keys.publicKey}`,
+        'X-Timestamp': timestamp,
+        'X-Signature': signature,
+        'Content-Type': 'application/json',
+        'Content-Length': '0',
+      },
+      timeout: 30000,
+    }, (res) => {
+      let text = '';
+      res.on('data', chunk => text += chunk);
+      res.on('end', () => {
+        let data: any = {};
+        try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
+        resolve({ status: res.statusCode || 0, data });
+      });
+    });
+    req.on('error', (e) => {
+      console.error(`${RED}Error: ${e.message}${RESET}`);
       process.exit(1);
-    }
+    });
+    req.end();
+  });
+}
 
-    // Valid key
-    console.log(`${GREEN}Valid${RESET}`);
-    console.log(`Public Key: ${result.public_key || 'N/A'}`);
-    console.log(`Tier: ${result.tier || 'N/A'}`);
-    console.log(`Status: ${result.status || 'N/A'}`);
-    console.log(`Expires: ${result.expires_at || 'N/A'}`);
-    console.log(`Time Remaining: ${result.time_remaining || 'N/A'}`);
-    console.log(`Rate Limit: ${result.rate_limit || 'N/A'}`);
-    console.log(`Burst: ${result.burst || 'N/A'}`);
-    console.log(`Concurrency: ${result.concurrency || 'N/A'}`);
-  } catch (error: any) {
-    console.error(`${RED}Error validating key: ${error.message}${RESET}`);
-    process.exit(1);
+// `un key` output per CLI_SPEC.md: the payload carries no public key, so we
+// print the one we signed with; expiry comes from valid_through (ms).
+async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
+  const pk = keys.publicKey;
+  if (shouldExtend) {
+    const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(pk)}`;
+    console.log(`${BLUE}Opening browser to extend key...${RESET}`);
+    openBrowser(extendUrl);
+    return;
   }
+
+  const { status, data } = await keyValidatePost(keys);
+  let state: string;
+  let reason: string;
+  if (status === 200) {
+    state = data.status || (data.valid ? 'active' : 'invalid');
+    reason = `status ${state}`;
+  } else if (status === 401) {
+    reason = String(data.error || 'unauthorized');
+    const map: Record<string, string> = { ':expired': 'expired', 'expired': 'expired', ':suspended': 'suspended', 'suspended': 'suspended' };
+    state = map[reason] || 'invalid';
+  } else {
+    console.error(`${RED}Error: HTTP ${status} ${data.error || data.message || ''}${RESET}`);
+    process.exit(4);
+  }
+
+  if (state !== 'active') {
+    if (state === 'expired') {
+      console.log(`${RED}Expired${RESET}`);
+      console.log(`Public Key: ${pk}`);
+      console.log(`${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}`);
+    } else if (state === 'suspended') {
+      console.log(`${RED}Suspended${RESET}`);
+      console.log(`Public Key: ${pk}`);
+    } else {
+      console.log(`${RED}Invalid${RESET}`);
+      console.log(`Public Key: ${pk}`);
+      console.log(`Reason: ${reason}`);
+    }
+    process.exit(3);
+  }
+
+  let expires = 'N/A';
+  let remaining = 'N/A';
+  if (typeof data.valid_through === 'number') {
+    const secs = Math.floor(data.valid_through / 1000);
+    expires = new Date(secs * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const left = secs - Math.floor(Date.now() / 1000);
+    remaining = left <= 0 ? 'expired'
+      : `${Math.floor(left / 86400)}d ${Math.floor((left % 86400) / 3600)}h ${Math.floor((left % 3600) / 60)}m`;
+  }
+  console.log(`${GREEN}Valid${RESET}`);
+  console.log(`Public Key: ${pk}`);
+  console.log(`Tier: ${data.tier !== undefined && data.tier !== null ? data.tier : 'N/A'}`);
+  console.log(`Status: ${data.status || 'N/A'}`);
+  console.log(`Expires: ${expires}`);
+  console.log(`Time Remaining: ${remaining}`);
 }
 
 async function cmdLanguages(args: Args): Promise<void> {
