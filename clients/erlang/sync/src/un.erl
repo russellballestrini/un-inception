@@ -633,50 +633,32 @@ validate_keys(Opts) ->
 %% ============================================================================
 
 api_get(Endpoint, Opts) ->
-    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "GET", Endpoint, ""),
-    Cmd = "curl -s " ++ ?API_BASE ++ Endpoint ++ AuthHeaders,
-    Result = os:cmd(Cmd),
+    Result = signed_curl(get_api_keys_from_opts(Opts), "GET", Endpoint, undefined, #{}),
     check_clock_drift_error(Result),
     Result.
 
 api_post(Endpoint, Json, Opts) ->
-    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
-    TmpFile = write_temp_file(Json),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "POST", Endpoint, Json),
-    Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++ " -H 'Content-Type: application/json'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
+    Result = signed_curl(get_api_keys_from_opts(Opts), "POST", Endpoint, Json, #{}),
     check_clock_drift_error(Result),
     Result.
 
 api_delete(Endpoint, Opts) ->
-    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "DELETE", Endpoint, ""),
-    Cmd = "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++ AuthHeaders,
-    Result = os:cmd(Cmd),
+    Result = signed_curl(get_api_keys_from_opts(Opts), "DELETE", Endpoint, undefined, #{}),
     check_clock_drift_error(Result),
     Result.
 
 api_patch(Endpoint, Json, Opts) ->
-    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
-    TmpFile = write_temp_file(Json),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PATCH", Endpoint, Json),
-    Cmd = "curl -s -X PATCH " ++ ?API_BASE ++ Endpoint ++ " -H 'Content-Type: application/json'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
+    Result = signed_curl(get_api_keys_from_opts(Opts), "PATCH", Endpoint, Json, #{}),
     check_clock_drift_error(Result),
     Result.
 
 api_put_text(Endpoint, Body, Opts) ->
-    {PublicKey, SecretKey} = get_api_keys_from_opts(Opts),
-    TmpFile = write_temp_file(Body),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PUT", Endpoint, Body),
-    Cmd = "curl -s -o /dev/null -w '%{http_code}' -X PUT " ++ ?API_BASE ++ Endpoint ++ " -H 'Content-Type: text/plain'" ++ AuthHeaders ++ " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
-    StatusCode = list_to_integer(string:trim(Result)),
-    StatusCode >= 200 andalso StatusCode < 300.
+    Result = signed_curl(get_api_keys_from_opts(Opts), "PUT", Endpoint, Body,
+                         #{content_type => "text/plain", curl_args => " -o /dev/null -w '%{http_code}'"}),
+    case string:to_integer(string:trim(Result)) of
+        {StatusCode, _} when is_integer(StatusCode) -> StatusCode >= 200 andalso StatusCode < 300;
+        _ -> false
+    end.
 
 %% Generic signed request used by the image CLI commands.
 api_request(Endpoint, Method, Body, PublicKey, SecretKey) ->
@@ -968,7 +950,7 @@ service_command(["--dump-bootstrap", ServiceId, File | _]) ->
             halt(1);
         Script ->
             file:write_file(File, Script),
-            os:cmd("chmod 755 " ++ File),
+            file:change_mode(File, 8#755),
             io:format("Bootstrap saved to ~s~n", [File])
     end;
 
@@ -1432,12 +1414,9 @@ key_validate_post(PublicKey, SecretKey) ->
     end,
     HeaderLines = ["Authorization: Bearer " ++ PublicKey,
                    "Content-Type: application/json"] ++ SigLines,
-    HdrFile = "/tmp/un_erl_key_" ++ os:getpid() ++ "_" ++ integer_to_list(rand:uniform(999999999)) ++ ".hdr",
-    ok = file:write_file(HdrFile, <<>>, [exclusive]),
-    ok = file:change_mode(HdrFile, 8#600),
-    ok = file:write_file(HdrFile, string:join(HeaderLines, "\n") ++ "\n"),
-    Cmd = "curl -s -X POST -w '\\n%{http_code}' -H @" ++ HdrFile ++
-          " '" ++ ?API_BASE ++ Path ++ "'",
+    HdrFile = private_temp_file("hdr", string:join(HeaderLines, "\n") ++ "\n"),
+    Cmd = "curl -s -X POST -w '\\n%{http_code}' -H @" ++ sh_quote(HdrFile) ++
+          " " ++ sh_quote(?API_BASE ++ Path),
     Output = os:cmd(Cmd),
     file:delete(HdrFile),
     case lists:reverse(string:split(Output, "\n", all)) of
@@ -1523,9 +1502,9 @@ open_extend_page(PublicKey) ->
     io:format("\033[33mOpening browser to extend key...\033[0m~n"),
     case os:type() of
         {unix, darwin} ->
-            os:cmd("open '" ++ Url ++ "'");
+            os:cmd("open " ++ sh_quote(Url));
         {unix, _} ->
-            os:cmd("xdg-open '" ++ Url ++ "' 2>/dev/null || sensible-browser '" ++ Url ++ "' 2>/dev/null &");
+            os:cmd("xdg-open " ++ sh_quote(Url) ++ " 2>/dev/null || sensible-browser " ++ sh_quote(Url) ++ " 2>/dev/null &");
         {win32, _} ->
             os:cmd("start " ++ Url)
     end.
@@ -1712,12 +1691,9 @@ rotate_post(PublicKey, SecretKey, Otp, Challenge) ->
                    "X-Timestamp: " ++ Timestamp,
                    "X-Signature: " ++ Signature,
                    "Content-Type: application/json"] ++ SudoLines,
-    HdrFile = "/tmp/un_erl_rot_" ++ os:getpid() ++ "_" ++ integer_to_list(rand:uniform(999999999)) ++ ".hdr",
-    ok = file:write_file(HdrFile, <<>>, [exclusive]),
-    ok = file:change_mode(HdrFile, 8#600),
-    ok = file:write_file(HdrFile, string:join(HeaderLines, "\n") ++ "\n"),
-    Cmd = "curl -s -X POST -w '\\n%{http_code}' -H @" ++ HdrFile ++
-          " --data-raw '{}' '" ++ ?API_BASE ++ Path ++ "'",
+    HdrFile = private_temp_file("hdr", string:join(HeaderLines, "\n") ++ "\n"),
+    Cmd = "curl -s -X POST -w '\\n%{http_code}' -H @" ++ sh_quote(HdrFile) ++
+          " --data-raw '{}' " ++ sh_quote(?API_BASE ++ Path),
     Output = os:cmd(Cmd),
     file:delete(HdrFile),
     case lists:reverse(string:split(Output, "\n", all)) of
@@ -1861,17 +1837,60 @@ check_clock_drift_error(Response) ->
             ok
     end.
 
-build_auth_headers(PublicKey, SecretKey, Method, Path, Body) ->
-    if
-        SecretKey =/= false ->
-            Timestamp = integer_to_list(erlang:system_time(second)),
-            Signature = make_signature(SecretKey, Timestamp, Method, Path, Body),
-            " -H 'Authorization: Bearer " ++ PublicKey ++ "'"
-            ++ " -H 'X-Timestamp: " ++ Timestamp ++ "'"
-            ++ " -H 'X-Signature: " ++ Signature ++ "'";
-        true ->
-            " -H 'Authorization: Bearer " ++ PublicKey ++ "'"
+%% Header lines that authenticate one request (signed when a secret key is known).
+auth_lines(PublicKey, false, _Method, _Path, _Body) ->
+    ["Authorization: Bearer " ++ PublicKey];
+auth_lines(PublicKey, SecretKey, Method, Path, Body) ->
+    Timestamp = integer_to_list(erlang:system_time(second)),
+    ["Authorization: Bearer " ++ PublicKey,
+     "X-Timestamp: " ++ Timestamp,
+     "X-Signature: " ++ make_signature(SecretKey, Timestamp, Method, Path, Body)].
+
+%% Every authenticated request goes through here. Headers and body travel in
+%% 0600 files, never argv (where `ps` shows them); --data-binary sends the body
+%% byte-for-byte as signed (-d @file strips newlines); every shell word is quoted.
+%% Opts: content_type, headers (extra lines), curl_args (extra curl flags).
+signed_curl({PublicKey, SecretKey}, Method, Endpoint, Body, Opts) ->
+    BodyStr = case Body of undefined -> ""; _ -> Body end,
+    TypeLines = case Body of
+        undefined -> [];
+        _ -> ["Content-Type: " ++ maps:get(content_type, Opts, "application/json")]
+    end,
+    HeaderLines = auth_lines(PublicKey, SecretKey, Method, Endpoint, BodyStr)
+                  ++ maps:get(headers, Opts, []) ++ TypeLines,
+    HdrFile = private_temp_file("hdr", string:join(HeaderLines, "\n") ++ "\n"),
+    BodyFile = case Body of undefined -> undefined; _ -> private_temp_file("body", Body) end,
+    BodyArgs = case BodyFile of
+        undefined -> "";
+        _ -> " --data-binary @" ++ sh_quote(BodyFile)
+    end,
+    Cmd = "curl -s -X " ++ Method ++ maps:get(curl_args, Opts, "") ++
+          " -H @" ++ sh_quote(HdrFile) ++ BodyArgs ++ " " ++ sh_quote(?API_BASE ++ Endpoint),
+    try
+        os:cmd(Cmd)
+    after
+        file:delete(HdrFile),
+        BodyFile =/= undefined andalso file:delete(BodyFile)
     end.
+
+%% A fresh file only this user can read: unguessable name, created exclusively
+%% (never follows a planted symlink), mode 0600 before any content lands.
+private_temp_file(Kind, Data) ->
+    Dir = case os:getenv("TMPDIR") of
+        false -> "/tmp";
+        "" -> "/tmp";
+        D -> D
+    end,
+    Rand = lists:flatten([io_lib:format("~2.16.0b", [X]) || X <- binary_to_list(crypto:strong_rand_bytes(12))]),
+    Path = filename:join(Dir, "un_erl_" ++ Kind ++ "_" ++ Rand),
+    ok = file:write_file(Path, <<>>, [exclusive]),
+    ok = file:change_mode(Path, 8#600),
+    ok = file:write_file(Path, Data),
+    Path.
+
+%% Single-quote one shell word.
+sh_quote(S) ->
+    "'" ++ lists:flatten(string:replace(S, "'", "'\\''", all)) ++ "'".
 
 ext_to_lang(".hs") -> {ok, "haskell"};
 ext_to_lang(".ml") -> {ok, "ocaml"};
@@ -1947,51 +1966,24 @@ build_input_files_json(Files) ->
     ",\"input_files\":[" ++ string:join(FileJsons, ",") ++ "]".
 
 write_temp_file(Data) ->
-    TmpFile = "/tmp/un_erl_" ++ integer_to_list(rand:uniform(999999)) ++ ".json",
-    file:write_file(TmpFile, Data),
-    TmpFile.
+    private_temp_file("body", Data).
 
 curl_post(ApiKey, Endpoint, TmpFile) ->
     {ok, Body} = file:read_file(TmpFile),
-    BodyStr = binary_to_list(Body),
     {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, BodyStr),
-    Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
-          " -H 'Content-Type: application/json'" ++
-          AuthHeaders ++
-          " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    check_clock_drift_error(Result),
-    Result.
-
-curl_post_data(ApiKey, Endpoint, Data) ->
-    TmpFile = write_temp_file(Data),
-    {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, Data),
-    Cmd = "curl -s -X POST " ++ ?API_BASE ++ Endpoint ++
-          " -H 'Content-Type: application/json'" ++
-          AuthHeaders ++
-          " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
+    Result = signed_curl({ApiKey, SecretKey}, "POST", Endpoint, binary_to_list(Body), #{}),
     check_clock_drift_error(Result),
     Result.
 
 curl_get(ApiKey, Endpoint) ->
     {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "GET", Endpoint, ""),
-    Cmd = "curl -s " ++ ?API_BASE ++ Endpoint ++
-          AuthHeaders,
-    Result = os:cmd(Cmd),
+    Result = signed_curl({ApiKey, SecretKey}, "GET", Endpoint, undefined, #{}),
     check_clock_drift_error(Result),
     Result.
 
 curl_delete(ApiKey, Endpoint) ->
     {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "DELETE", Endpoint, ""),
-    Cmd = "curl -s -X DELETE " ++ ?API_BASE ++ Endpoint ++
-          AuthHeaders,
-    Result = os:cmd(Cmd),
+    Result = signed_curl({ApiKey, SecretKey}, "DELETE", Endpoint, undefined, #{}),
     check_clock_drift_error(Result),
     Result.
 
@@ -2012,49 +2004,13 @@ handle_sudo_challenge(Response, Method, Endpoint, Body) ->
                     {error, cancelled};
                 _ ->
                     %% Retry the same request: same body, fresh signature, sudo headers.
-                    %% Headers go through a 0600 file, never argv.
-                    {PublicKey, SecretKey} = get_api_keys(),
-                    AuthLines = case SecretKey of
-                        false -> ["Authorization: Bearer " ++ PublicKey];
-                        _ ->
-                            Timestamp = integer_to_list(erlang:system_time(second)),
-                            Signature = make_signature(SecretKey, Timestamp, Method, Endpoint, Body),
-                            ["Authorization: Bearer " ++ PublicKey,
-                             "X-Timestamp: " ++ Timestamp,
-                             "X-Signature: " ++ Signature]
-                    end,
                     ChallengeLines = case ChallengeId of
                         "" -> [];
                         _ -> ["X-Sudo-Challenge: " ++ ChallengeId]
                     end,
-                    %% Body file must outlive the curl run that reads it
-                    {BodyFile, BodyLines} = case Body of
-                        "" -> {undefined, []};
-                        _ -> {write_temp_file(Body), ["Content-Type: application/json"]}
-                    end,
-                    HdrFile = "/tmp/un_erl_sudo_" ++ os:getpid() ++ "_" ++ integer_to_list(rand:uniform(999999999)) ++ ".hdr",
-                    ok = file:write_file(HdrFile, <<>>, [exclusive]),
-                    ok = file:change_mode(HdrFile, 8#600),
-                    ok = file:write_file(HdrFile, string:join(AuthLines ++ ["X-Sudo-OTP: " ++ Otp] ++
-                                                              ChallengeLines ++ BodyLines, "\n") ++ "\n"),
-                    BodyArgs = case BodyFile of
-                        undefined -> "";
-                        _ -> " -d @" ++ BodyFile
-                    end,
-                    Cmd = case Method of
-                        "DELETE" ->
-                            "curl -s -X DELETE -H @" ++ HdrFile ++ BodyArgs ++ " '" ++ ?API_BASE ++ Endpoint ++ "'";
-                        "POST" ->
-                            "curl -s -X POST -H @" ++ HdrFile ++ BodyArgs ++ " '" ++ ?API_BASE ++ Endpoint ++ "'";
-                        _ ->
-                            "curl -s -H @" ++ HdrFile ++ " '" ++ ?API_BASE ++ Endpoint ++ "'"
-                    end,
-                    RetryResult = os:cmd(Cmd),
-                    file:delete(HdrFile),
-                    case BodyFile of
-                        undefined -> ok;
-                        _ -> file:delete(BodyFile)
-                    end,
+                    RetryBody = case Body of "" -> undefined; _ -> Body end,
+                    RetryResult = signed_curl(get_api_keys(), Method, Endpoint, RetryBody,
+                                              #{headers => ["X-Sudo-OTP: " ++ Otp] ++ ChallengeLines}),
                     case string:str(RetryResult, "\"error\"") of
                         0 -> {ok, RetryResult};
                         _ -> {error, RetryResult}
@@ -2065,73 +2021,40 @@ handle_sudo_challenge(Response, Method, Endpoint, Body) ->
 %% Curl with 428 handling for destructive operations
 curl_delete_with_sudo(ApiKey, Endpoint) ->
     {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "DELETE", Endpoint, ""),
-    Cmd = "curl -s -w '\\n%{http_code}' -X DELETE " ++ ?API_BASE ++ Endpoint ++
-          AuthHeaders,
-    Result = os:cmd(Cmd),
-    %% Split response and status code
-    Lines = string:split(Result, "\n", all),
-    case lists:reverse(Lines) of
-        [StatusCodeStr | BodyLinesRev] ->
-            StatusCode = list_to_integer(string:trim(StatusCodeStr)),
-            Body = string:join(lists:reverse(BodyLinesRev), "\n"),
-            check_clock_drift_error(Body),
-            case StatusCode of
-                428 -> handle_sudo_challenge(Body, "DELETE", Endpoint, "");
-                _ -> {ok, Body, StatusCode}
-            end;
-        _ ->
-            {ok, Result, 200}
-    end.
+    Result = signed_curl({ApiKey, SecretKey}, "DELETE", Endpoint, undefined,
+                         #{curl_args => " -w '\\n%{http_code}'"}),
+    sudo_response(Result, "DELETE", Endpoint, "").
 
 curl_post_with_sudo(ApiKey, Endpoint, Json) ->
-    TmpFile = write_temp_file(Json),
     {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "POST", Endpoint, Json),
-    Cmd = "curl -s -w '\\n%{http_code}' -X POST " ++ ?API_BASE ++ Endpoint ++
-          " -H 'Content-Type: application/json'" ++
-          AuthHeaders ++
-          " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
-    %% Split response and status code
-    Lines = string:split(Result, "\n", all),
-    case lists:reverse(Lines) of
+    Result = signed_curl({ApiKey, SecretKey}, "POST", Endpoint, Json,
+                         #{curl_args => " -w '\\n%{http_code}'"}),
+    sudo_response(Result, "POST", Endpoint, Json).
+
+%% Split the trailing status line off; a 428 asks for the emailed OTP and retries.
+sudo_response(Result, Method, Endpoint, Json) ->
+    case lists:reverse(string:split(Result, "\n", all)) of
         [StatusCodeStr | BodyLinesRev] ->
-            StatusCode = list_to_integer(string:trim(StatusCodeStr)),
             Body = string:join(lists:reverse(BodyLinesRev), "\n"),
             check_clock_drift_error(Body),
-            case StatusCode of
-                428 -> handle_sudo_challenge(Body, "POST", Endpoint, Json);
-                _ -> {ok, Body, StatusCode}
+            case string:to_integer(string:trim(StatusCodeStr)) of
+                {428, _} -> handle_sudo_challenge(Body, Method, Endpoint, Json);
+                {StatusCode, _} when is_integer(StatusCode) -> {ok, Body, StatusCode};
+                _ -> {ok, Result, 0}
             end;
         _ ->
-            {ok, Result, 200}
+            {ok, Result, 0}
     end.
 
 curl_patch(ApiKey, Endpoint, TmpFile) ->
     {ok, Body} = file:read_file(TmpFile),
-    BodyStr = binary_to_list(Body),
     {_, SecretKey} = get_api_keys(),
-    AuthHeaders = build_auth_headers(ApiKey, SecretKey, "PATCH", Endpoint, BodyStr),
-    Cmd = "curl -s -X PATCH " ++ ?API_BASE ++ Endpoint ++
-          " -H 'Content-Type: application/json'" ++
-          AuthHeaders ++
-          " -d @" ++ TmpFile,
-    Result = os:cmd(Cmd),
+    Result = signed_curl({ApiKey, SecretKey}, "PATCH", Endpoint, binary_to_list(Body), #{}),
     check_clock_drift_error(Result),
     Result.
 
 curl_put_text(Endpoint, Content) ->
-    {PublicKey, SecretKey} = get_api_keys(),
-    TmpFile = write_temp_file(Content),
-    AuthHeaders = build_auth_headers(PublicKey, SecretKey, "PUT", Endpoint, Content),
-    Cmd = "curl -s -X PUT " ++ ?API_BASE ++ Endpoint ++
-          " -H 'Content-Type: text/plain'" ++
-          AuthHeaders ++
-          " --data-binary @" ++ TmpFile,
-    Result = os:cmd(Cmd),
-    file:delete(TmpFile),
+    Result = signed_curl(get_api_keys(), "PUT", Endpoint, Content, #{content_type => "text/plain"}),
     check_clock_drift_error(Result),
     Result.
 

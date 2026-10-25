@@ -984,66 +984,40 @@ defmodule Un do
   # ============================================================================
 
   defp api_get(endpoint, opts) do
-    {public_key, secret_key} = get_api_keys_from_opts(opts)
-    headers = build_auth_headers(public_key, secret_key, "GET", endpoint, "")
-    args = ["-s", "#{api_base()}#{endpoint}"] ++ headers
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+    output = signed_curl(get_api_keys_from_opts(opts), "GET", endpoint, nil)
     check_clock_drift(output)
     output
   end
 
   defp api_post(endpoint, json, opts) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
-
-    {public_key, secret_key} = get_api_keys_from_opts(opts)
-    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
-
-    args = ["-s", "-X", "POST", "#{api_base()}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
+    output = signed_curl(get_api_keys_from_opts(opts), "POST", endpoint, json)
     check_clock_drift(output)
     output
   end
 
   defp api_delete(endpoint, opts) do
-    {public_key, secret_key} = get_api_keys_from_opts(opts)
-    headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
-    args = ["-s", "-X", "DELETE", "#{api_base()}#{endpoint}"] ++ headers
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+    output = signed_curl(get_api_keys_from_opts(opts), "DELETE", endpoint, nil)
     check_clock_drift(output)
     output
   end
 
   defp api_patch(endpoint, json, opts) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
-
-    {public_key, secret_key} = get_api_keys_from_opts(opts)
-    headers = build_auth_headers(public_key, secret_key, "PATCH", endpoint, json)
-
-    args = ["-s", "-X", "PATCH", "#{api_base()}#{endpoint}", "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
+    output = signed_curl(get_api_keys_from_opts(opts), "PATCH", endpoint, json)
     check_clock_drift(output)
     output
   end
 
   defp api_put_text(endpoint, body, opts) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.txt"
-    File.write!(tmp_file, body)
+    output =
+      signed_curl(get_api_keys_from_opts(opts), "PUT", endpoint, body,
+        content_type: "text/plain",
+        curl_args: ["-o", "/dev/null", "-w", "%{http_code}"]
+      )
 
-    {public_key, secret_key} = get_api_keys_from_opts(opts)
-    headers = build_auth_headers(public_key, secret_key, "PUT", endpoint, body)
-
-    args = ["-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PUT", "#{api_base()}#{endpoint}", "-H", "Content-Type: text/plain"] ++ headers ++ ["-d", "@#{tmp_file}"]
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
-    status_code = String.trim(output) |> String.to_integer()
-    status_code >= 200 and status_code < 300
+    case Integer.parse(String.trim(output)) do
+      {status_code, _} -> status_code >= 200 and status_code < 300
+      :error -> false
+    end
   end
 
   defp get_api_keys_from_opts(opts) do
@@ -1824,10 +1798,7 @@ defmodule Un do
           else: []
         )
 
-    hdr_file = Path.join(System.tmp_dir!(), "un_ex_key_#{System.pid()}_#{:rand.uniform(999_999_999)}.hdr")
-    File.write!(hdr_file, "", [:write, :exclusive])
-    File.chmod!(hdr_file, 0o600)
-    File.write!(hdr_file, Enum.join(header_lines, "\n") <> "\n")
+    hdr_file = private_temp_file("hdr", Enum.join(header_lines, "\n") <> "\n")
 
     args = ["-s", "-X", "POST", "-w", "\n%{http_code}", "-H", "@#{hdr_file}", "#{api_base()}#{path}"]
     {output, exit_code} = System.cmd("curl", args)
@@ -2118,10 +2089,7 @@ defmodule Un do
         "Content-Type: application/json"
       ] ++ if(otp, do: ["X-Sudo-OTP: #{otp}", "X-Sudo-Challenge: #{challenge || ""}"], else: [])
 
-    hdr_file = Path.join(System.tmp_dir!(), "un_ex_rot_#{System.pid()}_#{:rand.uniform(999_999_999)}.hdr")
-    File.write!(hdr_file, "", [:write, :exclusive])
-    File.chmod!(hdr_file, 0o600)
-    File.write!(hdr_file, Enum.join(header_lines, "\n") <> "\n")
+    hdr_file = private_temp_file("hdr", Enum.join(header_lines, "\n") <> "\n")
 
     args = ["-s", "-X", "POST", "-w", "\n%{http_code}", "-H", "@#{hdr_file}",
             "--data-raw", body, "#{api_base()}#{path}"]
@@ -2276,109 +2244,94 @@ defmodule Un do
   end
 
   defp curl_post(_api_key, endpoint, json) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
-
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
-
-    args = [
-      "-s", "-X", "POST",
-      "#{api_base()}#{endpoint}",
-      "-H", "Content-Type: application/json"
-    ] ++ headers ++ ["-d", "@#{tmp_file}"]
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
+    output = signed_curl(get_api_keys(), "POST", endpoint, json)
     check_clock_drift(output)
     output
   end
 
-  defp build_auth_headers(public_key, secret_key, method, path, body) do
-    if secret_key do
-      timestamp = System.system_time(:second) |> Integer.to_string()
-      signature = make_signature(secret_key, timestamp, method, path, body)
-      [
-        "-H", "Authorization: Bearer #{public_key}",
-        "-H", "X-Timestamp: #{timestamp}",
-        "-H", "X-Signature: #{signature}"
-      ]
-    else
-      # Backwards compatibility: use simple bearer token
-      ["-H", "Authorization: Bearer #{public_key}"]
+  # Header lines that authenticate one request (signed when a secret key is known).
+  defp auth_lines(public_key, nil, _method, _path, _body), do: ["Authorization: Bearer #{public_key}"]
+
+  defp auth_lines(public_key, secret_key, method, path, body) do
+    timestamp = System.system_time(:second) |> Integer.to_string()
+
+    [
+      "Authorization: Bearer #{public_key}",
+      "X-Timestamp: #{timestamp}",
+      "X-Signature: #{make_signature(secret_key, timestamp, method, path, body)}"
+    ]
+  end
+
+  # Every authenticated request goes through here. Headers and body travel in
+  # 0600 files, never argv (where `ps` shows them); --data-binary sends the body
+  # byte-for-byte as signed (-d @file strips newlines).
+  # Options: :content_type, :headers (extra lines), :curl_args (extra curl flags).
+  defp signed_curl({public_key, secret_key}, method, endpoint, body, opts \\ []) do
+    type_lines = if body, do: ["Content-Type: #{Keyword.get(opts, :content_type, "application/json")}"], else: []
+
+    header_lines =
+      auth_lines(public_key, secret_key, method, endpoint, body || "") ++
+        Keyword.get(opts, :headers, []) ++ type_lines
+
+    hdr_file = private_temp_file("hdr", Enum.join(header_lines, "\n") <> "\n")
+    body_file = if body, do: private_temp_file("body", body)
+
+    try do
+      args =
+        ["-s", "-X", method] ++
+          Keyword.get(opts, :curl_args, []) ++
+          ["-H", "@#{hdr_file}"] ++
+          if(body_file, do: ["--data-binary", "@#{body_file}"], else: []) ++
+          ["#{api_base()}#{endpoint}"]
+
+      {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
+      output
+    after
+      File.rm(hdr_file)
+      if body_file, do: File.rm(body_file)
     end
   end
 
+  # A fresh file only this user can read: unguessable name, created exclusively
+  # (never follows a planted symlink), mode 0600 before any content lands.
+  defp private_temp_file(kind, data) do
+    rand = :crypto.strong_rand_bytes(12) |> Base.encode16(case: :lower)
+    path = Path.join(System.tmp_dir!(), "un_ex_#{kind}_#{rand}")
+    File.write!(path, "", [:write, :exclusive])
+    File.chmod!(path, 0o600)
+    File.write!(path, data)
+    path
+  end
+
   defp curl_get(_api_key, endpoint) do
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "GET", endpoint, "")
-
-    args = [
-      "-s",
-      "#{api_base()}#{endpoint}"
-    ] ++ headers
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
+    output = signed_curl(get_api_keys(), "GET", endpoint, nil)
     check_clock_drift(output)
     output
   end
 
   defp curl_delete(_api_key, endpoint) do
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
-
-    args = [
-      "-s", "-X", "DELETE",
-      "#{api_base()}#{endpoint}"
-    ] ++ headers
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
+    output = signed_curl(get_api_keys(), "DELETE", endpoint, nil)
     check_clock_drift(output)
     output
   end
 
   defp curl_patch(_api_key, endpoint, json) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
-
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "PATCH", endpoint, json)
-
-    args = [
-      "-s", "-X", "PATCH",
-      "#{api_base()}#{endpoint}",
-      "-H", "Content-Type: application/json"
-    ] ++ headers ++ ["-d", "@#{tmp_file}"]
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
+    output = signed_curl(get_api_keys(), "PATCH", endpoint, json)
     check_clock_drift(output)
     output
   end
 
   defp curl_put_text(endpoint, body) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.txt"
-    File.write!(tmp_file, body)
+    output =
+      signed_curl(get_api_keys(), "PUT", endpoint, body,
+        content_type: "text/plain",
+        curl_args: ["-o", "/dev/null", "-w", "%{http_code}"]
+      )
 
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "PUT", endpoint, body)
-
-    args = [
-      "-s", "-o", "/dev/null", "-w", "%{http_code}",
-      "-X", "PUT",
-      "#{api_base()}#{endpoint}",
-      "-H", "Content-Type: text/plain"
-    ] ++ headers ++ ["-d", "@#{tmp_file}"]
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
-    status_code = String.trim(output) |> String.to_integer()
-    status_code >= 200 and status_code < 300
+    case Integer.parse(String.trim(output)) do
+      {status_code, _} -> status_code >= 200 and status_code < 300
+      :error -> false
+    end
   end
 
   @max_env_content_size 65536
@@ -2508,47 +2461,11 @@ defmodule Un do
       {:error, :cancelled}
     else
       # Retry the same request: same body, fresh signature, sudo headers.
-      # Headers go through a 0600 file, never argv.
-      {public_key, secret_key} = get_api_keys()
-      body_str = body || ""
-      auth_lines =
-        build_auth_headers(public_key, secret_key, method, endpoint, body_str)
-        |> Enum.chunk_every(2)
-        |> Enum.map(fn [_, h] -> h end)
-
       sudo_lines = ["X-Sudo-OTP: #{otp}"] ++ if(challenge_id, do: ["X-Sudo-Challenge: #{challenge_id}"], else: [])
+      retry_body = if body in [nil, ""], do: nil, else: body
+      output = signed_curl(get_api_keys(), method, endpoint, retry_body, headers: sudo_lines)
 
-      # Same body as the first attempt; the file must outlive the curl run that reads it
-      tmp_file = if body_str != "" do
-        path = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-        File.write!(path, body_str)
-        path
-      end
-      {body_lines, body_args} =
-        if tmp_file, do: {["Content-Type: application/json"], ["-d", "@#{tmp_file}"]}, else: {[], []}
-
-      hdr_file = Path.join(System.tmp_dir!(), "un_ex_sudo_#{System.pid()}_#{:rand.uniform(999_999_999)}.hdr")
-      File.write!(hdr_file, "", [:write, :exclusive])
-      File.chmod!(hdr_file, 0o600)
-      File.write!(hdr_file, Enum.join(auth_lines ++ sudo_lines ++ body_lines, "\n") <> "\n")
-      headers = ["-H", "@#{hdr_file}"]
-
-      args = case method do
-        "DELETE" ->
-          ["-s", "-X", "DELETE", "#{api_base()}#{endpoint}"] ++ headers ++ body_args
-        "POST" ->
-          ["-s", "-X", "POST", "#{api_base()}#{endpoint}"] ++ headers ++ body_args
-        _ ->
-          ["-s", "#{api_base()}#{endpoint}"] ++ headers
-      end
-
-      {output, exit_code} = System.cmd("curl", args, stderr_to_stdout: true)
-
-      # Clean up only after curl has sent them
-      File.rm(hdr_file)
-      if tmp_file, do: File.rm(tmp_file)
-
-      if exit_code == 0 and not String.contains?(output, "\"error\"") do
+      if not String.contains?(output, "\"error\"") do
         {:ok, output}
       else
         {:error, output}
@@ -2558,56 +2475,25 @@ defmodule Un do
 
   # Curl with 428 handling for destructive operations
   defp curl_delete_with_sudo(_api_key, endpoint) do
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "DELETE", endpoint, "")
-
-    args = ["-s", "-X", "DELETE", "-w", "\n%{http_code}",
-            "#{api_base()}#{endpoint}"] ++ headers
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    # Split response body and status code
-    lines = String.split(output, "\n")
-    {body_lines, [status_code]} = Enum.split(lines, -1)
-    body = Enum.join(body_lines, "\n")
-    http_code = String.to_integer(String.trim(status_code))
-
-    check_clock_drift(body)
-
-    if http_code == 428 do
-      handle_sudo_challenge(body, "DELETE", endpoint, nil)
-    else
-      {:ok, body, http_code}
-    end
+    signed_curl(get_api_keys(), "DELETE", endpoint, nil, curl_args: ["-w", "\n%{http_code}"])
+    |> sudo_response("DELETE", endpoint, nil)
   end
 
   defp curl_post_with_sudo(_api_key, endpoint, json) do
-    tmp_file = "/tmp/un_ex_#{:rand.uniform(999999)}.json"
-    File.write!(tmp_file, json)
+    signed_curl(get_api_keys(), "POST", endpoint, json, curl_args: ["-w", "\n%{http_code}"])
+    |> sudo_response("POST", endpoint, json)
+  end
 
-    {public_key, secret_key} = get_api_keys()
-    headers = build_auth_headers(public_key, secret_key, "POST", endpoint, json)
-
-    args = ["-s", "-X", "POST", "-w", "\n%{http_code}",
-            "#{api_base()}#{endpoint}",
-            "-H", "Content-Type: application/json"] ++ headers ++ ["-d", "@#{tmp_file}"]
-
-    {output, _exit} = System.cmd("curl", args, stderr_to_stdout: true)
-
-    File.rm(tmp_file)
-
-    # Split response body and status code
-    lines = String.split(output, "\n")
-    {body_lines, [status_code]} = Enum.split(lines, -1)
+  # Split the trailing status line off; a 428 asks for the emailed OTP and retries.
+  defp sudo_response(output, method, endpoint, json) do
+    {body_lines, [status_code]} = Enum.split(String.split(output, "\n"), -1)
     body = Enum.join(body_lines, "\n")
-    http_code = String.to_integer(String.trim(status_code))
-
     check_clock_drift(body)
 
-    if http_code == 428 do
-      handle_sudo_challenge(body, "POST", endpoint, json)
-    else
-      {:ok, body, http_code}
+    case Integer.parse(String.trim(status_code)) do
+      {428, _} -> handle_sudo_challenge(body, method, endpoint, json)
+      {http_code, _} -> {:ok, body, http_code}
+      :error -> {:ok, output, 0}
     end
   end
 end
