@@ -766,6 +766,7 @@ type SessionOptions struct {
 	TTL         int    // Time-to-live in seconds (default: 3600)
 	VCPU        int    // Number of virtual CPUs (default: 1)
 	Multiplexer string // Multiplexer to use (e.g., "tmux")
+	OS          string // Target OS: "linux" or "freebsd" (empty = omitted, API default linux)
 }
 
 // ListSessions lists all active sessions for the authenticated account.
@@ -821,6 +822,9 @@ func CreateSession(creds *Credentials, opts *SessionOptions) (map[string]interfa
 		}
 		if opts.Multiplexer != "" {
 			data["multiplexer"] = opts.Multiplexer
+		}
+		if opts.OS != "" {
+			data["os"] = opts.OS
 		}
 	}
 
@@ -889,6 +893,7 @@ type ServiceOptions struct {
 	VCPU             int         // Number of virtual CPUs
 	UnfreezeOnDemand bool        // Enable automatic unfreezing on HTTP request
 	InputFiles       []InputFile // Files to include (written to /tmp/ in container)
+	OS               string      // Target OS: "linux" or "freebsd" (empty = omitted, API default linux)
 }
 
 // ServiceUpdateOptions contains optional parameters for service updates.
@@ -947,6 +952,9 @@ func CreateService(creds *Credentials, name string, ports []int, bootstrap strin
 		}
 		if len(opts.InputFiles) > 0 {
 			data["input_files"] = opts.InputFiles
+		}
+		if opts.OS != "" {
+			data["os"] = opts.OS
 		}
 	}
 
@@ -1954,6 +1962,7 @@ type CLIOptions struct {
 	PublicKey    string
 	SecretKey    string
 	Network      string
+	OS           string // --os: "linux" or "freebsd"; empty means omit the field
 	VCPU         int
 	Yes          bool
 	Help         bool
@@ -1989,6 +1998,7 @@ Global Options:
   -p, --public-key KEY   API public key
   -k, --secret-key KEY   API secret key
   -n, --network MODE     Network: zerotrust (default) or semitrusted
+      --os OS            Target OS: linux (default) or freebsd (execute, session, service)
   -v, --vcpu N           vCPU count (1-8)
   -y, --yes              Skip confirmation prompts
   -h, --help             Show help
@@ -2296,6 +2306,9 @@ func runExecute(creds *Credentials, opts *CLIOptions) int {
 	if opts.Network != "" {
 		data["network_mode"] = opts.Network
 	}
+	if opts.OS != "" {
+		data["os"] = opts.OS
+	}
 	if opts.VCPU > 0 {
 		data["vcpu"] = opts.VCPU
 	}
@@ -2458,6 +2471,7 @@ func runSession(creds *Credentials, args []string, opts *CLIOptions) int {
 	if opts.VCPU > 0 {
 		sessionOpts.VCPU = opts.VCPU
 	}
+	sessionOpts.OS = opts.OS
 	if fs.tmux {
 		sessionOpts.Multiplexer = "tmux"
 	} else if fs.screen {
@@ -2751,6 +2765,7 @@ func runService(creds *Credentials, args []string, opts *CLIOptions) int {
 		if opts.VCPU > 0 {
 			serviceOpts.VCPU = opts.VCPU
 		}
+		serviceOpts.OS = opts.OS
 		if len(opts.Files) > 0 {
 			inputFiles, err := buildInputFiles(opts.Files)
 			if err != nil {
@@ -3737,6 +3752,27 @@ func runLanguages(creds *Credentials, args []string) int {
 	return ExitSuccess
 }
 
+// osMissingValue marks a --os flag given without a value (fails NormalizeOS).
+const osMissingValue = "\x00missing"
+
+// NormalizeOS validates a target OS name case-insensitively and returns its
+// canonical form: "" (not given, field omitted), "linux" or "freebsd".
+func NormalizeOS(v string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	if v == osMissingValue {
+		return "", fmt.Errorf("--os requires a value: linux or freebsd")
+	}
+	switch strings.ToLower(v) {
+	case "linux":
+		return "linux", nil
+	case "freebsd":
+		return "freebsd", nil
+	}
+	return "", fmt.Errorf("invalid --os '%s' (expected linux or freebsd)", v)
+}
+
 // parseGlobalFlags parses global CLI options
 func parseGlobalFlags(args []string) (*CLIOptions, []string) {
 	opts := &CLIOptions{AccountIndex: -1}
@@ -3794,6 +3830,18 @@ func parseGlobalFlags(args []string) (*CLIOptions, []string) {
 				opts.Network = args[i+1]
 				i++
 			}
+		case arg == "--os":
+			if i+1 < len(args) {
+				opts.OS = args[i+1]
+				i++
+			} else {
+				opts.OS = osMissingValue
+			}
+		case strings.HasPrefix(arg, "--os="):
+			opts.OS = strings.TrimPrefix(arg, "--os=")
+			if opts.OS == "" {
+				opts.OS = osMissingValue
+			}
 		case arg == "-v" || arg == "--vcpu":
 			if i+1 < len(args) {
 				if v, err := strconv.Atoi(args[i+1]); err == nil {
@@ -3826,6 +3874,14 @@ func CliMain() {
 	}
 
 	opts, remaining := parseGlobalFlags(os.Args[1:])
+
+	// Validate --os before any request is made
+	if osName, err := NormalizeOS(opts.OS); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(ExitInvalidArgs)
+	} else {
+		opts.OS = osName
+	}
 
 	if opts.Help && len(remaining) == 0 {
 		printUsage()
