@@ -334,11 +334,28 @@ def _save_languages_cache(languages: List[str]) -> None:
         pass  # Cache failures are non-fatal
 
 
+OS_CHOICES = ("linux", "freebsd")
+
+
+def _with_os(data: Dict[str, Any], target_os: Optional[str]) -> Dict[str, Any]:
+    """Add "os" to a request body only when a target OS was given.
+
+    Omitting the field keeps bodies byte-identical for API versions that predate it.
+    """
+    if target_os:
+        value = target_os.lower()
+        if value not in OS_CHOICES:
+            raise ValueError(f"invalid os '{target_os}' (expected linux or freebsd)")
+        data["os"] = value
+    return data
+
+
 def execute_code(
     language: str,
     code: str,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    target_os: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute code synchronously (blocks until completion).
@@ -348,6 +365,7 @@ def execute_code(
         code: Source code to execute
         public_key: Optional API key (uses credentials resolution if not provided)
         secret_key: Optional API secret (uses credentials resolution if not provided)
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Response dict containing stdout, stderr, exit code, etc.
@@ -363,7 +381,7 @@ def execute_code(
         "/execute",
         public_key,
         secret_key,
-        {"language": language, "code": code},
+        _with_os({"language": language, "code": code}, target_os),
     )
 
     # If we got a job_id, poll until completion
@@ -381,6 +399,7 @@ def execute_async(
     code: str,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    target_os: Optional[str] = None,
 ) -> str:
     """
     Execute code asynchronously (returns immediately with job_id).
@@ -390,6 +409,7 @@ def execute_async(
         code: Source code to execute
         public_key: Optional API key
         secret_key: Optional API secret
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Job ID string
@@ -405,7 +425,7 @@ def execute_async(
         "/execute",
         public_key,
         secret_key,
-        {"language": language, "code": code},
+        _with_os({"language": language, "code": code}, target_os),
     )
     return response.get("job_id")
 
@@ -884,6 +904,7 @@ def create_session(
     shell: Optional[str] = None,
     multiplexer: Optional[str] = None,
     vcpu: int = 1,
+    target_os: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new interactive session.
@@ -897,6 +918,7 @@ def create_session(
         shell: Optional shell to use (e.g., "bash", "python3")
         multiplexer: Optional terminal multiplexer ("tmux" or "screen")
         vcpu: Number of vCPUs (1-8, default 1)
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Response dict containing session_id, container_name, etc.
@@ -919,6 +941,7 @@ def create_session(
         data["multiplexer"] = multiplexer
     if vcpu > 1:
         data["vcpu"] = vcpu
+    _with_os(data, target_os)
 
     return _make_request("POST", "/sessions", public_key, secret_key, data)
 
@@ -1126,6 +1149,7 @@ def create_service(
     unfreeze_on_demand: bool = False,
     golden_image: Optional[str] = None,
     input_files: Optional[List[Dict[str, str]]] = None,
+    target_os: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new persistent service.
@@ -1143,6 +1167,7 @@ def create_service(
         unfreeze_on_demand: If True, automatically unfreeze service on incoming requests
         golden_image: Optional LXD image alias (e.g., "golden-alpine-3.24")
         input_files: Optional list of dicts with "filename" and "content" (base64)
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Response dict containing service_id, etc.
@@ -1177,6 +1202,7 @@ def create_service(
         data["golden_image"] = golden_image
     if input_files:
         data["input_files"] = input_files
+    _with_os(data, target_os)
 
     return _make_request("POST", "/services", public_key, secret_key, data)
 
@@ -2816,6 +2842,8 @@ Examples:
                         help="Skip confirmation prompts")
     parser.add_argument("--account", type=int, metavar="N",
                         help="Select account row N from accounts.csv (overrides env vars)")
+    parser.add_argument("--os", type=str.lower, choices=OS_CHOICES, metavar="OS",
+                        help="Target OS: linux (default) or freebsd (execute, session, service)")
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -3084,7 +3112,7 @@ def _handle_execute_command(args, public_key: str, secret_key: str):
             sys.exit(1)
 
     # Execute code
-    result = execute_code(language, code, public_key, secret_key)
+    result = execute_code(language, code, public_key, secret_key, target_os=getattr(args, "os", None))
 
     # Output result
     stdout = result.get("stdout", "")
@@ -3157,6 +3185,7 @@ def _handle_session_command(args, public_key: str, secret_key: str):
             public_key=public_key,
             secret_key=secret_key,
             multiplexer=multiplexer,
+            target_os=getattr(args, "os", None),
         )
 
         session_id = result.get("session_id", result.get("id", ""))
@@ -3312,6 +3341,7 @@ def _handle_service_command(args, public_key: str, secret_key: str):
             service_type=args.service_type,
             golden_image=getattr(args, 'golden_image', None),
             input_files=service_input_files,
+            target_os=getattr(args, "os", None),
         )
 
         service_id = result.get("service_id", result.get("id", ""))
