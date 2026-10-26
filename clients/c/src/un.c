@@ -36,6 +36,7 @@
 #include <libwebsockets.h>
 #include <pwd.h>
 #include <fcntl.h>
+#include <strings.h>
 
 #ifdef UNSANDBOX_LIBRARY
 #include "un.h"
@@ -112,6 +113,11 @@ static const char* api_ws_host(int *port, int *use_ssl) {
 }
 
 #define API_URL api_execute_url()
+
+// Target OS from the global --os flag: NULL (field omitted, API default linux),
+// "linux" or "freebsd". Sent as "os" in POST /execute, /sessions and /services only,
+// so API versions that predate the field see byte-identical bodies when it is absent.
+static const char *g_target_os = NULL;
 #define API_BASE api_base()
 #define PORTAL_BASE portal_base()
 #define MAX_FILE_SIZE (100 * 1024 * 1024) // 100MB max single file
@@ -2276,6 +2282,9 @@ static struct SessionInfo create_session(const UnsandboxCredentials *creds, cons
     if (vcpu > 1) {
         p += sprintf(p, ",\"vcpu\":%d", vcpu);
     }
+    if (g_target_os) {
+        p += sprintf(p, ",\"os\":\"%s\"", g_target_os);
+    }
     // Add input files
     if (input_file_count > 0) {
         p += sprintf(p, ",\"input_files\":[");
@@ -3340,6 +3349,11 @@ static char* create_service(const UnsandboxCredentials *creds, const char *name,
     if (vcpu > 1) {
         if (p > payload + 1) p += sprintf(p, ",");
         p += sprintf(p, "\"vcpu\":%d", vcpu);
+    }
+
+    if (g_target_os) {
+        if (p > payload + 1) p += sprintf(p, ",");
+        p += sprintf(p, "\"os\":\"%s\"", g_target_os);
     }
 
     // Service type for SRV-enabled services (minecraft, mumble, etc.)
@@ -7003,6 +7017,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  -p KEY           Public key (or set UNSANDBOX_PUBLIC_KEY env var)\n");
     fprintf(stderr, "  -k KEY           Secret key (or set UNSANDBOX_SECRET_KEY env var)\n");
     fprintf(stderr, "  -n MODE          Network mode: zerotrust (default) or semitrusted\n");
+    fprintf(stderr, "  --os OS          Target OS: linux (default) or freebsd (execute, session, service)\n");
     fprintf(stderr, "  -v N, --vcpu N   vCPU count 1-8, each vCPU gets 2GB RAM. Default: 1\n");
     fprintf(stderr, "  -y               Skip confirmation for large uploads (>1GB)\n");
     fprintf(stderr, "  -h               Show this help\n");
@@ -9879,9 +9894,43 @@ const char *unsandbox_last_error(void) {
 #endif /* UNSANDBOX_LIBRARY - end of library API */
 
 #ifndef UNSANDBOX_LIBRARY
+// Remove the global --os OS / --os=OS flag from argv (any position, any subcommand)
+// and validate it before any request is made. Returns 0 on success, 1 on error.
+static int extract_os_flag(int *argc, char *argv[]) {
+    int out = 1;
+    for (int i = 1; i < *argc; i++) {
+        const char *val;
+        if (strcmp(argv[i], "--os") == 0) {
+            if (i + 1 >= *argc) {
+                fprintf(stderr, "Error: --os requires a value: linux or freebsd\n");
+                return 1;
+            }
+            val = argv[++i];
+        } else if (strncmp(argv[i], "--os=", 5) == 0) {
+            val = argv[i] + 5;
+        } else {
+            argv[out++] = argv[i];
+            continue;
+        }
+        if (strcasecmp(val, "linux") == 0) {
+            g_target_os = "linux";
+        } else if (strcasecmp(val, "freebsd") == 0) {
+            g_target_os = "freebsd";
+        } else {
+            fprintf(stderr, "Error: invalid --os '%s' (expected linux or freebsd)\n", val);
+            return 1;
+        }
+    }
+    *argc = out;
+    argv[out] = NULL;
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     // Disable stdout buffering for real-time output
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    if (extract_os_flag(&argc, argv) != 0) return 1;
 
     const char *filename = NULL;
     const char *cli_public_key = NULL;   // -p flag
@@ -11848,6 +11897,11 @@ jobs_cleanup:
     // Add TTL if specified
     if (ttl > 0) {
         p += sprintf(p, ",\"ttl\":%d", ttl);
+    }
+
+    // Add target OS only when --os was given
+    if (g_target_os) {
+        p += sprintf(p, ",\"os\":\"%s\"", g_target_os);
     }
 
     p += sprintf(p, "}");

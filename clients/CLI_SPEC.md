@@ -77,6 +77,7 @@ un paas logs [options]            # Platform logs (partner keys)
 | `--public-key KEY` | `-p` | API public key |
 | `--secret-key KEY` | `-k` | API secret key |
 | `--network MODE` | `-n` | Network: zerotrust or semitrusted |
+| `--os OS` | | Target OS: linux (default) or freebsd, case-insensitive. Sent as `"os"` in POST /execute, /sessions, /services only when given; any other value exits non-zero before a request |
 | `--vcpu N` | `-v` | vCPU count (1-8) |
 | `--yes` | `-y` | Skip confirmation prompts |
 | `--help` | `-h` | Show help |
