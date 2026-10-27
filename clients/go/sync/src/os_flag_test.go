@@ -129,6 +129,7 @@ func TestOSFlagInvalidSendsNothing(t *testing.T) {
 	for _, args := range [][]string{
 		{"--os", "openbsd", "-s", "bash", "echo hi"},
 		{"--os=", "-s", "bash", "echo hi"},
+		{"--os", "", "-s", "bash", "echo hi"},
 		{"-s", "bash", "echo hi", "--os"},
 	} {
 		code, out, reqs := runCLI(t, args...)

@@ -3755,6 +3755,9 @@ func runLanguages(creds *Credentials, args []string) int {
 // osMissingValue marks a --os flag given without a value (fails NormalizeOS).
 const osMissingValue = "\x00missing"
 
+// osEmptyValue marks "--os ''", an explicitly empty value (fails NormalizeOS).
+const osEmptyValue = "\x00empty"
+
 // NormalizeOS validates a target OS name case-insensitively and returns its
 // canonical form: "" (not given, field omitted), "linux" or "freebsd".
 func NormalizeOS(v string) (string, error) {
@@ -3763,6 +3766,9 @@ func NormalizeOS(v string) (string, error) {
 	}
 	if v == osMissingValue {
 		return "", fmt.Errorf("--os requires a value: linux or freebsd")
+	}
+	if v == osEmptyValue {
+		return "", fmt.Errorf("invalid --os '' (expected linux or freebsd)")
 	}
 	switch strings.ToLower(v) {
 	case "linux":
@@ -3833,6 +3839,9 @@ func parseGlobalFlags(args []string) (*CLIOptions, []string) {
 		case arg == "--os":
 			if i+1 < len(args) {
 				opts.OS = args[i+1]
+				if opts.OS == "" {
+					opts.OS = osEmptyValue
+				}
 				i++
 			} else {
 				opts.OS = osMissingValue
