@@ -75,8 +75,15 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::time::sleep;
 
-/// API base URL
-const API_BASE: &str = "https://api.unsandbox.com";
+/// API base URL: UNSANDBOX_API_URL, default https://api.unsandbox.com, trailing slash stripped
+fn api_base() -> String {
+    env::var("UNSANDBOX_API_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "https://api.unsandbox.com".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
 
 /// Languages cache TTL in seconds (1 hour)
 const LANGUAGES_CACHE_TTL: u64 = 3600;
@@ -123,6 +130,10 @@ pub enum UnsandboxError {
     /// Missing expected field in response
     #[error("Missing field in response: {0}")]
     MissingField(String),
+
+    /// Invalid target OS (expected "linux" or "freebsd")
+    #[error("invalid os '{0}' (expected linux or freebsd)")]
+    InvalidOs(String),
 }
 
 /// Result type for unsandbox SDK operations
@@ -370,6 +381,8 @@ pub struct SessionCreateOptions {
     pub tmux: Option<bool>,
     /// Whether to use screen multiplexer
     pub screen: Option<bool>,
+    /// Target OS: "linux" (API default) or "freebsd"
+    pub os: Option<String>,
 }
 
 /// Options for creating a service
@@ -387,6 +400,8 @@ pub struct ServiceCreateOptions {
     pub bootstrap_url: Option<String>,
     /// Whether to enable automatic unfreezing on incoming HTTP requests
     pub unfreeze_on_demand: Option<bool>,
+    /// Target OS: "linux" (API default) or "freebsd"
+    pub os: Option<String>,
 }
 
 /// Options for updating a service
@@ -816,7 +831,7 @@ async fn make_request<T: for<'de> Deserialize<'de>>(
         .timeout(Duration::from_secs(120))
         .build()?;
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
 
     let body_str = match body {
@@ -920,10 +935,45 @@ async fn save_languages_cache(languages: &[String]) {
 /// println!("Exit code: {}", result.exit_code);
 /// ```
 pub async fn execute_code(language: &str, code: &str, creds: &Credentials) -> Result<ExecuteResult> {
-    let body = serde_json::json!({
+    execute_code_with_os(language, code, None, creds).await
+}
+
+/// Normalize a target OS name: "linux" or "freebsd", case-insensitive.
+///
+/// Returns the lowercase name, or `UnsandboxError::InvalidOs` for any other
+/// value (including the empty string).
+pub fn normalize_os(os: &str) -> Result<String> {
+    let value = os.to_lowercase();
+    match value.as_str() {
+        "linux" | "freebsd" => Ok(value),
+        _ => Err(UnsandboxError::InvalidOs(os.to_string())),
+    }
+}
+
+/// Add `"os"` to a request body when a target OS is given; leave the body
+/// unchanged otherwise.
+fn with_os(body: &mut serde_json::Value, os: Option<&str>) -> Result<()> {
+    if let Some(os) = os {
+        body["os"] = serde_json::json!(normalize_os(os)?);
+    }
+    Ok(())
+}
+
+/// Execute code on a chosen target OS (waits for completion).
+///
+/// Same as [`execute_code`], plus `os`: `Some("linux")` or `Some("freebsd")`
+/// (case-insensitive). `None` omits the field (API default, linux).
+pub async fn execute_code_with_os(
+    language: &str,
+    code: &str,
+    os: Option<&str>,
+    creds: &Credentials,
+) -> Result<ExecuteResult> {
+    let mut body = serde_json::json!({
         "language": language,
         "code": code
     });
+    with_os(&mut body, os)?;
 
     let response: ExecuteResponse = make_request("POST", "/execute", creds, Some(&body)).await?;
 
@@ -958,10 +1008,24 @@ pub async fn execute_code(language: &str, code: &str, creds: &Credentials) -> Re
 /// let result = wait_for_job(&job_id, &creds, None).await?;
 /// ```
 pub async fn execute_async(language: &str, code: &str, creds: &Credentials) -> Result<String> {
-    let body = serde_json::json!({
+    execute_async_with_os(language, code, None, creds).await
+}
+
+/// Execute code asynchronously on a chosen target OS.
+///
+/// Same as [`execute_async`], plus `os`: `Some("linux")` or `Some("freebsd")`
+/// (case-insensitive). `None` omits the field (API default, linux).
+pub async fn execute_async_with_os(
+    language: &str,
+    code: &str,
+    os: Option<&str>,
+    creds: &Credentials,
+) -> Result<String> {
+    let mut body = serde_json::json!({
         "language": language,
         "code": code
     });
+    with_os(&mut body, os)?;
 
     let response: ExecuteResponse = make_request("POST", "/execute", creds, Some(&body)).await?;
     Ok(response.job_id)
@@ -1321,6 +1385,7 @@ pub async fn create_session(
         if let Some(screen) = opts.screen {
             body["screen"] = serde_json::json!(screen);
         }
+        with_os(&mut body, opts.os.as_deref())?;
     }
 
     make_request("POST", "/sessions", creds, Some(&body)).await
@@ -1511,6 +1576,7 @@ pub async fn create_service(
         if let Some(unfreeze_on_demand) = opts.unfreeze_on_demand {
             body["unfreeze_on_demand"] = serde_json::json!(unfreeze_on_demand);
         }
+        with_os(&mut body, opts.os.as_deref())?;
     }
 
     make_request("POST", "/services", creds, Some(&body)).await
@@ -1714,7 +1780,7 @@ pub async fn set_service_env(
         .timeout(Duration::from_secs(120))
         .build()?;
 
-    let url = format!("{}{}", API_BASE, path);
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
     let signature = sign_request(&creds.secret_key, timestamp, "PUT", &path, &content);
 
@@ -1846,8 +1912,8 @@ pub async fn validate_keys(creds: &Credentials) -> Result<KeysValid> {
         .timeout(Duration::from_secs(30))
         .build()?;
 
-    let url = "https://api.unsandbox.com/keys/validate";
     let path = "/keys/validate";
+    let url = format!("{}{}", api_base(), path);
     let timestamp = get_timestamp();
     let body_str = "";
     let signature = sign_request(&creds.secret_key, timestamp, "POST", path, body_str);
@@ -1956,6 +2022,8 @@ struct CliOptions {
     public_key: Option<String>,    // -p, --public-key
     secret_key: Option<String>,    // -k, --secret-key
     network: Option<String>,       // -n, --network
+    os: Option<String>,            // --os (normalized)
+    os_error: Option<String>,      // --os error to report
     vcpu: Option<u32>,             // -v, --vcpu
     yes: bool,                     // -y, --yes
     help: bool,                    // -h, --help
@@ -2037,6 +2105,7 @@ GLOBAL OPTIONS:
     -p, --public-key KEY   API public key
     -k, --secret-key KEY   API secret key
     -n, --network MODE     Network mode: zerotrust or semitrusted
+    --os OS                Target OS: linux (default) or freebsd (execute, session, service)
     -v, --vcpu N           vCPU count (1-8)
     -y, --yes              Skip confirmation prompts
     -h, --help             Show this help
@@ -2089,6 +2158,15 @@ EXAMPLES:
     un session --tmux              Start persistent session
     un service --name web --ports 80 --bootstrap 'python -m http.server 80'
 ");
+}
+
+fn set_os(opts: &mut CliOptions, value: &str) {
+    match normalize_os(value) {
+        Ok(os) => opts.os = Some(os),
+        Err(_) => {
+            opts.os_error = Some(format!("invalid --os '{}' (expected linux or freebsd)", value));
+        }
+    }
 }
 
 fn parse_args(args: &[String]) -> CliOptions {
@@ -2175,6 +2253,19 @@ fn parse_args(args: &[String]) -> CliOptions {
                 } else {
                     i += 1;
                 }
+            }
+            "--os" => {
+                if i + 1 < args.len() {
+                    set_os(&mut opts, &args[i + 1]);
+                    i += 2;
+                } else {
+                    opts.os_error = Some("--os requires a value: linux or freebsd".to_string());
+                    i += 1;
+                }
+            }
+            s if s.starts_with("--os=") => {
+                set_os(&mut opts, &s["--os=".len()..]);
+                i += 1;
             }
             "-v" | "--vcpu" => {
                 if i + 1 < args.len() {
@@ -2547,7 +2638,7 @@ async fn cmd_execute(opts: &CliOptions) -> i32 {
     };
 
     // Execute the code
-    match execute_code(&language, &code, &creds).await {
+    match execute_code_with_os(&language, &code, opts.os.as_deref(), &creds).await {
         Ok(result) => {
             print!("{}", result.output);
             println!("---");
@@ -2701,6 +2792,7 @@ async fn cmd_session(opts: &CliOptions) -> i32 {
         vcpu: opts.vcpu,
         tmux: if opts.session_tmux { Some(true) } else { None },
         screen: if opts.session_screen { Some(true) } else { None },
+        os: opts.os.clone(),
     };
 
     match create_session(&shell, &creds, Some(session_opts)).await {
@@ -2948,6 +3040,7 @@ async fn cmd_service(opts: &CliOptions) -> i32 {
             domains: opts.service_domains.as_ref().map(|d| {
                 d.split(',').map(|s| s.trim().to_string()).collect()
             }),
+            os: opts.os.clone(),
             ..Default::default()
         };
 
@@ -3257,6 +3350,11 @@ async fn cli_main_async() -> i32 {
         return EXIT_SUCCESS;
     }
 
+    if let Some(ref err) = opts.os_error {
+        eprintln!("Error: {}", err);
+        return EXIT_INVALID_ARGS;
+    }
+
     // Dispatch based on command
     match opts.command.as_deref() {
         Some("session") => cmd_session(&opts).await,
@@ -3274,8 +3372,9 @@ async fn cli_main_async() -> i32 {
         }
         Some(cmd) => {
             // Treat unknown command as file to execute
+            let cmd = cmd.to_string();
             let mut new_opts = opts;
-            new_opts.positional.insert(0, cmd.to_string());
+            new_opts.positional.insert(0, cmd);
             new_opts.command = None;
             cmd_execute(&new_opts).await
         }
@@ -3293,7 +3392,10 @@ async fn cli_main_async() -> i32 {
 /// }
 /// ```
 pub fn cli_main() -> i32 {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
     rt.block_on(cli_main_async())
 }
 

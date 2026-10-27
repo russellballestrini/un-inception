@@ -69,7 +69,7 @@ require 'optparse'
 # Returns Future objects that can be awaited with .value
 module UnAsync
   # API base URL
-  API_BASE = 'https://api.unsandbox.com'
+  API_BASE = ENV.fetch('UNSANDBOX_API_URL', 'https://api.unsandbox.com').sub(%r{/+\z}, '')
 
   # Polling delays in milliseconds for exponential backoff
   POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000].freeze
@@ -188,13 +188,35 @@ module UnAsync
     end
   end
 
+  # Target OS values accepted by the API (omitted = API default, linux)
+  OS_CHOICES = %w[linux freebsd].freeze
+
   class << self
+    # Normalize a target OS name: "linux" or "freebsd", case-insensitive
+    #
+    # @param os [String] Target OS name
+    # @return [String] Lowercase OS name
+    # @raise [ArgumentError] If the value is not linux or freebsd
+    def normalize_os(os)
+      value = os.to_s.downcase
+      raise ArgumentError, "invalid os '#{os}' (expected linux or freebsd)" unless OS_CHOICES.include?(value)
+
+      value
+    end
+
+    # Add "os" to a request body when a target OS is given
+    def with_os(data, os)
+      data[:os] = normalize_os(os) unless os.nil?
+      data
+    end
+
     # Execute code asynchronously (returns Future, awaits until completion)
     #
     # @param language [String] Programming language (e.g., "python", "javascript", "go")
     # @param code [String] Source code to execute
     # @param public_key [String, nil] Optional API key (uses credentials resolution if not provided)
     # @param secret_key [String, nil] Optional API secret (uses credentials resolution if not provided)
+    # @param os [String, nil] Target OS: "linux" or "freebsd" (nil = API default, linux)
     # @return [Future<Hash>] Future resolving to response hash containing stdout, stderr, exit code, etc.
     # @raise [CredentialsError] If no credentials found (on .value)
     # @raise [APIError] If API request fails (on .value)
@@ -204,7 +226,8 @@ module UnAsync
     #     # Do other work...
     #     result = future.value
     #     puts result["stdout"]  # => "hello\n"
-    def execute_code(language, code, public_key: nil, secret_key: nil)
+    def execute_code(language, code, public_key: nil, secret_key: nil, os: nil)
+      data = with_os({ language: language, code: code }, os)
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         response = make_request_sync(
@@ -212,7 +235,7 @@ module UnAsync
           '/execute',
           pk,
           sk,
-          { language: language, code: code }
+          data
         )
 
         # If we got a job_id, poll until completion
@@ -242,7 +265,8 @@ module UnAsync
     #     job_id = future.value
     #     # Later...
     #     result = UnAsync.wait_for_job(job_id).value
-    def execute_async(language, code, public_key: nil, secret_key: nil)
+    def execute_async(language, code, public_key: nil, secret_key: nil, os: nil)
+      data = with_os({ language: language, code: code }, os)
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         response = make_request_sync(
@@ -250,7 +274,7 @@ module UnAsync
           '/execute',
           pk,
           sk,
-          { language: language, code: code }
+          data
         )
         response['job_id']
       end
@@ -608,7 +632,8 @@ module UnAsync
     # @example
     #     result = UnAsync.create_session("bash", network_mode: "semitrusted").value
     #     puts result["session_id"]
-    def create_session(language, public_key: nil, secret_key: nil, network_mode: 'zerotrust', ttl: 3600, multiplexer: nil, vcpu: 1)
+    def create_session(language, public_key: nil, secret_key: nil, network_mode: 'zerotrust', ttl: 3600, multiplexer: nil, vcpu: 1, os: nil)
+      os = normalize_os(os) unless os.nil?
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         data = {
@@ -618,6 +643,7 @@ module UnAsync
         data[:shell] = language if language
         data[:multiplexer] = multiplexer if multiplexer
         data[:vcpu] = vcpu if vcpu > 1
+        with_os(data, os)
         make_request_sync('POST', '/sessions', pk, sk, data)
       end
     end
@@ -774,7 +800,8 @@ module UnAsync
     # @example
     #     result = UnAsync.create_service("web", [80, 443], "apt install -y nginx && nginx").value
     #     puts result["service_id"]
-    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false)
+    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false, os: nil)
+      os = normalize_os(os) unless os.nil?
       Future.new do
         pk, sk = resolve_credentials(public_key, secret_key)
         data = {
@@ -787,6 +814,7 @@ module UnAsync
         data[:custom_domains] = custom_domains if custom_domains
         data[:service_type] = service_type if service_type
         data[:unfreeze_on_demand] = unfreeze_on_demand if unfreeze_on_demand
+        with_os(data, os)
         make_request_sync('POST', '/services', pk, sk, data)
       end
     end
@@ -1427,7 +1455,7 @@ module UnAsync
       signature = sign_request(secret_key, timestamp, method, path, data ? body : nil)
 
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
+      http.use_ssl = (uri.scheme == 'https')
       http.open_timeout = REQUEST_TIMEOUT
       http.read_timeout = REQUEST_TIMEOUT
 
@@ -1490,7 +1518,7 @@ module UnAsync
       signature = sign_request(secret_key, timestamp, method, path, body)
 
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
+      http.use_ssl = (uri.scheme == 'https')
       http.open_timeout = REQUEST_TIMEOUT
       http.read_timeout = REQUEST_TIMEOUT
 
@@ -1628,6 +1656,10 @@ module UnAsync
         output: nil
       }
 
+      # --os OS / --os=OS is global: take it out of ARGV before dispatch,
+      # validate it before any credentials or HTTP request.
+      cli_extract_os(options)
+
       # Check for subcommands first
       if ARGV.empty?
         cli_show_help
@@ -1669,6 +1701,37 @@ module UnAsync
 
     private
 
+    # Remove --os OS / --os=OS from ARGV into options[:os] (normalized).
+    # Exits with an error on a missing or invalid value.
+    def cli_extract_os(options)
+      i = 0
+      while i < ARGV.length
+        arg = ARGV[i]
+        break if arg == '--'
+
+        if arg == '--os'
+          if i + 1 >= ARGV.length
+            $stderr.puts 'Error: --os requires a value: linux or freebsd'
+            exit(EXIT_INVALID_ARGS)
+          end
+          value = ARGV[i + 1]
+          ARGV.slice!(i, 2)
+        elsif arg.start_with?('--os=')
+          value = arg.sub('--os=', '')
+          ARGV.slice!(i, 1)
+        else
+          i += 1
+          next
+        end
+        begin
+          options[:os] = normalize_os(value)
+        rescue ArgumentError
+          $stderr.puts "Error: invalid --os '#{value}' (expected linux or freebsd)"
+          exit(EXIT_INVALID_ARGS)
+        end
+      end
+    end
+
     # Show main help
     def cli_show_help
       puts <<~HELP
@@ -1692,6 +1755,7 @@ module UnAsync
           -p, --public-key KEY   API public key
           -k, --secret-key KEY   API secret key
           -n, --network MODE     Network mode: zerotrust or semitrusted
+              --os OS            Target OS: linux (default) or freebsd (execute, session, service)
           -v, --vcpu N           vCPU count (1-8)
           -y, --yes              Skip confirmation prompts
           -h, --help             Show this help
@@ -1788,7 +1852,8 @@ module UnAsync
         language,
         code,
         public_key: options[:public_key],
-        secret_key: options[:secret_key]
+        secret_key: options[:secret_key],
+        os: options[:os]
       ).value
 
       # Output results
@@ -1920,6 +1985,7 @@ module UnAsync
           network_mode: options[:network],
           vcpu: options[:vcpu],
           multiplexer: multiplexer,
+          os: options[:os],
           **creds
         ).value
         puts "Session created: #{result['session_id']}"
@@ -2167,6 +2233,7 @@ module UnAsync
           vcpu: options[:vcpu],
           custom_domains: service_opts[:domains],
           service_type: service_opts[:type],
+          os: options[:os],
           **creds
         ).value
         puts "Service created: #{result['service_id']}"

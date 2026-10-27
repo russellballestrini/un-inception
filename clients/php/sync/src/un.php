@@ -77,6 +77,9 @@ class ApiException extends \Exception {
  */
 class Unsandbox {
     private const DEFAULT_API_BASE = 'https://api.unsandbox.com';
+
+    /** Target OS values accepted by the API (omitted = API default, linux) */
+    public const OS_CHOICES = ['linux', 'freebsd'];
     private const LANGUAGES_CACHE_TTL = 3600; // 1 hour
     private const POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000];
 
@@ -162,17 +165,37 @@ class Unsandbox {
     }
 
     /**
+     * Normalize a target OS name: "linux" or "freebsd", case-insensitive.
+     *
+     * @param string $os Target OS name
+     * @return string Lowercase OS name
+     * @throws \InvalidArgumentException Value is not linux or freebsd
+     */
+    public static function normalizeOs(string $os): string {
+        $value = strtolower($os);
+        if (!in_array($value, self::OS_CHOICES, true)) {
+            throw new \InvalidArgumentException("invalid os '{$os}' (expected linux or freebsd)");
+        }
+        return $value;
+    }
+
+    /**
      * Execute code synchronously (awaits until completion).
      *
      * @param string $language Programming language (e.g., "python", "javascript", "go")
      * @param string $code Source code to execute
      * @param string|null $publicKey Optional API key (uses credentials resolution if not provided)
      * @param string|null $secretKey Optional API secret (uses credentials resolution if not provided)
+     * @param string|null $os Target OS: "linux" or "freebsd" (null = API default, linux)
      * @return array Response array containing stdout, stderr, exit code, etc.
      * @throws CredentialsException Missing credentials
      * @throws ApiException API request failed
      */
-    public function executeCode(string $language, string $code, ?string $publicKey = null, ?string $secretKey = null): array {
+    public function executeCode(string $language, string $code, ?string $publicKey = null, ?string $secretKey = null, ?string $os = null): array {
+        $data = ['language' => $language, 'code' => $code];
+        if ($os !== null) {
+            $data['os'] = self::normalizeOs($os);
+        }
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
 
         $response = $this->makeRequest(
@@ -180,7 +203,7 @@ class Unsandbox {
             '/execute',
             $publicKey,
             $secretKey,
-            ['language' => $language, 'code' => $code]
+            $data
         );
 
         // If we got a job_id, poll until completion
@@ -201,11 +224,16 @@ class Unsandbox {
      * @param string $code Source code to execute
      * @param string|null $publicKey Optional API key
      * @param string|null $secretKey Optional API secret
+     * @param string|null $os Target OS: "linux" or "freebsd" (null = API default, linux)
      * @return string Job ID string
      * @throws CredentialsException Missing credentials
      * @throws ApiException API request failed
      */
-    public function executeAsync(string $language, string $code, ?string $publicKey = null, ?string $secretKey = null): string {
+    public function executeAsync(string $language, string $code, ?string $publicKey = null, ?string $secretKey = null, ?string $os = null): string {
+        $data = ['language' => $language, 'code' => $code];
+        if ($os !== null) {
+            $data['os'] = self::normalizeOs($os);
+        }
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
 
         $response = $this->makeRequest(
@@ -213,7 +241,7 @@ class Unsandbox {
             '/execute',
             $publicKey,
             $secretKey,
-            ['language' => $language, 'code' => $code]
+            $data
         );
 
         return $response['job_id'] ?? '';
@@ -887,7 +915,7 @@ class Unsandbox {
      * @param string $language Programming language or shell (e.g., "bash", "python3")
      * @param string|null $publicKey Optional API key
      * @param string|null $secretKey Optional API secret
-     * @param array $opts Optional parameters: 'network_mode', 'ttl', 'shell', 'multiplexer', 'vcpu'
+     * @param array $opts Optional parameters: 'network_mode', 'ttl', 'shell', 'multiplexer', 'vcpu', 'os' (linux or freebsd)
      * @return array Session info including session_id and container_name
      * @throws CredentialsException Missing credentials
      * @throws ApiException API request failed
@@ -898,6 +926,7 @@ class Unsandbox {
         ?string $secretKey = null,
         array $opts = []
     ): array {
+        $os = isset($opts['os']) ? self::normalizeOs($opts['os']) : null;
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
 
         $data = [
@@ -918,6 +947,9 @@ class Unsandbox {
         }
         if (isset($opts['input_files'])) {
             $data['input_files'] = $opts['input_files'];
+        }
+        if ($os !== null) {
+            $data['os'] = $os;
         }
 
         return $this->makeRequest('POST', '/sessions', $publicKey, $secretKey, $data);
@@ -1054,7 +1086,7 @@ class Unsandbox {
      * @param string $bootstrap Bootstrap command or URL
      * @param string|null $publicKey Optional API key
      * @param string|null $secretKey Optional API secret
-     * @param array $opts Optional parameters: 'network_mode', 'vcpu', 'service_type', 'custom_domains', 'bootstrap_content', 'input_files'
+     * @param array $opts Optional parameters: 'network_mode', 'vcpu', 'service_type', 'custom_domains', 'bootstrap_content', 'input_files', 'os' (linux or freebsd)
      * @return array Service info including service_id
      * @throws CredentialsException Missing credentials
      * @throws ApiException API request failed
@@ -1067,6 +1099,7 @@ class Unsandbox {
         ?string $secretKey = null,
         array $opts = []
     ): array {
+        $os = isset($opts['os']) ? self::normalizeOs($opts['os']) : null;
         [$publicKey, $secretKey] = $this->resolveCredentials($publicKey, $secretKey);
 
         // Convert ports to array if string
@@ -1100,6 +1133,9 @@ class Unsandbox {
         }
         if (isset($opts['unfreeze_on_demand']) && $opts['unfreeze_on_demand']) {
             $data['unfreeze_on_demand'] = true;
+        }
+        if ($os !== null) {
+            $data['os'] = $os;
         }
 
         return $this->makeRequest('POST', '/services', $publicKey, $secretKey, $data);
@@ -2481,6 +2517,7 @@ HELP;
             'public_key' => null,
             'secret_key' => null,
             'network' => 'zerotrust',
+            'os' => null,
             'vcpu' => 1,
             'yes' => false,
             'help' => false,
@@ -2526,6 +2563,23 @@ HELP;
             } elseif ($arg === '-n' || $arg === '--network') {
                 $i++;
                 $opts['network'] = $argv[$i] ?? 'zerotrust';
+            } elseif ($arg === '--os' || strpos($arg, '--os=') === 0) {
+                if ($arg === '--os') {
+                    $i++;
+                    if (!isset($argv[$i])) {
+                        $this->cliError("--os requires a value: linux or freebsd");
+                        exit(2);
+                    }
+                    $value = $argv[$i];
+                } else {
+                    $value = substr($arg, strlen('--os='));
+                }
+                try {
+                    $opts['os'] = self::normalizeOs($value);
+                } catch (\InvalidArgumentException $e) {
+                    $this->cliError("invalid --os '{$value}' (expected linux or freebsd)");
+                    exit(2);
+                }
             } elseif ($arg === '-v' || $arg === '--vcpu') {
                 $i++;
                 $opts['vcpu'] = (int)($argv[$i] ?? 1);
@@ -2634,7 +2688,7 @@ HELP;
             }
         }
 
-        $result = $this->executeCode($language, $code);
+        $result = $this->executeCode($language, $code, null, null, $opts['os']);
 
         // Output result
         if (isset($result['stdout'])) {
@@ -2731,6 +2785,9 @@ HELP;
         }
         if ($opts['vcpu'] > 1) {
             $createOpts['vcpu'] = $opts['vcpu'];
+        }
+        if ($opts['os'] !== null) {
+            $createOpts['os'] = $opts['os'];
         }
 
         $session = $this->createSession($sessionOpts['shell'] ?? 'bash', null, null, $createOpts);
@@ -2962,6 +3019,9 @@ HELP;
             }
             if ($serviceOpts['unfreeze_on_demand']) {
                 $createOpts['unfreeze_on_demand'] = true;
+            }
+            if ($opts['os'] !== null) {
+                $createOpts['os'] = $opts['os'];
             }
 
             // Handle input files
@@ -3978,6 +4038,7 @@ GLOBAL OPTIONS:
     -p, --public-key KEY    API public key
     -k, --secret-key KEY    API secret key
     -n, --network MODE      Network mode: zerotrust (default) or semitrusted
+    --os OS                 Target OS: linux (default) or freebsd (execute, session, service)
     -v, --vcpu N            vCPU count (1-8)
     -y, --yes               Skip confirmation prompts
     -h, --help              Show this help

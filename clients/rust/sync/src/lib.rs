@@ -137,6 +137,10 @@ pub enum UnsandboxError {
     /// Missing expected field in response
     #[error("Missing field in response: {0}")]
     MissingField(String),
+
+    /// Invalid target OS (expected "linux" or "freebsd")
+    #[error("invalid os '{0}' (expected linux or freebsd)")]
+    InvalidOs(String),
 }
 
 /// Result type for unsandbox SDK operations
@@ -393,6 +397,8 @@ pub struct SessionCreateOptions {
     pub tmux: Option<bool>,
     /// Whether to use screen multiplexer
     pub screen: Option<bool>,
+    /// Target OS: "linux" (API default) or "freebsd"
+    pub os: Option<String>,
 }
 
 /// Options for creating a service
@@ -412,6 +418,8 @@ pub struct ServiceCreateOptions {
     pub unfreeze_on_demand: Option<bool>,
     /// Input files to upload (filename + base64-encoded content)
     pub input_files: Option<Vec<InputFile>>,
+    /// Target OS: "linux" (API default) or "freebsd"
+    pub os: Option<String>,
 }
 
 /// A file to upload with a service create or redeploy request
@@ -1122,10 +1130,45 @@ fn save_languages_cache(languages: &[String]) {
 /// println!("Exit code: {}", result.exit_code);
 /// ```
 pub fn execute_code(language: &str, code: &str, creds: &Credentials) -> Result<ExecuteResult> {
-    let body = serde_json::json!({
+    execute_code_with_os(language, code, None, creds)
+}
+
+/// Normalize a target OS name: "linux" or "freebsd", case-insensitive.
+///
+/// Returns the lowercase name, or `UnsandboxError::InvalidOs` for any other
+/// value (including the empty string).
+pub fn normalize_os(os: &str) -> Result<String> {
+    let value = os.to_lowercase();
+    match value.as_str() {
+        "linux" | "freebsd" => Ok(value),
+        _ => Err(UnsandboxError::InvalidOs(os.to_string())),
+    }
+}
+
+/// Add `"os"` to a request body when a target OS is given; leave the body
+/// unchanged otherwise.
+fn with_os(body: &mut serde_json::Value, os: Option<&str>) -> Result<()> {
+    if let Some(os) = os {
+        body["os"] = serde_json::json!(normalize_os(os)?);
+    }
+    Ok(())
+}
+
+/// Execute code synchronously on a chosen target OS.
+///
+/// Same as [`execute_code`], plus `os`: `Some("linux")` or `Some("freebsd")`
+/// (case-insensitive). `None` omits the field (API default, linux).
+pub fn execute_code_with_os(
+    language: &str,
+    code: &str,
+    os: Option<&str>,
+    creds: &Credentials,
+) -> Result<ExecuteResult> {
+    let mut body = serde_json::json!({
         "language": language,
         "code": code
     });
+    with_os(&mut body, os)?;
 
     let response: ExecuteResponse = make_request("POST", "/execute", creds, Some(&body))?;
 
@@ -1160,10 +1203,24 @@ pub fn execute_code(language: &str, code: &str, creds: &Credentials) -> Result<E
 /// let result = wait_for_job(&job_id, &creds, None)?;
 /// ```
 pub fn execute_async(language: &str, code: &str, creds: &Credentials) -> Result<String> {
-    let body = serde_json::json!({
+    execute_async_with_os(language, code, None, creds)
+}
+
+/// Execute code asynchronously on a chosen target OS.
+///
+/// Same as [`execute_async`], plus `os`: `Some("linux")` or `Some("freebsd")`
+/// (case-insensitive). `None` omits the field (API default, linux).
+pub fn execute_async_with_os(
+    language: &str,
+    code: &str,
+    os: Option<&str>,
+    creds: &Credentials,
+) -> Result<String> {
+    let mut body = serde_json::json!({
         "language": language,
         "code": code
     });
+    with_os(&mut body, os)?;
 
     let response: ExecuteResponse = make_request("POST", "/execute", creds, Some(&body))?;
     Ok(response.job_id)
@@ -1870,6 +1927,7 @@ pub fn create_session(
         if let Some(screen) = opts.screen {
             body["screen"] = serde_json::json!(screen);
         }
+        with_os(&mut body, opts.os.as_deref())?;
     }
 
     make_request("POST", "/sessions", creds, Some(&body))
@@ -2065,6 +2123,7 @@ pub fn create_service(
                 body["input_files"] = serde_json::json!(input_files);
             }
         }
+        with_os(&mut body, opts.os.as_deref())?;
     }
 
     make_request("POST", "/services", creds, Some(&body))
@@ -3107,6 +3166,10 @@ struct CliOptions {
     // Languages options
     languages_json: bool,
 
+    // Target OS (--os): normalized value, or the error to report
+    os: Option<String>,
+    os_error: Option<String>,
+
     // Key options
     key_rotate: bool,       // key --rotate
     key_otp: Option<String>, // key --otp CODE
@@ -3137,6 +3200,7 @@ GLOBAL OPTIONS:
     -k, --secret-key KEY   API secret key
     --account N            Select account row N from accounts.csv (overrides env vars)
     -n, --network MODE     Network mode: zerotrust or semitrusted
+    --os OS                Target OS: linux (default) or freebsd (execute, session, service)
     -v, --vcpu N           vCPU count (1-8)
     -y, --yes              Skip confirmation prompts
     -h, --help             Show this help
@@ -3204,6 +3268,15 @@ EXAMPLES:
     un session --tmux              Start persistent session
     un service --name web --ports 80 --bootstrap 'python -m http.server 80'
 ");
+}
+
+fn set_os(opts: &mut CliOptions, value: &str) {
+    match normalize_os(value) {
+        Ok(os) => opts.os = Some(os),
+        Err(_) => {
+            opts.os_error = Some(format!("invalid --os '{}' (expected linux or freebsd)", value));
+        }
+    }
 }
 
 fn parse_args(args: &[String]) -> CliOptions {
@@ -3310,6 +3383,19 @@ fn parse_args(args: &[String]) -> CliOptions {
                 } else {
                     i += 1;
                 }
+            }
+            "--os" => {
+                if i + 1 < args.len() {
+                    set_os(&mut opts, &args[i + 1]);
+                    i += 2;
+                } else {
+                    opts.os_error = Some("--os requires a value: linux or freebsd".to_string());
+                    i += 1;
+                }
+            }
+            s if s.starts_with("--os=") => {
+                set_os(&mut opts, &s["--os=".len()..]);
+                i += 1;
             }
             "-v" | "--vcpu" => {
                 if i + 1 < args.len() {
@@ -3731,7 +3817,7 @@ fn cmd_execute(opts: &CliOptions) -> i32 {
     };
 
     // Execute the code
-    match execute_code(&language, &code, &creds) {
+    match execute_code_with_os(&language, &code, opts.os.as_deref(), &creds) {
         Ok(result) => {
             print!("{}", result.output);
             println!("---");
@@ -3885,6 +3971,7 @@ fn cmd_session(opts: &CliOptions) -> i32 {
         vcpu: opts.vcpu,
         tmux: if opts.session_tmux { Some(true) } else { None },
         screen: if opts.session_screen { Some(true) } else { None },
+        os: opts.os.clone(),
     };
 
     match create_session(&shell, &creds, Some(session_opts)) {
@@ -4165,6 +4252,7 @@ fn cmd_service(opts: &CliOptions) -> i32 {
                 d.split(',').map(|s| s.trim().to_string()).collect()
             }),
             input_files: service_input_files,
+            os: opts.os.clone(),
             ..Default::default()
         };
 
@@ -5035,6 +5123,11 @@ pub fn cli_main() -> i32 {
     if opts.help {
         print_help();
         return EXIT_SUCCESS;
+    }
+
+    if let Some(ref err) = opts.os_error {
+        eprintln!("Error: {}", err);
+        return EXIT_INVALID_ARGS;
     }
 
     // Dispatch based on command

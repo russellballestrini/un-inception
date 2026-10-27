@@ -94,13 +94,35 @@ module Un
     end
   end
 
+  # Target OS values accepted by the API (omitted = API default, linux)
+  OS_CHOICES = %w[linux freebsd].freeze
+
   class << self
+    # Normalize a target OS name: "linux" or "freebsd", case-insensitive
+    #
+    # @param os [String] Target OS name
+    # @return [String] Lowercase OS name
+    # @raise [ArgumentError] If the value is not linux or freebsd
+    def normalize_os(os)
+      value = os.to_s.downcase
+      raise ArgumentError, "invalid os '#{os}' (expected linux or freebsd)" unless OS_CHOICES.include?(value)
+
+      value
+    end
+
+    # Add "os" to a request body when a target OS is given
+    def with_os(data, os)
+      data[:os] = normalize_os(os) unless os.nil?
+      data
+    end
+
     # Execute code synchronously (blocks until completion)
     #
     # @param language [String] Programming language (e.g., "python", "javascript", "go")
     # @param code [String] Source code to execute
     # @param public_key [String, nil] Optional API key (uses credentials resolution if not provided)
     # @param secret_key [String, nil] Optional API secret (uses credentials resolution if not provided)
+    # @param os [String, nil] Target OS: "linux" or "freebsd" (nil = API default, linux)
     # @return [Hash] Response hash containing stdout, stderr, exit code, etc.
     # @raise [CredentialsError] If no credentials found
     # @raise [APIError] If API request fails
@@ -108,14 +130,15 @@ module Un
     # @example
     #     result = Un.execute_code("python", 'print("hello")')
     #     puts result["stdout"]  # => "hello\n"
-    def execute_code(language, code, public_key: nil, secret_key: nil)
+    def execute_code(language, code, public_key: nil, secret_key: nil, os: nil)
+      data = with_os({ language: language, code: code }, os)
       pk, sk = resolve_credentials(public_key, secret_key)
       response = make_request(
         'POST',
         '/execute',
         pk,
         sk,
-        { language: language, code: code }
+        data
       )
 
       # If we got a job_id, poll until completion
@@ -143,14 +166,15 @@ module Un
     #     job_id = Un.execute_async("python", 'import time; time.sleep(10); print("done")')
     #     # Later...
     #     result = Un.wait_for_job(job_id)
-    def execute_async(language, code, public_key: nil, secret_key: nil)
+    def execute_async(language, code, public_key: nil, secret_key: nil, os: nil)
+      data = with_os({ language: language, code: code }, os)
       pk, sk = resolve_credentials(public_key, secret_key)
       response = make_request(
         'POST',
         '/execute',
         pk,
         sk,
-        { language: language, code: code }
+        data
       )
       response['job_id']
     end
@@ -776,6 +800,7 @@ module Un
     # @param ttl [Integer] Time-to-live in seconds (default: 3600)
     # @param multiplexer [String, nil] Terminal multiplexer ("tmux" or "screen")
     # @param vcpu [Integer] Number of vCPUs (1-8)
+    # @param os [String, nil] Target OS: "linux" or "freebsd" (nil = API default, linux)
     # @return [Hash] Response hash with session_id and container_name
     # @raise [CredentialsError] If no credentials found
     # @raise [APIError] If API request fails
@@ -783,7 +808,8 @@ module Un
     # @example
     #     result = Un.create_session("bash", network_mode: "semitrusted")
     #     puts result["session_id"]
-    def create_session(language, public_key: nil, secret_key: nil, network_mode: 'zerotrust', ttl: 3600, multiplexer: nil, vcpu: 1)
+    def create_session(language, public_key: nil, secret_key: nil, network_mode: 'zerotrust', ttl: 3600, multiplexer: nil, vcpu: 1, os: nil)
+      os = normalize_os(os) unless os.nil?
       pk, sk = resolve_credentials(public_key, secret_key)
       data = {
         network_mode: network_mode,
@@ -792,6 +818,7 @@ module Un
       data[:shell] = language if language
       data[:multiplexer] = multiplexer if multiplexer
       data[:vcpu] = vcpu if vcpu > 1
+      with_os(data, os)
       make_request('POST', '/sessions', pk, sk, data)
     end
 
@@ -928,6 +955,7 @@ module Un
     # @param service_type [String, nil] Service type for SRV records (e.g., "minecraft")
     # @param unfreeze_on_demand [Boolean] If true, service will auto-wake on HTTP request (default: false)
     # @param input_files [Array<Hash>, nil] Optional list of hashes with "filename" and "content" (base64)
+    # @param os [String, nil] Target OS: "linux" or "freebsd" (nil = API default, linux)
     # @return [Hash] Response hash with service_id
     # @raise [CredentialsError] If no credentials found
     # @raise [APIError] If API request fails
@@ -935,7 +963,8 @@ module Un
     # @example
     #     result = Un.create_service("web", [80, 443], "apt install -y nginx && nginx")
     #     puts result["service_id"]
-    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false, input_files: nil)
+    def create_service(name, ports, bootstrap, public_key: nil, secret_key: nil, network_mode: 'semitrusted', vcpu: 1, custom_domains: nil, service_type: nil, unfreeze_on_demand: false, input_files: nil, os: nil)
+      os = normalize_os(os) unless os.nil?
       pk, sk = resolve_credentials(public_key, secret_key)
       data = {
         name: name,
@@ -948,6 +977,7 @@ module Un
       data[:service_type] = service_type if service_type
       data[:unfreeze_on_demand] = unfreeze_on_demand if unfreeze_on_demand
       data[:input_files] = input_files if input_files && !input_files.empty?
+      with_os(data, os)
       make_request('POST', '/services', pk, sk, data)
     end
 
@@ -2002,6 +2032,10 @@ module Un
       end
       Un.cli_account_index = options[:account_index]
 
+      # --os OS / --os=OS is global: take it out of ARGV before dispatch,
+      # validate it before any credentials or HTTP request.
+      cli_extract_os(options)
+
       # Check for subcommands first
       if ARGV.empty?
         cli_show_help
@@ -2052,6 +2086,37 @@ module Un
 
     private
 
+    # Remove --os OS / --os=OS from ARGV into options[:os] (normalized).
+    # Exits with an error on a missing or invalid value.
+    def cli_extract_os(options)
+      i = 0
+      while i < ARGV.length
+        arg = ARGV[i]
+        break if arg == '--'
+
+        if arg == '--os'
+          if i + 1 >= ARGV.length
+            $stderr.puts 'Error: --os requires a value: linux or freebsd'
+            exit(EXIT_INVALID_ARGS)
+          end
+          value = ARGV[i + 1]
+          ARGV.slice!(i, 2)
+        elsif arg.start_with?('--os=')
+          value = arg.sub('--os=', '')
+          ARGV.slice!(i, 1)
+        else
+          i += 1
+          next
+        end
+        begin
+          options[:os] = normalize_os(value)
+        rescue ArgumentError
+          $stderr.puts "Error: invalid --os '#{value}' (expected linux or freebsd)"
+          exit(EXIT_INVALID_ARGS)
+        end
+      end
+    end
+
     # Show main help
     def cli_show_help
       puts <<~HELP
@@ -2079,6 +2144,7 @@ module Un
           -k, --secret-key KEY   API secret key
               --account N        Use accounts.csv row N (overrides env vars)
           -n, --network MODE     Network mode: zerotrust or semitrusted
+              --os OS            Target OS: linux (default) or freebsd (execute, session, service)
           -v, --vcpu N           vCPU count (1-8)
           -y, --yes              Skip confirmation prompts
           -h, --help             Show this help
@@ -2368,7 +2434,8 @@ module Un
         language,
         code,
         public_key: options[:public_key],
-        secret_key: options[:secret_key]
+        secret_key: options[:secret_key],
+        os: options[:os]
       )
 
       # Output results
@@ -2500,6 +2567,7 @@ module Un
           network_mode: options[:network],
           vcpu: options[:vcpu],
           multiplexer: multiplexer,
+          os: options[:os],
           **creds
         )
         puts "Session created: #{result['session_id']}"
@@ -2768,6 +2836,7 @@ module Un
           vcpu: options[:vcpu],
           custom_domains: service_opts[:domains],
           service_type: service_opts[:type],
+          os: options[:os],
           input_files: service_input_files,
           **creds
         )
