@@ -621,7 +621,22 @@ def apiRequestText(endpoint, method, body, publicKey, secretKey) {
  * println result.stdout  // "Hello World\n"
  * }</pre>
  */
+/**
+ * Validate a target OS name case-insensitively.
+ *
+ * @param value "linux" or "freebsd" in any case, or null when not given
+ * @return the lowercase name, or null (field omitted, API default linux)
+ * @throws IllegalArgumentException for any other value, including ""
+ */
+def normalizeOs(value) {
+    if (value == null) return null
+    def os = value.toString().toLowerCase()
+    if (os == 'linux' || os == 'freebsd') return os
+    throw new IllegalArgumentException("invalid os '${value}' (expected linux or freebsd)")
+}
+
 def execute(String language, String code, Map options = [:]) {
+    def targetOs = normalizeOs(options.os)
     def (publicKey, secretKey) = getCredentials(
         options.publicKey,
         options.secretKey,
@@ -635,6 +650,7 @@ def execute(String language, String code, Map options = [:]) {
         ttl: options.ttl ?: DEFAULT_TTL,
         vcpu: options.vcpu ?: 1
     ]
+    if (targetOs) payload.os = targetOs
 
     if (options.env) {
         payload.env = options.env
@@ -672,6 +688,7 @@ def execute(String language, String code, Map options = [:]) {
  * }</pre>
  */
 def executeAsync(String language, String code, Map options = [:]) {
+    def targetOs = normalizeOs(options.os)
     def (publicKey, secretKey) = getCredentials(
         options.publicKey,
         options.secretKey,
@@ -685,6 +702,7 @@ def executeAsync(String language, String code, Map options = [:]) {
         ttl: options.ttl ?: DEFAULT_TTL,
         vcpu: options.vcpu ?: 1
     ]
+    if (targetOs) payload.os = targetOs
 
     if (options.env) payload.env = options.env
     if (options.inputFiles) {
@@ -1002,12 +1020,14 @@ def sessionGet(String sessionId, Map options = [:]) {
  * Create a new session.
  */
 def sessionCreate(Map options = [:]) {
+    def targetOs = normalizeOs(options.os)
     def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
     def payload = [
         network_mode: options.networkMode ?: 'zerotrust',
         shell: options.shell ?: 'bash'
     ]
     if (options.vcpu) payload.vcpu = options.vcpu
+    if (targetOs) payload.os = targetOs
     return apiRequest('/sessions', 'POST', payload, publicKey, secretKey)
 }
 
@@ -1084,8 +1104,10 @@ def serviceGet(String serviceId, Map options = [:]) {
  * Create a new service.
  */
 def serviceCreate(String name, Map options = [:]) {
+    def targetOs = normalizeOs(options.os)
     def (publicKey, secretKey) = getCredentials(options.publicKey, options.secretKey)
     def payload = [name: name]
+    if (targetOs) payload.os = targetOs
     if (options.ports) payload.ports = options.ports.split(',').collect { it.trim().toInteger() }
     if (options.domains) payload.domains = options.domains
     if (options.bootstrap) payload.bootstrap = options.bootstrap
@@ -1973,6 +1995,7 @@ class Client {
 
 class Args {
     String command = null
+    String targetOs = null
     String sourceFile = null
     String inlineLang = null
     String apiKey = null
@@ -2141,6 +2164,7 @@ def cmdExecute(args) {
     def options = [
         networkMode: args.network ?: 'zerotrust',
         vcpu: args.vcpu > 0 ? args.vcpu : 1,
+        os: args.targetOs,
         publicKey: publicKey,
         secretKey: secretKey
     ]
@@ -2240,6 +2264,7 @@ def cmdSession(args) {
     def payload = [shell: args.sessionShell ?: 'bash']
     if (args.network) payload.network = args.network
     if (args.vcpu > 0) payload.vcpu = args.vcpu
+    if (args.targetOs) payload.os = args.targetOs
 
     if (args.files) {
         payload.input_files = args.files.collect { filepath ->
@@ -2799,6 +2824,7 @@ def cmdService(args) {
         }
         if (args.network) payload.network = args.network
         if (args.vcpu > 0) payload.vcpu = args.vcpu
+        if (args.targetOs) payload.os = args.targetOs
 
         if (args.files) {
             payload.input_files = args.files.collect { filepath ->
@@ -2831,6 +2857,20 @@ def cmdService(args) {
 
     System.err.println("${RED}Error: Specify --name to create a service, or use --list, --info, etc.${RESET}")
     System.exit(1)
+}
+
+/** Parse a --os CLI value; exits non-zero with an error before any request when invalid. */
+def parseOsFlag(value) {
+    if (!value) {
+        System.err.println("${RED}Error: --os requires a value: linux or freebsd${RESET}")
+        System.exit(2)
+    }
+    try {
+        return normalizeOs(value)
+    } catch (IllegalArgumentException e) {
+        System.err.println("${RED}Error: invalid --os '${value}' (expected linux or freebsd)${RESET}")
+        System.exit(2)
+    }
 }
 
 def parseArgs(argv) {
@@ -3045,8 +3085,13 @@ def parseArgs(argv) {
             case '--json':
                 args.jsonOutput = true
                 break
+            case '--os':
+                args.targetOs = parseOsFlag(i + 1 < argv.size() ? argv[++i] : null)
+                break
             default:
-                if (argv[i].startsWith('-')) {
+                if (argv[i].startsWith('--os=')) {
+                    args.targetOs = parseOsFlag(argv[i].substring('--os='.length()))
+                } else if (argv[i].startsWith('-')) {
                     System.err.println("${RED}Unknown option: ${argv[i]}${RESET}")
                     System.exit(1)
                 } else {
@@ -3079,6 +3124,7 @@ Execute options:
   -o DIR              Output directory for artifacts
   -n MODE             Network mode (zerotrust/semitrusted)
   -v N                vCPU count (1-8)
+  --os OS             Target OS: linux (default) or freebsd (execute, session, service)
   -k KEY              API key (legacy)
   -p KEY              Public key
 

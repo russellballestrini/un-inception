@@ -1,6 +1,6 @@
 # UN Groovy Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -19,6 +19,10 @@ test-cli:
 test-library:
 	@echo "━━━ LIBRARY MODE ━━━"
 	@if [ -f "$(SYNC_DIR)/build.gradle" ]; then cd $(SYNC_DIR) && gradle test -q 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Tests incomplete"; fi
+
+test-os:
+	@echo "━━━ --os FLAG (offline, local mock API) ━━━"
+	@OS_FLAG_TIMEOUT=$${OS_FLAG_TIMEOUT:-120} bash $(ROOT_DIR)/tests/os_flag_cli.sh groovy $(SYNC_DIR)/src/un.groovy
 
 test-integration:
 	@echo "━━━ INTEGRATION MODE ━━━"

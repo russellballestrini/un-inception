@@ -127,8 +127,35 @@ data class Args(
     var imageClone: String? = null,
     var imageName: String? = null,
     var imagePorts: String? = null,
-    var accountIndex: Int = -1
+    var accountIndex: Int = -1,
+    var targetOs: String? = null
 )
+
+/**
+ * Validate a target OS name case-insensitively: "linux" or "freebsd" (any case)
+ * returns the lowercase name, null returns null (field omitted, API default linux),
+ * anything else (including "") throws IllegalArgumentException.
+ */
+fun normalizeOs(value: String?): String? {
+    if (value == null) return null
+    val os = value.lowercase()
+    if (os == "linux" || os == "freebsd") return os
+    throw IllegalArgumentException("invalid os '$value' (expected linux or freebsd)")
+}
+
+/** Parse a --os CLI value; exits non-zero with an error before any request when invalid. */
+fun parseOsFlag(value: String?): String {
+    if (value.isNullOrEmpty()) {
+        System.err.println("${RED}Error: --os requires a value: linux or freebsd${RESET}")
+        exitProcess(2)
+    }
+    return try {
+        normalizeOs(value)!!
+    } catch (e: IllegalArgumentException) {
+        System.err.println("${RED}Error: invalid --os '$value' (expected linux or freebsd)${RESET}")
+        exitProcess(2)
+    }
+}
 
 fun main(args: Array<String>) {
     // paas has its own flags (-n, -l, -f mean lines/level/follow there)
@@ -199,6 +226,7 @@ fun cmdExecute(args: Args) {
     if (args.vcpu > 0) {
         payload["vcpu"] = args.vcpu
     }
+    args.targetOs?.let { payload["os"] = it }
 
     val result = apiRequest("/execute", "POST", payload, publicKey, secretKey)
 
@@ -284,6 +312,8 @@ fun cmdSession(args: Args) {
         }
         payload["input_files"] = inputFiles
     }
+
+    args.targetOs?.let { payload["os"] = it }
 
     println("${YELLOW}Creating session...${RESET}")
     val result = apiRequest("/sessions", "POST", payload, publicKey, secretKey)
@@ -480,6 +510,7 @@ fun cmdService(args: Args) {
         if (args.vcpu > 0) {
             payload["vcpu"] = args.vcpu
         }
+        args.targetOs?.let { payload["os"] = it }
 
         val result = apiRequest("/services", "POST", payload, publicKey, secretKey)
         val serviceId = result["id"] as? String
@@ -1544,6 +1575,7 @@ fun parseArgs(args: Array<String>): Args {
             "--rotate" -> result.keyRotate = true
             "--otp" -> result.keyOtp = args[++i]
             "--account" -> result.accountIndex = args[++i].toInt()
+            "--os" -> result.targetOs = parseOsFlag(if (i + 1 < args.size) args[++i] else null)
             "--env-file" -> result.envFile = args[++i]
             "--info" -> {
                 when (result.command) {
@@ -1587,7 +1619,9 @@ fun parseArgs(args: Array<String>): Args {
                 }
             }
             else -> {
-                if (args[i].startsWith("-")) {
+                if (args[i].startsWith("--os=")) {
+                    result.targetOs = parseOsFlag(args[i].substring("--os=".length))
+                } else if (args[i].startsWith("-")) {
                     System.err.println("${RED}Unknown option: ${args[i]}${RESET}")
                     kotlin.system.exitProcess(1)
                 } else {
@@ -1637,22 +1671,25 @@ fun hmacSign(secretKey: String, message: String): String {
 
 /**
  * Execute code synchronously.
+ * os: target OS, "linux" or "freebsd" (null = omitted, API default linux); invalid throws IllegalArgumentException.
  */
-fun execute(language: String, code: String, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+fun execute(language: String, code: String, publicKey: String? = null, secretKey: String? = null, os: String? = null): Map<String, Any> {
+    val targetOs = normalizeOs(os)
     val (pk, sk) = if (publicKey != null && secretKey != null) {
         Pair(publicKey, secretKey)
     } else {
         getApiKeys(null)
     }
-    val payload = mapOf("language" to language, "code" to code)
+    val payload = mutableMapOf<String, Any>("language" to language, "code" to code)
+    if (targetOs != null) payload["os"] = targetOs
     return apiRequest("/execute", "POST", payload, pk, sk)
 }
 
 /**
  * Execute code asynchronously, returns job ID.
  */
-fun executeAsync(language: String, code: String, publicKey: String? = null, secretKey: String? = null): String? {
-    val result = execute(language, code, publicKey, secretKey)
+fun executeAsync(language: String, code: String, publicKey: String? = null, secretKey: String? = null, os: String? = null): String? {
+    val result = execute(language, code, publicKey, secretKey, os)
     return result["job_id"]?.toString()
 }
 
@@ -1757,10 +1794,12 @@ fun sessionGet(sessionId: String, publicKey: String? = null, secretKey: String? 
     return apiRequest("/sessions/$sessionId", "GET", null, pk, sk)
 }
 
-fun sessionCreate(networkMode: String? = null, shell: String? = null, publicKey: String? = null, secretKey: String? = null): Map<String, Any> {
+fun sessionCreate(networkMode: String? = null, shell: String? = null, publicKey: String? = null, secretKey: String? = null, os: String? = null): Map<String, Any> {
+    val targetOs = normalizeOs(os)
     val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
     val payload = mutableMapOf<String, Any>("shell" to (shell ?: "bash"))
     if (networkMode != null) payload["network_mode"] = networkMode
+    if (targetOs != null) payload["os"] = targetOs
     return apiRequest("/sessions", "POST", payload, pk, sk)
 }
 
@@ -1807,9 +1846,11 @@ fun serviceGet(serviceId: String, publicKey: String? = null, secretKey: String? 
     return apiRequest("/services/$serviceId", "GET", null, pk, sk)
 }
 
-fun serviceCreate(name: String, ports: String? = null, domains: String? = null, bootstrap: String? = null, networkMode: String? = null, publicKey: String? = null, secretKey: String? = null): String? {
+fun serviceCreate(name: String, ports: String? = null, domains: String? = null, bootstrap: String? = null, networkMode: String? = null, publicKey: String? = null, secretKey: String? = null, os: String? = null): String? {
+    val targetOs = normalizeOs(os)
     val (pk, sk) = if (publicKey != null && secretKey != null) Pair(publicKey, secretKey) else getApiKeys(null)
     val payload = mutableMapOf<String, Any>("name" to name)
+    if (targetOs != null) payload["os"] = targetOs
     if (ports != null) payload["ports"] = ports.split(",").map { it.trim().toInt() }
     if (domains != null) payload["domains"] = domains
     if (bootstrap != null) payload["bootstrap"] = bootstrap
@@ -2288,6 +2329,7 @@ Execute options:
   -n MODE           Network mode (zerotrust/semitrusted)
   -v N              vCPU count (1-8)
   -k KEY            API key
+  --os OS           Target OS: linux (default) or freebsd (execute, session, service)
 
 Session options:
   --list            List active sessions

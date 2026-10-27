@@ -900,6 +900,24 @@ public class Un {
         return LANGUAGE_MAP.get(ext);
     }
 
+    /**
+     * Validate a target OS name case-insensitively.
+     *
+     * @param targetOs "linux" or "freebsd" in any case, or null when not given
+     * @return the lowercase name, or null when targetOs is null
+     * @throws IllegalArgumentException for any other value, including ""
+     */
+    public static String normalizeOs(String targetOs) {
+        if (targetOs == null) {
+            return null;
+        }
+        String os = targetOs.toLowerCase(Locale.ROOT);
+        if (os.equals("linux") || os.equals("freebsd")) {
+            return os;
+        }
+        throw new IllegalArgumentException("invalid os '" + targetOs + "' (expected linux or freebsd)");
+    }
+
     // ========================================================================
     // Public API Methods
     // ========================================================================
@@ -922,6 +940,24 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
+        return executeCode(language, code, publicKey, secretKey, null);
+    }
+
+    /**
+     * Execute code synchronously on a chosen target OS.
+     *
+     * @param targetOs Target OS: "linux" or "freebsd" (null = omitted, API default linux)
+     * @throws IllegalArgumentException if targetOs is not linux or freebsd (no request is made)
+     * @see #executeCode(String, String, String, String)
+     */
+    public static Map<String, Object> executeCode(
+        String language,
+        String code,
+        String publicKey,
+        String secretKey,
+        String targetOs
+    ) throws IOException {
+        String os = normalizeOs(targetOs);
         String[] creds = resolveCredentials(publicKey, secretKey);
         publicKey = creds[0];
         secretKey = creds[1];
@@ -929,6 +965,9 @@ public class Un {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("language", language);
         data.put("code", code);
+        if (os != null) {
+            data.put("os", os);
+        }
 
         Map<String, Object> response = makeRequest("POST", "/execute", publicKey, secretKey, data);
 
@@ -963,6 +1002,24 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
+        return executeAsync(language, code, publicKey, secretKey, null);
+    }
+
+    /**
+     * Execute code asynchronously on a chosen target OS.
+     *
+     * @param targetOs Target OS: "linux" or "freebsd" (null = omitted, API default linux)
+     * @throws IllegalArgumentException if targetOs is not linux or freebsd (no request is made)
+     * @see #executeAsync(String, String, String, String)
+     */
+    public static String executeAsync(
+        String language,
+        String code,
+        String publicKey,
+        String secretKey,
+        String targetOs
+    ) throws IOException {
+        String os = normalizeOs(targetOs);
         String[] creds = resolveCredentials(publicKey, secretKey);
         publicKey = creds[0];
         secretKey = creds[1];
@@ -970,6 +1027,9 @@ public class Un {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("language", language);
         data.put("code", code);
+        if (os != null) {
+            data.put("os", os);
+        }
 
         Map<String, Object> response = makeRequest("POST", "/execute", publicKey, secretKey, data);
         Object jobId = response.get("job_id");
@@ -1339,7 +1399,8 @@ public class Un {
      * @param language Programming language/shell for the session (e.g., "bash", "python3")
      * @param publicKey Optional API key
      * @param secretKey Optional API secret
-     * @param opts Optional parameters: network_mode, ttl, shell, multiplexer, vcpu
+     * @param opts Optional parameters: network_mode, ttl, shell, multiplexer, vcpu,
+     *             os ("linux" or "freebsd"; validated, IllegalArgumentException otherwise)
      * @return Response map containing session_id, container_name
      * @throws IOException on network errors
      * @throws CredentialsException if credentials cannot be found
@@ -1361,6 +1422,10 @@ public class Un {
         }
         if (opts != null) {
             data.putAll(opts);
+            if (opts.containsKey("os")) {
+                Object os = opts.get("os");
+                data.put("os", normalizeOs(os == null ? "" : os.toString()));
+            }
         }
 
         return makeRequest("POST", "/sessions", creds[0], creds[1], data);
@@ -1571,34 +1636,7 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
-        String[] creds = resolveCredentials(publicKey, secretKey);
-
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("name", name);
-        if (ports != null && !ports.isEmpty()) {
-            // Parse ports string into list
-            List<Integer> portList = new ArrayList<>();
-            for (String p : ports.split(",")) {
-                try {
-                    portList.add(Integer.parseInt(p.trim()));
-                } catch (NumberFormatException e) {
-                    // Skip invalid port
-                }
-            }
-            data.put("ports", portList);
-        }
-        if (bootstrap != null && !bootstrap.isEmpty()) {
-            if (bootstrap.startsWith("http://") || bootstrap.startsWith("https://")) {
-                data.put("bootstrap_url", bootstrap);
-            } else {
-                data.put("bootstrap", bootstrap);
-            }
-        }
-        if (inputFiles != null && !inputFiles.isEmpty()) {
-            data.put("input_files", inputFiles);
-        }
-
-        return makeRequest("POST", "/services", creds[0], creds[1], data);
+        return createService(name, ports, bootstrap, false, inputFiles, null, publicKey, secretKey);
     }
 
     /**
@@ -1650,6 +1688,27 @@ public class Un {
         String publicKey,
         String secretKey
     ) throws IOException {
+        return createService(name, ports, bootstrap, unfreezeOnDemand, inputFiles, null, publicKey, secretKey);
+    }
+
+    /**
+     * Create a new service on a chosen target OS.
+     *
+     * @param targetOs Target OS: "linux" or "freebsd" (null = omitted, API default linux)
+     * @throws IllegalArgumentException if targetOs is not linux or freebsd (no request is made)
+     * @see #createService(String, String, String, boolean, List, String, String)
+     */
+    public static Map<String, Object> createService(
+        String name,
+        String ports,
+        String bootstrap,
+        boolean unfreezeOnDemand,
+        List<Map<String, String>> inputFiles,
+        String targetOs,
+        String publicKey,
+        String secretKey
+    ) throws IOException {
+        String os = normalizeOs(targetOs);
         String[] creds = resolveCredentials(publicKey, secretKey);
 
         Map<String, Object> data = new LinkedHashMap<>();
@@ -1678,6 +1737,9 @@ public class Un {
         }
         if (inputFiles != null && !inputFiles.isEmpty()) {
             data.put("input_files", inputFiles);
+        }
+        if (os != null) {
+            data.put("os", os);
         }
 
         return makeRequest("POST", "/services", creds[0], creds[1], data);
@@ -3158,6 +3220,7 @@ public class Un {
         String secretKey = null;
         String language = null;
         String networkMode = "zerotrust";
+        String targetOs = null;
         int vcpu = 1;
         int accountIndex = -1;
         List<String> envVars = new ArrayList<>();
@@ -3226,6 +3289,27 @@ public class Un {
                 }
                 networkMode = args[++i];
                 i++;
+            } else if (arg.equals("--os") || arg.startsWith("--os=")) {
+                if (arg.equals("--os")) {
+                    if (i + 1 >= args.length) {
+                        System.err.println("Error: --os requires a value: linux or freebsd");
+                        System.exit(2);
+                    }
+                    targetOs = args[++i];
+                } else {
+                    targetOs = arg.substring("--os=".length());
+                }
+                if (targetOs.isEmpty()) {
+                    System.err.println("Error: --os requires a value: linux or freebsd");
+                    System.exit(2);
+                }
+                try {
+                    targetOs = normalizeOs(targetOs);
+                } catch (IllegalArgumentException e) {
+                    System.err.println("Error: invalid --os '" + targetOs + "' (expected linux or freebsd)");
+                    System.exit(2);
+                }
+                i++;
             } else if (arg.equals("-v") || arg.equals("--vcpu")) {
                 if (i + 1 >= args.length) {
                     System.err.println("Error: -v/--vcpu requires an argument");
@@ -3287,10 +3371,10 @@ public class Un {
         // Route to subcommand handlers
         switch (command) {
             case "session":
-                handleSession(positionalArgs, publicKey, secretKey, networkMode, vcpu, language);
+                handleSession(positionalArgs, publicKey, secretKey, networkMode, vcpu, language, targetOs);
                 break;
             case "service":
-                handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars, files);
+                handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars, files, targetOs);
                 break;
             case "snapshot":
                 handleSnapshot(positionalArgs, publicKey, secretKey);
@@ -3310,7 +3394,7 @@ public class Un {
                 break;
             default:
                 // Default: execute code
-                handleExecute(positionalArgs, publicKey, secretKey, language, networkMode, vcpu, envVars, files);
+                handleExecute(positionalArgs, publicKey, secretKey, language, networkMode, vcpu, envVars, files, targetOs);
                 break;
         }
     }
@@ -3337,6 +3421,7 @@ public class Un {
         System.out.println("  -k, --secret-key KEY  API secret key");
         System.out.println("  --account N           Use row N from accounts.csv (overrides env vars)");
         System.out.println("  -n, --network MODE    Network: zerotrust or semitrusted");
+        System.out.println("  --os OS               Target OS: linux (default) or freebsd (execute, session, service)");
         System.out.println("  -v, --vcpu N          vCPU count (1-8)");
         System.out.println("  -h, --help            Show help");
         System.out.println();
@@ -3409,7 +3494,8 @@ public class Un {
         String networkMode,
         int vcpu,
         List<String> envVars,
-        List<String> files
+        List<String> files,
+        String targetOs
     ) throws Exception {
         String codeOrFile = args.get(0);
         String code;
@@ -3432,7 +3518,7 @@ public class Un {
             }
         }
 
-        Map<String, Object> result = executeCode(language, code, publicKey, secretKey);
+        Map<String, Object> result = executeCode(language, code, publicKey, secretKey, targetOs);
 
         // Print output
         Object stdout = result.get("stdout");
@@ -3469,7 +3555,8 @@ public class Un {
         String secretKey,
         String networkMode,
         int vcpu,
-        String shell
+        String shell,
+        String targetOs
     ) throws Exception {
         // Parse session-specific options
         boolean list = false;
@@ -3605,6 +3692,9 @@ public class Un {
             } else if (useScreen) {
                 opts.put("multiplexer", "screen");
             }
+            if (targetOs != null) {
+                opts.put("os", targetOs);
+            }
 
             Map<String, Object> result = createSession(shell != null ? shell : "bash", publicKey, secretKey, opts);
             System.out.println("Session created:");
@@ -3619,7 +3709,8 @@ public class Un {
         String networkMode,
         int vcpu,
         List<String> envVars,
-        List<String> files
+        List<String> files,
+        String targetOs
     ) throws Exception {
         // Check for "env" subcommand
         if (args.size() > 1 && args.get(1).equals("env")) {
@@ -3795,7 +3886,7 @@ public class Un {
         } else if (name != null) {
             // Build input_files from -f args
             List<Map<String, String>> inputFiles = buildInputFiles(files);
-            Map<String, Object> result = createService(name, ports, bootstrap, inputFiles, publicKey, secretKey);
+            Map<String, Object> result = createService(name, ports, bootstrap, false, inputFiles, targetOs, publicKey, secretKey);
             System.out.println("Service created:");
             printMap(result);
         } else {

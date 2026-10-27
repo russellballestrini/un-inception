@@ -88,7 +88,19 @@ import java.util.concurrent.*;
  */
 public class UnsandboxAsync {
 
-    private static final String API_BASE = "https://api.unsandbox.com";
+    private static final String API_BASE = resolveApiBase();
+
+    /** API base: UNSANDBOX_API_URL (trailing slashes stripped), default https://api.unsandbox.com. */
+    private static String resolveApiBase() {
+        String base = System.getenv("UNSANDBOX_API_URL");
+        if (base == null || base.isEmpty()) {
+            base = "https://api.unsandbox.com";
+        }
+        while (base.endsWith("/")) {
+            base = base.substring(0, base.length() - 1);
+        }
+        return base;
+    }
     private static final int[] POLL_DELAYS_MS = {300, 450, 700, 900, 650, 1600, 2000};
     private static final long LANGUAGES_CACHE_TTL_MS = 3600 * 1000; // 1 hour
     private static final int DEFAULT_TIMEOUT_MS = 120000; // 2 minutes
@@ -722,6 +734,24 @@ public class UnsandboxAsync {
         return LANGUAGE_MAP.get(ext);
     }
 
+    /**
+     * Validate a target OS name case-insensitively.
+     *
+     * @param targetOs "linux" or "freebsd" in any case, or null when not given
+     * @return the lowercase name, or null when targetOs is null
+     * @throws IllegalArgumentException for any other value, including ""
+     */
+    public static String normalizeOs(String targetOs) {
+        if (targetOs == null) {
+            return null;
+        }
+        String os = targetOs.toLowerCase(Locale.ROOT);
+        if (os.equals("linux") || os.equals("freebsd")) {
+            return os;
+        }
+        throw new IllegalArgumentException("invalid os '" + targetOs + "' (expected linux or freebsd)");
+    }
+
     // ========================================================================
     // Public API Methods
     // ========================================================================
@@ -741,6 +771,24 @@ public class UnsandboxAsync {
         String publicKey,
         String secretKey
     ) {
+        return executeCode(language, code, publicKey, secretKey, null);
+    }
+
+    /**
+     * Execute code on a chosen target OS.
+     *
+     * @param targetOs Target OS: "linux" or "freebsd" (null = omitted, API default linux)
+     * @throws IllegalArgumentException if targetOs is not linux or freebsd (no request is made)
+     * @see #executeCode(String, String, String, String)
+     */
+    public static CompletableFuture<Map<String, Object>> executeCode(
+        String language,
+        String code,
+        String publicKey,
+        String secretKey,
+        String targetOs
+    ) {
+        String os = normalizeOs(targetOs);
         String[] creds = resolveCredentials(publicKey, secretKey);
         final String pk = creds[0];
         final String sk = creds[1];
@@ -748,6 +796,9 @@ public class UnsandboxAsync {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("language", language);
         data.put("code", code);
+        if (os != null) {
+            data.put("os", os);
+        }
 
         return makeRequest("POST", "/execute", pk, sk, data)
             .thenCompose(response -> {
@@ -778,6 +829,24 @@ public class UnsandboxAsync {
         String publicKey,
         String secretKey
     ) {
+        return executeAsync(language, code, publicKey, secretKey, null);
+    }
+
+    /**
+     * Execute code on a chosen target OS and return job ID immediately.
+     *
+     * @param targetOs Target OS: "linux" or "freebsd" (null = omitted, API default linux)
+     * @throws IllegalArgumentException if targetOs is not linux or freebsd (no request is made)
+     * @see #executeAsync(String, String, String, String)
+     */
+    public static CompletableFuture<String> executeAsync(
+        String language,
+        String code,
+        String publicKey,
+        String secretKey,
+        String targetOs
+    ) {
+        String os = normalizeOs(targetOs);
         String[] creds = resolveCredentials(publicKey, secretKey);
         final String pk = creds[0];
         final String sk = creds[1];
@@ -785,6 +854,9 @@ public class UnsandboxAsync {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("language", language);
         data.put("code", code);
+        if (os != null) {
+            data.put("os", os);
+        }
 
         return makeRequest("POST", "/execute", pk, sk, data)
             .thenApply(response -> {
@@ -1147,7 +1219,8 @@ public class UnsandboxAsync {
      * @param language Programming language/shell for the session (e.g., "bash", "python3")
      * @param publicKey Optional API key
      * @param secretKey Optional API secret
-     * @param opts Optional parameters: network_mode, ttl, shell, multiplexer, vcpu
+     * @param opts Optional parameters: network_mode, ttl, shell, multiplexer, vcpu,
+     *             os ("linux" or "freebsd"; validated, IllegalArgumentException otherwise)
      * @return CompletableFuture containing response map with session_id, container_name
      */
     public static CompletableFuture<Map<String, Object>> createSession(
@@ -1166,6 +1239,10 @@ public class UnsandboxAsync {
         }
         if (opts != null) {
             data.putAll(opts);
+            if (opts.containsKey("os")) {
+                Object os = opts.get("os");
+                data.put("os", normalizeOs(os == null ? "" : os.toString()));
+            }
         }
 
         return makeRequest("POST", "/sessions", creds[0], creds[1], data);
@@ -1329,30 +1406,7 @@ public class UnsandboxAsync {
         String publicKey,
         String secretKey
     ) {
-        String[] creds = resolveCredentials(publicKey, secretKey);
-
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("name", name);
-        if (ports != null && !ports.isEmpty()) {
-            List<Integer> portList = new ArrayList<>();
-            for (String p : ports.split(",")) {
-                try {
-                    portList.add(Integer.parseInt(p.trim()));
-                } catch (NumberFormatException e) {
-                    // Skip invalid port
-                }
-            }
-            data.put("ports", portList);
-        }
-        if (bootstrap != null && !bootstrap.isEmpty()) {
-            if (bootstrap.startsWith("http://") || bootstrap.startsWith("https://")) {
-                data.put("bootstrap_url", bootstrap);
-            } else {
-                data.put("bootstrap", bootstrap);
-            }
-        }
-
-        return makeRequest("POST", "/services", creds[0], creds[1], data);
+        return createService(name, ports, bootstrap, false, null, publicKey, secretKey);
     }
 
     /**
@@ -1374,6 +1428,26 @@ public class UnsandboxAsync {
         String publicKey,
         String secretKey
     ) {
+        return createService(name, ports, bootstrap, unfreezeOnDemand, null, publicKey, secretKey);
+    }
+
+    /**
+     * Create a new service on a chosen target OS.
+     *
+     * @param targetOs Target OS: "linux" or "freebsd" (null = omitted, API default linux)
+     * @throws IllegalArgumentException if targetOs is not linux or freebsd (no request is made)
+     * @see #createService(String, String, String, boolean, String, String)
+     */
+    public static CompletableFuture<Map<String, Object>> createService(
+        String name,
+        String ports,
+        String bootstrap,
+        boolean unfreezeOnDemand,
+        String targetOs,
+        String publicKey,
+        String secretKey
+    ) {
+        String os = normalizeOs(targetOs);
         String[] creds = resolveCredentials(publicKey, secretKey);
 
         Map<String, Object> data = new LinkedHashMap<>();
@@ -1398,6 +1472,9 @@ public class UnsandboxAsync {
         }
         if (unfreezeOnDemand) {
             data.put("unfreeze_on_demand", true);
+        }
+        if (os != null) {
+            data.put("os", os);
         }
 
         return makeRequest("POST", "/services", creds[0], creds[1], data);
@@ -1962,6 +2039,10 @@ public class UnsandboxAsync {
         }
     }
 
+    /** Subcommands whose own options follow them on the command line. */
+    private static final Set<String> SUBCOMMANDS = new HashSet<>(Arrays.asList(
+        "session", "service", "snapshot"));
+
     /**
      * CLI main implementation.
      */
@@ -1976,6 +2057,7 @@ public class UnsandboxAsync {
         String secretKey = null;
         String language = null;
         String networkMode = "zerotrust";
+        String targetOs = null;
         int vcpu = 1;
         List<String> envVars = new ArrayList<>();
         List<String> files = new ArrayList<>();
@@ -1987,6 +2069,10 @@ public class UnsandboxAsync {
             String arg = args[i];
             if (arg.equals("-h") || arg.equals("--help")) {
                 showHelp = true;
+                i++;
+            } else if (!positionalArgs.isEmpty() && SUBCOMMANDS.contains(positionalArgs.get(0))) {
+                // After a subcommand, its options belong to its handler (CLI_SPEC.md)
+                positionalArgs.add(arg);
                 i++;
             } else if (arg.equals("-s") || arg.equals("--shell")) {
                 if (i + 1 >= args.length) {
@@ -2015,6 +2101,27 @@ public class UnsandboxAsync {
                     System.exit(2);
                 }
                 networkMode = args[++i];
+                i++;
+            } else if (arg.equals("--os") || arg.startsWith("--os=")) {
+                if (arg.equals("--os")) {
+                    if (i + 1 >= args.length) {
+                        System.err.println("Error: --os requires a value: linux or freebsd");
+                        System.exit(2);
+                    }
+                    targetOs = args[++i];
+                } else {
+                    targetOs = arg.substring("--os=".length());
+                }
+                if (targetOs.isEmpty()) {
+                    System.err.println("Error: --os requires a value: linux or freebsd");
+                    System.exit(2);
+                }
+                try {
+                    targetOs = normalizeOs(targetOs);
+                } catch (IllegalArgumentException e) {
+                    System.err.println("Error: invalid --os '" + targetOs + "' (expected linux or freebsd)");
+                    System.exit(2);
+                }
                 i++;
             } else if (arg.equals("-v") || arg.equals("--vcpu")) {
                 if (i + 1 >= args.length) {
@@ -2057,10 +2164,10 @@ public class UnsandboxAsync {
             // Route to subcommand handlers
             switch (command) {
                 case "session":
-                    handleSession(positionalArgs, publicKey, secretKey, networkMode, vcpu, language);
+                    handleSession(positionalArgs, publicKey, secretKey, networkMode, vcpu, language, targetOs);
                     break;
                 case "service":
-                    handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars);
+                    handleService(positionalArgs, publicKey, secretKey, networkMode, vcpu, envVars, targetOs);
                     break;
                 case "snapshot":
                     handleSnapshot(positionalArgs, publicKey, secretKey);
@@ -2070,7 +2177,7 @@ public class UnsandboxAsync {
                     break;
                 default:
                     // Default: execute code
-                    handleExecute(positionalArgs, publicKey, secretKey, language, networkMode, vcpu, envVars, files);
+                    handleExecute(positionalArgs, publicKey, secretKey, language, networkMode, vcpu, envVars, files, targetOs);
                     break;
             }
         } finally {
@@ -2096,6 +2203,7 @@ public class UnsandboxAsync {
         System.out.println("  -p, --public-key KEY  API public key");
         System.out.println("  -k, --secret-key KEY  API secret key");
         System.out.println("  -n, --network MODE    Network: zerotrust or semitrusted");
+        System.out.println("  --os OS               Target OS: linux (default) or freebsd (execute, session, service)");
         System.out.println("  -v, --vcpu N          vCPU count (1-8)");
         System.out.println("  -h, --help            Show help");
         System.out.println();
@@ -2151,7 +2259,8 @@ public class UnsandboxAsync {
         String networkMode,
         int vcpu,
         List<String> envVars,
-        List<String> files
+        List<String> files,
+        String targetOs
     ) throws Exception {
         String codeOrFile = args.get(0);
         String code;
@@ -2174,7 +2283,7 @@ public class UnsandboxAsync {
             }
         }
 
-        Map<String, Object> result = executeCode(language, code, publicKey, secretKey).get();
+        Map<String, Object> result = executeCode(language, code, publicKey, secretKey, targetOs).get();
 
         // Print output
         Object stdout = result.get("stdout");
@@ -2211,7 +2320,8 @@ public class UnsandboxAsync {
         String secretKey,
         String networkMode,
         int vcpu,
-        String shell
+        String shell,
+        String targetOs
     ) throws Exception {
         // Parse session-specific options
         boolean list = false;
@@ -2347,6 +2457,9 @@ public class UnsandboxAsync {
             } else if (useScreen) {
                 opts.put("multiplexer", "screen");
             }
+            if (targetOs != null) {
+                opts.put("os", targetOs);
+            }
 
             Map<String, Object> result = createSession(shell != null ? shell : "bash", publicKey, secretKey, opts).get();
             System.out.println("Session created:");
@@ -2360,7 +2473,8 @@ public class UnsandboxAsync {
         String secretKey,
         String networkMode,
         int vcpu,
-        List<String> envVars
+        List<String> envVars,
+        String targetOs
     ) throws Exception {
         // Check for "env" subcommand
         if (args.size() > 1 && args.get(1).equals("env")) {
@@ -2533,7 +2647,7 @@ public class UnsandboxAsync {
             System.out.println("Snapshot created: " + snapId);
         } else if (name != null) {
             // Create new service
-            Map<String, Object> result = createService(name, ports, bootstrap, publicKey, secretKey).get();
+            Map<String, Object> result = createService(name, ports, bootstrap, false, targetOs, publicKey, secretKey).get();
             System.out.println("Service created:");
             printMap(result);
         } else {

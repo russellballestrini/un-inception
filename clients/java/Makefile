@@ -19,7 +19,7 @@
 #   Maven or Gradle
 
 .PHONY: all build test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async clean help examples
+.PHONY: test-sync test-async test-os clean help examples
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -58,6 +58,7 @@ help:
 	@echo "Test by SDK:"
 	@echo "  make test-sync        Test synchronous SDK"
 	@echo "  make test-async       Test asynchronous SDK"
+	@echo "  make test-os          Offline --os flag test, sync and async CLIs (local mock API)"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make clean            Remove build artifacts"
@@ -239,6 +240,17 @@ examples:
 	fi
 
 # ============================================================================
+# TEST: --os flag (offline, local mock API, no credentials)
+# ============================================================================
+
+test-os:
+	@rm -rf build/os-sync build/os-async && mkdir -p build/os-sync build/os-async
+	@$(JAVAC) -nowarn -d build/os-sync $(SYNC_DIR)/src/Un.java 2>&1 | grep -v '^Note:' || true
+	@$(JAVAC) -nowarn -d build/os-async $(ASYNC_DIR)/src/UnsandboxAsync.java 2>&1 | grep -v '^Note:' || true
+	@bash $(ROOT_DIR)/tests/os_flag_cli.sh $(JAVA) -cp build/os-sync Un
+	@bash $(ROOT_DIR)/tests/os_flag_cli.sh $(JAVA) -cp build/os-async UnsandboxAsync
+
+# ============================================================================
 # Clean
 # ============================================================================
 
@@ -249,5 +261,5 @@ clean:
 	@if [ -f "$(SYNC_DIR)/build.gradle" ]; then cd $(SYNC_DIR) && $(GRADLE) clean -q 2>/dev/null || true; fi
 	@if [ -f "$(ASYNC_DIR)/build.gradle" ]; then cd $(ASYNC_DIR) && $(GRADLE) clean -q 2>/dev/null || true; fi
 	@rm -rf $(SYNC_DIR)/target $(ASYNC_DIR)/target 2>/dev/null || true
-	@rm -rf $(SYNC_DIR)/build $(ASYNC_DIR)/build 2>/dev/null || true
+	@rm -rf $(SYNC_DIR)/build $(ASYNC_DIR)/build build/os-sync build/os-async 2>/dev/null || true
 	@echo "$(GREEN)✓$(NC) Cleaned build artifacts"
