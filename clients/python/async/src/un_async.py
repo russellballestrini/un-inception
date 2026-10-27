@@ -33,7 +33,7 @@ except ImportError:
     aiohttp = None  # type: ignore
 
 
-API_BASE = "https://api.unsandbox.com"
+API_BASE = os.environ.get("UNSANDBOX_API_URL", "https://api.unsandbox.com").rstrip("/")
 POLL_DELAYS_MS = [300, 450, 700, 900, 650, 1600, 2000]
 LANGUAGES_CACHE_TTL = 3600  # 1 hour
 
@@ -246,11 +246,28 @@ def _save_languages_cache(languages: List[str]) -> None:
         pass  # Cache failures are non-fatal
 
 
+OS_CHOICES = ("linux", "freebsd")
+
+
+def _with_os(data: Dict[str, Any], target_os: Optional[str]) -> Dict[str, Any]:
+    """Add "os" to a request body only when a target OS was given.
+
+    Omitting the field keeps bodies byte-identical for API versions that predate it.
+    """
+    if target_os:
+        value = target_os.lower()
+        if value not in OS_CHOICES:
+            raise ValueError(f"invalid os '{target_os}' (expected linux or freebsd)")
+        data["os"] = value
+    return data
+
+
 async def execute_code(
     language: str,
     code: str,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    target_os: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute code synchronously (awaits until completion).
@@ -260,6 +277,7 @@ async def execute_code(
         code: Source code to execute
         public_key: Optional API key (uses credentials resolution if not provided)
         secret_key: Optional API secret (uses credentials resolution if not provided)
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Response dict containing stdout, stderr, exit code, etc.
@@ -275,7 +293,7 @@ async def execute_code(
         "/execute",
         public_key,
         secret_key,
-        {"language": language, "code": code},
+        _with_os({"language": language, "code": code}, target_os),
     )
 
     # If we got a job_id, poll until completion
@@ -293,6 +311,7 @@ async def execute_async(
     code: str,
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
+    target_os: Optional[str] = None,
 ) -> str:
     """
     Execute code asynchronously (returns immediately with job_id).
@@ -302,6 +321,7 @@ async def execute_async(
         code: Source code to execute
         public_key: Optional API key
         secret_key: Optional API secret
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Job ID string
@@ -317,7 +337,7 @@ async def execute_async(
         "/execute",
         public_key,
         secret_key,
-        {"language": language, "code": code},
+        _with_os({"language": language, "code": code}, target_os),
     )
     return response.get("job_id")
 
@@ -755,6 +775,7 @@ async def create_session(
     shell: Optional[str] = None,
     multiplexer: Optional[str] = None,
     vcpu: int = 1,
+    target_os: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new interactive session.
@@ -768,6 +789,7 @@ async def create_session(
         shell: Optional shell to use (e.g., "bash", "python3")
         multiplexer: Optional terminal multiplexer ("tmux" or "screen")
         vcpu: Number of vCPUs (1-8, default 1)
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Response dict containing session_id, container_name, etc.
@@ -790,6 +812,7 @@ async def create_session(
         data["multiplexer"] = multiplexer
     if vcpu > 1:
         data["vcpu"] = vcpu
+    _with_os(data, target_os)
 
     return await _make_request("POST", "/sessions", public_key, secret_key, data)
 
@@ -995,6 +1018,7 @@ async def create_service(
     vcpu: int = 1,
     service_type: Optional[str] = None,
     unfreeze_on_demand: bool = False,
+    target_os: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new persistent service.
@@ -1010,6 +1034,7 @@ async def create_service(
         vcpu: Number of vCPUs (1-8, default 1)
         service_type: Optional service type for SRV records (e.g., "minecraft")
         unfreeze_on_demand: If True, automatically unfreeze service on incoming requests
+        target_os: Optional target OS, "linux" or "freebsd" (omitted = API default, linux)
 
     Returns:
         Response dict containing service_id, etc.
@@ -1039,6 +1064,7 @@ async def create_service(
         data["service_type"] = service_type
     if unfreeze_on_demand:
         data["unfreeze_on_demand"] = unfreeze_on_demand
+    _with_os(data, target_os)
 
     return await _make_request("POST", "/services", public_key, secret_key, data)
 
@@ -1817,8 +1843,14 @@ def _format_list_output(items: List[Dict[str, Any]], resource_type: str) -> str:
     return "\n".join(lines)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for the CLI."""
+def _build_parser(subcommands: bool = True) -> argparse.ArgumentParser:
+    """Build the argument parser for the CLI.
+
+    With subcommands=False our parser carries only global options plus the
+    execute positional (FILE or, with -s, inline code). argparse cannot mix an
+    optional positional with subparsers: it hands the first positional to the
+    subcommand slot, so _async_main picks one parser by our first positional.
+    """
     parser = argparse.ArgumentParser(
         prog="un_async.py",
         description="Unsandbox CLI (Async) - Execute code in secure containers",
@@ -1857,6 +1889,14 @@ Examples:
                         metavar="N", help="vCPU count (1-8, default: 1)")
     parser.add_argument("-y", "--yes", action="store_true",
                         help="Skip confirmation prompts")
+    parser.add_argument("--os", type=str.lower, choices=OS_CHOICES, metavar="OS",
+                        help="Target OS: linux (default) or freebsd (execute, session, service)")
+
+    if not subcommands:
+        parser.add_argument("source", nargs="?",
+                            help="Source file or inline code (with -s)")
+        parser.set_defaults(command=None)
+        return parser
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -1978,17 +2018,47 @@ Examples:
     # Key subcommand
     subparsers.add_parser("key", help="Check API key validity")
 
-    # Positional argument for source file or inline code
+    # Positional argument for source file or inline code (listed in --help;
+    # _async_main routes execute invocations to our subcommands=False parser)
     parser.add_argument("source", nargs="?",
                         help="Source file or inline code (with -s)")
 
     return parser
 
 
+CLI_SUBCOMMANDS = ("session", "service", "service-env", "snapshot", "key")
+
+
+def _first_positional(parser: argparse.ArgumentParser, argv: List[str]) -> Optional[str]:
+    """Return our first argv token that is not a global option or its value."""
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            return argv[i + 1] if i + 1 < len(argv) else None
+        if tok.startswith("-") and tok != "-":
+            if tok.startswith("--"):
+                name, has_inline = tok.split("=", 1)[0], "=" in tok
+            else:
+                name, has_inline = tok[:2], len(tok) > 2
+            action = parser._option_string_actions.get(name)
+            if action is not None and action.nargs != 0 and not has_inline:
+                i += 1  # skip this option's value
+            i += 1
+            continue
+        return tok
+    return None
+
+
 async def _async_main():
     """Async main entry point for CLI."""
+    argv = sys.argv[1:]
     parser = _build_parser()
-    args = parser.parse_args()
+    first = _first_positional(parser, argv)
+    if first is not None and first not in CLI_SUBCOMMANDS:
+        # Execute mode: un_async.py FILE  or  un_async.py -s LANG 'code'
+        parser = _build_parser(subcommands=False)
+    args = parser.parse_args(argv)
 
     # Resolve credentials
     try:
@@ -2067,7 +2137,8 @@ async def _handle_execute_command(args, public_key: str, secret_key: str):
             sys.exit(1)
 
     # Execute code
-    result = await execute_code(language, code, public_key, secret_key)
+    result = await execute_code(language, code, public_key, secret_key,
+                                target_os=getattr(args, "os", None))
 
     # Output result
     stdout = result.get("stdout", "")
@@ -2140,6 +2211,7 @@ async def _handle_session_command(args, public_key: str, secret_key: str):
             public_key=public_key,
             secret_key=secret_key,
             multiplexer=multiplexer,
+            target_os=getattr(args, "os", None),
         )
 
         session_id = result.get("session_id", result.get("id", ""))
@@ -2243,6 +2315,7 @@ async def _handle_service_command(args, public_key: str, secret_key: str):
             custom_domains=custom_domains,
             vcpu=getattr(args, 'vcpu', 1) or 1,
             service_type=args.service_type,
+            target_os=getattr(args, "os", None),
         )
 
         service_id = result.get("service_id", result.get("id", ""))
