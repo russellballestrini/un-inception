@@ -34,9 +34,16 @@ import (
 )
 
 const (
-	APIBase           = "https://api.unsandbox.com"
 	LanguagesCacheTTL = 3600 // 1 hour in seconds
 )
+
+// APIBase is the API endpoint, overridable via UNSANDBOX_API_URL (trailing slash stripped)
+var APIBase = func() string {
+	if v := os.Getenv("UNSANDBOX_API_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return "https://api.unsandbox.com"
+}()
 
 var (
 	// PollDelaysMs defines exponential backoff delays for job polling
@@ -420,15 +427,51 @@ func saveLanguagesCache(languages []string) {
 // The channel receives exactly one ExecuteResult then closes.
 // This function blocks until completion (polls until job finishes).
 func ExecuteCode(creds *Credentials, language, code string) <-chan ExecuteResult {
+	return ExecuteCodeWithOptions(creds, language, code, nil)
+}
+
+// ExecuteOptions contains optional parameters for code execution.
+type ExecuteOptions struct {
+	OS string // Target OS: "linux" or "freebsd" (empty = omitted, API default linux)
+}
+
+// executeData builds a POST /execute body, adding "os" only when opts.OS is set.
+func executeData(language, code string, opts *ExecuteOptions) (map[string]interface{}, error) {
+	data := map[string]interface{}{
+		"language": language,
+		"code":     code,
+	}
+	if opts != nil {
+		osName, err := NormalizeOS(opts.OS)
+		if err != nil {
+			return nil, err
+		}
+		if osName != "" {
+			data["os"] = osName
+		}
+	}
+	return data, nil
+}
+
+// ExecuteCodeWithOptions is ExecuteCode with optional parameters (e.g. target OS).
+// An invalid OS is reported on the channel without making a request.
+func ExecuteCodeWithOptions(creds *Credentials, language, code string, opts *ExecuteOptions) <-chan ExecuteResult {
+	data, err := executeData(language, code, opts)
+	if err != nil {
+		resultChan := make(chan ExecuteResult, 1)
+		resultChan <- ExecuteResult{Err: err}
+		close(resultChan)
+		return resultChan
+	}
+	return executeRequest(creds, data)
+}
+
+// executeRequest POSTs a prepared /execute body and polls until the job finishes.
+func executeRequest(creds *Credentials, data map[string]interface{}) <-chan ExecuteResult {
 	resultChan := make(chan ExecuteResult, 1)
 
 	go func() {
 		defer close(resultChan)
-
-		data := map[string]string{
-			"language": language,
-			"code":     code,
-		}
 
 		response, err := makeRequest("POST", "/execute", creds, data)
 		if err != nil {
@@ -456,15 +499,23 @@ func ExecuteCode(creds *Credentials, language, code string) <-chan ExecuteResult
 // The channel receives exactly one JobIDResult then closes.
 // This returns immediately with a job_id without waiting for completion.
 func ExecuteAsync(creds *Credentials, language, code string) <-chan JobIDResult {
+	return ExecuteAsyncWithOptions(creds, language, code, nil)
+}
+
+// ExecuteAsyncWithOptions is ExecuteAsync with optional parameters (e.g. target OS).
+// An invalid OS is reported on the channel without making a request.
+func ExecuteAsyncWithOptions(creds *Credentials, language, code string, opts *ExecuteOptions) <-chan JobIDResult {
 	resultChan := make(chan JobIDResult, 1)
+
+	data, err := executeData(language, code, opts)
+	if err != nil {
+		resultChan <- JobIDResult{Err: err}
+		close(resultChan)
+		return resultChan
+	}
 
 	go func() {
 		defer close(resultChan)
-
-		data := map[string]string{
-			"language": language,
-			"code":     code,
-		}
 
 		response, err := makeRequest("POST", "/execute", creds, data)
 		if err != nil {
@@ -822,6 +873,7 @@ type SessionOptions struct {
 	TTL         int    // Time-to-live in seconds (default: 3600)
 	VCPU        int    // Number of virtual CPUs (default: 1)
 	Multiplexer string // Multiplexer to use (e.g., "tmux")
+	OS          string // Target OS: "linux" or "freebsd" (empty = omitted, API default linux)
 }
 
 // SessionListResult contains the result of listing sessions.
@@ -911,6 +963,14 @@ func CreateSession(creds *Credentials, opts *SessionOptions) <-chan SessionResul
 			}
 			if opts.Multiplexer != "" {
 				data["multiplexer"] = opts.Multiplexer
+			}
+			osName, err := NormalizeOS(opts.OS)
+			if err != nil {
+				resultChan <- SessionResult{Err: err}
+				return
+			}
+			if osName != "" {
+				data["os"] = osName
 			}
 		}
 
@@ -1036,6 +1096,7 @@ type ServiceOptions struct {
 	Shell            string // Shell to use for bootstrap
 	VCPU             int    // Number of virtual CPUs
 	UnfreezeOnDemand bool   // Enable automatic unfreezing on HTTP request
+	OS               string // Target OS: "linux" or "freebsd" (empty = omitted, API default linux)
 }
 
 // ServiceUpdateOptions contains optional parameters for service updates.
@@ -1119,6 +1180,14 @@ func CreateService(creds *Credentials, name string, ports []int, bootstrap strin
 			}
 			if opts.UnfreezeOnDemand {
 				data["unfreeze_on_demand"] = true
+			}
+			osName, err := NormalizeOS(opts.OS)
+			if err != nil {
+				resultChan <- ServiceResult{Err: err}
+				return
+			}
+			if osName != "" {
+				data["os"] = osName
 			}
 		}
 
@@ -1663,6 +1732,7 @@ type CLIOptions struct {
 	PublicKey string
 	SecretKey string
 	Network   string
+	OS        string // --os: "linux" or "freebsd"; empty means omit the field
 	VCPU      int
 	Yes       bool
 	Help      bool
@@ -1695,6 +1765,7 @@ Global Options:
   -p, --public-key KEY   API public key
   -k, --secret-key KEY   API secret key
   -n, --network MODE     Network: zerotrust (default) or semitrusted
+  --os OS                Target OS: linux (default) or freebsd (execute, session, service)
   -v, --vcpu N           vCPU count (1-8)
   -y, --yes              Skip confirmation prompts
   -h, --help             Show help
@@ -1951,6 +2022,9 @@ func runExecute(creds *Credentials, opts *CLIOptions) int {
 	if opts.Network != "" {
 		data["network_mode"] = opts.Network
 	}
+	if opts.OS != "" {
+		data["os"] = opts.OS
+	}
 	if opts.VCPU > 0 {
 		data["vcpu"] = opts.VCPU
 	}
@@ -1966,7 +2040,7 @@ func runExecute(creds *Credentials, opts *CLIOptions) int {
 	}
 
 	// Execute asynchronously and wait for result
-	resultChan := ExecuteCode(creds, language, code)
+	resultChan := executeRequest(creds, data)
 	result := <-resultChan
 	if result.Err != nil {
 		return cliError(result.Err.Error(), ExitAPIError)
@@ -2109,6 +2183,7 @@ func runSession(creds *Credentials, args []string, opts *CLIOptions) int {
 	if opts.Network != "" {
 		sessionOpts.NetworkMode = opts.Network
 	}
+	sessionOpts.OS = opts.OS
 	if opts.VCPU > 0 {
 		sessionOpts.VCPU = opts.VCPU
 	}
@@ -2408,6 +2483,7 @@ func runService(creds *Credentials, args []string, opts *CLIOptions) int {
 		if opts.Network != "" {
 			serviceOpts.NetworkMode = opts.Network
 		}
+		serviceOpts.OS = opts.OS
 		if opts.VCPU > 0 {
 			serviceOpts.VCPU = opts.VCPU
 		}
@@ -2851,6 +2927,27 @@ func runKey(creds *Credentials) int {
 	return ExitSuccess
 }
 
+// osMissingValue marks a --os flag given without a value (fails NormalizeOS).
+const osMissingValue = "\x00missing"
+
+// NormalizeOS validates a target OS name case-insensitively and returns its
+// canonical form: "" (not given, field omitted), "linux" or "freebsd".
+func NormalizeOS(v string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	if v == osMissingValue {
+		return "", fmt.Errorf("--os requires a value: linux or freebsd")
+	}
+	switch strings.ToLower(v) {
+	case "linux":
+		return "linux", nil
+	case "freebsd":
+		return "freebsd", nil
+	}
+	return "", fmt.Errorf("invalid --os '%s' (expected linux or freebsd)", v)
+}
+
 // parseGlobalFlags parses global CLI options
 func parseGlobalFlags(args []string) (*CLIOptions, []string) {
 	opts := &CLIOptions{}
@@ -2901,6 +2998,22 @@ func parseGlobalFlags(args []string) (*CLIOptions, []string) {
 				opts.Network = args[i+1]
 				i++
 			}
+		case arg == "--os":
+			// An empty value (--os "") is as invalid as a missing one
+			if i+1 < len(args) && args[i+1] != "" {
+				opts.OS = args[i+1]
+				i++
+			} else {
+				opts.OS = osMissingValue
+				if i+1 < len(args) {
+					i++
+				}
+			}
+		case strings.HasPrefix(arg, "--os="):
+			opts.OS = strings.TrimPrefix(arg, "--os=")
+			if opts.OS == "" {
+				opts.OS = osMissingValue
+			}
 		case arg == "-v" || arg == "--vcpu":
 			if i+1 < len(args) {
 				if v, err := strconv.Atoi(args[i+1]); err == nil {
@@ -2928,6 +3041,14 @@ func CliMain() {
 	}
 
 	opts, remaining := parseGlobalFlags(os.Args[1:])
+
+	// Validate --os before any request is made
+	if osName, err := NormalizeOS(opts.OS); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+		os.Exit(ExitInvalidArgs)
+	} else {
+		opts.OS = osName
+	}
 
 	if opts.Help && len(remaining) == 0 {
 		printUsage()
