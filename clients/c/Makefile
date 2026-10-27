@@ -108,11 +108,15 @@ test: build $(TEST_DIR)/test_library
 	@echo ""
 	@./$(TEST_DIR)/test_library
 	@$(MAKE) --no-print-directory test-os
+	@$(MAKE) --no-print-directory test-exit
 
 test-library: test
 
 test-os: cli
 	@bash $(TEST_DIR)/test_os_flag.sh
+
+test-exit: cli
+	@bash $(TEST_DIR)/test_exit_status.sh
 
 test-integration: build
 	@echo ""

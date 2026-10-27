@@ -879,6 +879,20 @@ char* extract_json_string(const char *json, const char *key) {
 }
 
 // Extract JSON number value (returns -1 if not found or null)
+// A JSON boolean (true/false; also 1/0): 1, 0, or -1 when absent or null.
+static int extract_json_bool(const char *json, const char *key) {
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *start = strstr(json, search);
+    if (!start) return -1;
+    start += strlen(search);
+    while (*start == ' ' || *start == '\t') start++;
+    if (strncmp(start, "true", 4) == 0) return 1;
+    if (strncmp(start, "false", 5) == 0) return 0;
+    if (strncmp(start, "null", 4) == 0) return -1;
+    return atoll(start) != 0;
+}
+
 long long extract_json_number(const char *json, const char *key) {
     char search[256];
     snprintf(search, sizeof(search), "\"%s\":", key);
@@ -987,8 +1001,15 @@ char* get_basename_no_ext(const char *path) {
     return result;
 }
 
-// Parse and handle response
-void parse_and_print_response(const char *json_response, int save_artifacts, const char *artifact_dir, const char *source_file) {
+// Parse and handle response. Returns the exit status for un itself: the
+// program's exit_code (a program killed by signal N reports 128+N, as a
+// shell does), 1 when the API answered an error, else 0. un used to exit 0
+// whatever the program did, so scripts and CI could not see failures.
+int parse_and_print_response(const char *json_response, int save_artifacts, const char *artifact_dir, const char *source_file) {
+    int rc = 0;
+    long long code = extract_json_number(json_response, "exit_code");
+    if (code > 0) rc = code < 256 ? (int)code : 1;
+
     // Print stdout in blue
     char *out = extract_json_string(json_response, "stdout");
     if (out && strlen(out) > 0) {
@@ -1007,8 +1028,9 @@ void parse_and_print_response(const char *json_response, int save_artifacts, con
     char *error = extract_json_string(json_response, "error");
     if (error && strlen(error) > 0) {
         fprintf(stderr, "\033[1;31mError: %s\033[0m\n", error);
-        free(error);
+        if (rc == 0) rc = 1;
     }
+    if (error) free(error);
 
     // Handle artifacts - API returns "artifacts":[{"filename":"...", "content_base64":"..."}]
     if (save_artifacts) {
@@ -1186,6 +1208,7 @@ void parse_and_print_response(const char *json_response, int save_artifacts, con
             }
         }
     }
+    return rc;
 }
 
 // Get basename from path
@@ -3621,10 +3644,14 @@ static int get_service_info(const UnsandboxCredentials *creds, const char *servi
     // Extract and display service details
     char *id = extract_json_string(response.data, "id");
     char *name = extract_json_string(response.data, "name");
-    char *status = extract_json_string(response.data, "status");
+    // The API names it "state" (as the list view reads it); "status" kept
+    // for older responses.
+    char *status = extract_json_string(response.data, "state");
+    if (!status) status = extract_json_string(response.data, "status");
     char *network_mode = extract_json_string(response.data, "network_mode");
-    int locked = (int)extract_json_number(response.data, "locked");
-    int unfreeze_on_demand = (int)extract_json_number(response.data, "unfreeze_on_demand");
+    // JSON booleans: atoll("true") is 0, so these always printed "no".
+    int locked = extract_json_bool(response.data, "locked") == 1;
+    int unfreeze_on_demand = extract_json_bool(response.data, "unfreeze_on_demand") == 1;
 
     printf("Service Information:\n");
     printf("  ID:              %s\n", id ? id : "-");
@@ -5040,7 +5067,7 @@ static int execute_service(const UnsandboxCredentials *creds, const char *servic
         if (error) free(error);
         ret = 1;
     } else {
-        parse_and_print_response(final_response, 0, NULL, NULL);
+        ret = parse_and_print_response(final_response, 0, NULL, NULL);
     }
 
     if (status) free(status);
@@ -11991,9 +12018,10 @@ jobs_cleanup:
         }
     }
 
-    // Parse and print final response
+    // Parse and print final response; its exit status is un's
+    int rc = 0;
     if (final_data) {
-        parse_and_print_response(final_data, save_artifacts, artifact_dir, filename);
+        rc = parse_and_print_response(final_data, save_artifacts, artifact_dir, filename);
         if (final_data != response.data) {
             free(final_data);
         }
@@ -12011,6 +12039,6 @@ jobs_cleanup:
     curl_global_cleanup();
     free_credentials(creds);
 
-    return 0;
+    return rc;
 }
 #endif /* UNSANDBOX_LIBRARY */
