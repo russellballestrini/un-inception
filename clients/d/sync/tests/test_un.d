@@ -128,6 +128,46 @@ unittest {
 // Functional Tests - Test against real API (requires credentials)
 // ============================================================================
 
+unittest {
+    writeln("Testing normalizeOs / osJsonField (--os)...");
+    assert(normalizeOs("linux") == "linux");
+    assert(normalizeOs("FreeBSD") == "freebsd");
+    assert(normalizeOs("openbsd") is null);
+    assert(normalizeOs("") is null);
+    assert(osJsonField("") == "", "no os means no os field");
+    assert(osJsonField("FREEBSD") == `,"os":"freebsd"`);
+    bool threw = false;
+    try { osJsonField("openbsd"); } catch (Exception) { threw = true; }
+    assert(threw, "invalid os must be rejected before any request");
+    writeln("  PASS");
+}
+
+unittest {
+    writeln("Testing extractOsFlag (--os)...");
+    string[] a = ["un", "--os", "FreeBSD", "-n", "semitrusted", "script.py"];
+    g_targetOs = "";
+    assert(extractOsFlag(a));
+    assert(g_targetOs == "freebsd");
+    assert(a == ["un", "-n", "semitrusted", "script.py"], "--os must be removed from args");
+
+    string[] b = ["un", "--os=linux", "session"];
+    g_targetOs = "";
+    assert(extractOsFlag(b) && g_targetOs == "linux" && b == ["un", "session"]);
+
+    string[] c = ["un", "script.py"];
+    g_targetOs = "";
+    assert(extractOsFlag(c) && g_targetOs == "" && c == ["un", "script.py"]);
+
+    string[] d = ["un", "--os", "openbsd", "script.py"];
+    assert(!extractOsFlag(d), "invalid --os must fail");
+    string[] e = ["un", "--os", "", "script.py"];
+    assert(!extractOsFlag(e), "empty --os must fail");
+    string[] f = ["un", "--os"];
+    assert(!extractOsFlag(f), "--os without a value must fail");
+    g_targetOs = "";
+    writeln("  PASS");
+}
+
 bool hasCredentials() {
     string pk = environment.get("UNSANDBOX_PUBLIC_KEY", "");
     string sk = environment.get("UNSANDBOX_SECRET_KEY", "");

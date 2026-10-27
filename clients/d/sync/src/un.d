@@ -67,6 +67,57 @@ string API_BASE() {
     }
     return cached;
 }
+// Target OS from the global --os flag: "" (field omitted, API default linux),
+// "linux" or "freebsd". Sent as "os" in POST /execute, /sessions, /services.
+string g_targetOs = "";
+
+// Normalize a target OS name: "linux" or "freebsd", case-insensitive.
+// Returns null for any other value (including the empty string).
+string normalizeOs(string os) {
+    string v = os.toLower;
+    if (v == "linux" || v == "freebsd") return v;
+    return null;
+}
+
+// JSON fragment `,"os":"..."` for a request body, "" when os is empty.
+// Throws on an invalid value so library callers fail before any request.
+string osJsonField(string os) {
+    if (os.empty) return "";
+    string v = normalizeOs(os);
+    if (v is null) throw new Exception(format("invalid os '%s' (expected linux or freebsd)", os));
+    return format(`,"os":"%s"`, v);
+}
+
+// Remove the global --os OS / --os=OS flag from args (any position) and
+// validate it into g_targetOs before any request is made. Returns false
+// after printing an error to stderr.
+bool extractOsFlag(ref string[] args) {
+    string[] kept = args.length > 0 ? [args[0]] : [];
+    for (size_t i = 1; i < args.length; i++) {
+        string val;
+        if (args[i] == "--os") {
+            if (i + 1 >= args.length) {
+                stderr.writeln("Error: --os requires a value: linux or freebsd");
+                return false;
+            }
+            val = args[++i];
+        } else if (args[i].startsWith("--os=")) {
+            val = args[i][5 .. $];
+        } else {
+            kept ~= args[i];
+            continue;
+        }
+        string v = normalizeOs(val);
+        if (v is null) {
+            stderr.writefln("Error: invalid --os '%s' (expected linux or freebsd)", val);
+            return false;
+        }
+        g_targetOs = v;
+    }
+    args = kept;
+    return true;
+}
+
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
 // Serves /logs/{source} (partner log access) and /keys/extend.
 string PORTAL_BASE() {
@@ -512,16 +563,17 @@ string extractJsonField(string response, string field) {
 immutable string SDK_VERSION = "4.2.0";
 
 // Execute code synchronously
-string execute(string language, string code, string publicKey, string secretKey) {
-    string body_ = format(`{"language":"%s","code":"%s"}`, escapeJson(language), escapeJson(code));
+// os: "" (API default), "linux" or "freebsd"
+string execute(string language, string code, string publicKey, string secretKey, string os = "") {
+    string body_ = format(`{"language":"%s","code":"%s"%s}`, escapeJson(language), escapeJson(code), osJsonField(os));
     string authHeaders = buildAuthHeaders("POST", "/execute", body_, publicKey, secretKey);
     string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
 }
 
 // Execute code asynchronously (returns job_id)
-string executeAsync(string language, string code, string publicKey, string secretKey) {
-    string body_ = format(`{"language":"%s","code":"%s","async":true}`, escapeJson(language), escapeJson(code));
+string executeAsync(string language, string code, string publicKey, string secretKey, string os = "") {
+    string body_ = format(`{"language":"%s","code":"%s","async":true%s}`, escapeJson(language), escapeJson(code), osJsonField(os));
     string authHeaders = buildAuthHeaders("POST", "/execute", body_, publicKey, secretKey);
     string cmd = format(`curl -s -X POST '%s/execute' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
     return execCurl(cmd);
@@ -590,9 +642,10 @@ string sessionGet(string sessionId, string publicKey, string secretKey) {
     return execCurl(cmd);
 }
 
-string sessionCreate(string shell, string network, string publicKey, string secretKey) {
+string sessionCreate(string shell, string network, string publicKey, string secretKey, string os = "") {
     string body_ = format(`{"shell":"%s"`, shell.empty ? "bash" : shell);
     if (!network.empty) body_ ~= format(`,"network":"%s"`, network);
+    body_ ~= osJsonField(os);
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", "/sessions", body_, publicKey, secretKey);
     string cmd = format(`curl -s -X POST '%s/sessions' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
@@ -657,11 +710,12 @@ string serviceGet(string serviceId, string publicKey, string secretKey) {
     return execCurl(cmd);
 }
 
-string serviceCreate(string name, string ports, string bootstrap, string network, string publicKey, string secretKey) {
+string serviceCreate(string name, string ports, string bootstrap, string network, string publicKey, string secretKey, string os = "") {
     string body_ = format(`{"name":"%s"`, escapeJson(name));
     if (!ports.empty) body_ ~= format(`,"ports":"%s"`, ports);
     if (!bootstrap.empty) body_ ~= format(`,"bootstrap":"%s"`, escapeJson(bootstrap));
     if (!network.empty) body_ ~= format(`,"network":"%s"`, network);
+    body_ ~= osJsonField(os);
     body_ ~= "}";
     string authHeaders = buildAuthHeaders("POST", "/services", body_, publicKey, secretKey);
     string cmd = format(`curl -s -X POST '%s/services' -H 'Content-Type: application/json' %s --data-binary @%s`, API_BASE, authHeaders, bodyFile(body_));
@@ -1375,6 +1429,7 @@ void cmdExecute(string sourceFile, string[] envs, bool artifacts, string network
     if (artifacts) json ~= `,"return_artifacts":true`;
     if (!network.empty) json ~= format(`,"network":"%s"`, network);
     if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
+    json ~= osJsonField(g_targetOs);
     json ~= "}";
 
     string authHeaders = buildAuthHeaders("POST", "/execute", json, publicKey, secretKey);
@@ -1404,6 +1459,7 @@ void cmdSession(bool list, string kill, string shell, string network, int vcpu, 
     string json = format(`{"shell":"%s"`, shell.empty ? "bash" : shell);
     if (!network.empty) json ~= format(`,"network":"%s"`, network);
     if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
+    json ~= osJsonField(g_targetOs);
     if (tmux) json ~= `,"persistence":"tmux"`;
     if (screen) json ~= `,"persistence":"screen"`;
     json ~= buildInputFilesJson(inputFiles);
@@ -1594,6 +1650,7 @@ void cmdService(string name, string ports, string bootstrap, string bootstrapFil
         }
         if (!network.empty) json ~= format(`,"network":"%s"`, network);
         if (vcpu > 0) json ~= format(`,"vcpu":%d`, vcpu);
+        json ~= osJsonField(g_targetOs);
         if (createUnfreezeOnDemand) json ~= `,"unfreeze_on_demand":true`;
         json ~= buildInputFilesJson(inputFiles);
         json ~= "}";
@@ -2119,6 +2176,8 @@ int rotateKey(string publicKey, string secretKey, string otpArg, string csvPath)
 }
 
 int main(string[] args) {
+    if (!extractOsFlag(args)) return 1;
+
     string publicKey;
     string secretKey;
     int accountIndex = -1;  // -1 = not set
@@ -2188,6 +2247,9 @@ int main(string[] args) {
         stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
         stderr.writefln("       %s image [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
+        stderr.writeln("");
+        stderr.writeln("Global options:");
+        stderr.writeln("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)");
         stderr.writeln("");
         stderr.writeln("Service env commands:");
         stderr.writeln("  env status <id>     Show vault status");

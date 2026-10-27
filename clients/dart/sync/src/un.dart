@@ -151,6 +151,7 @@ class Args {
   String? publicKey;
   int? account;
   String? network;
+  String? targetOs;
   int vcpu = 0;
   List<String> env = [];
   List<String> files = [];
@@ -743,6 +744,9 @@ Future<void> cmdExecute(Args args) async {
   if (args.network != null) {
     payload['network'] = args.network;
   }
+  if (args.targetOs != null) {
+    payload['os'] = args.targetOs;
+  }
   if (args.vcpu > 0) {
     payload['vcpu'] = args.vcpu;
   }
@@ -809,6 +813,9 @@ Future<void> cmdSession(Args args) async {
   };
   if (args.network != null) {
     payload['network'] = args.network;
+  }
+  if (args.targetOs != null) {
+    payload['os'] = args.targetOs;
   }
   if (args.vcpu > 0) {
     payload['vcpu'] = args.vcpu;
@@ -1010,6 +1017,9 @@ Future<void> cmdService(Args args) async {
     }
     if (args.network != null) {
       payload['network'] = args.network;
+    }
+    if (args.targetOs != null) {
+      payload['os'] = args.targetOs;
     }
     if (args.vcpu > 0) {
       payload['vcpu'] = args.vcpu;
@@ -1959,6 +1969,16 @@ Future<void> cmdKey(Args args) async {
   print('Time Remaining: $remaining');
 }
 
+// Normalize a --os value: linux or freebsd (case-insensitive), else error and exit
+String normalizeTargetOs(String value) {
+  final os = value.toLowerCase();
+  if (os != 'linux' && os != 'freebsd') {
+    stderr.writeln("${red}Error: invalid --os '$value' (expected linux or freebsd)$reset");
+    exit(1);
+  }
+  return os;
+}
+
 Args parseArgs(List<String> argv) {
   final args = Args();
   var i = 0;
@@ -2224,8 +2244,17 @@ Args parseArgs(List<String> argv) {
           }
         }
         break;
+      case '--os':
+        if (i + 1 >= argv.length) {
+          stderr.writeln('${red}Error: --os requires a value: linux or freebsd$reset');
+          exit(1);
+        }
+        args.targetOs = normalizeTargetOs(argv[++i]);
+        break;
       default:
-        if (argv[i].startsWith('-')) {
+        if (argv[i].startsWith('--os=')) {
+          args.targetOs = normalizeTargetOs(argv[i].substring(5));
+        } else if (argv[i].startsWith('-')) {
           stderr.writeln('${red}Unknown option: ${argv[i]}$reset');
           exit(1);
         } else {
@@ -2253,6 +2282,7 @@ Execute options:
   -a                Return artifacts
   -o DIR            Output directory for artifacts
   -n MODE           Network mode (zerotrust/semitrusted)
+  --os OS           Target OS: linux (default) or freebsd (execute, session, service)
   -v N              vCPU count (1-8)
   -p KEY            Public key (use with -k for secret key)
   -k KEY            Secret/API key

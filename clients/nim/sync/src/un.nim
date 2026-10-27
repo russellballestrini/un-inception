@@ -295,6 +295,10 @@ proc execCurlPut(endpoint, body, publicKey, secretKey: string): bool =
 
 const MAX_ENV_CONTENT_SIZE = 65536
 
+# Target OS from the global --os flag: "" (field omitted, API default linux),
+# "linux" or "freebsd". Sent as "os" in /execute, /sessions and /services bodies.
+var targetOs = ""
+
 proc readEnvFile(path: string): string =
   if not fileExists(path):
     stderr.writeLine(RED & "Error: Env file not found: " & path & RESET)
@@ -525,6 +529,7 @@ proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network:
   if artifacts: json.add(""","return_artifacts":true""")
   if network != "": json.add(fmt""","network":"{network}"""")
   if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
+  if targetOs != "": json.add(fmt""","os":"{targetOs}"""")
   json.add("}")
 
   let authHeaders = buildAuthHeaders("POST", "/execute", json, publicKey, secretKey)
@@ -625,6 +630,7 @@ proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execut
   var json = fmt"""{{"shell":"{shellName}""""
   if network != "": json.add(fmt""","network":"{network}"""")
   if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
+  if targetOs != "": json.add(fmt""","os":"{targetOs}"""")
   if tmux: json.add(""","persistence":"tmux"""")
   if screen: json.add(""","persistence":"screen"""")
   json.add(buildInputFilesJson(inputFiles))
@@ -863,6 +869,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     if serviceType != "": json.add(fmt""","service_type":"{serviceType}"""")
     if network != "": json.add(fmt""","network":"{network}"""")
     if vcpu > 0: json.add(fmt""","vcpu":{vcpu}""")
+    if targetOs != "": json.add(fmt""","os":"{targetOs}"""")
     if unfreezeOnDemand: json.add(""","unfreeze_on_demand":true""")
     json.add(buildInputFilesJson(inputFiles))
     json.add("}")
@@ -1790,13 +1797,40 @@ proc resolveCredentials(argPk: string, argSk: string, accountIndex: int): tuple[
   stderr.writeLine(RED & "Error: No credentials found. Set UNSANDBOX_PUBLIC_KEY and UNSANDBOX_SECRET_KEY" & RESET)
   quit(1)
 
+# Remove the global --os OS / --os=OS flag from params (any position) and validate it
+# before any request is made. Quits non-zero on a missing or invalid value.
+proc extractOsFlag(params: seq[string]): seq[string] =
+  result = @[]
+  var i = 0
+  while i < params.len:
+    var val: string
+    if params[i] == "--os":
+      if i + 1 >= params.len:
+        stderr.writeLine("Error: --os requires a value: linux or freebsd")
+        quit(1)
+      inc i
+      val = params[i]
+    elif params[i].startsWith("--os="):
+      val = params[i][5 .. ^1]
+    else:
+      result.add(params[i])
+      inc i
+      continue
+    case val.toLowerAscii()
+    of "linux", "freebsd": targetOs = val.toLowerAscii()
+    else:
+      stderr.writeLine("Error: invalid --os '" & val & "' (expected linux or freebsd)")
+      quit(1)
+    inc i
+
 proc main() =
+  let cliParams = extractOsFlag(commandLineParams())
   var argPublicKey = ""
   var argSecretKey = ""
   var accountIndex = -1  # -1 means not set
 
   # Pre-scan for --account, -p, and -k before subcommand dispatch
-  let rawArgs = commandLineParams()
+  let rawArgs = cliParams
   var i = 0
   while i < rawArgs.len:
     if rawArgs[i] == "--account" and i + 1 < rawArgs.len:
@@ -1818,7 +1852,7 @@ proc main() =
   var publicKey = resolved.pk
   var secretKey = resolved.sk
 
-  let args = commandLineParams()
+  let args = cliParams
 
   if args.len < 1:
     stderr.writeLine("Usage: un.nim [options] <source_file>")
@@ -1829,6 +1863,9 @@ proc main() =
     stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
     stderr.writeLine("       un.nim key --rotate [--otp CODE]")
+    stderr.writeLine("")
+    stderr.writeLine("Global options:")
+    stderr.writeLine("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)")
     stderr.writeLine("")
     stderr.writeLine("Languages options:")
     stderr.writeLine("  --json              Output as JSON array")

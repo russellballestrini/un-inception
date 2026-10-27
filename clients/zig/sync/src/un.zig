@@ -72,6 +72,58 @@ const time = std.time;
 
 const DEFAULT_API_BASE = "https://api.unsandbox.com";
 
+// Target OS from the global --os flag: null (field omitted, API default linux),
+// "linux" or "freebsd". Sent as "os" in POST /execute, /sessions, /services.
+pub var g_target_os: ?[]const u8 = null;
+
+pub const OsError = error{InvalidOs};
+
+/// Normalize a target OS name: "linux" or "freebsd", case-insensitive.
+/// Returns null for any other value (including the empty string).
+pub fn normalizeOs(os: []const u8) ?[]const u8 {
+    if (std.ascii.eqlIgnoreCase(os, "linux")) return "linux";
+    if (std.ascii.eqlIgnoreCase(os, "freebsd")) return "freebsd";
+    return null;
+}
+
+/// JSON fragment `,"os":"..."` for a request body, "" when os is null.
+/// error.InvalidOs for any other value, so nothing is sent.
+pub fn osJsonField(os: ?[]const u8) OsError![]const u8 {
+    const o = os orelse return "";
+    const v = normalizeOs(o) orelse return error.InvalidOs;
+    return if (mem.eql(u8, v, "linux")) ",\"os\":\"linux\"" else ",\"os\":\"freebsd\"";
+}
+
+/// Remove the global --os OS / --os=OS flag from args (any position) and
+/// validate it into g_target_os before any request is made. Returns the
+/// remaining args (a prefix of `out`), or null after printing an error.
+pub fn extractOsFlag(args: []const [:0]u8, out: [][:0]u8) ?[][:0]u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        var val: []const u8 = undefined;
+        if (i > 0 and mem.eql(u8, args[i], "--os")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("Error: --os requires a value: linux or freebsd\n", .{});
+                return null;
+            }
+            i += 1;
+            val = args[i];
+        } else if (i > 0 and mem.startsWith(u8, args[i], "--os=")) {
+            val = args[i][5..];
+        } else {
+            out[n] = args[i];
+            n += 1;
+            continue;
+        }
+        g_target_os = normalizeOs(val) orelse {
+            std.debug.print("Error: invalid --os '{s}' (expected linux or freebsd)\n", .{val});
+            return null;
+        };
+    }
+    return out[0..n];
+}
+
 // API base URL: UNSANDBOX_API_URL (trailing slash stripped), default https://api.unsandbox.com
 fn apiBase() []const u8 {
     const v = std.posix.getenv("UNSANDBOX_API_URL") orelse return DEFAULT_API_BASE;
@@ -357,14 +409,26 @@ fn makeApiRequest(allocator: std.mem.Allocator, method: []const u8, path: []cons
 
 // Execute code synchronously
 pub fn execute(allocator: std.mem.Allocator, language: []const u8, code: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
-    const body = try std.fmt.allocPrint(allocator, "{{\"language\":\"{s}\",\"code\":\"{s}\"}}", .{ language, code });
+    return executeWithOs(allocator, language, code, null, public_key, secret_key);
+}
+
+// Execute code synchronously on a target OS: null (API default), "linux" or "freebsd"
+pub fn executeWithOs(allocator: std.mem.Allocator, language: []const u8, code: []const u8, os: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const os_field = try osJsonField(os);
+    const body = try std.fmt.allocPrint(allocator, "{{\"language\":\"{s}\",\"code\":\"{s}\"{s}}}", .{ language, code, os_field });
     defer allocator.free(body);
     return try makeApiRequest(allocator, "POST", "/execute", body, public_key, secret_key);
 }
 
 // Execute code asynchronously (returns job_id)
 pub fn executeAsync(allocator: std.mem.Allocator, language: []const u8, code: []const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
-    const body = try std.fmt.allocPrint(allocator, "{{\"language\":\"{s}\",\"code\":\"{s}\",\"async\":true}}", .{ language, code });
+    return executeAsyncWithOs(allocator, language, code, null, public_key, secret_key);
+}
+
+// Execute code asynchronously on a target OS: null (API default), "linux" or "freebsd"
+pub fn executeAsyncWithOs(allocator: std.mem.Allocator, language: []const u8, code: []const u8, os: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const os_field = try osJsonField(os);
+    const body = try std.fmt.allocPrint(allocator, "{{\"language\":\"{s}\",\"code\":\"{s}\",\"async\":true{s}}}", .{ language, code, os_field });
     defer allocator.free(body);
     return try makeApiRequest(allocator, "POST", "/execute", body, public_key, secret_key);
 }
@@ -460,11 +524,18 @@ pub fn sessionGet(allocator: std.mem.Allocator, session_id: []const u8, public_k
 }
 
 pub fn sessionCreate(allocator: std.mem.Allocator, shell: ?[]const u8, network: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    return sessionCreateWithOs(allocator, shell, network, null, public_key, secret_key);
+}
+
+// Create a session on a target OS: null (API default), "linux" or "freebsd"
+pub fn sessionCreateWithOs(allocator: std.mem.Allocator, shell: ?[]const u8, network: ?[]const u8, os: ?[]const u8, public_key: []const u8, secret_key: []const u8) ![]const u8 {
+    const os_field = try osJsonField(os);
     var body_buf: [512]u8 = undefined;
     var stream = std.io.fixedBufferStream(&body_buf);
     const writer = stream.writer();
     try writer.print("{{\"shell\":\"{s}\"", .{shell orelse "bash"});
     if (network) |n| try writer.print(",\"network\":\"{s}\"", .{n});
+    try writer.writeAll(os_field);
     try writer.writeAll("}");
     const body = stream.getWritten();
     return try makeApiRequest(allocator, "POST", "/sessions", body, public_key, secret_key);
@@ -1594,8 +1665,13 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try process.argsAlloc(allocator);
-    defer process.argsFree(allocator, args);
+    const raw_args = try process.argsAlloc(allocator);
+    defer process.argsFree(allocator, raw_args);
+
+    // Global --os OS / --os=OS: validated before credentials or any request
+    const args_buf = try allocator.alloc([:0]u8, raw_args.len);
+    defer allocator.free(args_buf);
+    const args = extractOsFlag(raw_args, args_buf) orelse return 1;
 
     if (args.len < 2) {
         std.debug.print("Usage: {s} [options] <source_file>\n", .{args[0]});
@@ -1625,6 +1701,7 @@ pub fn main() !u8 {
         std.debug.print("  -p PUBLIC_KEY       Explicit public key\n", .{});
         std.debug.print("  -k SECRET_KEY       Explicit secret key\n", .{});
         std.debug.print("  --account N         Use row N from accounts.csv (bypasses env vars)\n", .{});
+        std.debug.print("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)\n", .{});
         return 1;
     }
 
@@ -1712,7 +1789,7 @@ pub fn main() !u8 {
             const sh = shell orelse "bash";
             const input_files_json = try buildInputFilesJson(allocator, input_files);
             defer allocator.free(input_files_json);
-            const json = try std.fmt.allocPrint(allocator, "{{\"shell\":\"{s}\"{s}}}", .{ sh, input_files_json });
+            const json = try std.fmt.allocPrint(allocator, "{{\"shell\":\"{s}\"{s}{s}}}", .{ sh, input_files_json, osJsonField(g_target_os) catch "" });
             defer allocator.free(json);
             const auth_headers = try buildAuthCmd(allocator, "POST", "/sessions", json, public_key, secret_key);
             defer allocator.free(auth_headers);
@@ -2014,6 +2091,7 @@ pub fn main() !u8 {
             if (unfreeze_on_demand) {
                 try writer.writeAll(",\"unfreeze_on_demand\":true");
             }
+            try writer.writeAll(osJsonField(g_target_os) catch "");
             // Add input_files JSON
             const input_files_json = try buildInputFilesJson(allocator, input_files);
             defer allocator.free(input_files_json);
@@ -2477,7 +2555,9 @@ pub fn main() !u8 {
             else => try writer.writeByte(c),
         }
     }
-    try writer.writeAll("\"}");
+    try writer.writeAll("\"");
+    try writer.writeAll(osJsonField(g_target_os) catch "");
+    try writer.writeAll("}");
 
     // Read back the JSON to compute HMAC
     const json_content = try fs.cwd().readFileAlloc(allocator, json_file, 10 * 1024 * 1024);

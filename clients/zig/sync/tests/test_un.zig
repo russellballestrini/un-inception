@@ -82,6 +82,56 @@ test "hmacSign" {
     try testing.expect(!mem.eql(u8, result, result3));
 }
 
+test "normalizeOs and osJsonField (--os)" {
+    try testing.expectEqualStrings("linux", un.normalizeOs("linux").?);
+    try testing.expectEqualStrings("freebsd", un.normalizeOs("FreeBSD").?);
+    try testing.expect(un.normalizeOs("openbsd") == null);
+    try testing.expect(un.normalizeOs("") == null);
+    try testing.expectEqualStrings("", try un.osJsonField(null));
+    try testing.expectEqualStrings(",\"os\":\"freebsd\"", try un.osJsonField("FREEBSD"));
+    try testing.expectError(error.InvalidOs, un.osJsonField("openbsd"));
+    try testing.expectError(error.InvalidOs, un.osJsonField(""));
+}
+
+test "invalid os is rejected before any request" {
+    // error.InvalidOs comes back before makeApiRequest, so nothing is sent
+    try testing.expectError(error.InvalidOs, un.executeWithOs(testing.allocator, "bash", "echo hi", "openbsd", "pk", "sk"));
+    try testing.expectError(error.InvalidOs, un.executeAsyncWithOs(testing.allocator, "bash", "echo hi", "", "pk", "sk"));
+    try testing.expectError(error.InvalidOs, un.sessionCreateWithOs(testing.allocator, null, null, "windows", "pk", "sk"));
+}
+
+test "extractOsFlag (--os)" {
+    var a0 = "un".*;
+    var a1 = "--os".*;
+    var a2 = "FreeBSD".*;
+    var a3 = "script.py".*;
+    var a4 = "--os=linux".*;
+    var a5 = "openbsd".*;
+    var a6 = "".*;
+    var out: [8][:0]u8 = undefined;
+
+    un.g_target_os = null;
+    const r1 = un.extractOsFlag(&[_][:0]u8{ &a0, &a1, &a2, &a3 }, &out).?;
+    try testing.expectEqual(@as(usize, 2), r1.len);
+    try testing.expectEqualStrings("script.py", r1[1]);
+    try testing.expectEqualStrings("freebsd", un.g_target_os.?);
+
+    un.g_target_os = null;
+    const r2 = un.extractOsFlag(&[_][:0]u8{ &a0, &a4, &a3 }, &out).?;
+    try testing.expectEqual(@as(usize, 2), r2.len);
+    try testing.expectEqualStrings("linux", un.g_target_os.?);
+
+    un.g_target_os = null;
+    const r3 = un.extractOsFlag(&[_][:0]u8{ &a0, &a3 }, &out).?;
+    try testing.expectEqual(@as(usize, 2), r3.len);
+    try testing.expect(un.g_target_os == null);
+
+    try testing.expect(un.extractOsFlag(&[_][:0]u8{ &a0, &a1, &a5, &a3 }, &out) == null);
+    try testing.expect(un.extractOsFlag(&[_][:0]u8{ &a0, &a1, &a6, &a3 }, &out) == null);
+    try testing.expect(un.extractOsFlag(&[_][:0]u8{ &a0, &a1 }, &out) == null);
+    un.g_target_os = null;
+}
+
 // ============================================================================
 // Functional Tests - Test against real API (requires credentials)
 // These tests are marked as skipped by default since they require credentials

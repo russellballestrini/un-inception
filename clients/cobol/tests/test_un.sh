@@ -98,6 +98,89 @@ test_that "WS-PORTS variable defined" "grep -q 'WS-PORTS' '$SOURCE'"
 test_that "WS-NAME variable defined" "grep -q 'WS-NAME' '$SOURCE'"
 
 echo ""
+echo "=== --os Flag (offline mock API) ==="
+# Compiles our CLI and points it at a local recording mock (UNSANDBOX_API_URL)
+# with throwaway keys and a temp HOME: no network, no real credentials.
+if command -v cobc >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    OS_WORK="$(mktemp -d)"
+    cat > "$OS_WORK/mock.py" <<'PY'
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+log_path, port_path = sys.argv[1], sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        with open(log_path, "a") as f:
+            f.write(json.dumps({"path": self.path, "body": body}) + "\n")
+        data = b'{"stdout":"","stderr":"","exit_code":0}'
+        self.send_response(200 if self.path.startswith("/execute") else 400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    do_GET = do_POST
+    def log_message(self, *a):
+        pass
+srv = HTTPServer(("127.0.0.1", 0), H)
+open(port_path, "w").write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+    python3 "$OS_WORK/mock.py" "$OS_WORK/log" "$OS_WORK/port" &
+    OS_MOCK=$!
+    for _ in $(seq 1 50); do [ -s "$OS_WORK/port" ] && break; sleep 0.1; done
+    cobc -x -o "$OS_WORK/un" "$SOURCE" 2>/dev/null
+    echo 'print(1)' > "$OS_WORK/hi.py"
+    mkdir -p "$OS_WORK/home"
+
+    # os_run ARGS...: run our CLI against our mock; sets OS_RC
+    os_run() {
+        : > "$OS_WORK/log"
+        (cd "$OS_WORK" && HOME="$OS_WORK/home" \
+            UNSANDBOX_API_URL="http://127.0.0.1:$(cat "$OS_WORK/port")" \
+            UNSANDBOX_PUBLIC_KEY=unsb-pk-test-0000-0000-0000 \
+            UNSANDBOX_SECRET_KEY=unsb-sk-test0-00000-00000-00000 \
+            timeout 30 ./un "$@" </dev/null >"$OS_WORK/out" 2>&1)
+        OS_RC=$?
+    }
+    # os_of PATH: "os" of our first POST to PATH, <absent> or <no-request>
+    os_of() {
+        python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["path"] == sys.argv[2]:
+        print(json.loads(r["body"]).get("os", "<absent>")); break
+else:
+    print("<no-request>")' "$OS_WORK/log" "$1"
+    }
+
+    os_run --os freebsd hi.py
+    test_that "execute --os freebsd sends os freebsd" "[ \"$(os_of /execute)\" = freebsd ]"
+    os_run hi.py
+    test_that "execute without --os sends no os key" "[ \"$(os_of /execute)\" = '<absent>' ]"
+    os_run --os=FreeBSD hi.py
+    test_that "execute --os=FreeBSD normalizes to freebsd" "[ \"$(os_of /execute)\" = freebsd ]"
+    os_run --os freebsd session
+    test_that "session --os freebsd sends os freebsd" "[ \"$(os_of /sessions)\" = freebsd ]"
+    os_run session
+    test_that "session without --os sends no os key" "[ \"$(os_of /sessions)\" = '<absent>' ]"
+    os_run --os linux service --name ostest --ports 80 --bootstrap true
+    test_that "service --os linux sends os linux" "[ \"$(os_of /services)\" = linux ]"
+    os_run service --name ostest --ports 80 --bootstrap true
+    test_that "service without --os sends no os key" "[ \"$(os_of /services)\" = '<absent>' ]"
+    os_run --os openbsd hi.py
+    test_that "--os openbsd rejected, nothing sent" "[ $OS_RC -ne 0 ] && grep -q openbsd '$OS_WORK/out' && [ ! -s '$OS_WORK/log' ]"
+    os_run --os '' hi.py
+    test_that "--os '' rejected, nothing sent" "[ $OS_RC -ne 0 ] && grep -q 'invalid --os' '$OS_WORK/out' && [ ! -s '$OS_WORK/log' ]"
+    os_run --os
+    test_that "--os without value rejected, nothing sent" "[ $OS_RC -ne 0 ] && grep -q -- '--os requires a value' '$OS_WORK/out' && [ ! -s '$OS_WORK/log' ]"
+
+    kill "$OS_MOCK" 2>/dev/null
+    rm -rf "$OS_WORK"
+else
+    echo "[SKIP] cobc, python3 or jq not installed"
+fi
+
+echo ""
 echo "=== Summary ==="
 echo "Tests passed: $TESTS_PASSED / $TESTS_RUN"
 

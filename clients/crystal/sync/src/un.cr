@@ -580,6 +580,9 @@ def cmd_execute(args)
   if network = args[:network]?.as?(String)
     payload.as_h["network"] = JSON::Any.new(network)
   end
+  if target_os = args[:target_os]?.as?(String)
+    payload.as_h["os"] = JSON::Any.new(target_os)
+  end
 
   # Execute
   result = api_request("/execute", public_key, secret_key, method: "POST", data: payload)
@@ -687,6 +690,9 @@ def cmd_session(args)
 
   if network = args[:network]?.as?(String)
     payload.as_h["network"] = JSON::Any.new(network)
+  end
+  if target_os = args[:target_os]?.as?(String)
+    payload.as_h["os"] = JSON::Any.new(target_os)
   end
 
   if shell = args[:shell]?.as?(String)
@@ -1787,6 +1793,11 @@ def cmd_service(args)
       payload.as_h["network"] = JSON::Any.new(network)
     end
 
+    # Add target OS (only when --os was given)
+    if target_os = args[:target_os]?.as?(String)
+      payload.as_h["os"] = JSON::Any.new(target_os)
+    end
+
     # Add unfreeze_on_demand
     if args[:create_unfreeze_on_demand]?.as?(Bool)
       payload.as_h["unfreeze_on_demand"] = JSON::Any.new(true)
@@ -1839,7 +1850,45 @@ def cmd_service(args)
   exit 1
 end
 
+# Normalize a --os value: linux or freebsd (case-insensitive), else error and exit
+def normalize_target_os(value : String) : String
+  os = value.downcase
+  unless os == "linux" || os == "freebsd"
+    STDERR.puts "#{RED}Error: invalid --os '#{value}' (expected linux or freebsd)#{RESET}"
+    exit 1
+  end
+  os
+end
+
+# Remove the global --os OS / --os=OS flag from argv (any position) and validate
+# it before any request is made. Returns nil when the flag is absent.
+def extract_os_flag(argv : Array(String)) : String?
+  target_os = nil
+  rest = [] of String
+  i = 0
+  while i < argv.size
+    arg = argv[i]
+    if arg == "--os"
+      if i + 1 >= argv.size
+        STDERR.puts "#{RED}Error: --os requires a value: linux or freebsd#{RESET}"
+        exit 1
+      end
+      target_os = normalize_target_os(argv[i + 1])
+      i += 2
+    elsif arg.starts_with?("--os=")
+      target_os = normalize_target_os(arg[5..])
+      i += 1
+    else
+      rest << arg
+      i += 1
+    end
+  end
+  argv.replace(rest)
+  target_os
+end
+
 def main
+  target_os = extract_os_flag(ARGV)
   paas_main(ARGV.to_a) if ARGV.size >= 1 && (ARGV[0] == "paas" || ARGV[0] == "logs")
   args = {
     :source_file => nil,
@@ -1928,7 +1977,8 @@ def main
     :logs_lines => nil,
     :logs_since => nil,
     :logs_grep => nil,
-    :logs_follow => false
+    :logs_follow => false,
+    :target_os => target_os
   } of Symbol => (String | Array(String) | Bool | Int32 | Nil)
 
   parser = OptionParser.new do |opts|
@@ -1940,6 +1990,7 @@ def main
     opts.on("--rotate", "key: rotate this key's secret (sudo OTP), update accounts.csv") { args[:rotate] = true }
     opts.on("--otp=CODE", "key --rotate: finish a rotation started without a terminal") { |c| args[:otp] = c }
     opts.on("-n NETWORK", "--network=NETWORK", "Network mode") { |n| args[:network] = n }
+    opts.on("--os=OS", "Target OS: linux (default) or freebsd (execute, session, service)") { |o| args[:target_os] = normalize_target_os(o) }
     opts.on("-e ENV", "--env=ENV", "Environment variable (KEY=VALUE)") { |e|
       args[:env].as(Array(String)) << e
       args[:svc_envs].as(Array(String)) << e

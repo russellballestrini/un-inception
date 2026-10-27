@@ -114,6 +114,12 @@
        01  WS-OTP              PIC X(64).
        01  WS-ROT-CMD          PIC X(8192).
        01  WS-CRED-PATH        PIC X(512).
+      *> Global --os flag: WS-TARGET-OS is linux, freebsd, or SPACES (the
+      *> "os" field is then left out of request bodies; API default linux)
+       01  WS-TARGET-OS        PIC X(16) VALUE SPACES.
+       01  WS-OS-VAL           PIC X(256) VALUE SPACES.
+       01  WS-OS-JSON          PIC X(32) VALUE SPACES.
+       01  WS-OS-JQ            PIC X(32) VALUE SPACES.
       *> Request signing helper (POSIX sh). Every request command pipes
       *> "ts:METHOD:path:body" into sh -c "$UNSB_HMAC", which prints the hex
       *> HMAC-SHA256 keyed by $UNSB_SK. GET-CREDENTIALS exports both: the
@@ -155,12 +161,23 @@
       *> Get first command line argument
            ACCEPT WS-ARG1 FROM ARGUMENT-VALUE.
 
-      *> Pre-scan: handle --account N global flag before subcommand
-           IF WS-ARG1 = "--account"
-               ACCEPT WS-ACCOUNT-STR FROM ARGUMENT-VALUE
-               MOVE FUNCTION NUMVAL(WS-ACCOUNT-STR) TO WS-ACCOUNT-INDEX
+      *> Pre-scan: handle --account N and --os OS global flags before
+      *> subcommand (--os is validated here, before any request)
+           PERFORM UNTIL WS-ARG1 NOT = "--account"
+                   AND WS-ARG1 NOT = "--os"
+                   AND WS-ARG1(1:5) NOT = "--os="
+               IF WS-ARG1 = "--account"
+                   ACCEPT WS-ACCOUNT-STR FROM ARGUMENT-VALUE
+                   MOVE FUNCTION NUMVAL(WS-ACCOUNT-STR)
+                       TO WS-ACCOUNT-INDEX
+               ELSE
+                   PERFORM PARSE-OS-FLAG
+               END-IF
+               MOVE SPACES TO WS-ARG1
                ACCEPT WS-ARG1 FROM ARGUMENT-VALUE
-           END-IF.
+                   ON EXCEPTION MOVE SPACES TO WS-ARG1
+               END-ACCEPT
+           END-PERFORM.
 
            IF WS-ARG1 = SPACES
                DISPLAY "Usage: un.cob <source_file>" UPON SYSERR
@@ -168,6 +185,8 @@
                DISPLAY "       un.cob service [options]" UPON SYSERR
                DISPLAY "       un.cob key [--extend | --rotate [--otp CODE]]"
                    UPON SYSERR
+               DISPLAY "  --os OS   Target OS: linux (default) or freebsd "
+                   "(execute, session, service)" UPON SYSERR
                MOVE 1 TO RETURN-CODE
                STOP RUN
            END-IF.
@@ -318,6 +337,37 @@
                MOVE 1 TO RETURN-CODE
                STOP RUN
            END-IF.
+
+       PARSE-OS-FLAG.
+      *> --os OS or --os=OS: linux or freebsd, case-insensitive
+           MOVE SPACES TO WS-OS-VAL.
+           IF WS-ARG1 = "--os"
+               ACCEPT WS-OS-VAL FROM ARGUMENT-VALUE
+                   ON EXCEPTION
+                       DISPLAY "Error: --os requires a value: "
+                           "linux or freebsd" UPON SYSERR
+                       MOVE 1 TO RETURN-CODE
+                       STOP RUN
+               END-ACCEPT
+           ELSE
+               MOVE WS-ARG1(6:) TO WS-OS-VAL
+           END-IF.
+           MOVE FUNCTION LOWER-CASE(WS-OS-VAL) TO WS-TARGET-OS.
+           IF WS-OS-VAL(17:) NOT = SPACES
+               OR (WS-TARGET-OS NOT = "linux"
+                   AND WS-TARGET-OS NOT = "freebsd")
+               DISPLAY "Error: invalid --os '" FUNCTION TRIM(WS-OS-VAL)
+                   "' (expected linux or freebsd)" UPON SYSERR
+               MOVE 1 TO RETURN-CODE
+               STOP RUN
+           END-IF.
+           MOVE SPACES TO WS-OS-JSON WS-OS-JQ.
+           STRING ",""os"":""" FUNCTION TRIM(WS-TARGET-OS) """"
+               DELIMITED BY SIZE INTO WS-OS-JSON
+           END-STRING.
+           STRING ", os: """ FUNCTION TRIM(WS-TARGET-OS) """"
+               DELIMITED BY SIZE INTO WS-OS-JQ
+           END-STRING.
 
        HANDLE-EXECUTE.
       *> Get credentials
@@ -486,7 +536,7 @@
            STRING "TS=$(date +%s); "
                "BODY=$(jq -Rs '{language: """
                FUNCTION TRIM(WS-LANGUAGE)
-               """, code: .}' < '"
+               """, code: ." WS-OS-JQ "}' < '"
                FUNCTION TRIM(WS-FILENAME)
                "'); "
                "SIG=$(printf %s ""$TS:POST:/execute:$BODY"" | "
@@ -605,8 +655,10 @@
 
            STRING FUNCTION TRIM(WS-CURL-CMD)
                "if [ -n ""$INPUT_FILES"" ]; then "
-               "JSON='{""shell"":""bash"",""input_files"":['""$INPUT_FILES""']}'; "
-               "else JSON='{""shell"":""bash""}'; fi; "
+               "JSON='{""shell"":""bash""" FUNCTION TRIM(WS-OS-JSON)
+               ",""input_files"":['""$INPUT_FILES""']}'; "
+               "else JSON='{""shell"":""bash""" FUNCTION TRIM(WS-OS-JSON)
+               "}'; fi; "
                "curl -s -X POST $UN_API/sessions "
                "-H 'Content-Type: application/json' "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
@@ -819,8 +871,14 @@
                    ELSE
                        MOVE WS-ARG3 TO WS-INPUT-FILES
                    END-IF
+               END-IF END-IF END-IF END-IF END-IF END-IF END-IF END-IF
                END-IF
+      *> One END-IF per ELSE IF above, so this ACCEPT runs every pass.
+      *> Past our last argument ACCEPT leaves WS-ARG3 unchanged: clear it
+      *> so our loop ends instead of re-reading our last flag forever
                ACCEPT WS-ARG3 FROM ARGUMENT-VALUE
+                   ON EXCEPTION MOVE SPACES TO WS-ARG3
+               END-ACCEPT
            END-PERFORM.
 
        PARSE-SERVICE-ENV-ARGS.
@@ -1002,6 +1060,14 @@
                STRING FUNCTION TRIM(WS-CURL-CMD)
                    ",""unfreeze_on_demand"":"
                    FUNCTION TRIM(WS-UNFREEZE-ON-DEMAND)
+                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               END-STRING
+           END-IF.
+
+      *> Add os if --os was given
+           IF WS-TARGET-OS NOT = SPACES
+               STRING FUNCTION TRIM(WS-CURL-CMD)
+                   FUNCTION TRIM(WS-OS-JSON)
                    DELIMITED BY SIZE INTO WS-CURL-CMD
                END-STRING
            END-IF.

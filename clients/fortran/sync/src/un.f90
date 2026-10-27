@@ -115,6 +115,7 @@ module unsandbox_sdk
     public :: detect_language
     public :: api_base_url
     public :: set_env
+    public :: normalize_os
 
     ! API configuration
     ! Default API base; override with UNSANDBOX_API_URL (see api_base_url())
@@ -251,6 +252,32 @@ contains
 
         rc = c_setenv(trim(name) // c_null_char, value // c_null_char, 1_c_int)
     end subroutine set_env
+
+    !--------------------------------------------------------------------------
+    ! Subroutine: normalize_os
+    ! Description: Validate a target OS (linux or freebsd, any case) and
+    !              return it lowercased. status = 1 for any other value,
+    !              including an empty string. Sent as "os" only when given.
+    !--------------------------------------------------------------------------
+    subroutine normalize_os(value, normalized, status)
+        character(len=*), intent(in) :: value
+        character(len=*), intent(out) :: normalized
+        integer, intent(out) :: status
+        character(len=len(value)) :: low
+        integer :: k, c
+
+        low = value
+        do k = 1, len(low)
+            c = iachar(low(k:k))
+            if (c >= 65 .and. c <= 90) low(k:k) = achar(c + 32)
+        end do
+        normalized = ''
+        status = 1
+        if (low == 'linux' .or. low == 'freebsd') then
+            normalized = trim(low)
+            status = 0
+        end if
+    end subroutine normalize_os
 
     !--------------------------------------------------------------------------
     ! Subroutine: load_csv_row
@@ -628,16 +655,18 @@ contains
     !   network     - Optional: Network mode (zerotrust/semitrusted)
     !   ttl         - Optional: Timeout in seconds
     !   vcpu        - Optional: vCPU count (1-8)
+    !   target_os   - Optional: Target OS (linux or freebsd); omitted = API default
     !--------------------------------------------------------------------------
-    subroutine client_execute(self, language, code, result, status, network, ttl, vcpu)
+    subroutine client_execute(self, language, code, result, status, network, ttl, vcpu, target_os)
         class(unsandbox_client), intent(in) :: self
         character(len=*), intent(in) :: language, code
         type(execution_result), intent(out) :: result
         integer, intent(out) :: status
         character(len=*), intent(in), optional :: network
         integer, intent(in), optional :: ttl, vcpu
+        character(len=*), intent(in), optional :: target_os
         character(len=16384) :: cmd
-        character(len=32) :: net_mode
+        character(len=32) :: net_mode, os_jq
         integer :: exec_ttl, exec_vcpu
 
         status = 0
@@ -649,6 +678,16 @@ contains
         if (present(ttl)) exec_ttl = ttl
         if (present(vcpu)) exec_vcpu = vcpu
 
+        os_jq = ''
+        if (present(target_os)) then
+            call normalize_os(target_os, os_jq, status)
+            if (status /= 0) then
+                result%stderr = 'Invalid target_os (expected linux or freebsd)'
+                return
+            end if
+            os_jq = ', os: "' // trim(os_jq) // '"'
+        end if
+
         if (.not. self%initialized) then
             status = 1
             result%stderr = 'Client not initialized'
@@ -656,12 +695,12 @@ contains
         end if
 
         ! Build and execute shell command with HMAC auth
-        write(cmd, '(30A)') &
+        write(cmd, '(40A)') &
             'TMPFILE=$(mktemp); ', &
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
             'BODY=$(jq -Rs ''{language: "', trim(language), '", code: ., ', &
             'network_mode: "', trim(net_mode), '", ttl: ', char(48+mod(exec_ttl/10,10)), char(48+mod(exec_ttl,10)), &
-            '}'' < "$TMPFILE"); ', &
+            trim(os_jq), '}'' < "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
             'SIG=$(printf %s "$TS:POST:/execute:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'RESP=$(curl -s -X POST ', trim(api_base_url()), '/execute ', &
@@ -690,16 +729,26 @@ contains
     !   code     - Source code to execute
     !   job_id   - Output: Job ID for polling
     !   status   - Output: 0 on success, non-zero on error
+    !   target_os - Optional: Target OS (linux or freebsd); omitted = API default
     !--------------------------------------------------------------------------
-    subroutine client_execute_async(self, language, code, job_id, status)
+    subroutine client_execute_async(self, language, code, job_id, status, target_os)
         class(unsandbox_client), intent(in) :: self
         character(len=*), intent(in) :: language, code
         character(len=*), intent(out) :: job_id
         integer, intent(out) :: status
+        character(len=*), intent(in), optional :: target_os
         character(len=8192) :: cmd
+        character(len=32) :: os_jq
 
         status = 0
         job_id = ''
+
+        os_jq = ''
+        if (present(target_os)) then
+            call normalize_os(target_os, os_jq, status)
+            if (status /= 0) return
+            os_jq = ', os: "' // trim(os_jq) // '"'
+        end if
 
         if (.not. self%initialized) then
             status = 1
@@ -709,7 +758,7 @@ contains
         write(cmd, '(20A)') &
             'TMPFILE=$(mktemp); ', &
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
-            'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .}'' < "$TMPFILE"); ', &
+            'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .', trim(os_jq), '}'' < "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
             'SIG=$(printf %s "$TS:POST:/execute/async:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST ', trim(api_base_url()), '/execute/async ', &
@@ -1002,6 +1051,11 @@ program unsandbox_cli
     integer :: stat, i, nargs, dot_pos
     integer :: account_index   ! -1 = not set; >= 0 means use that CSV row
     logical :: list_flag, is_session, is_service, is_key
+    ! Arguments with the global --os flag removed; handlers read these via
+    ! get_arg/arg_count. target_os is '' (field omitted) or linux/freebsd.
+    character(len=4096), allocatable :: cli_args(:)
+    integer :: cli_argc
+    character(len=16) :: target_os
 
     ! Initialize
     subcommand = ''
@@ -1016,8 +1070,11 @@ program unsandbox_cli
     ! Every API request below targets $UN_API (UNSANDBOX_API_URL or default)
     call set_env('UN_API', trim(api_base_url()))
 
+    ! Strip and validate the global --os flag before any request or credentials
+    call extract_os_flag()
+
     ! Get command line arguments count
-    nargs = command_argument_count()
+    nargs = arg_count()
     if (nargs < 1) then
         call print_help()
         stop 1
@@ -1025,9 +1082,9 @@ program unsandbox_cli
 
     ! Pre-scan all arguments for --account N
     do i = 1, nargs - 1
-        call get_command_argument(i, arg)
+        call get_arg(i, arg)
         if (trim(arg) == '--account') then
-            call get_command_argument(i + 1, arg)
+            call get_arg(i + 1, arg)
             read(arg, *, iostat=stat) account_index
             if (stat /= 0) account_index = -1
             exit
@@ -1035,7 +1092,7 @@ program unsandbox_cli
     end do
 
     ! Check for subcommands
-    call get_command_argument(1, arg, status=stat)
+    call get_arg(1, arg, status=stat)
     if (trim(arg) == '-h' .or. trim(arg) == '--help') then
         call print_help()
         stop 0
@@ -1068,6 +1125,75 @@ program unsandbox_cli
     end if
 
 contains
+
+    ! Remove --os OS / --os=OS from the arguments (any position) and validate
+    ! it: linux or freebsd, case-insensitive. Anything else exits non-zero.
+    subroutine extract_os_flag()
+        character(len=4096) :: a, val
+        integer :: k, n, ios
+
+        target_os = ''
+        n = command_argument_count()
+        allocate(cli_args(max(n, 1)))
+        cli_argc = 0
+        k = 1
+        do while (k <= n)
+            call get_command_argument(k, a)
+            if (trim(a) == '--os') then
+                if (k + 1 > n) then
+                    write(0, '(A)') 'Error: --os requires a value: linux or freebsd'
+                    stop 1
+                end if
+                call get_command_argument(k + 1, val)
+                k = k + 1
+            else if (len_trim(a) >= 5 .and. a(1:5) == '--os=') then
+                val = a(6:)
+            else
+                cli_argc = cli_argc + 1
+                cli_args(cli_argc) = a
+                k = k + 1
+                cycle
+            end if
+            call normalize_os(trim(val), target_os, ios)
+            if (ios /= 0) then
+                write(0, '(A,A,A)') 'Error: invalid --os ''', trim(val), ''' (expected linux or freebsd)'
+                stop 1
+            end if
+            k = k + 1
+        end do
+    end subroutine extract_os_flag
+
+    integer function arg_count()
+        arg_count = cli_argc
+    end function arg_count
+
+    subroutine get_arg(k, val, status)
+        integer, intent(in) :: k
+        character(len=*), intent(out) :: val
+        integer, intent(out), optional :: status
+
+        val = ''
+        if (present(status)) status = 0
+        if (k >= 1 .and. k <= cli_argc) then
+            val = cli_args(k)
+        else if (present(status)) then
+            status = 1
+        end if
+    end subroutine get_arg
+
+    ! JSON fragment for request bodies: ,"os":"freebsd" when --os was given
+    function os_json() result(frag)
+        character(len=:), allocatable :: frag
+        frag = ''
+        if (len_trim(target_os) > 0) frag = ',"os":"' // trim(target_os) // '"'
+    end function os_json
+
+    ! jq object fragment: , os: "freebsd" when --os was given
+    function os_jq() result(frag)
+        character(len=:), allocatable :: frag
+        frag = ''
+        if (len_trim(target_os) > 0) frag = ', os: "' // trim(target_os) // '"'
+    end function os_jq
 
     subroutine print_help()
         write(*, '(A)') 'unsandbox SDK for Fortran - Execute code in secure sandboxes'
@@ -1144,6 +1270,9 @@ contains
         write(*, '(A)') 'Credential options (global):'
         write(*, '(A)') '  --account N     Use row N from accounts.csv (bypasses env vars)'
         write(*, '(A)') ''
+        write(*, '(A)') 'Global options:'
+        write(*, '(A)') '  --os OS         Target OS: linux (default) or freebsd (execute, session, service)'
+        write(*, '(A)') ''
         write(*, '(A)') 'Library Usage:'
         write(*, '(A)') '  use unsandbox_sdk'
         write(*, '(A)') '  type(unsandbox_client) :: client'
@@ -1180,9 +1309,9 @@ contains
         end if
 
         ! Build curl command with HMAC auth
-        write(full_cmd, '(30A)') &
+        write(full_cmd, '(40A)') &
             'TS=$(date +%s); ', &
-            'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .}'' < "', trim(fname), '"); ', &
+            'BODY=$(jq -Rs ''{language: "', trim(language), '", code: .', os_jq(), '}'' < "', trim(fname), '"); ', &
             'SIG=$(printf %s "$TS:POST:/execute:$BODY" | sh -c "$UNSB_HMAC"); ', &
             'curl -s -X POST $UN_API/execute ', &
             '-H "Content-Type: application/json" ', &
@@ -1226,18 +1355,18 @@ contains
         input_files = ''
 
         ! Parse session arguments
-        do i = 2, command_argument_count()
-            call get_command_argument(i, arg)
+        do i = 2, arg_count()
+            call get_arg(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
             else if (trim(arg) == '--kill') then
                 kill_mode = .true.
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, session_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, session_id)
                 end if
             else if (trim(arg) == '-f') then
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, arg)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, arg)
                     if (len_trim(input_files) > 0) then
                         input_files = trim(input_files) // ',' // trim(arg)
                     else
@@ -1297,7 +1426,7 @@ contains
                     'if [ -n "$INPUT_FILES" ]; then INPUT_FILES="$INPUT_FILES,"; fi; ', &
                     'INPUT_FILES="$INPUT_FILES{\"filename\":\"$name\",\"content\":\"$b64\"}"; ', &
                     'done; ', &
-                    'BODY=''{"shell":"bash","input_files":[''"$INPUT_FILES"'']}''; ', &
+                    'BODY=''{"shell":"bash"', os_json(), ',"input_files":[''"$INPUT_FILES"'']}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(printf %s "$TS:POST:/sessions:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/sessions ', &
@@ -1309,7 +1438,7 @@ contains
                     'echo -e "\x1b[33mSession created (WebSocket required)\x1b[0m"'
             else
                 write(full_cmd, '(20A)') &
-                    'BODY=''{"shell":"bash"}''; ', &
+                    'BODY=''{"shell":"bash"', os_json(), '}''; ', &
                     'TS=$(date +%s); ', &
                     'SIG=$(printf %s "$TS:POST:/sessions:$BODY" | sh -c "$UNSB_HMAC"); ', &
                     'curl -s -X POST $UN_API/sessions ', &
@@ -1346,30 +1475,30 @@ contains
 
         ! Parse service arguments
         i = 2
-        do while (i <= command_argument_count())
-            call get_command_argument(i, arg)
+        do while (i <= arg_count())
+            call get_arg(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
             else if (trim(arg) == 'env') then
-                if (i+2 <= command_argument_count()) then
-                    call get_command_argument(i+1, env_action)
-                    call get_command_argument(i+2, env_target)
+                if (i+2 <= arg_count()) then
+                    call get_arg(i+1, env_action)
+                    call get_arg(i+2, env_target)
                     i = i + 2
                 end if
             else if (trim(arg) == '--name') then
                 operation = 'create'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_name)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_name)
                     i = i + 1
                 end if
             else if (trim(arg) == '--type') then
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_type)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_type)
                     i = i + 1
                 end if
             else if (trim(arg) == '-e') then
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, arg)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, arg)
                     if (len_trim(svc_envs) > 0) then
                         svc_envs = trim(svc_envs) // char(10) // trim(arg)
                     else
@@ -1378,13 +1507,13 @@ contains
                     i = i + 1
                 end if
             else if (trim(arg) == '--env-file') then
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, svc_env_file)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, svc_env_file)
                     i = i + 1
                 end if
             else if (trim(arg) == '-f') then
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, arg)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, arg)
                     if (len_trim(input_files) > 0) then
                         input_files = trim(input_files) // ',' // trim(arg)
                     else
@@ -1394,66 +1523,66 @@ contains
                 end if
             else if (trim(arg) == '--info') then
                 operation = 'info'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--logs') then
                 operation = 'logs'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--freeze') then
                 operation = 'sleep'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--unfreeze') then
                 operation = 'wake'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--destroy') then
                 operation = 'destroy'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--resize') then
                 operation = 'resize'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--vcpu' .or. trim(arg) == '-v') then
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, arg)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, arg)
                     read(arg, *) resize_vcpu
                     i = i + 1
                 end if
             else if (trim(arg) == '--dump-bootstrap') then
                 operation = 'dump-bootstrap'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
             else if (trim(arg) == '--dump-file') then
                 operation = 'dump-file'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_type)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_type)
                     i = i + 1
                 end if
             else if (trim(arg) == '--set-unfreeze-on-demand') then
                 operation = 'set-unfreeze-on-demand'
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_id)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_id)
                     i = i + 1
                 end if
-                if (i+1 <= command_argument_count()) then
-                    call get_command_argument(i+1, service_type)
+                if (i+1 <= arg_count()) then
+                    call get_arg(i+1, service_type)
                     i = i + 1
                 end if
             end if
@@ -1679,7 +1808,7 @@ contains
             call execute_command_line(trim(full_cmd), wait=.true.)
         else if (trim(operation) == 'create' .and. len_trim(service_name) > 0) then
             write(full_cmd, '(60A)') &
-                'BODY=''{"name":"', trim(service_name), '"}''; ', &
+                'BODY=''{"name":"', trim(service_name), '"', os_json(), '}''; ', &
                 'TS=$(date +%s); ', &
                 'SIG=$(printf %s "$TS:POST:/services:$BODY" | sh -c "$UNSB_HMAC"); ', &
                 'RESP=$(curl -s -X POST $UN_API/services ', &
@@ -1735,55 +1864,55 @@ contains
         list_mode = .false.
 
         ! Parse arguments
-        do i = 2, command_argument_count()
-            call get_command_argument(i, arg)
+        do i = 2, arg_count()
+            call get_arg(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
             else if (trim(arg) == '--info') then
                 operation = 'info'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, snapshot_id)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, snapshot_id)
                 end if
             else if (trim(arg) == '--delete') then
                 operation = 'delete'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, snapshot_id)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, snapshot_id)
                 end if
             else if (trim(arg) == '--lock') then
                 operation = 'lock'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, snapshot_id)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, snapshot_id)
                 end if
             else if (trim(arg) == '--unlock') then
                 operation = 'unlock'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, snapshot_id)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, snapshot_id)
                 end if
             else if (trim(arg) == '--restore') then
                 operation = 'restore'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, snapshot_id)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, snapshot_id)
                 end if
             else if (trim(arg) == '--clone') then
                 operation = 'clone'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, snapshot_id)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, snapshot_id)
                 end if
             else if (trim(arg) == '--type') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, clone_type)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, clone_type)
                 end if
             else if (trim(arg) == '--name') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, name)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, name)
                 end if
             else if (trim(arg) == '--ports') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, ports)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, ports)
                 end if
             else if (trim(arg) == '--shell') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i + 1, shell)
+                if (i < arg_count()) then
+                    call get_arg(i + 1, shell)
                 end if
             end if
         end do
@@ -1950,65 +2079,65 @@ contains
         end if
 
         ! Parse image arguments
-        do i = 2, command_argument_count()
-            call get_command_argument(i, arg)
+        do i = 2, arg_count()
+            call get_arg(i, arg)
             if (trim(arg) == '-l' .or. trim(arg) == '--list') then
                 list_mode = .true.
                 operation = 'list'
             else if (trim(arg) == '--info') then
                 operation = 'info'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--delete') then
                 operation = 'delete'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--lock') then
                 operation = 'lock'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--unlock') then
                 operation = 'unlock'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--publish') then
                 operation = 'publish'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--source-type') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, source_type)
+                if (i < arg_count()) then
+                    call get_arg(i+1, source_type)
                 end if
             else if (trim(arg) == '--visibility') then
                 operation = 'visibility'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
-                if (i+1 < command_argument_count()) then
-                    call get_command_argument(i+2, visibility_mode)
+                if (i+1 < arg_count()) then
+                    call get_arg(i+2, visibility_mode)
                 end if
             else if (trim(arg) == '--spawn') then
                 operation = 'spawn'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--clone') then
                 operation = 'clone'
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, image_id)
+                if (i < arg_count()) then
+                    call get_arg(i+1, image_id)
                 end if
             else if (trim(arg) == '--name') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, name)
+                if (i < arg_count()) then
+                    call get_arg(i+1, name)
                 end if
             else if (trim(arg) == '--ports') then
-                if (i < command_argument_count()) then
-                    call get_command_argument(i+1, ports)
+                if (i < arg_count()) then
+                    call get_arg(i+1, ports)
                 end if
             end if
         end do
@@ -2214,14 +2343,14 @@ contains
         otp_code = ''
 
         ! Check for --extend, --rotate, --otp CODE
-        do i = 2, command_argument_count()
-            call get_command_argument(i, arg)
+        do i = 2, arg_count()
+            call get_arg(i, arg)
             if (trim(arg) == '--extend') then
                 extend_mode = .true.
             else if (trim(arg) == '--rotate') then
                 rotate_mode = .true.
-            else if (trim(arg) == '--otp' .and. i < command_argument_count()) then
-                call get_command_argument(i + 1, otp_code)
+            else if (trim(arg) == '--otp' .and. i < arg_count()) then
+                call get_arg(i + 1, otp_code)
             end if
         end do
 
@@ -2369,8 +2498,8 @@ contains
         json_mode = .false.
 
         ! Check for --json flag
-        do i = 2, command_argument_count()
-            call get_command_argument(i, arg)
+        do i = 2, arg_count()
+            call get_arg(i, arg)
             if (trim(arg) == '--json') then
                 json_mode = .true.
             end if

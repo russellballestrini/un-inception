@@ -533,7 +533,7 @@ fn cmd_key(extend bool, api_key string) {
 	println('Time Remaining: ${remaining}')
 }
 
-fn cmd_execute(source_file string, envs []string, artifacts bool, network string, vcpu int, api_key string) {
+fn cmd_execute(source_file string, envs []string, artifacts bool, network string, vcpu int, target_os string, api_key string) {
 	lang := detect_language(source_file) or {
 		eprintln('${red}Error: ${err}${reset}')
 		exit(1)
@@ -569,6 +569,9 @@ fn cmd_execute(source_file string, envs []string, artifacts bool, network string
 	if vcpu > 0 {
 		json += ',"vcpu":${vcpu}'
 	}
+	if target_os != '' {
+		json += ',"os":"${target_os}"'
+	}
 	json += '}'
 
 	pub_key := get_public_key()
@@ -578,7 +581,7 @@ fn cmd_execute(source_file string, envs []string, artifacts bool, network string
 	println(exec_curl_body(cmd, json))
 }
 
-fn cmd_session(list bool, kill string, shell string, network string, vcpu int, tmux bool, screen bool, input_files []string, api_key string) {
+fn cmd_session(list bool, kill string, shell string, network string, vcpu int, target_os string, tmux bool, screen bool, input_files []string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -605,6 +608,9 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	if vcpu > 0 {
 		json += ',"vcpu":${vcpu}'
 	}
+	if target_os != '' {
+		json += ',"os":"${target_os}"'
+	}
 	if tmux {
 		json += ',"persistence":"tmux"'
 	}
@@ -620,7 +626,7 @@ fn cmd_session(list bool, kill string, shell string, network string, vcpu int, t
 	println(exec_curl_body(cmd, json))
 }
 
-fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, resize string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, input_files []string, svc_envs []string, svc_env_file string, unfreeze_on_demand bool, set_unfreeze_on_demand_id string, set_unfreeze_on_demand_enabled string, api_key string) {
+fn cmd_service(name string, ports string, service_type string, bootstrap string, bootstrap_file string, list bool, info string, logs string, tail string, sleep string, wake string, destroy string, resize string, execute string, command string, dump_bootstrap string, dump_file string, network string, vcpu int, target_os string, input_files []string, svc_envs []string, svc_env_file string, unfreeze_on_demand bool, set_unfreeze_on_demand_id string, set_unfreeze_on_demand_enabled string, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
@@ -781,6 +787,9 @@ fn cmd_service(name string, ports string, service_type string, bootstrap string,
 		}
 		if vcpu > 0 {
 			json += ',"vcpu":${vcpu}'
+		}
+		if target_os != '' {
+			json += ',"os":"${target_os}"'
 		}
 		if unfreeze_on_demand {
 			json += ',"unfreeze_on_demand":true'
@@ -1975,16 +1984,52 @@ fn resolve_credentials(account_index int, explicit_pub_key string) (string, stri
 	return pub_key, sec_key
 }
 
+// Remove the global --os OS / --os=OS flag from args (any position) and validate it
+// before any request is made. Returns remaining args and target OS ('' when not given:
+// field omitted, API default linux). Exits non-zero on a missing or invalid value.
+fn extract_os_flag(argv []string) ([]string, string) {
+	mut out := []string{}
+	mut target_os := ''
+	mut i := 0
+	for i < argv.len {
+		mut val := ''
+		if i > 0 && argv[i] == '--os' {
+			if i + 1 >= argv.len {
+				eprintln('Error: --os requires a value: linux or freebsd')
+				exit(1)
+			}
+			i++
+			val = argv[i]
+		} else if i > 0 && argv[i].starts_with('--os=') {
+			val = argv[i][5..]
+		} else {
+			out << argv[i]
+			i++
+			continue
+		}
+		match val.to_lower() {
+			'linux', 'freebsd' { target_os = val.to_lower() }
+			else {
+				eprintln("Error: invalid --os '${val}' (expected linux or freebsd)")
+				exit(1)
+			}
+		}
+		i++
+	}
+	return out, target_os
+}
+
 fn main() {
+	args, target_os := extract_os_flag(os.args)
 	// First pass: scan for --account N and -p flags
 	mut account_index := -1
 	mut explicit_pub_key := ''
-	for i := 1; i < os.args.len; i++ {
-		if os.args[i] == '--account' && i + 1 < os.args.len {
-			account_index = os.args[i + 1].int()
+	for i := 1; i < args.len; i++ {
+		if args[i] == '--account' && i + 1 < args.len {
+			account_index = args[i + 1].int()
 			i++
-		} else if os.args[i] == '-p' && i + 1 < os.args.len {
-			explicit_pub_key = os.args[i + 1]
+		} else if args[i] == '-p' && i + 1 < args.len {
+			explicit_pub_key = args[i + 1]
 			i++
 		}
 	}
@@ -1996,15 +2041,18 @@ fn main() {
 	os.setenv('UNSANDBOX_SECRET_KEY', sec_key, true)
 	mut api_key := pub_key
 
-	if os.args.len < 2 {
-		eprintln('Usage: ${os.args[0]} [options] <source_file>')
-		eprintln('       ${os.args[0]} session [options]')
-		eprintln('       ${os.args[0]} service [options]')
-		eprintln('       ${os.args[0]} service env <action> <service_id> [options]')
-		eprintln('       ${os.args[0]} image [options]')
-		eprintln('       ${os.args[0]} key [--extend]')
-		eprintln('       ${os.args[0]} key --rotate [--otp CODE]')
-		eprintln('       ${os.args[0]} languages [--json]')
+	if args.len < 2 {
+		eprintln('Usage: ${args[0]} [options] <source_file>')
+		eprintln('       ${args[0]} session [options]')
+		eprintln('       ${args[0]} service [options]')
+		eprintln('       ${args[0]} service env <action> <service_id> [options]')
+		eprintln('       ${args[0]} image [options]')
+		eprintln('       ${args[0]} key [--extend]')
+		eprintln('       ${args[0]} key --rotate [--otp CODE]')
+		eprintln('       ${args[0]} languages [--json]')
+		eprintln('')
+		eprintln('Global options:')
+		eprintln('  --os OS                   Target OS: linux (default) or freebsd (execute, session, service)')
 		eprintln('')
 		eprintln('Vault commands:')
 		eprintln('  service env status <id>   Check vault status')
@@ -2025,7 +2073,7 @@ fn main() {
 		exit(1)
 	}
 
-	if os.args[1] == 'session' {
+	if args[1] == 'session' {
 		mut list := false
 		mut kill := ''
 		mut shell := ''
@@ -2036,37 +2084,37 @@ fn main() {
 
 		mut input_files := []string{}
 		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
+		for i < args.len {
+			match args[i] {
 				'--list' { list = true }
 				'--kill' {
 					i++
-					kill = os.args[i]
+					kill = args[i]
 				}
 				'--shell' {
 					i++
-					shell = os.args[i]
+					shell = args[i]
 				}
 				'-n' {
 					i++
-					network = os.args[i]
+					network = args[i]
 				}
 				'-v' {
 					i++
-					vcpu = os.args[i].int()
+					vcpu = args[i].int()
 				}
 				'--tmux' { tmux = true }
 				'--screen' { screen = true }
 				'-k' {
 					i++
-					api_key = os.args[i]
+					api_key = args[i]
 				}
 				'--account' {
 					i++  // already handled in first pass
 				}
 				'-f' {
 					i++
-					f := os.args[i]
+					f := args[i]
 					if os.exists(f) {
 						input_files << f
 					} else {
@@ -2079,11 +2127,11 @@ fn main() {
 			i++
 		}
 
-		cmd_session(list, kill, shell, network, vcpu, tmux, screen, input_files, api_key)
+		cmd_session(list, kill, shell, network, vcpu, target_os, tmux, screen, input_files, api_key)
 		return
 	}
 
-	if os.args[1] == 'service' {
+	if args[1] == 'service' {
 		mut name := ''
 		mut ports := ''
 		mut service_type := ''
@@ -2113,117 +2161,117 @@ fn main() {
 		mut set_unfreeze_on_demand_enabled := ''
 
 		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
+		for i < args.len {
+			match args[i] {
 				'env' {
 					// service env <action> <service_id>
-					if i + 2 < os.args.len {
+					if i + 2 < args.len {
 						i++
-						env_action = os.args[i]
+						env_action = args[i]
 						i++
-						env_target = os.args[i]
+						env_target = args[i]
 					}
 				}
 				'--name' {
 					i++
-					name = os.args[i]
+					name = args[i]
 				}
 				'--ports' {
 					i++
-					ports = os.args[i]
+					ports = args[i]
 				}
 				'--type' {
 					i++
-					service_type = os.args[i]
+					service_type = args[i]
 				}
 				'--bootstrap' {
 					i++
-					bootstrap = os.args[i]
+					bootstrap = args[i]
 				}
 				'--bootstrap-file' {
 					i++
-					bootstrap_file = os.args[i]
+					bootstrap_file = args[i]
 				}
 				'--list' { list = true }
 				'--info' {
 					i++
-					info = os.args[i]
+					info = args[i]
 				}
 				'--logs' {
 					i++
-					logs = os.args[i]
+					logs = args[i]
 				}
 				'--tail' {
 					i++
-					tail = os.args[i]
+					tail = args[i]
 				}
 				'--freeze' {
 					i++
-					sleep = os.args[i]
+					sleep = args[i]
 				}
 				'--unfreeze' {
 					i++
-					wake = os.args[i]
+					wake = args[i]
 				}
 				'--destroy' {
 					i++
-					destroy = os.args[i]
+					destroy = args[i]
 				}
 				'--resize' {
 					i++
-					resize = os.args[i]
+					resize = args[i]
 				}
 				'--execute' {
 					i++
-					execute = os.args[i]
+					execute = args[i]
 				}
 				'--command' {
 					i++
-					command = os.args[i]
+					command = args[i]
 				}
 				'--dump-bootstrap' {
 					i++
-					dump_bootstrap = os.args[i]
+					dump_bootstrap = args[i]
 				}
 				'--dump-file' {
 					i++
-					dump_file = os.args[i]
+					dump_file = args[i]
 				}
 				'-e' {
 					i++
-					svc_envs << os.args[i]
+					svc_envs << args[i]
 				}
 				'--env-file' {
 					i++
-					svc_env_file = os.args[i]
+					svc_env_file = args[i]
 				}
 				'--unfreeze-on-demand' { unfreeze_on_demand = true }
 				'--set-unfreeze-on-demand' {
 					i++
-					set_unfreeze_on_demand_id = os.args[i]
+					set_unfreeze_on_demand_id = args[i]
 					i++
-					if i < os.args.len {
-						set_unfreeze_on_demand_enabled = os.args[i]
+					if i < args.len {
+						set_unfreeze_on_demand_enabled = args[i]
 					}
 				}
 				'-n' {
 					i++
-					network = os.args[i]
+					network = args[i]
 				}
 				'-v' {
 					i++
-					vcpu = os.args[i].int()
+					vcpu = args[i].int()
 				}
 				'-k' {
 					i++
-					api_key = os.args[i]
+					api_key = args[i]
 				}
 				'--account' {
 					i++  // already handled in first pass
 				}
 				'-f' {
 					i++
-					f := os.args[i]
+					f := args[i]
 					if os.exists(f) {
 						input_files << f
 					} else {
@@ -2243,29 +2291,29 @@ fn main() {
 		}
 
 		cmd_service(name, ports, service_type, bootstrap, bootstrap_file, list, info, logs, tail, sleep, wake, destroy, resize, execute, command, dump_bootstrap, dump_file, network,
-			vcpu, input_files, svc_envs, svc_env_file, unfreeze_on_demand, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, api_key)
+			vcpu, target_os, input_files, svc_envs, svc_env_file, unfreeze_on_demand, set_unfreeze_on_demand_id, set_unfreeze_on_demand_enabled, api_key)
 		return
 	}
 
-	if os.args[1] == 'key' {
+	if args[1] == 'key' {
 		mut extend := false
 		mut rotate := false
 		mut otp_flag := ''
 
 		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
+		for i < args.len {
+			match args[i] {
 				'--extend' { extend = true }
 				'--rotate' { rotate = true }
 				'--otp' {
 					i++
-					if i < os.args.len {
-						otp_flag = os.args[i]
+					if i < args.len {
+						otp_flag = args[i]
 					}
 				}
 				'-k' {
 					i++
-					api_key = os.args[i]
+					api_key = args[i]
 				}
 				'--account' {
 					i++  // already handled in first pass
@@ -2283,16 +2331,16 @@ fn main() {
 		return
 	}
 
-	if os.args[1] == 'languages' {
+	if args[1] == 'languages' {
 		mut json_output := false
 
 		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
+		for i < args.len {
+			match args[i] {
 				'--json' { json_output = true }
 				'-k' {
 					i++
-					api_key = os.args[i]
+					api_key = args[i]
 				}
 				'--account' {
 					i++  // already handled in first pass
@@ -2306,7 +2354,7 @@ fn main() {
 		return
 	}
 
-	if os.args[1] == 'image' {
+	if args[1] == 'image' {
 		mut list := false
 		mut info := ''
 		mut delete := ''
@@ -2328,84 +2376,84 @@ fn main() {
 		mut to_key := ''
 
 		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
+		for i < args.len {
+			match args[i] {
 				'--list', '-l' { list = true }
 				'--info' {
 					i++
-					info = os.args[i]
+					info = args[i]
 				}
 				'--delete' {
 					i++
-					delete = os.args[i]
+					delete = args[i]
 				}
 				'--lock' {
 					i++
-					lock_id = os.args[i]
+					lock_id = args[i]
 				}
 				'--unlock' {
 					i++
-					unlock_id = os.args[i]
+					unlock_id = args[i]
 				}
 				'--publish' {
 					i++
-					publish = os.args[i]
+					publish = args[i]
 				}
 				'--source-type' {
 					i++
-					source_type = os.args[i]
+					source_type = args[i]
 				}
 				'--visibility' {
 					i++
-					visibility_id = os.args[i]
+					visibility_id = args[i]
 					i++
-					if i < os.args.len {
-						visibility_mode = os.args[i]
+					if i < args.len {
+						visibility_mode = args[i]
 					}
 				}
 				'--spawn' {
 					i++
-					spawn_id = os.args[i]
+					spawn_id = args[i]
 				}
 				'--clone' {
 					i++
-					clone = os.args[i]
+					clone = args[i]
 				}
 				'--name' {
 					i++
-					name = os.args[i]
+					name = args[i]
 				}
 				'--ports' {
 					i++
-					ports = os.args[i]
+					ports = args[i]
 				}
 				'--grant' {
 					i++
-					grant = os.args[i]
+					grant = args[i]
 				}
 				'--revoke' {
 					i++
-					revoke = os.args[i]
+					revoke = args[i]
 				}
 				'--trusted' {
 					i++
-					trusted = os.args[i]
+					trusted = args[i]
 				}
 				'--trusted-key' {
 					i++
-					trusted_key = os.args[i]
+					trusted_key = args[i]
 				}
 				'--transfer' {
 					i++
-					transfer = os.args[i]
+					transfer = args[i]
 				}
 				'--to-key' {
 					i++
-					to_key = os.args[i]
+					to_key = args[i]
 				}
 				'-k' {
 					i++
-					api_key = os.args[i]
+					api_key = args[i]
 				}
 				'--account' {
 					i++  // already handled in first pass
@@ -2419,7 +2467,7 @@ fn main() {
 		return
 	}
 
-	if os.args[1] == 'snapshot' {
+	if args[1] == 'snapshot' {
 		mut list := false
 		mut info := ''
 		mut session := ''
@@ -2435,22 +2483,22 @@ fn main() {
 		mut hot := false
 
 		mut i := 2
-		for i < os.args.len {
-			match os.args[i] {
+		for i < args.len {
+			match args[i] {
 				'--list', '-l' { list = true }
-				'--info' { i++; info = os.args[i] }
-				'--session' { i++; session = os.args[i] }
-				'--service' { i++; service = os.args[i] }
-				'--restore' { i++; restore = os.args[i] }
-				'--delete' { i++; delete = os.args[i] }
-				'--lock' { i++; lock_id = os.args[i] }
-				'--unlock' { i++; unlock_id = os.args[i] }
-				'--clone' { i++; clone = os.args[i] }
-				'--clone-type' { i++; clone_type = os.args[i] }
-				'--name' { i++; name = os.args[i] }
-				'--ports' { i++; ports = os.args[i] }
+				'--info' { i++; info = args[i] }
+				'--session' { i++; session = args[i] }
+				'--service' { i++; service = args[i] }
+				'--restore' { i++; restore = args[i] }
+				'--delete' { i++; delete = args[i] }
+				'--lock' { i++; lock_id = args[i] }
+				'--unlock' { i++; unlock_id = args[i] }
+				'--clone' { i++; clone = args[i] }
+				'--clone-type' { i++; clone_type = args[i] }
+				'--name' { i++; name = args[i] }
+				'--ports' { i++; ports = args[i] }
 				'--hot' { hot = true }
-				'-k' { i++; api_key = os.args[i] }
+				'-k' { i++; api_key = args[i] }
 				'--account' { i++  /* already handled in first pass */ }
 				else {}
 			}
@@ -2461,29 +2509,29 @@ fn main() {
 		return
 	}
 
-	if os.args[1] == 'paas' {
-		if os.args.len < 3 {
+	if args[1] == 'paas' {
+		if args.len < 3 {
 			eprintln('Usage: un paas <command> [options]\n\nCommands:\n  logs    Fetch or stream production logs\n\nRun \'un paas <command> -h\' for help on a specific command.')
 			exit(1)
 		}
-		if os.args[2] != 'logs' {
-			eprintln('Error: Unknown paas command \'${os.args[2]}\'\nRun \'un paas\' for available commands.')
+		if args[2] != 'logs' {
+			eprintln('Error: Unknown paas command \'${args[2]}\'\nRun \'un paas\' for available commands.')
 			exit(1)
 		}
-		exit(cmd_paas_logs(os.args[3..]))
+		exit(cmd_paas_logs(args[3..]))
 	}
 
-	if os.args[1] == 'logs' {
+	if args[1] == 'logs' {
 		// Alias for `paas logs`
-		exit(cmd_paas_logs(os.args[2..]))
+		exit(cmd_paas_logs(args[2..]))
 	}
 
-	if os.args[1] == 'health' {
+	if args[1] == 'health' {
 		cmd_health()
 		return
 	}
 
-	if os.args[1] == 'version' {
+	if args[1] == 'version' {
 		cmd_version()
 		return
 	}
@@ -2496,34 +2544,34 @@ fn main() {
 	mut vcpu := 0
 
 	mut i := 1
-	for i < os.args.len {
-		match os.args[i] {
+	for i < args.len {
+		match args[i] {
 			'-e' {
 				i++
-				envs << os.args[i]
+				envs << args[i]
 			}
 			'-a' { artifacts = true }
 			'-n' {
 				i++
-				network = os.args[i]
+				network = args[i]
 			}
 			'-v' {
 				i++
-				vcpu = os.args[i].int()
+				vcpu = args[i].int()
 			}
 			'-k' {
 				i++
-				api_key = os.args[i]
+				api_key = args[i]
 			}
 			'--account' {
 				i++  // already handled in first pass
 			}
 			else {
-				if os.args[i].starts_with('-') {
-					eprintln('${red}Unknown option: ${os.args[i]}${reset}')
+				if args[i].starts_with('-') {
+					eprintln('${red}Unknown option: ${args[i]}${reset}')
 					exit(1)
 				} else {
-					source_file = os.args[i]
+					source_file = args[i]
 				}
 			}
 		}
@@ -2535,5 +2583,5 @@ fn main() {
 		exit(1)
 	}
 
-	cmd_execute(source_file, envs, artifacts, network, vcpu, api_key)
+	cmd_execute(source_file, envs, artifacts, network, vcpu, target_os, api_key)
 }
