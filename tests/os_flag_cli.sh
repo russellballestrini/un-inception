@@ -71,8 +71,19 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(n).decode()
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            body = b""
+            while True:
+                size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
+                if size == 0:
+                    self.rfile.readline()
+                    break
+                body += self.rfile.read(size)
+                self.rfile.readline()
+            body = body.decode()
+        else:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n).decode()
         self._record(body)
         if self.path.startswith("/execute"):
             self._reply(200, {"success": True, "status": "completed", "stdout": "", "stderr": "", "exit_code": 0})
