@@ -9,6 +9,7 @@
 
 // Include the SDK source directly for testing
 // In production, you'd link against the compiled library
+#define UN_NO_MAIN  // our test supplies main()
 #include "../src/un.cpp"
 
 using namespace std;
@@ -116,6 +117,42 @@ TEST(escape_json) {
     ASSERT_EQ(escape_json("line1\nline2"), "line1\\nline2");
     ASSERT_EQ(escape_json("tab\there"), "tab\\there");
     ASSERT_EQ(escape_json("back\\slash"), "back\\\\slash");
+}
+
+TEST(normalize_os) {
+    string out, err;
+    ASSERT(normalize_os("freebsd", out, err));
+    ASSERT_EQ(out, "freebsd");
+    ASSERT(normalize_os("FreeBSD", out, err));
+    ASSERT_EQ(out, "freebsd");
+    ASSERT(normalize_os("LINUX", out, err));
+    ASSERT_EQ(out, "linux");
+    ASSERT(!normalize_os("openbsd", out, err));
+    ASSERT(err.find("openbsd") != string::npos);
+    ASSERT(!normalize_os("", out, err));
+    ASSERT(err.find("--os requires a value") != string::npos);
+}
+
+TEST(os_json_field) {
+    string field, err;
+    ASSERT(os_json_field("", field, err));
+    ASSERT_EQ(field, "");  // no os given, no key in our body
+    ASSERT(os_json_field("FreeBSD", field, err));
+    ASSERT_EQ(field, ",\"os\":\"freebsd\"");
+    ASSERT(!os_json_field("openbsd", field, err));
+    ASSERT_EQ(field, "");
+}
+
+TEST(invalid_os_sends_nothing) {
+    // An invalid os is rejected before any request is built or sent
+    string result = execute("bash", "echo hi", "pk", "sk", "openbsd");
+    ASSERT(result.find("invalid --os 'openbsd'") != string::npos);
+    result = execute_async("bash", "echo hi", "pk", "sk", "openbsd");
+    ASSERT(result.find("invalid --os 'openbsd'") != string::npos);
+    result = session_create("bash", "", "pk", "sk", "openbsd");
+    ASSERT(result.find("invalid --os 'openbsd'") != string::npos);
+    result = service_create("web", "80", "true", "", "pk", "sk", "openbsd");
+    ASSERT(result.find("invalid --os 'openbsd'") != string::npos);
 }
 
 TEST(base64_encode) {
@@ -288,6 +325,9 @@ int main() {
     RUN_TEST(last_error);
     RUN_TEST(escape_json);
     RUN_TEST(base64_encode);
+    RUN_TEST(normalize_os);
+    RUN_TEST(os_json_field);
+    RUN_TEST(invalid_os_sends_nothing);
 
     cout << endl << "--- Integration Tests ---" << endl;
     RUN_TEST(compute_hmac);

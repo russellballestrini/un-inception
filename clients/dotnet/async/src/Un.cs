@@ -117,6 +117,7 @@ async Task CmdExecuteAsync(Args args)
 
     if (args.Artifacts) payload["return_artifacts"] = true;
     if (args.Network != null) payload["network"] = args.Network;
+    if (args.Os != null) payload["os"] = args.Os;
     if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
 
     var result = await ApiRequestAsync("/execute", HttpMethod.Post, payload, publicKey, secretKey);
@@ -213,6 +214,7 @@ async Task CmdSessionAsync(Args args)
 
     var payload = new Dictionary<string, object> { ["shell"] = args.SessionShell ?? "bash" };
     if (args.Network != null) payload["network"] = args.Network;
+    if (args.Os != null) payload["os"] = args.Os;
     if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
 
     Console.WriteLine($"{YELLOW}Creating session...{RESET}");
@@ -442,6 +444,7 @@ async Task CmdServiceAsync(Args args)
         if (args.ServiceBootstrap != null) payload["bootstrap"] = args.ServiceBootstrap;
         else if (args.ServiceBootstrapFile != null) payload["bootstrap"] = File.ReadAllText(args.ServiceBootstrapFile);
         if (args.Network != null) payload["network"] = args.Network;
+        if (args.Os != null) payload["os"] = args.Os;
         if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
         if (args.ServiceCreateUnfreezeOnDemand) payload["unfreeze_on_demand"] = true;
 
@@ -846,6 +849,16 @@ string BuildEnvContent(List<string> envs, string? envFile)
 
 string GetStr(JsonElement el, string prop) => el.TryGetProperty(prop, out var p) ? p.GetString() ?? "N/A" : "N/A";
 
+// Validate a target OS name case-insensitively and return its canonical
+// form, "linux" or "freebsd". Anything else (including "") throws.
+string NormalizeOs(string? os)
+{
+    var lower = (os ?? "").ToLowerInvariant();
+    if (lower == "linux" || lower == "freebsd") return lower;
+    if (string.IsNullOrEmpty(os)) throw new ArgumentException("--os requires a value: linux or freebsd");
+    throw new ArgumentException($"invalid --os '{os}' (expected linux or freebsd)");
+}
+
 Args ParseArgs(string[] args)
 {
     var result = new Args();
@@ -870,6 +883,8 @@ Args ParseArgs(string[] args)
         }
         else if (arg == "-k" || arg == "--api-key") result.ApiKey = args[++i];
         else if (arg == "-n" || arg == "--network") result.Network = args[++i];
+        else if (arg == "--os") result.Os = NormalizeOs(i + 1 < args.Length ? args[++i] : "");
+        else if (arg.StartsWith("--os=")) result.Os = NormalizeOs(arg[5..]);
         else if (arg == "-v" || arg == "--vcpu") result.Vcpu = int.Parse(args[++i]);
         else if (arg == "-e" || arg == "--env") result.Env.Add(args[++i]);
         else if (arg == "--env-file") result.EnvFile = args[++i];
@@ -995,6 +1010,7 @@ Execute options:
   -a                Return artifacts
   -o DIR            Output directory for artifacts
   -n MODE           Network mode (zerotrust/semitrusted)
+  --os OS           Target OS: linux (default) or freebsd (execute, session, service)
   -v N              vCPU count (1-8)
   -k KEY            API key
 
@@ -1082,6 +1098,7 @@ class Args
 {
     public bool ShowHelp, ShowVersion;
     public string? Command, SourceFile, ApiKey, Network, OutputDir;
+    public string? Os;  // --os, normalized: null (omitted), "linux" or "freebsd"
     public int Vcpu;
     public List<string> Env = new(), Files = new();
     public bool Artifacts, SessionList, ServiceList;

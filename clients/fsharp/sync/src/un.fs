@@ -81,6 +81,7 @@ type Args = {
     mutable ApiKey: string option
     mutable AccountIndex: int option
     mutable Network: string option
+    mutable Os: string option  // --os, normalized: "linux" or "freebsd"; None = omitted
     mutable Vcpu: int
     Env: ResizeArray<string>
     Files: ResizeArray<string>
@@ -718,6 +719,8 @@ let cmdExecute (args: Args) =
         payload <- payload @ [("return_artifacts", box true)]
     if args.Network.IsSome then
         payload <- payload @ [("network", box args.Network.Value)]
+    if args.Os.IsSome then
+        payload <- payload @ [("os", box args.Os.Value)]
     if args.Vcpu > 0 then
         payload <- payload @ [("vcpu", box args.Vcpu)]
 
@@ -769,6 +772,8 @@ let cmdSession (args: Args) =
         let mutable payload = [("shell", box (match args.SessionShell with | Some s -> s | None -> "bash"))]
         if args.Network.IsSome then
             payload <- payload @ [("network", box args.Network.Value)]
+        if args.Os.IsSome then
+            payload <- payload @ [("os", box args.Os.Value)]
         if args.Vcpu > 0 then
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
@@ -1305,6 +1310,8 @@ let cmdService (args: Args) =
             payload <- payload @ [("input_files", box inputFiles)]
         if args.Network.IsSome then
             payload <- payload @ [("network", box args.Network.Value)]
+        if args.Os.IsSome then
+            payload <- payload @ [("os", box args.Os.Value)]
         if args.Vcpu > 0 then
             payload <- payload @ [("vcpu", box args.Vcpu)]
 
@@ -1334,6 +1341,15 @@ let cmdService (args: Args) =
         eprintfn "%sError: Specify --name to create a service, or use --list, --info, etc.%s" red reset
         exit 1
 
+/// Validate a target OS name case-insensitively and return its canonical
+/// form, "linux" or "freebsd". Anything else (including "") fails.
+let normalizeOs (os: string) =
+    match (if isNull os then "" else os.ToLowerInvariant()) with
+    | "linux" -> "linux"
+    | "freebsd" -> "freebsd"
+    | _ when String.IsNullOrEmpty(os) -> raise (ArgumentException("--os requires a value: linux or freebsd"))
+    | _ -> raise (ArgumentException(sprintf "invalid --os '%s' (expected linux or freebsd)" os))
+
 let parseArgs (argv: string[]) =
     let args = {
         Command = None
@@ -1341,6 +1357,7 @@ let parseArgs (argv: string[]) =
         ApiKey = None
         AccountIndex = None
         Network = None
+        Os = None
         Vcpu = 0
         Env = ResizeArray<string>()
         Files = ResizeArray<string>()
@@ -1435,6 +1452,10 @@ let parseArgs (argv: string[]) =
                 eprintfn "Error: --account requires an integer argument"
                 Environment.Exit(1)
         | "-n" | "--network" -> i <- i + 1; args.Network <- Some argv.[i]
+        | "--os" ->
+            i <- i + 1
+            args.Os <- Some (normalizeOs (if i < argv.Length then argv.[i] else ""))
+        | arg when arg.StartsWith("--os=") -> args.Os <- Some (normalizeOs (arg.Substring(5)))
         | "-v" | "--vcpu" -> i <- i + 1; args.Vcpu <- int argv.[i]
         | "-e" | "--env" -> i <- i + 1; args.Env.Add(argv.[i])
         | "--env-file" -> i <- i + 1; args.EnvFile <- Some argv.[i]
@@ -1602,6 +1623,7 @@ let printHelp () =
     printfn "  -a                Return artifacts"
     printfn "  -o DIR            Output directory for artifacts"
     printfn "  -n MODE           Network mode (zerotrust/semitrusted)"
+    printfn "  --os OS           Target OS: linux (default) or freebsd (execute, session, service)"
     printfn "  -v N              vCPU count (1-8)"
     printfn "  -k KEY            API key"
     printfn "  --account N       Use accounts.csv row N (bypasses env vars)"

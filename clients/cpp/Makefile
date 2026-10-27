@@ -1,6 +1,6 @@
 # UN C++ Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-unit test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -24,6 +24,8 @@ help:
 	@echo "  make test             All 4 test modes"
 	@echo "  make test-cli         CLI mode"
 	@echo "  make test-library     Library mode"
+	@echo "  make test-unit        Offline unit tests (sync/tests/test_un.cpp)"
+	@echo "  make test-os          Offline --os flag check (tests/os_flag_cli.sh)"
 	@echo ""
 
 all: build
@@ -73,6 +75,13 @@ test-functional:
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
 
+test-unit:
+	$(CXX) -std=c++17 -o test_un $(SYNC_DIR)/tests/test_un.cpp -I$(SYNC_DIR)/src $(LDFLAGS)
+	@env -u UNSANDBOX_PUBLIC_KEY -u UNSANDBOX_SECRET_KEY ./test_un  # offline: functional tests skip
+
+test-os: $(BIN)
+	@bash ../../tests/os_flag_cli.sh ./$(BIN)
+
 clean:
-	rm -f $(BIN)
+	rm -f $(BIN) test_un
 	@echo "$(GREEN)✓$(NC) Cleaned C++ artifacts"

@@ -1,6 +1,6 @@
 # UN CLI - .NET 10 Implementation (sync and async)
 
-.PHONY: build build-sync build-async run clean test test-sync test-async help
+.PHONY: build build-sync build-async run clean test test-sync test-async test-os help
 
 SYNC_DIR := sync/src
 ASYNC_DIR := async/src
@@ -26,6 +26,9 @@ run-sync:
 
 run-async:
 	cd $(ASYNC_DIR) && dotnet run --
+
+test-os: build-sync
+	@bash ../../tests/os_flag_cli.sh dotnet $(SYNC_DIR)/bin/Release/net10.0/un.dll
 
 clean:
 	cd $(SYNC_DIR) && dotnet clean 2>/dev/null || true
@@ -94,6 +97,7 @@ help:
 	@echo "  test           Run basic tests (both versions)"
 	@echo "  test-sync      Test sync version"
 	@echo "  test-async     Test async version"
+	@echo "  test-os        Offline --os flag check, sync version (tests/os_flag_cli.sh)"
 	@echo "  test-cli       Run CLI tests (requires API keys)"
 	@echo "  test-functional Run functional tests (requires API keys)"
 	@echo "  help           Show this help"

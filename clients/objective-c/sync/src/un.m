@@ -260,6 +260,28 @@ static NSString* UNHomeDirectory(void) {
 // Set by main() when --account N is parsed.
 static NSInteger g_accountIndex = -1;
 
+// Global target OS from --os: nil means not given (no "os" key is sent).
+// Set by main() after validation, so it is always "linux" or "freebsd".
+static NSString* g_targetOS = nil;
+
+/**
+ * Validate a target OS name case-insensitively.
+ * Returns "linux" or "freebsd"; anything else (including "" or nil)
+ * returns nil and sets *errorMessage.
+ */
+static NSString* UNNormalizeOS(NSString* value, NSString** errorMessage) {
+    NSString* lower = [value lowercaseString];
+    if ([lower isEqualToString:@"linux"] || [lower isEqualToString:@"freebsd"]) {
+        return lower;
+    }
+    if (errorMessage) {
+        *errorMessage = [value length] == 0
+            ? @"--os requires a value: linux or freebsd"
+            : [NSString stringWithFormat:@"invalid --os '%@' (expected linux or freebsd)", value];
+    }
+    return nil;
+}
+
 /**
  * Load public_key,secret_key from a CSV file at the given row index (0-based,
  * skipping blank lines and comment lines starting with '#').
@@ -571,7 +593,8 @@ NSString* UNDetectLanguage(NSString* filename) {
  *
  * @param language Programming language
  * @param code Source code
- * @param options Dictionary with optional keys: env, input_files, network_mode, ttl, vcpu, return_artifact
+ * @param options Dictionary with optional keys: env, input_files, network_mode, ttl, vcpu, return_artifact,
+ *                os ("linux" or "freebsd", case-insensitive; omitted = API default linux)
  * @return Dictionary with stdout, stderr, exit_code, job_id
  */
 - (NSDictionary*)execute:(NSString*)language code:(NSString*)code options:(NSDictionary*)options;
@@ -810,6 +833,12 @@ NSString* UNDetectLanguage(NSString* filename) {
     if (options[@"env"]) payload[@"env"] = options[@"env"];
     if (options[@"input_files"]) payload[@"input_files"] = options[@"input_files"];
     if ([options[@"return_artifact"] boolValue]) payload[@"return_artifact"] = @YES;
+    if (options[@"os"]) {
+        NSString* osError = nil;
+        NSString* os = UNNormalizeOS(options[@"os"], &osError);
+        if (!os) return @{@"error": osError};
+        payload[@"os"] = os;
+    }
 
     return [self apiRequest:@"/execute" method:@"POST" data:payload];
 }
@@ -826,6 +855,12 @@ NSString* UNDetectLanguage(NSString* filename) {
     if (options[@"env"]) payload[@"env"] = options[@"env"];
     if (options[@"input_files"]) payload[@"input_files"] = options[@"input_files"];
     if ([options[@"return_artifact"] boolValue]) payload[@"return_artifact"] = @YES;
+    if (options[@"os"]) {
+        NSString* osError = nil;
+        NSString* os = UNNormalizeOS(options[@"os"], &osError);
+        if (!os) return @{@"error": osError};
+        payload[@"os"] = os;
+    }
 
     return [self apiRequest:@"/execute/async" method:@"POST" data:payload];
 }
@@ -1363,6 +1398,7 @@ void cmdExecute(NSArray* args) {
 
     if (artifacts) payload[@"return_artifacts"] = @YES;
     if (network) payload[@"network"] = network;
+    if (g_targetOS) payload[@"os"] = g_targetOS;
     if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
 
     NSDictionary* result = apiRequestCLI(@"/execute", @"POST", payload, publicKey, secretKey);
@@ -1450,6 +1486,7 @@ void cmdSession(NSArray* args) {
         @"shell": shell ?: @"bash"
     }];
     if (network) payload[@"network"] = network;
+    if (g_targetOS) payload[@"os"] = g_targetOS;
     if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
 
     if ([inputFiles count] > 0) {
@@ -1720,6 +1757,7 @@ void cmdService(NSArray* args) {
         }
 
         if (network) payload[@"network"] = network;
+        if (g_targetOS) payload[@"os"] = g_targetOS;
         if (vcpu > 0) payload[@"vcpu"] = @(vcpu);
         if (unfreezeOnDemand) payload[@"unfreeze_on_demand"] = @YES;
 
@@ -2812,7 +2850,8 @@ void showHelp(void) {
     printf("  -a              Return artifacts\n");
     printf("  -o DIR          Output directory for artifacts\n");
     printf("  -n MODE         Network mode (zerotrust|semitrusted)\n");
-    printf("  -v N            vCPU count (1-8)\n\n");
+    printf("  -v N            vCPU count (1-8)\n");
+    printf("  --os OS         Target OS: linux (default) or freebsd (execute, session, service)\n\n");
     printf("Session options:\n");
     printf("  --list          List active sessions\n");
     printf("  --kill ID       Terminate session\n");
@@ -2864,6 +2903,36 @@ int main(int argc, const char* argv[]) {
         NSMutableArray* args = [NSMutableArray array];
         for (int i = 1; i < argc; i++) {
             [args addObject:[NSString stringWithUTF8String:argv[i]]];
+        }
+
+        // Global --os OS / --os=OS: remove it from args and validate it
+        // before any credential lookup or request
+        for (NSUInteger i = 0; i < [args count]; ) {
+            NSString* a = args[i];
+            NSString* value = nil;
+            NSUInteger consumed = 0;
+            if ([a isEqualToString:@"--os"]) {
+                value = i + 1 < [args count] ? args[i + 1] : @"";
+                consumed = i + 1 < [args count] ? 2 : 1;
+            } else if ([a hasPrefix:@"--os="]) {
+                value = [a substringFromIndex:5];
+                consumed = 1;
+            }
+            if (consumed == 0) {
+                i++;
+                continue;
+            }
+            NSString* osError = nil;
+            g_targetOS = UNNormalizeOS(value, &osError);
+            if (!g_targetOS) {
+                fprintf(stderr, "%sError: %s%s\n", [RED UTF8String], [osError UTF8String], [RESET UTF8String]);
+                return 2;
+            }
+            [args removeObjectsInRange:NSMakeRange(i, consumed)];
+        }
+        if ([args count] == 0) {
+            showHelp();
+            return 1;
         }
 
         // Pre-scan for --account N before subcommand dispatch

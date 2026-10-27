@@ -1,6 +1,6 @@
 # UN Swift Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -16,6 +16,7 @@ help:
 	@echo ""
 	@echo "  make build            Compile with swift build"
 	@echo "  make test             All 4 test modes"
+	@echo "  make test-os          Offline --os flag check (tests/os_flag_cli.sh)"
 	@echo ""
 
 build:
@@ -63,6 +64,10 @@ test-functional:
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
 
+test-os:
+	swiftc -parse-as-library -o un-swift $(SYNC_DIR)/src/un.swift
+	@bash ../../tests/os_flag_cli.sh ./un-swift
+
 clean:
-	@rm -rf $(SYNC_DIR)/.build 2>/dev/null || true
+	@rm -rf $(SYNC_DIR)/.build un-swift 2>/dev/null || true
 	@echo "$(GREEN)✓$(NC) Cleaned Swift artifacts"

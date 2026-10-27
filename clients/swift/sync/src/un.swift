@@ -650,6 +650,22 @@ func detectLanguage(_ filename: String) -> String? {
     return LANGUAGE_MAP[ext]
 }
 
+// MARK: - Target OS
+
+/// Validate a target OS name case-insensitively and return its canonical
+/// form, "linux" or "freebsd". Anything else (including "") throws.
+func normalizeOS(_ value: String) throws -> String {
+    switch value.lowercased() {
+    case "linux": return "linux"
+    case "freebsd": return "freebsd"
+    default:
+        if value.isEmpty {
+            throw UnsandboxError.invalidArgument("--os requires a value: linux or freebsd")
+        }
+        throw UnsandboxError.invalidArgument("invalid --os '\(value)' (expected linux or freebsd)")
+    }
+}
+
 // MARK: - Execution Functions
 
 /// Execute code synchronously (blocks until completion)
@@ -679,9 +695,11 @@ func executeCodeWithOptions(
     networkMode: String = "zerotrust",
     vcpu: Int = 1,
     artifacts: Bool = false,
+    os: String? = nil,
     publicKey: String? = nil,
     secretKey: String? = nil
 ) throws -> [String: Any] {
+    let targetOS = try os.map(normalizeOS)
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
 
     var data: [String: Any] = [
@@ -689,6 +707,10 @@ func executeCodeWithOptions(
         "code": code,
         "network_mode": networkMode
     ]
+
+    if let targetOS = targetOS {
+        data["os"] = targetOS
+    }
 
     if let env = env, !env.isEmpty {
         data["env"] = env
@@ -715,12 +737,17 @@ func executeCodeWithOptions(
 }
 
 /// Execute code asynchronously (returns immediately with job_id)
-func executeAsync(language: String, code: String, publicKey: String? = nil, secretKey: String? = nil) throws -> String {
+func executeAsync(language: String, code: String, os: String? = nil, publicKey: String? = nil, secretKey: String? = nil) throws -> String {
+    let targetOS = try os.map(normalizeOS)
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    let response = try makeRequest(method: "POST", path: "/execute", publicKey: pk, secretKey: sk, data: [
+    var data: [String: Any] = [
         "language": language,
         "code": code
-    ])
+    ]
+    if let targetOS = targetOS {
+        data["os"] = targetOS
+    }
+    let response = try makeRequest(method: "POST", path: "/execute", publicKey: pk, secretKey: sk, data: data)
     return response["job_id"] as? String ?? ""
 }
 
@@ -810,15 +837,21 @@ func createSession(
     shell: String? = nil,
     multiplexer: String? = nil,
     vcpu: Int = 1,
+    os: String? = nil,
     publicKey: String? = nil,
     secretKey: String? = nil
 ) throws -> [String: Any] {
+    let targetOS = try os.map(normalizeOS)
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
 
     var data: [String: Any] = [
         "network_mode": networkMode,
         "ttl": ttl
     ]
+
+    if let targetOS = targetOS {
+        data["os"] = targetOS
+    }
 
     if let language = language {
         data["language"] = language
@@ -891,9 +924,11 @@ func createService(
     vcpu: Int = 1,
     serviceType: String? = nil,
     unfreezeOnDemand: Bool = false,
+    os: String? = nil,
     publicKey: String? = nil,
     secretKey: String? = nil
 ) throws -> [String: Any] {
+    let targetOS = try os.map(normalizeOS)
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
 
     var data: [String: Any] = [
@@ -901,6 +936,10 @@ func createService(
         "ports": ports,
         "network_mode": networkMode
     ]
+
+    if let targetOS = targetOS {
+        data["os"] = targetOS
+    }
 
     if let bootstrap = bootstrap {
         if bootstrap.hasPrefix("http://") || bootstrap.hasPrefix("https://") {
@@ -1645,6 +1684,7 @@ func printHelp() {
         -p, --public-key KEY  API public key
         -k, --secret-key KEY  API secret key
         -n, --network MODE    Network: zerotrust or semitrusted
+        --os OS               Target OS: linux (default) or freebsd (execute, session, service)
         -v, --vcpu N          vCPU count (1-8)
         -y, --yes             Skip confirmation prompts
         -h, --help            Show help
@@ -1724,6 +1764,7 @@ class CLIArgs {
     var publicKey: String?
     var secretKey: String?
     var networkMode: String = "zerotrust"
+    var os: String?            // --os value as given (validated in main)
     var vcpu: Int = 1
     var yes: Bool = false
 
@@ -1844,6 +1885,12 @@ class CLIArgs {
             case "-n", "--network":
                 i += 1
                 if i < args.count { networkMode = args[i] }
+            case "--os":
+                // A missing value becomes "" so validation rejects it
+                i += 1
+                os = i < args.count ? args[i] : ""
+            case _ where arg.hasPrefix("--os="):
+                os = String(arg.dropFirst(5))
             case "-v", "--vcpu":
                 i += 1
                 if i < args.count { vcpu = Int(args[i]) ?? 1 }
@@ -2083,6 +2130,7 @@ func handleExecuteCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
         networkMode: args.networkMode,
         vcpu: args.vcpu,
         artifacts: args.artifacts,
+        os: args.os,
         publicKey: pk,
         secretKey: sk
     )
@@ -2151,6 +2199,7 @@ func handleSessionCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
             networkMode: args.networkMode,
             shell: args.shell,
             multiplexer: multiplexer,
+            os: args.os,
             publicKey: pk,
             secretKey: sk
         )
@@ -2248,6 +2297,7 @@ func handleServiceCommand(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
             customDomains: customDomains,
             vcpu: args.vcpu,
             serviceType: args.serviceType,
+            os: args.os,
             publicKey: pk,
             secretKey: sk
         )
@@ -3007,6 +3057,19 @@ struct UnCLI {
         }
         let args = CLIArgs()
         args.parse(argv)
+
+        // Validate --os before credentials or any request
+        if let osValue = args.os {
+            do {
+                args.os = try normalizeOS(osValue)
+            } catch UnsandboxError.invalidArgument(let msg) {
+                fputs("Error: \(msg)\n", stderr)
+                exit(2)
+            } catch {
+                fputs("Error: \(error)\n", stderr)
+                exit(2)
+            }
+        }
 
         // Resolve credentials
         let pk: String

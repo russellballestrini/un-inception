@@ -124,6 +124,7 @@ void CmdExecute(Args args)
 
     if (args.Artifacts) payload["return_artifacts"] = true;
     if (args.Network != null) payload["network"] = args.Network;
+    if (args.Os != null) payload["os"] = args.Os;
     if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
 
     var result = ApiRequest("/execute", HttpMethod.Post, payload, publicKey, secretKey);
@@ -218,6 +219,7 @@ void CmdSession(Args args)
 
     var createPayload = new Dictionary<string, object> { ["shell"] = args.SessionShell ?? "bash" };
     if (args.Network != null) createPayload["network"] = args.Network;
+    if (args.Os != null) createPayload["os"] = args.Os;
     if (args.Vcpu > 0) createPayload["vcpu"] = args.Vcpu;
 
     Console.WriteLine($"{YELLOW}Creating session...{RESET}");
@@ -700,6 +702,7 @@ void CmdService(Args args)
         if (args.ServiceBootstrap != null) payload["bootstrap"] = args.ServiceBootstrap;
         else if (args.ServiceBootstrapFile != null) payload["bootstrap"] = File.ReadAllText(args.ServiceBootstrapFile);
         if (args.Network != null) payload["network"] = args.Network;
+        if (args.Os != null) payload["os"] = args.Os;
         if (args.Vcpu > 0) payload["vcpu"] = args.Vcpu;
         if (args.ServiceCreateUnfreezeOnDemand) payload["unfreeze_on_demand"] = true;
         if (args.Files.Count > 0)
@@ -1230,6 +1233,8 @@ Args ParseArgs(string[] args)
         }
         else if (arg == "-k" || arg == "--api-key") result.ApiKey = args[++i];
         else if (arg == "-n" || arg == "--network") result.Network = args[++i];
+        else if (arg == "--os") result.Os = Unsandbox.NormalizeOs(i + 1 < args.Length ? args[++i] : "");
+        else if (arg.StartsWith("--os=")) result.Os = Unsandbox.NormalizeOs(arg[5..]);
         else if (arg == "-v" || arg == "--vcpu") result.Vcpu = int.Parse(args[++i]);
         else if (arg == "-e" || arg == "--env") result.Env.Add(args[++i]);
         else if (arg == "--env-file") result.EnvFile = args[++i];
@@ -1551,6 +1556,7 @@ Execute options:
   -a                Return artifacts
   -o DIR            Output directory for artifacts
   -n MODE           Network mode (zerotrust/semitrusted)
+  --os OS           Target OS: linux (default) or freebsd (execute, session, service)
   -v N              vCPU count (1-8)
   -k KEY            API key
 
@@ -1658,13 +1664,27 @@ public static class Unsandbox
 
     // --- Execution Functions (8) ---
 
+    /// <summary>
+    /// Validate a target OS name case-insensitively and return its canonical
+    /// form, "linux" or "freebsd". Anything else (including "") throws.
+    /// </summary>
+    public static string NormalizeOs(string? os)
+    {
+        var lower = (os ?? "").ToLowerInvariant();
+        if (lower == "linux" || lower == "freebsd") return lower;
+        if (string.IsNullOrEmpty(os)) throw new ArgumentException("--os requires a value: linux or freebsd");
+        throw new ArgumentException($"invalid --os '{os}' (expected linux or freebsd)");
+    }
+
     /// <summary>Execute code synchronously</summary>
-    public static ExecuteResult Execute(string language, string code, string? publicKey = null, string? secretKey = null)
+    /// <param name="os">Optional target OS: "linux" or "freebsd" (null = API default linux)</param>
+    public static ExecuteResult Execute(string language, string code, string? publicKey = null, string? secretKey = null, string? os = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         var payload = new Dictionary<string, object> { ["language"] = language, ["code"] = code };
         try
         {
+            if (os != null) payload["os"] = NormalizeOs(os);
             var result = ApiCall("/execute", HttpMethod.Post, payload, pk, sk);
             return new ExecuteResult
             {
@@ -1680,12 +1700,13 @@ public static class Unsandbox
     }
 
     /// <summary>Execute code asynchronously, returns job ID</summary>
-    public static string? ExecuteAsync(string language, string code, string? publicKey = null, string? secretKey = null)
+    public static string? ExecuteAsync(string language, string code, string? publicKey = null, string? secretKey = null, string? os = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         var payload = new Dictionary<string, object> { ["language"] = language, ["code"] = code, ["async"] = true };
         try
         {
+            if (os != null) payload["os"] = NormalizeOs(os);
             var result = ApiCall("/execute", HttpMethod.Post, payload, pk, sk);
             return GetString(result, "job_id");
         }
@@ -1810,13 +1831,14 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return null; }
     }
 
-    public static SessionInfo? SessionCreate(string? networkMode = null, string? shell = null, string? publicKey = null, string? secretKey = null)
+    public static SessionInfo? SessionCreate(string? networkMode = null, string? shell = null, string? publicKey = null, string? secretKey = null, string? os = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         var payload = new Dictionary<string, object> { ["shell"] = shell ?? "bash" };
         if (networkMode != null) payload["network"] = networkMode;
         try
         {
+            if (os != null) payload["os"] = NormalizeOs(os);
             var result = ApiCall("/sessions", HttpMethod.Post, payload, pk, sk);
             return new SessionInfo { Id = GetString(result, "id"), Status = "running" };
         }
@@ -1905,7 +1927,7 @@ public static class Unsandbox
         catch (Exception ex) { _lastError = ex.Message; return null; }
     }
 
-    public static string? ServiceCreate(string name, string? ports = null, string? domains = null, string? bootstrap = null, string? networkMode = null, List<Dictionary<string, string>>? inputFiles = null, string? publicKey = null, string? secretKey = null)
+    public static string? ServiceCreate(string name, string? ports = null, string? domains = null, string? bootstrap = null, string? networkMode = null, List<Dictionary<string, string>>? inputFiles = null, string? publicKey = null, string? secretKey = null, string? os = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
         var payload = new Dictionary<string, object> { ["name"] = name };
@@ -1916,6 +1938,7 @@ public static class Unsandbox
         if (inputFiles != null && inputFiles.Count > 0) payload["input_files"] = inputFiles;
         try
         {
+            if (os != null) payload["os"] = NormalizeOs(os);
             var result = ApiCall("/services", HttpMethod.Post, payload, pk, sk);
             return GetString(result, "id");
         }
@@ -2559,6 +2582,7 @@ class Args
 {
     public bool ShowHelp, ShowVersion;
     public string? Command, SourceFile, ApiKey, Network, OutputDir;
+    public string? Os;  // --os, normalized: null (omitted), "linux" or "freebsd"
     public int Vcpu;
     public List<string> Env = new(), Files = new();
     public bool Artifacts, SessionList, ServiceList;

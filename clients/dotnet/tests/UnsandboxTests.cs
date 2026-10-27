@@ -19,6 +19,8 @@ public class UnitTests
         TestDetectLanguage();
         TestHmacSign();
         TestVersion();
+        TestNormalizeOs();
+        TestInvalidOsSendsNothing();
 
         Console.WriteLine("\n=== Unit Tests Complete ===");
     }
@@ -72,6 +74,36 @@ public class UnitTests
             Console.WriteLine($"PASS ({version})");
         else
             Console.WriteLine($"FAIL (got {version})");
+    }
+
+    static void TestNormalizeOs()
+    {
+        Console.Write("NormalizeOs: ");
+        var ok = Unsandbox.NormalizeOs("freebsd") == "freebsd"
+            && Unsandbox.NormalizeOs("FreeBSD") == "freebsd"
+            && Unsandbox.NormalizeOs("LINUX") == "linux";
+        string? invalidMsg = null, emptyMsg = null;
+        try { Unsandbox.NormalizeOs("openbsd"); } catch (ArgumentException ex) { invalidMsg = ex.Message; }
+        try { Unsandbox.NormalizeOs(""); } catch (ArgumentException ex) { emptyMsg = ex.Message; }
+        ok = ok && invalidMsg != null && invalidMsg.Contains("openbsd")
+                && emptyMsg != null && emptyMsg.Contains("--os requires a value");
+        Console.WriteLine(ok ? "PASS" : $"FAIL (invalid: {invalidMsg}, empty: {emptyMsg})");
+    }
+
+    static void TestInvalidOsSendsNothing()
+    {
+        // An invalid os is rejected before any request is made, so this
+        // needs no network and no real credentials.
+        Console.Write("InvalidOsSendsNothing: ");
+        var exec = Unsandbox.Execute("bash", "echo hi", "pk", "sk", os: "openbsd");
+        var session = Unsandbox.SessionCreate(publicKey: "pk", secretKey: "sk", os: "openbsd");
+        var sessionErr = Unsandbox.LastError();
+        var service = Unsandbox.ServiceCreate("ostest", "80", publicKey: "pk", secretKey: "sk", os: "openbsd");
+        var serviceErr = Unsandbox.LastError();
+        var ok = !exec.Success && (exec.ErrorMessage ?? "").Contains("invalid --os 'openbsd'")
+            && session == null && (sessionErr ?? "").Contains("invalid --os 'openbsd'")
+            && service == null && (serviceErr ?? "").Contains("invalid --os 'openbsd'");
+        Console.WriteLine(ok ? "PASS" : $"FAIL (execute: {exec.ErrorMessage}, session: {sessionErr}, service: {serviceErr})");
     }
 }
 

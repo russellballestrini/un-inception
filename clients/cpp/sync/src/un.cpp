@@ -93,6 +93,34 @@ static string resolve_portal_base() {
 }
 const string PORTAL_BASE = resolve_portal_base();
 const int LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
+
+// Target OS (--os): validates a name case-insensitively into its canonical
+// form, "linux" or "freebsd". Returns false with err set for anything else.
+bool normalize_os(const string& value, string& out, string& err) {
+    string lower;
+    for (char c : value) lower += (char)tolower((unsigned char)c);
+    if (lower == "linux" || lower == "freebsd") {
+        out = lower;
+        return true;
+    }
+    if (value.empty()) err = "--os requires a value: linux or freebsd";
+    else err = "invalid --os '" + value + "' (expected linux or freebsd)";
+    return false;
+}
+
+// CLI --os value, already normalized ("" = flag not given, field omitted).
+static string TARGET_OS;
+
+// JSON fragment ",\"os\":\"...\"" for a request body, "" when os is empty.
+// Returns false with err set when os is not linux or freebsd.
+bool os_json_field(const string& os, string& field, string& err) {
+    field.clear();
+    if (os.empty()) return true;
+    string normalized;
+    if (!normalize_os(os, normalized, err)) return false;
+    field = ",\"os\":\"" + normalized + "\"";
+    return true;
+}
 const string BLUE = "\033[34m";
 const string RED = "\033[31m";
 const string GREEN = "\033[32m";
@@ -629,8 +657,11 @@ void set_unfreeze_on_demand(const string& service_id, bool enabled, const string
 const string SDK_VERSION = "4.2.0";
 
 // Execute code synchronously
-string execute(const string& language, const string& code, const string& public_key, const string& secret_key) {
-    string body = "{\"language\":\"" + escape_json(language) + "\",\"code\":\"" + escape_json(code) + "\"}";
+// os: optional target OS, "linux" or "freebsd" ("" = omitted, API default linux)
+string execute(const string& language, const string& code, const string& public_key, const string& secret_key, const string& os = "") {
+    string os_field, os_err;
+    if (!os_json_field(os, os_field, os_err)) return "{\"error\":\"" + escape_json(os_err) + "\"}";
+    string body = "{\"language\":\"" + escape_json(language) + "\",\"code\":\"" + escape_json(code) + "\"" + os_field + "}";
     string auth_headers = build_auth_headers("POST", "/execute", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
                  "-H 'Content-Type: application/json' "
@@ -640,8 +671,10 @@ string execute(const string& language, const string& code, const string& public_
 }
 
 // Execute code asynchronously (returns job_id)
-string execute_async(const string& language, const string& code, const string& public_key, const string& secret_key) {
-    string body = "{\"language\":\"" + escape_json(language) + "\",\"code\":\"" + escape_json(code) + "\",\"async\":true}";
+string execute_async(const string& language, const string& code, const string& public_key, const string& secret_key, const string& os = "") {
+    string os_field, os_err;
+    if (!os_json_field(os, os_field, os_err)) return "{\"error\":\"" + escape_json(os_err) + "\"}";
+    string body = "{\"language\":\"" + escape_json(language) + "\",\"code\":\"" + escape_json(code) + "\",\"async\":true" + os_field + "}";
     string auth_headers = build_auth_headers("POST", "/execute", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
                  "-H 'Content-Type: application/json' "
@@ -714,9 +747,12 @@ string session_get(const string& session_id, const string& public_key, const str
     return exec_curl(cmd);
 }
 
-string session_create(const string& shell, const string& network, const string& public_key, const string& secret_key) {
+string session_create(const string& shell, const string& network, const string& public_key, const string& secret_key, const string& os = "") {
+    string os_field, os_err;
+    if (!os_json_field(os, os_field, os_err)) return "{\"error\":\"" + escape_json(os_err) + "\"}";
     string body = "{\"shell\":\"" + (shell.empty() ? "bash" : shell) + "\"";
     if (!network.empty()) body += ",\"network\":\"" + network + "\"";
+    body += os_field;
     body += "}";
     string auth_headers = build_auth_headers("POST", "/sessions", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/sessions' "
@@ -787,11 +823,14 @@ string service_get(const string& service_id, const string& public_key, const str
     return exec_curl(cmd);
 }
 
-string service_create(const string& name, const string& ports, const string& bootstrap, const string& network, const string& public_key, const string& secret_key) {
+string service_create(const string& name, const string& ports, const string& bootstrap, const string& network, const string& public_key, const string& secret_key, const string& os = "") {
+    string os_field, os_err;
+    if (!os_json_field(os, os_field, os_err)) return "{\"error\":\"" + escape_json(os_err) + "\"}";
     string body = "{\"name\":\"" + escape_json(name) + "\"";
     if (!ports.empty()) body += ",\"ports\":\"" + ports + "\"";
     if (!bootstrap.empty()) body += ",\"bootstrap\":\"" + escape_json(bootstrap) + "\"";
     if (!network.empty()) body += ",\"network\":\"" + network + "\"";
+    body += os_field;
     body += "}";
     string auth_headers = build_auth_headers("POST", "/services", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/services' "
@@ -1563,6 +1602,7 @@ void cmd_execute(const string& source_file, const vector<string>& envs, const ve
 
     if (artifacts) json << ",\"return_artifacts\":true";
     if (!network.empty()) json << ",\"network\":\"" << network << "\"";
+    if (!TARGET_OS.empty()) json << ",\"os\":\"" << TARGET_OS << "\"";
     if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
     json << "}";
 
@@ -1634,6 +1674,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     ostringstream json;
     json << "{\"shell\":\"" << (shell.empty() ? "bash" : shell) << "\"";
     if (!network.empty()) json << ",\"network\":\"" << network << "\"";
+    if (!TARGET_OS.empty()) json << ",\"os\":\"" << TARGET_OS << "\"";
     if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
     if (tmux) json << ",\"persistence\":\"tmux\"";
     if (screen) json << ",\"persistence\":\"screen\"";
@@ -1934,6 +1975,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
             json << "]";
         }
         if (!network.empty()) json << ",\"network\":\"" << network << "\"";
+        if (!TARGET_OS.empty()) json << ",\"os\":\"" << TARGET_OS << "\"";
         if (vcpu > 0) json << ",\"vcpu\":" << vcpu;
         if (unfreeze_on_demand >= 0) json << ",\"unfreeze_on_demand\":" << (unfreeze_on_demand ? "true" : "false");
         json << "}";
@@ -2455,7 +2497,36 @@ int cmd_rotate_key(const string& public_key, const string& secret_key, const str
     return 0;
 }
 
+#ifndef UN_NO_MAIN
 int main(int argc, char* argv[]) {
+    // Global --os OS / --os=OS: strip it from argv and validate before any
+    // credential lookup or request.
+    vector<char*> kept_args;
+    for (int i = 0; i < argc; i++) {
+        string a = argv[i];
+        bool given = false;
+        string value;
+        if (i > 0 && a == "--os") {
+            given = true;
+            if (i + 1 < argc) value = argv[++i];
+        } else if (i > 0 && a.rfind("--os=", 0) == 0) {
+            given = true;
+            value = a.substr(5);
+        }
+        if (!given) {
+            kept_args.push_back(argv[i]);
+            continue;
+        }
+        string err;
+        if (!normalize_os(value, TARGET_OS, err)) {
+            cerr << RED << "Error: " << err << RESET << endl;
+            return 1;
+        }
+    }
+    kept_args.push_back(nullptr);
+    argc = (int)kept_args.size() - 1;
+    argv = kept_args.data();
+
     string public_key;
     string secret_key;
     int account_index = -1;  // -1 = not set
@@ -2526,6 +2597,7 @@ int main(int argc, char* argv[]) {
         cerr << "       " << argv[0] << " service [options]" << endl;
         cerr << "       " << argv[0] << " image [options]" << endl;
         cerr << "       " << argv[0] << " key [options]" << endl;
+        cerr << "  --os OS   Target OS: linux (default) or freebsd (execute, session, service)" << endl;
         return 1;
     }
 
@@ -2715,3 +2787,4 @@ int main(int argc, char* argv[]) {
     cmd_execute(source_file, envs, files, artifacts, network, vcpu, public_key, secret_key);
     return 0;
 }
+#endif  // UN_NO_MAIN
