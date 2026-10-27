@@ -3744,6 +3744,59 @@ static int freeze_service(const UnsandboxCredentials *creds, const char *service
 }
 
 // Unfreeze a service
+// Adopt a service whose record is gone (unsandbox ticket #131): a record the
+// ghost reaper set aside, or one rebuilt from the container's own record.
+static int adopt_service(const UnsandboxCredentials *creds, const char *service_id) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return 1;
+
+    struct ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    char url[512];
+    snprintf(url, sizeof(url), "%s/services/%s/adopt", API_BASE, service_id);
+
+    char path[256];
+    snprintf(path, sizeof(path), "/services/%s/adopt", service_id);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = add_hmac_auth_headers(headers, creds, "POST", path, "{}");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{}");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return 1;
+    }
+
+    if (http_code != 200) {
+        char *err = extract_json_string(response.data, "error");
+        fprintf(stderr, "Error: HTTP %ld: %s\n", http_code, err ? err : response.data);
+        free(err);
+        free(response.data);
+        return 1;
+    }
+
+    printf("\033[32mService adopted\033[0m (unreachable until the next reconcile pass reads its container)\n");
+    free(response.data);
+    return 0;
+}
+
 static int unfreeze_service(const UnsandboxCredentials *creds, const char *service_id) {
     CURL *curl = curl_easy_init();
     if (!curl) return 1;
@@ -7080,6 +7133,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  --download-logs ID FILE  Download all logs to file\n");
     fprintf(stderr, "  --freeze ID        Freeze a service\n");
     fprintf(stderr, "  --unfreeze ID      Unfreeze a service\n");
+    fprintf(stderr, "  --adopt ID         Take back a service whose record was lost (container still there)\n");
     fprintf(stderr, "  --destroy ID       Destroy a service\n");
     fprintf(stderr, "  --lock ID          Lock a service to prevent deletion\n");
     fprintf(stderr, "  --unlock ID        Unlock a service to allow deletion\n");
@@ -10505,6 +10559,7 @@ int main(int argc, char *argv[]) {
         const char *download_logs_file = NULL;
         int do_freeze = 0;
         int do_unfreeze = 0;
+        int do_adopt = 0;
         int do_destroy = 0;
         int do_lock = 0;
         int do_unlock = 0;
@@ -10655,6 +10710,10 @@ int main(int argc, char *argv[]) {
                 service_id = argv[i];
             } else if (strcmp(argv[i], "--unfreeze") == 0 && i + 1 < argc) {
                 do_unfreeze = 1;
+                i++;
+                service_id = argv[i];
+            } else if (strcmp(argv[i], "--adopt") == 0 && i + 1 < argc) {
+                do_adopt = 1;
                 i++;
                 service_id = argv[i];
             } else if (strcmp(argv[i], "--destroy") == 0 && i + 1 < argc) {
@@ -10901,6 +10960,8 @@ int main(int argc, char *argv[]) {
             ret = freeze_service(creds, service_id);
         } else if (do_unfreeze) {
             ret = unfreeze_service(creds, service_id);
+        } else if (do_adopt) {
+            ret = adopt_service(creds, service_id);
         } else if (do_destroy) {
             ret = destroy_service(creds, service_id);
         } else if (do_lock) {
