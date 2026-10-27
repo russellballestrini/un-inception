@@ -339,6 +339,18 @@
 
 (defparameter *account-index* nil)
 
+;; --os OS: target OS for execute/session/service, nil = API default (linux)
+(defparameter *target-os* nil)
+
+(defun normalize-os (value)
+  "Lowercase and validate a target OS. Returns \"linux\" or \"freebsd\", nil on invalid."
+  (let ((v (string-downcase (or value ""))))
+    (when (member v '("linux" "freebsd") :test #'string=) v)))
+
+(defun os-json ()
+  "JSON fragment adding \"os\" to a request body only when --os was given."
+  (if *target-os* (format nil ",\"os\":\"~a\"" *target-os*) ""))
+
 (defun load-accounts-csv (path index)
   "Load row INDEX from a CSV file of public_key,secret_key pairs.
    Skips blank lines and lines starting with #. Returns (list pk sk) or nil."
@@ -496,8 +508,8 @@
       (format t "Error: Unknown extension: ~a~%" ext)
       (uiop:quit 1))
     (let* ((code (read-file file))
-           (json (format nil "{\"language\":\"~a\",\"code\":\"~a\"}"
-                         language (escape-json code)))
+           (json (format nil "{\"language\":\"~a\",\"code\":\"~a\"~a}"
+                         language (escape-json code) (os-json)))
            (response (curl-post api-key "/execute" json)))
       (format t "~a~%" response))))
 
@@ -512,7 +524,7 @@
       (t
         (let* ((sh (or shell "bash"))
                (input-files-json (build-input-files-json input-files))
-               (json (format nil "{\"shell\":\"~a\"~a}" sh input-files-json))
+               (json (format nil "{\"shell\":\"~a\"~a~a}" sh (os-json) input-files-json))
                (response (curl-post api-key "/sessions" json)))
           (format t "~aSession created (WebSocket required)~a~%" *yellow* *reset*)
           (format t "~a~%" response))))))
@@ -605,7 +617,7 @@
                                           ""))
               (type-json (if service-type (format nil ",\"service_type\":\"~a\"" service-type) ""))
               (input-files-json (build-input-files-json input-files))
-              (json (format nil "{\"name\":\"~a\"~a~a~a~a~a}" name ports-json bootstrap-json bootstrap-content-json type-json input-files-json))
+              (json (format nil "{\"name\":\"~a\"~a~a~a~a~a~a}" name ports-json bootstrap-json bootstrap-content-json type-json (os-json) input-files-json))
               (response (curl-post api-key "/services" json))
               (service-id (parse-json-field response "id")))
          (format t "~aService created~a~%" *green* *reset*)
@@ -1445,9 +1457,34 @@
          (incf i))))
     (nreverse result)))
 
+(defun strip-os-flag (args)
+  "Remove --os OS / --os=OS from args, set *target-os* as side-effect. Returns filtered args.
+Exits non-zero on a missing or invalid value, before any credential or HTTP use."
+  (let ((result nil)
+        (raw nil))
+    (loop while args do
+      (let ((arg (pop args)))
+        (cond
+          ((string= arg "--os")
+           (when (null args)
+             (format *error-output* "Error: --os requires a value: linux or freebsd~%")
+             (uiop:quit 2))
+           (setf raw (pop args)))
+          ((and (> (length arg) 5) (string= (subseq arg 0 5) "--os="))
+           (setf raw (subseq arg 5)))
+          ((string= arg "--os=")
+           (setf raw ""))
+          (t (push arg result)))))
+    (when raw
+      (setf *target-os* (normalize-os raw))
+      (unless *target-os*
+        (format *error-output* "Error: invalid --os '~a' (expected linux or freebsd)~%" raw)
+        (uiop:quit 2)))
+    (nreverse result)))
+
 (defun main ()
   (let* ((raw-args (uiop:command-line-arguments))
-         (args (strip-account-flag raw-args)))
+         (args (strip-account-flag (strip-os-flag raw-args))))
     (if (null args)
         (progn
           (format t "Usage: un.lisp [options] <source_file>~%")
@@ -1457,6 +1494,8 @@
           (format t "       un.lisp languages [--json]~%")
           (format t "       un.lisp paas logs [options]~%")
           (format t "       un.lisp key [--extend] | key --rotate [--otp CODE]~%")
+          (format t "~%Global options:~%")
+          (format t "  --os OS             Target OS: linux (default) or freebsd (execute, session, service)~%")
           (format t "~%Image options:~%")
           (format t "  --list              List all images~%")
           (format t "  --info ID           Get image details~%")

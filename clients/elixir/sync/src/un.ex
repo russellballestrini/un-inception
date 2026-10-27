@@ -211,6 +211,7 @@ defmodule Un do
     * `:env` - Environment variables as keyword list
     * `:input_files` - List of file paths to include
     * `:return_artifacts` - Return compiled artifacts
+    * `:os` - Target OS, "linux" or "freebsd" (omitted = API default, linux)
     * `:public_key` - API public key (optional)
     * `:secret_key` - API secret key (optional)
 
@@ -348,6 +349,7 @@ defmodule Un do
     * `:network` - Network mode
     * `:vcpu` - Number of vCPUs
     * `:input_files` - List of file paths
+    * `:os` - Target OS, "linux" or "freebsd" (omitted = API default, linux)
   """
   @spec session_create(keyword()) :: session()
   def session_create(opts \\ []) do
@@ -360,7 +362,9 @@ defmodule Un do
     vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
     input_files_json = build_input_files_json(input_files)
 
-    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}#{input_files_json}}"
+    os_json = os_json(Keyword.get(opts, :os))
+
+    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}#{input_files_json}#{os_json}}"
     response = api_post("/sessions", json, opts)
 
     %{
@@ -469,6 +473,7 @@ defmodule Un do
     * `:network` - Network mode
     * `:vcpu` - Number of vCPUs
     * `:input_files` - List of file paths
+    * `:os` - Target OS, "linux" or "freebsd" (omitted = API default, linux)
   """
   @spec service_create(String.t(), keyword()) :: String.t() | nil
   def service_create(name, opts \\ []) do
@@ -486,7 +491,9 @@ defmodule Un do
     vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
     input_files_json = build_input_files_json(input_files)
 
-    json = "{\"name\":\"#{escape_json(name)}\"#{ports_json}#{domains_json}#{bootstrap_json}#{network_json}#{vcpu_json}#{input_files_json}}"
+    os_json = os_json(Keyword.get(opts, :os))
+
+    json = "{\"name\":\"#{escape_json(name)}\"#{ports_json}#{domains_json}#{bootstrap_json}#{network_json}#{vcpu_json}#{input_files_json}#{os_json}}"
     response = api_post("/services", json, opts)
     extract_json_value(response, "id")
   end
@@ -1324,9 +1331,28 @@ defmodule Un do
     env_json = if env != [], do: ",\"env\":{" <> Enum.map_join(env, ",", fn {k, v} -> "\"#{k}\":\"#{escape_json(v)}\"" end) <> "}", else: ""
     input_files_json = build_input_files_json(input_files)
     artifacts_json = if return_artifacts, do: ",\"return_artifacts\":true", else: ""
+    os_json = os_json(Keyword.get(opts, :os))
 
-    "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"#{network_json}#{vcpu_json}#{ttl_json}#{env_json}#{input_files_json}#{artifacts_json}}"
+    "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"#{network_json}#{vcpu_json}#{ttl_json}#{env_json}#{input_files_json}#{artifacts_json}#{os_json}}"
   end
+
+  @doc """
+  Normalize a target OS ("linux" or "freebsd", any case) to lowercase.
+  Raises ArgumentError for any other value.
+  """
+  @spec normalize_os(String.t()) :: String.t()
+  def normalize_os(value) when is_binary(value) do
+    case String.downcase(value) do
+      os when os in ["linux", "freebsd"] -> os
+      _ -> raise ArgumentError, "invalid os '#{value}' (expected linux or freebsd)"
+    end
+  end
+
+  def normalize_os(value), do: raise(ArgumentError, "invalid os #{inspect(value)} (expected linux or freebsd)")
+
+  # ,"os":"..." fragment for a request body, empty when no target OS was given
+  defp os_json(nil), do: ""
+  defp os_json(os), do: ",\"os\":\"#{normalize_os(os)}\""
 
   defp parse_result(response) do
     %{
@@ -1356,6 +1382,10 @@ defmodule Un do
     if account_index != nil do
       Process.put(:account_index, account_index)
     end
+    {target_os, args} = extract_os_arg(args, nil, [])
+    if target_os != nil do
+      Process.put(:target_os, target_os)
+    end
     dispatch(args)
   end
 
@@ -1383,8 +1413,27 @@ defmodule Un do
     extract_account_arg(rest, acc, [arg | rest_acc])
   end
 
+  # Global --os OS / --os=OS, validated before any request or credential lookup
+  defp extract_os_arg([], os, rest_acc), do: {os, Enum.reverse(rest_acc)}
+  defp extract_os_arg(["--os"], _os, _rest_acc) do
+    IO.puts(:stderr, "Error: --os requires a value: linux or freebsd")
+    System.halt(1)
+  end
+  defp extract_os_arg(["--os", value | rest], _os, rest_acc), do: extract_os_arg(rest, cli_os(value), rest_acc)
+  defp extract_os_arg(["--os=" <> value | rest], _os, rest_acc), do: extract_os_arg(rest, cli_os(value), rest_acc)
+  defp extract_os_arg([arg | rest], os, rest_acc), do: extract_os_arg(rest, os, [arg | rest_acc])
+
+  defp cli_os(value) do
+    normalize_os(value)
+  rescue
+    ArgumentError ->
+      IO.puts(:stderr, "Error: invalid --os '#{value}' (expected linux or freebsd)")
+      System.halt(1)
+  end
+
   defp print_usage do
     IO.puts("Usage: un.ex [--account N] [options] <source_file>")
+    IO.puts("       un.ex [--account N] -s <language> <code>")
     IO.puts("       un.ex [--account N] session [options]")
     IO.puts("       un.ex [--account N] service [options]")
     IO.puts("       un.ex [--account N] service env <action> <service_id>")
@@ -1396,6 +1445,7 @@ defmodule Un do
     IO.puts("")
     IO.puts("Global options:")
     IO.puts("  --account N    Use accounts.csv row N (bypasses env vars)")
+    IO.puts("  --os OS        Target OS: linux (default) or freebsd (execute, session, service)")
     IO.puts("")
     IO.puts("Service options: --name, --ports, --bootstrap, -e KEY=VALUE, --env-file FILE")
     IO.puts("                --set-unfreeze-on-demand ID true|false")
@@ -1408,6 +1458,14 @@ defmodule Un do
   end
 
   # Execute command
+  # Inline code: un.ex -s LANG 'CODE'
+  defp execute_command(["-s", language, code | _]) do
+    api_key = get_api_key()
+    json = build_execute_json(language, code, %{})
+    response = curl_post(api_key, "/execute", json)
+    IO.puts(response)
+  end
+
   defp execute_command(args) do
     api_key = get_api_key()
     {file, opts} = parse_exec_args(args)
@@ -1482,7 +1540,9 @@ defmodule Un do
     vcpu_json = if vcpu, do: ",\"vcpu\":#{vcpu}", else: ""
     input_files_json = build_input_files_json(input_files)
 
-    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}#{input_files_json}}"
+    os_json = os_json(Process.get(:target_os))
+
+    json = "{\"shell\":\"#{shell}\"#{network_json}#{vcpu_json}#{input_files_json}#{os_json}}"
     response = curl_post(api_key, "/sessions", json)
     IO.puts("#{@yellow}Session created (WebSocket required)#{@reset}")
     IO.puts(response)
@@ -1734,7 +1794,9 @@ defmodule Un do
     type_json = if service_type, do: ",\"service_type\":\"#{service_type}\"", else: ""
     input_files_json = build_input_files_json(input_files)
 
-    json = "{\"name\":\"#{name}\"#{ports_json}#{bootstrap_json}#{bootstrap_content_json}#{network_json}#{vcpu_json}#{type_json}#{input_files_json}}"
+    os_json = os_json(Process.get(:target_os))
+
+    json = "{\"name\":\"#{name}\"#{ports_json}#{bootstrap_json}#{bootstrap_content_json}#{network_json}#{vcpu_json}#{type_json}#{input_files_json}#{os_json}}"
     response = curl_post(api_key, "/services", json)
     IO.puts("#{@green}Service created#{@reset}")
     IO.puts(response)
@@ -2530,7 +2592,7 @@ defmodule Un do
   end
 
   defp build_execute_json(language, code, _opts) do
-    "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"}"
+    "{\"language\":\"#{language}\",\"code\":\"#{escape_json(code)}\"#{os_json(Process.get(:target_os))}}"
   end
 
   defp curl_post(_api_key, endpoint, json) do

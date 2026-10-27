@@ -1,6 +1,6 @@
 # UN Prolog Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -26,6 +26,10 @@ test-integration:
 test-functional:
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@echo "  $(YELLOW)⊘$(NC) Not implemented"
+
+# Offline: global --os flag request bodies against a local mock (no credentials)
+test-os:
+	@bash ../../tests/os_flag_cli.sh swipl $(SYNC_DIR)/src/un.pro
 
 clean:
 	@echo "$(GREEN)✓$(NC) Cleaned"

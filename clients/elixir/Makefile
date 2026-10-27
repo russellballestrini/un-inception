@@ -1,6 +1,6 @@
 # UN Elixir Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional clean help
+.PHONY: test-os all build test test-cli test-library test-integration test-functional clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -63,6 +63,10 @@ test-functional:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
+
+# Offline: global --os flag request bodies against a local mock API (no credentials)
+test-os:
+	@OS_FLAG_TIMEOUT=300 bash ../../tests/os_flag_cli.sh elixir $(SYNC_DIR)/src/un.ex
 
 clean:
 	@rm -rf $(SYNC_DIR)/_build $(ASYNC_DIR)/_build 2>/dev/null || true

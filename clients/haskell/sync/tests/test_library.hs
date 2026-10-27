@@ -8,7 +8,7 @@ No credentials required - tests pure library functions only.
 -}
 
 import System.Exit (exitFailure, exitSuccess)
-import Data.Char (isHexDigit)
+import Data.Char (isHexDigit, toLower)
 import Data.List (isPrefixOf)
 
 -- Import from parent src directory
@@ -61,6 +61,14 @@ detectLanguage filename = extToLang (takeExtension filename)
 hmacSign :: String -> String -> String
 hmacSign = hmacSha256
 
+-- Target OS validation for --os / *WithOs (matches un.hs)
+normalizeOs :: String -> Either String String
+normalizeOs v =
+  let lower = map toLower v
+  in if lower `elem` ["linux", "freebsd"]
+       then Right lower
+       else Left ("invalid os '" ++ v ++ "' (expected linux or freebsd)")
+
 main :: IO ()
 main = do
   putStrLn $ "\n" ++ blue ++ "=== Un Haskell SDK Library Tests ===" ++ reset ++ "\n"
@@ -71,6 +79,7 @@ main = do
     , runTest "hmac_sign" testHmacSign
     , runTest "hmac_sign_deterministic" testHmacSignDeterministic
     , runTest "hmac_sign_different_secrets" testHmacSignDifferentSecrets
+    , runTest "normalize_os" testNormalizeOs
     ]
 
   let passed = length $ filter id results
@@ -159,3 +168,14 @@ testHmacSignDifferentSecrets = do
   let sig1 = hmacSign "secret1" "test message"
   let sig2 = hmacSign "secret2" "test message"
   return $ sig1 /= sig2
+
+testNormalizeOs :: IO Bool
+testNormalizeOs = do
+  let isLeft (Left _) = True
+      isLeft _ = False
+  return $ and
+    [ normalizeOs "linux" == Right "linux"
+    , normalizeOs "FreeBSD" == Right "freebsd"
+    , isLeft (normalizeOs "openbsd")
+    , isLeft (normalizeOs "")
+    ]

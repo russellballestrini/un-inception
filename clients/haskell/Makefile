@@ -1,6 +1,6 @@
 # UN Haskell Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -64,6 +64,10 @@ test-functional:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
+
+# Offline --os flag contract check (local mock API, no credentials, no network)
+test-os:
+	@bash ../../tests/os_flag_cli.sh runhaskell sync/src/un.hs
 
 clean:
 	@rm -rf $(SYNC_DIR)/.stack-work $(SYNC_DIR)/dist-newstyle 2>/dev/null || true

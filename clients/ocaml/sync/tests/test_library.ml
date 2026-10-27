@@ -56,6 +56,19 @@ let hmac_sha256 secret message =
 
 let hmac_sign secret message = hmac_sha256 secret message
 
+(* Target OS validation for --os / ?os (matches un.ml) *)
+let normalize_os value =
+  match String.lowercase_ascii value with
+  | ("linux" | "freebsd") as v -> Ok v
+  | _ -> Error (Printf.sprintf "invalid os '%s' (expected linux or freebsd)" value)
+
+let os_json = function
+  | None -> ""
+  | Some value ->
+    (match normalize_os value with
+     | Ok v -> Printf.sprintf ",\"os\":\"%s\"" v
+     | Error msg -> failwith msg)
+
 (* Test tracking *)
 let passed = ref 0
 let failed = ref 0
@@ -141,6 +154,18 @@ let test_hmac_sign_different_secrets () =
   let sig2 = hmac_sign "secret2" "test message" in
   assert_true (sig1 <> sig2) "different secrets should produce different signatures"
 
+let test_normalize_os () =
+  assert_true (normalize_os "linux" = Ok "linux") "linux accepted";
+  assert_true (normalize_os "FreeBSD" = Ok "freebsd") "FreeBSD normalized to freebsd";
+  assert_true (Result.is_error (normalize_os "openbsd")) "openbsd rejected";
+  assert_true (Result.is_error (normalize_os "")) "empty rejected"
+
+let test_os_json () =
+  assert_equal (os_json None) "" "no os means no os key";
+  assert_equal (os_json (Some "FREEBSD")) ",\"os\":\"freebsd\"" "os key present and lowercase";
+  assert_true (try ignore (os_json (Some "openbsd")); false with Failure _ -> true)
+    "invalid os raises before any request"
+
 let () =
   Printf.printf "\n%s=== Un OCaml SDK Library Tests ===%s\n\n" blue reset;
 
@@ -149,6 +174,8 @@ let () =
   run_test "hmac_sign" test_hmac_sign;
   run_test "hmac_sign_deterministic" test_hmac_sign_deterministic;
   run_test "hmac_sign_different_secrets" test_hmac_sign_different_secrets;
+  run_test "normalize_os" test_normalize_os;
+  run_test "os_json" test_os_json;
 
   let total = !passed + !failed in
   Printf.printf "\n%sResults: %d/%d passed%s\n" blue !passed total reset;

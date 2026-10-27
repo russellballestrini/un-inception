@@ -126,6 +126,20 @@
 
 (def ^:dynamic *account-index* nil)
 
+;; --os OS: target OS for execute/session/service, nil = API default (linux)
+(def ^:dynamic *target-os* nil)
+
+(defn normalize-os
+  "Lowercase and validate a target OS. Returns \"linux\" or \"freebsd\", nil on invalid."
+  [v]
+  (let [s (str/lower-case (or v ""))]
+    (when (#{"linux" "freebsd"} s) s)))
+
+(defn os-json
+  "JSON fragment adding \"os\" to a request body only when --os was given."
+  []
+  (if *target-os* (str ",\"os\":\"" *target-os* "\"") ""))
+
 (defn load-accounts-csv [path index]
   (when (.exists (io/file path))
     (try
@@ -489,7 +503,7 @@
           network-json (if network (str ",\"network\":\"" network "\"") "")
           vcpu-json (if vcpu (str ",\"vcpu\":" vcpu) "")
           json (str "{\"language\":\"" language "\",\"code\":\"" (escape-json code) "\""
-                    env-json artifacts-json network-json vcpu-json "}")]
+                    env-json artifacts-json network-json vcpu-json (os-json) "}")]
       (let [response (curl-post api-key "/execute" json)
             stdout-val (extract-field "stdout" response)
             stderr-val (extract-field "stderr" response)
@@ -514,7 +528,7 @@
                     network-json (if network (str ",\"network\":\"" network "\"") "")
                     vcpu-json (if vcpu (str ",\"vcpu\":" vcpu) "")
                     input-files-json (build-input-files-json input-files)
-                    json (str "{\"shell\":\"" sh "\"" network-json vcpu-json input-files-json "}")]
+                    json (str "{\"shell\":\"" sh "\"" network-json vcpu-json (os-json) input-files-json "}")]
                 (println (str yellow "Session created (WebSocket required)" reset))
                 (println (curl-post api-key "/sessions" json))))))
 
@@ -586,7 +600,7 @@
                       vcpu-json (if vcpu (str ",\"vcpu\":" vcpu) "")
                       unfreeze-on-demand-json (if (some? unfreeze-on-demand) (str ",\"unfreeze_on_demand\":" (if unfreeze-on-demand "true" "false")) "")
                       input-files-json (build-input-files-json input-files)
-                      json (str "{\"name\":\"" name "\"" ports-json bootstrap-json bootstrap-content-json service-type-json network-json vcpu-json unfreeze-on-demand-json input-files-json "}")
+                      json (str "{\"name\":\"" name "\"" ports-json bootstrap-json bootstrap-content-json service-type-json network-json vcpu-json (os-json) unfreeze-on-demand-json input-files-json "}")
                       response (curl-post api-key "/services" json)
                       service-id (extract-field "id" response)]
                   (println (str green "Service created" reset))
@@ -1418,6 +1432,7 @@
         :execute (if file
                    (execute-command file env-vars artifacts out-dir network vcpu)
                    (do (println "Usage: un.clj [options] <source_file>")
+                       (println "  --os OS        Target OS: linux (default) or freebsd (execute, session, service)")
                        (println "       un.clj languages [--json]")
                        (println "       un.clj session [options]")
                        (println "       un.clj service [options]")
@@ -1671,12 +1686,32 @@
       account-val (second (drop-while #(not= % "--account") raw-args))
       account-idx (when account-val
                     (try (Integer/parseInt account-val) (catch Exception _ nil)))
+      ;; --os OS / --os=OS: global, validated before any credential or HTTP use
+      os-raw (loop [in raw-args found nil]
+               (cond
+                 (empty? in) found
+                 (= (first in) "--os") (recur (drop 2 in) (if (next in) (second in) ::missing))
+                 (.startsWith ^String (first in) "--os=") (recur (rest in) (subs (first in) 5))
+                 :else (recur (rest in) found)))
+      target-os (cond
+                  (nil? os-raw) nil
+                  (= os-raw ::missing)
+                  (do (binding [*out* *err*] (println "Error: --os requires a value: linux or freebsd"))
+                      (System/exit 2))
+                  :else
+                  (or (normalize-os os-raw)
+                      (do (binding [*out* *err*]
+                            (println (str "Error: invalid --os '" os-raw "' (expected linux or freebsd)")))
+                          (System/exit 2))))
       filtered-args (loop [in raw-args out []]
                       (cond
                         (empty? in) out
                         (= (first in) "--account") (recur (drop 2 in) out)
+                        (= (first in) "--os") (recur (drop 2 in) out)
+                        (.startsWith ^String (first in) "--os=") (recur (rest in) out)
                         :else (recur (rest in) (conj out (first in)))))]
-  (binding [*account-index* account-idx]
+  (binding [*account-index* account-idx
+            *target-os* target-os]
     (cond
       (= (first filtered-args) "paas")
       (let [rc (paas-command (rest filtered-args))]

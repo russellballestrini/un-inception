@@ -62,7 +62,7 @@ import System.Process (readProcessWithExitCode)
 import System.IO (hPutStrLn, hPutStr, hFlush, stderr, stdout, stdin, hIsTerminalDevice)
 import System.Directory (createDirectoryIfMissing, setPermissions, getPermissions, setOwnerExecutable)
 import Data.List (isPrefixOf, intercalate)
-import Data.Char (isDigit, ord)
+import Data.Char (isDigit, ord, toLower)
 import Text.Printf (printf)
 import Control.Monad (when, unless, forM_)
 import Control.Exception (try, catch)
@@ -104,6 +104,31 @@ languagesCacheTtl = 3600  -- 1 hour in seconds
 {-# NOINLINE cliAccountIndex #-}
 cliAccountIndex :: IORef (Maybe Int)
 cliAccountIndex = unsafePerformIO (newIORef Nothing)
+
+-- Global target OS set by --os OS flag (Nothing = not set, API default linux)
+{-# NOINLINE cliOs #-}
+cliOs :: IORef (Maybe String)
+cliOs = unsafePerformIO (newIORef Nothing)
+
+-- | Validate a target OS: linux or freebsd, case-insensitive, normalized to lowercase
+normalizeOs :: String -> Either String String
+normalizeOs v =
+  let lower = map toLower v
+  in if lower `elem` ["linux", "freebsd"]
+       then Right lower
+       else Left ("invalid os '" ++ v ++ "' (expected linux or freebsd)")
+
+-- | JSON fragment for "os" in a request body, empty when no OS given.
+-- Fails (IO error) on an invalid OS, before any request is made.
+osJsonFor :: Maybe String -> IO String
+osJsonFor Nothing = return ""
+osJsonFor (Just v) = case normalizeOs v of
+  Right o -> return $ ",\"os\":\"" ++ o ++ "\""
+  Left err -> ioError (userError err)
+
+-- | OS JSON fragment from the global --os flag
+cliOsJson :: IO String
+cliOsJson = readIORef cliOs >>= osJsonFor
 
 -- ANSI colors
 blue, red, green, yellow, reset :: String
@@ -411,9 +436,14 @@ getLanguages = do
 
 -- | Execute code synchronously
 execute :: String -> String -> IO (Either String (Bool, String, String, Int))
-execute language code = do
+execute = executeWithOs Nothing
+
+-- | Execute code synchronously on a target OS (Just "linux" | Just "freebsd", Nothing = API default)
+executeWithOs :: Maybe String -> String -> String -> IO (Either String (Bool, String, String, Int))
+executeWithOs targetOs language code = do
+  osJson <- osJsonFor targetOs
   apiKey <- getApiKey
-  let json = "{\"language\":\"" ++ escapeJSON language ++ "\",\"code\":\"" ++ escapeJSON code ++ "\"}"
+  let json = "{\"language\":\"" ++ escapeJSON language ++ "\",\"code\":\"" ++ escapeJSON code ++ "\"" ++ osJson ++ "}"
   (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/execute") json
   case exitCode of
     ExitSuccess ->
@@ -430,9 +460,14 @@ execute language code = do
 
 -- | Execute code asynchronously, returning a job ID
 executeAsync :: String -> String -> IO (Maybe String)
-executeAsync language code = do
+executeAsync = executeAsyncWithOs Nothing
+
+-- | Execute code asynchronously on a target OS, returning a job ID
+executeAsyncWithOs :: Maybe String -> String -> String -> IO (Maybe String)
+executeAsyncWithOs targetOs language code = do
+  osJson <- osJsonFor targetOs
   apiKey <- getApiKey
-  let json = "{\"language\":\"" ++ escapeJSON language ++ "\",\"code\":\"" ++ escapeJSON code ++ "\"}"
+  let json = "{\"language\":\"" ++ escapeJSON language ++ "\",\"code\":\"" ++ escapeJSON code ++ "\"" ++ osJson ++ "}"
   (exitCode, stdout, _) <- curlPost apiKey (apiBase ++ "/execute/async") json
   case exitCode of
     ExitSuccess -> return $ extractJsonString stdout "job_id"
@@ -510,11 +545,16 @@ sessionGet sessionId = do
 
 -- | Create a new session
 sessionCreate :: Maybe String -> Maybe String -> IO (Maybe String)
-sessionCreate shell network = do
+sessionCreate = sessionCreateWithOs Nothing
+
+-- | Create a new session on a target OS
+sessionCreateWithOs :: Maybe String -> Maybe String -> Maybe String -> IO (Maybe String)
+sessionCreateWithOs targetOs shell network = do
+  osJson <- osJsonFor targetOs
   apiKey <- getApiKey
   let shellVal = maybe "bash" id shell
   let networkJson = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") network
-  let json = "{\"shell\":\"" ++ shellVal ++ "\"" ++ networkJson ++ "}"
+  let json = "{\"shell\":\"" ++ shellVal ++ "\"" ++ networkJson ++ osJson ++ "}"
   (_, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions") json
   return $ extractJsonString stdout "id"
 
@@ -575,12 +615,17 @@ serviceGet serviceId = do
 
 -- | Create a new service
 serviceCreate :: String -> Maybe String -> Maybe String -> Maybe String -> IO (Maybe String)
-serviceCreate name ports bootstrap network = do
+serviceCreate = serviceCreateWithOs Nothing
+
+-- | Create a new service on a target OS
+serviceCreateWithOs :: Maybe String -> String -> Maybe String -> Maybe String -> Maybe String -> IO (Maybe String)
+serviceCreateWithOs targetOs name ports bootstrap network = do
+  osJson <- osJsonFor targetOs
   apiKey <- getApiKey
   let portsJson = maybe "" (\p -> ",\"ports\":[" ++ p ++ "]") ports
   let bootstrapJson = maybe "" (\b -> ",\"bootstrap\":\"" ++ escapeJSON b ++ "\"") bootstrap
   let networkJson = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") network
-  let json = "{\"name\":\"" ++ escapeJSON name ++ "\"" ++ portsJson ++ bootstrapJson ++ networkJson ++ "}"
+  let json = "{\"name\":\"" ++ escapeJSON name ++ "\"" ++ portsJson ++ bootstrapJson ++ networkJson ++ osJson ++ "}"
   (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services") json
   return $ extractJsonString stdout "id"
 
@@ -877,11 +922,37 @@ stripAccountArg (arg:rest) = do
   rest' <- stripAccountArg rest
   return (arg : rest')
 
+-- Strip global --os OS / --os=OS (before our subcommand or source file),
+-- validate it and set cliOs IORef. Exits before any request.
+stripOsArg :: [String] -> IO [String]
+stripOsArg [] = return []
+stripOsArg ["--os"] = osMissing
+stripOsArg ("--os":v:rest) = setOs v >> stripOsArg rest
+stripOsArg (arg:rest)
+  | "--os=" `isPrefixOf` arg = setOs (drop 5 arg) >> stripOsArg rest
+  | arg `elem` ["session", "service", "key", "snapshot", "image", "languages"] = return (arg : rest)
+  | otherwise = do
+      rest' <- stripOsArg rest
+      return (arg : rest')
+
+setOs :: String -> IO ()
+setOs v = case normalizeOs v of
+  Right o -> writeIORef cliOs (Just o)
+  Left _ -> do
+    hPutStrLn stderr $ "Error: invalid --os '" ++ v ++ "' (expected linux or freebsd)"
+    exitFailure
+
+osMissing :: IO a
+osMissing = do
+  hPutStrLn stderr "Error: --os requires a value: linux or freebsd"
+  exitFailure
+
 -- Main
 main :: IO ()
 main = do
   rawArgs <- getArgs
-  args <- stripAccountArg rawArgs
+  osArgs <- stripOsArg rawArgs
+  args <- stripAccountArg osArgs
   cmd <- parseArgs args
   case cmd of
     Execute opts -> executeCommand opts
@@ -907,6 +978,7 @@ printHelp = do
   putStrLn ""
   putStrLn "Global options:"
   putStrLn "  --account N     Use accounts.csv row N (bypasses env vars)"
+  putStrLn "  --os OS         Target OS: linux (default) or freebsd (execute, session, service)"
   putStrLn ""
   putStrLn "Execute options:"
   putStrLn "  -e KEY=VALUE    Environment variable"
@@ -1006,8 +1078,9 @@ executeCommand opts = do
   let networkJSON = maybe "" (\n -> ",\"network\":\"" ++ n ++ "\"") (exNetwork opts)
   let vcpuJSON = maybe "" (\v -> ",\"vcpu\":" ++ show v) (exVcpu opts)
 
+  osJSON <- cliOsJson
   let json = "{\"language\":\"" ++ lang ++ "\",\"code\":\"" ++ escapeJSON code ++ "\""
-             ++ envJSON ++ filesJSON ++ artifactsJSON ++ networkJSON ++ vcpuJSON ++ "}"
+             ++ envJSON ++ filesJSON ++ artifactsJSON ++ networkJSON ++ vcpuJSON ++ osJSON ++ "}"
 
   -- Call API
   (exitCode, stdout, stderr) <- curlPost apiKey (apiBase ++ "/execute") json
@@ -1060,7 +1133,8 @@ sessionCommand opts = do
             return $ "{\"filename\":\"" ++ fname ++ "\",\"content_base64\":\"" ++ b64 ++ "\"}"
             ) (sessFiles opts)
           return $ ",\"input_files\":[" ++ intercalate "," fileEntries ++ "]"
-      let json = "{\"shell\":\"" ++ shell ++ "\"" ++ networkJSON ++ vcpuJSON ++ filesJSON ++ "}"
+      osJSON <- cliOsJson
+      let json = "{\"shell\":\"" ++ shell ++ "\"" ++ networkJSON ++ vcpuJSON ++ filesJSON ++ osJSON ++ "}"
       (_, stdout, _) <- curlPost apiKey (apiBase ++ "/sessions") json
       putStrLn $ yellow ++ "Session created (WebSocket required for interactivity)" ++ reset
       putStrLn stdout
@@ -1230,7 +1304,8 @@ serviceCommand opts = do
                 return $ "{\"filename\":\"" ++ fname ++ "\",\"content_base64\":\"" ++ b64 ++ "\"}"
                 ) (svcFiles opts)
               return $ ",\"input_files\":[" ++ intercalate "," fileEntries ++ "]"
-          let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ bootstrapContentJSON ++ networkJSON ++ vcpuJSON ++ filesJSON ++ "}"
+          osJSON <- cliOsJson
+          let json = "{\"name\":\"" ++ name ++ "\"" ++ portsJSON ++ typeJSON ++ bootstrapJSON ++ bootstrapContentJSON ++ networkJSON ++ vcpuJSON ++ filesJSON ++ osJSON ++ "}"
           (_, stdout, _) <- curlPost apiKey (apiBase ++ "/services") json
           putStrLn $ green ++ "Service created" ++ reset
           putStrLn stdout

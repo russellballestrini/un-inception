@@ -777,12 +777,15 @@
     (when (not language)
       (format (current-error-port) "Error: Unknown extension: ~a\n" ext)
       (exit 1))
-    (let* ((code (read-file file))
-           (json (format #f "{\"language\":\"~a\",\"code\":\"~a\"}"
-                         language (escape-json code)))
-           (response (curl-post api-key "/execute" json)))
-      (display response)
-      (newline))))
+    (execute-code api-key language (read-file file))))
+
+;; Shared by file and inline (un.scm -s LANG 'CODE', CLI_SPEC.md -s/--shell)
+(define (execute-code api-key language code)
+  (let* ((json (format #f "{\"language\":\"~a\",\"code\":\"~a\"~a}"
+                       language (escape-json code) (os-json)))
+         (response (curl-post api-key "/execute" json)))
+    (display response)
+    (newline)))
 
 (define (session-cmd action id shell input-files)
   (let ((api-key (get-api-key)))
@@ -796,7 +799,7 @@
       (else
         (let* ((sh (or shell "bash"))
                (input-files-json (build-input-files-json input-files))
-               (json (format #f "{\"shell\":\"~a\"~a}" sh input-files-json))
+               (json (format #f "{\"shell\":\"~a\"~a~a}" sh input-files-json (os-json)))
                (response (curl-post api-key "/sessions" json)))
           (format #t "~aSession created (WebSocket required)~a\n" yellow reset)
           (display response)
@@ -894,7 +897,7 @@
               (type-json (if type (format #f ",\"service_type\":\"~a\"" type) ""))
               (unfreeze-on-demand-json (if unfreeze-on-demand ",\"unfreeze_on_demand\":true" ""))
               (input-files-json (build-input-files-json input-files))
-              (json (format #f "{\"name\":\"~a\"~a~a~a~a~a~a}" name ports-json bootstrap-json bootstrap-content-json type-json unfreeze-on-demand-json input-files-json))
+              (json (format #f "{\"name\":\"~a\"~a~a~a~a~a~a~a}" name ports-json bootstrap-json bootstrap-content-json type-json unfreeze-on-demand-json input-files-json (os-json)))
               (response (curl-post api-key "/services" json))
               (service-id (json-extract-string response "id")))
          (format #t "~aService created~a\n" green reset)
@@ -1620,6 +1623,9 @@
         (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
         (display "       un.scm paas logs [options]\n")
+        (display "       un.scm [options] -s LANG 'CODE'\n")
+        (display "\nGlobal options:\n")
+        (display "  --os OS             Target OS: linux (default) or freebsd (execute, session, service)\n")
         (display "\nLanguages options:\n")
         (display "  --json              Output as JSON array\n")
         (display "\nImage options:\n")
@@ -1869,6 +1875,8 @@
            (else
              (display "Error: Invalid service command\n" (current-error-port))
              (exit 1))))
+        ((and (or (equal? (car args) "-s") (equal? (car args) "--shell")) (> (length args) 2))
+         (execute-code (get-api-key) (cadr args) (caddr args)))
         (else
           (execute-cmd (car args))))))
 
@@ -1883,4 +1891,36 @@
          (loop (cddr in) out)))
       (else (loop (cdr in) (cons (car in) out))))))
 
-(main (strip-account-flag (cdr (command-line))))
+;; Global --os OS / --os=OS: linux | freebsd, case-insensitive, sent as "os"
+;; in POST /execute, /sessions, /services only when given. Invalid or missing
+;; values exit 1 before any credential lookup or request.
+(define *target-os* #f)
+
+(define (os-json)
+  (if *target-os* (format #f ",\"os\":\"~a\"" *target-os*) ""))
+
+(define (normalize-os value)
+  (let ((lower (string-downcase value)))
+    (if (member lower '("linux" "freebsd"))
+        lower
+        (begin
+          (format (current-error-port) "Error: invalid --os '~a' (expected linux or freebsd)\n" value)
+          (exit 1)))))
+
+(define (strip-os-flag args)
+  "Remove --os OS / --os=OS from args list, setting *target-os* as side-effect."
+  (let loop ((in args) (out '()))
+    (cond
+      ((null? in) (reverse out))
+      ((equal? (car in) "--os")
+       (when (null? (cdr in))
+         (display "Error: --os requires a value: linux or freebsd\n" (current-error-port))
+         (exit 1))
+       (set! *target-os* (normalize-os (cadr in)))
+       (loop (cddr in) out))
+      ((string-prefix? "--os=" (car in))
+       (set! *target-os* (normalize-os (substring (car in) 5)))
+       (loop (cdr in) out))
+      (else (loop (cdr in) (cons (car in) out))))))
+
+(main (strip-os-flag (strip-account-flag (cdr (command-line)))))

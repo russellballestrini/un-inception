@@ -211,7 +211,8 @@ session_create(Opts) ->
     Vcpu = maps:get(vcpu, Opts, undefined),
     NetworkJson = case Network of undefined -> ""; N -> ",\"network\":\"" ++ N ++ "\"" end,
     VcpuJson = case Vcpu of undefined -> ""; V -> ",\"vcpu\":" ++ integer_to_list(V) end,
-    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ NetworkJson ++ VcpuJson ++ "}",
+    OsJson = os_json(maps:get(os, Opts, undefined)),
+    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ NetworkJson ++ VcpuJson ++ OsJson ++ "}",
     Response = api_post("/sessions", Json, Opts),
     extract_json_field(Response, "id").
 
@@ -288,7 +289,8 @@ service_create(Name, Opts) ->
     BootstrapJson = case Bootstrap of undefined -> ""; B -> ",\"bootstrap\":\"" ++ escape_json(B) ++ "\"" end,
     NetworkJson = case Network of undefined -> ""; N -> ",\"network\":\"" ++ N ++ "\"" end,
     VcpuJson = case Vcpu of undefined -> ""; V -> ",\"vcpu\":" ++ integer_to_list(V) end,
-    Json = "{\"name\":\"" ++ escape_json(Name) ++ "\"" ++ PortsJson ++ BootstrapJson ++ NetworkJson ++ VcpuJson ++ "}",
+    OsJson = os_json(maps:get(os, Opts, undefined)),
+    Json = "{\"name\":\"" ++ escape_json(Name) ++ "\"" ++ PortsJson ++ BootstrapJson ++ NetworkJson ++ VcpuJson ++ OsJson ++ "}",
     Response = api_post("/services", Json, Opts),
     extract_json_field(Response, "id").
 
@@ -856,7 +858,23 @@ build_execute_json_full(Language, Code, Opts) ->
     VcpuJson = case Vcpu of undefined -> ""; V -> ",\"vcpu\":" ++ integer_to_list(V) end,
     TtlJson = case Ttl of undefined -> ""; T -> ",\"ttl\":" ++ integer_to_list(T) end,
     ArtifactsJson = if ReturnArtifacts -> ",\"return_artifacts\":true"; true -> "" end,
-    "{\"language\":\"" ++ Language ++ "\",\"code\":\"" ++ escape_json(Code) ++ "\"" ++ NetworkJson ++ VcpuJson ++ TtlJson ++ ArtifactsJson ++ "}".
+    OsJson = os_json(maps:get(os, Opts, undefined)),
+    "{\"language\":\"" ++ Language ++ "\",\"code\":\"" ++ escape_json(Code) ++ "\"" ++ NetworkJson ++ VcpuJson ++ TtlJson ++ ArtifactsJson ++ OsJson ++ "}".
+
+%% @doc Normalize a target OS ("linux" or "freebsd", any case) to lowercase.
+%% Errors with {invalid_os, Value} for any other value.
+normalize_os(Value) when is_list(Value) ->
+    case string:lowercase(Value) of
+        "linux" -> "linux";
+        "freebsd" -> "freebsd";
+        _ -> erlang:error({invalid_os, Value})
+    end;
+normalize_os(Value) ->
+    erlang:error({invalid_os, Value}).
+
+%% ,"os":"..." fragment for a request body, empty when no target OS was given
+os_json(undefined) -> "";
+os_json(Os) -> ",\"os\":\"" ++ normalize_os(Os) ++ "\"".
 
 parse_result(Response) ->
     ExitCode = case extract_json_number(Response, "exit_code") of 0 -> 0; N when is_integer(N) -> N; _ -> 0 end,
@@ -884,10 +902,17 @@ main(RawArgs) ->
         undefined -> ok;
         N -> erlang:put(account_index, N)
     end,
-    dispatch(Args).
+    %% Strip global --os OS / --os=OS, validated before any request or credential lookup
+    {TargetOs, Args2} = extract_os_arg(Args, undefined, []),
+    case TargetOs of
+        undefined -> ok;
+        Os -> erlang:put(target_os, Os)
+    end,
+    dispatch(Args2).
 
 dispatch([]) ->
     io:format("Usage: un.erl [--account N] [options] <source_file>~n"),
+    io:format("       un.erl [--account N] -s <language> <code>~n"),
     io:format("       un.erl [--account N] session [options]~n"),
     io:format("       un.erl [--account N] service [options]~n"),
     io:format("       un.erl [--account N] snapshot [options]~n"),
@@ -897,6 +922,7 @@ dispatch([]) ->
     io:format("       un.erl [--account N] paas logs [options]~n"),
     io:format("~nGlobal options:~n"),
     io:format("  --account N    Use accounts.csv row N (bypasses env vars)~n"),
+    io:format("  --os OS        Target OS: linux (default) or freebsd (execute, session, service)~n"),
     halt(1);
 
 dispatch(["session" | Rest]) ->
@@ -935,7 +961,38 @@ extract_account_arg(["--account", NStr | Rest], _Acc, RestAcc) ->
 extract_account_arg([Arg | Rest], Acc, RestAcc) ->
     extract_account_arg(Rest, Acc, [Arg | RestAcc]).
 
+%% Strip --os OS / --os=OS from argument list, return {Os | undefined, RestArgs}
+extract_os_arg([], Os, RestAcc) ->
+    {Os, lists:reverse(RestAcc)};
+extract_os_arg(["--os"], _Os, _RestAcc) ->
+    io:format(standard_error, "Error: --os requires a value: linux or freebsd~n", []),
+    halt(1);
+extract_os_arg(["--os", Value | Rest], _Os, RestAcc) ->
+    extract_os_arg(Rest, cli_os(Value), RestAcc);
+extract_os_arg(["--os=" ++ Value | Rest], _Os, RestAcc) ->
+    extract_os_arg(Rest, cli_os(Value), RestAcc);
+extract_os_arg([Arg | Rest], Os, RestAcc) ->
+    extract_os_arg(Rest, Os, [Arg | RestAcc]).
+
+cli_os(Value) ->
+    try normalize_os(Value)
+    catch error:{invalid_os, _} ->
+        io:format(standard_error, "Error: invalid --os '~s' (expected linux or freebsd)~n", [Value]),
+        halt(1)
+    end.
+
+%% ,"os":"..." fragment from the global --os flag, empty without it
+cli_os_json() -> os_json(erlang:get(target_os)).
+
 %% Execute command
+%% Inline code: un.erl -s LANG 'CODE'
+execute_command(["-s", Language, Code | _]) ->
+    ApiKey = get_api_key(),
+    Json = build_json(Language, Code),
+    TmpFile = write_temp_file(Json),
+    Response = curl_post(ApiKey, "/execute", TmpFile),
+    file:delete(TmpFile),
+    io:format("~s~n", [Response]);
 execute_command(Args) ->
     {File, _Opts} = parse_exec_args(Args, #{file => undefined}),
     case File of
@@ -1003,7 +1060,7 @@ session_command(Args) ->
     Shell = get_shell_opt(Args, "bash"),
     InputFiles = get_input_files(Args),
     InputFilesJson = build_input_files_json(InputFiles),
-    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ InputFilesJson ++ "}",
+    Json = "{\"shell\":\"" ++ Shell ++ "\"" ++ InputFilesJson ++ cli_os_json() ++ "}",
     TmpFile = write_temp_file(Json),
     Response = curl_post(ApiKey, "/sessions", TmpFile),
     file:delete(TmpFile),
@@ -1230,7 +1287,7 @@ service_command(Args) ->
                 T -> ",\"service_type\":\"" ++ T ++ "\""
             end,
             InputFilesJson = build_input_files_json(InputFiles),
-            Json = "{\"name\":\"" ++ Name ++ "\"" ++ PortsJson ++ BootstrapJson ++ BootstrapContentJson ++ TypeJson ++ InputFilesJson ++ "}",
+            Json = "{\"name\":\"" ++ Name ++ "\"" ++ PortsJson ++ BootstrapJson ++ BootstrapContentJson ++ TypeJson ++ InputFilesJson ++ cli_os_json() ++ "}",
             TmpFile = write_temp_file(Json),
             Response = curl_post(ApiKey, "/services", TmpFile),
             file:delete(TmpFile),
@@ -2254,7 +2311,7 @@ escape_json([C | Rest], Acc) ->
     escape_json(Rest, [C | Acc]).
 
 build_json(Language, Code) ->
-    "{\"language\":\"" ++ Language ++ "\",\"code\":\"" ++ escape_json(Code) ++ "\"}".
+    "{\"language\":\"" ++ Language ++ "\",\"code\":\"" ++ escape_json(Code) ++ "\"" ++ cli_os_json() ++ "}".
 
 read_and_base64(Filepath) ->
     case file:read_file(Filepath) of

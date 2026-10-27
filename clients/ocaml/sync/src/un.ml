@@ -293,6 +293,25 @@ let save_languages_cache languages_json =
 (** Global account index set by --account N CLI flag; -1 means not set *)
 let cli_account_index = ref (-1)
 
+(** Global target OS set by --os OS CLI flag; None means not set (API default linux) *)
+let cli_os : string option ref = ref None
+
+(** Validate a target OS: "linux" or "freebsd", case-insensitive.
+    Returns the lowercase value, or Error with a message naming the value. *)
+let normalize_os value =
+  match String.lowercase_ascii value with
+  | ("linux" | "freebsd") as v -> Ok v
+  | _ -> Error (Printf.sprintf "invalid os '%s' (expected linux or freebsd)" value)
+
+(** JSON fragment for "os" in a request body; empty when no OS was given.
+    @raise Failure on an invalid OS, before any request is made *)
+let os_json = function
+  | None -> ""
+  | Some value ->
+    (match normalize_os value with
+     | Ok v -> Printf.sprintf ",\"os\":\"%s\"" v
+     | Error msg -> failwith msg)
+
 (** Parse accounts from CSV content, return list of (pk, sk) pairs *)
 let parse_accounts_csv content =
   let lines = String.split_on_char '\n' content in
@@ -736,7 +755,8 @@ let api_post_with_sudo ?public_key ?secret_key endpoint json =
      print_endline result.stdout
    ]}
 *)
-let execute ?public_key ?secret_key ?(opts=default_exec_options) language code =
+let execute ?public_key ?secret_key ?(opts=default_exec_options) ?os language code =
+  let os_json = os_json os in
   let env_json = if opts.env = [] then ""
     else ",\"env\":{" ^ (String.concat "," (List.map (fun (k, v) ->
       Printf.sprintf "\"%s\":\"%s\"" k (escape_json v)) opts.env)) ^ "}"
@@ -747,8 +767,8 @@ let execute ?public_key ?secret_key ?(opts=default_exec_options) language code =
   let vcpu_json = Printf.sprintf ",\"vcpu\":%d" opts.vcpu in
   let ttl_json = Printf.sprintf ",\"ttl\":%d" opts.ttl in
 
-  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s%s}"
-    language (escape_json code) env_json input_files_json artifacts_json network_json vcpu_json ttl_json in
+  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s%s%s}"
+    language (escape_json code) env_json input_files_json artifacts_json network_json vcpu_json ttl_json os_json in
 
   let response = api_post ?public_key ?secret_key "/execute" json in
 
@@ -776,7 +796,8 @@ let execute ?public_key ?secret_key ?(opts=default_exec_options) language code =
      print_endline result.stdout
    ]}
 *)
-let execute_async ?public_key ?secret_key ?(opts=default_exec_options) language code =
+let execute_async ?public_key ?secret_key ?(opts=default_exec_options) ?os language code =
+  let os_json = os_json os in
   let env_json = if opts.env = [] then ""
     else ",\"env\":{" ^ (String.concat "," (List.map (fun (k, v) ->
       Printf.sprintf "\"%s\":\"%s\"" k (escape_json v)) opts.env)) ^ "}"
@@ -787,8 +808,8 @@ let execute_async ?public_key ?secret_key ?(opts=default_exec_options) language 
   let vcpu_json = Printf.sprintf ",\"vcpu\":%d" opts.vcpu in
   let ttl_json = Printf.sprintf ",\"ttl\":%d" opts.ttl in
 
-  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s%s}"
-    language (escape_json code) env_json input_files_json artifacts_json network_json vcpu_json ttl_json in
+  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s%s%s}"
+    language (escape_json code) env_json input_files_json artifacts_json network_json vcpu_json ttl_json os_json in
 
   let response = api_post ?public_key ?secret_key "/execute/async" json in
 
@@ -1115,10 +1136,11 @@ let session_get ?public_key ?secret_key session_id =
   api_get ?public_key ?secret_key (Printf.sprintf "/sessions/%s" session_id)
 
 (** Create a new session *)
-let session_create ?public_key ?secret_key ?(shell="bash") ?network ?vcpu () =
+let session_create ?public_key ?secret_key ?(shell="bash") ?network ?vcpu ?os () =
+  let os_json = os_json os in
   let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
   let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
-  let json = Printf.sprintf "{\"shell\":\"%s\"%s%s}" shell network_json vcpu_json in
+  let json = Printf.sprintf "{\"shell\":\"%s\"%s%s%s}" shell network_json vcpu_json os_json in
   let response = api_post ?public_key ?secret_key "/sessions" json in
   extract_json_value response "id"
 
@@ -1185,12 +1207,13 @@ let service_get ?public_key ?secret_key service_id =
   api_get ?public_key ?secret_key (Printf.sprintf "/services/%s" service_id)
 
 (** Create a new service *)
-let service_create ?public_key ?secret_key name ?ports ?bootstrap ?network ?vcpu () =
+let service_create ?public_key ?secret_key name ?ports ?bootstrap ?network ?vcpu ?os () =
+  let os_json = os_json os in
   let ports_json = match ports with Some p -> Printf.sprintf ",\"ports\":[%s]" p | None -> "" in
   let bootstrap_json = match bootstrap with Some b -> Printf.sprintf ",\"bootstrap\":\"%s\"" (escape_json b) | None -> "" in
   let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
   let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
-  let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s}" (escape_json name) ports_json bootstrap_json network_json vcpu_json in
+  let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s}" (escape_json name) ports_json bootstrap_json network_json vcpu_json os_json in
   let response = api_post ?public_key ?secret_key "/services" json in
   extract_json_value response "id"
 
@@ -1679,8 +1702,8 @@ let execute_command file env_vars artifacts out_dir network vcpu =
   let artifacts_json = if artifacts then ",\"return_artifacts\":true" else "" in
   let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
   let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
-  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s}"
-    language (escape_json code) env_json artifacts_json network_json vcpu_json in
+  let json = Printf.sprintf "{\"language\":\"%s\",\"code\":\"%s\"%s%s%s%s%s}"
+    language (escape_json code) env_json artifacts_json network_json vcpu_json (os_json !cli_os) in
 
   let tmp_file = Printf.sprintf "/tmp/un_ocaml_%d.json" (Random.int 999999) in
   let oc = open_out tmp_file in
@@ -2002,7 +2025,7 @@ let session_command action shell network vcpu input_files =
     let network_json = match network with Some n -> Printf.sprintf ",\"network\":\"%s\"" n | None -> "" in
     let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
     let input_files_json = build_input_files_json input_files in
-    let json = Printf.sprintf "{\"shell\":\"%s\"%s%s%s}" sh network_json vcpu_json input_files_json in
+    let json = Printf.sprintf "{\"shell\":\"%s\"%s%s%s%s}" sh network_json vcpu_json input_files_json (os_json !cli_os) in
     let response = curl_post api_key "/sessions" json in
     Printf.printf "%sSession created (WebSocket required)%s\n" yellow reset;
     Printf.printf "%s\n" response
@@ -2177,7 +2200,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let vcpu_json = match vcpu with Some v -> Printf.sprintf ",\"vcpu\":%d" v | None -> "" in
        let unfreeze_on_demand_json = if unfreeze_on_demand then ",\"unfreeze_on_demand\":true" else "" in
        let input_files_json = build_input_files_json input_files in
-       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s%s%s%s}" n ports_json bootstrap_json bootstrap_content_json service_type_json network_json vcpu_json unfreeze_on_demand_json input_files_json in
+       let json = Printf.sprintf "{\"name\":\"%s\"%s%s%s%s%s%s%s%s%s}" n ports_json bootstrap_json bootstrap_content_json service_type_json network_json vcpu_json unfreeze_on_demand_json input_files_json (os_json !cli_os) in
        let response = curl_post api_key "/services" json in
        Printf.printf "%sService created%s\n" green reset;
        Printf.printf "%s\n" response;
@@ -2344,10 +2367,33 @@ let strip_account_arg args =
   in
   aux args
 
+(* Strip global --os OS / --os=OS (before our subcommand or source file),
+   validate it and set cli_os. Exits before any request. *)
+let strip_os_arg args =
+  let set_os value =
+    match normalize_os value with
+    | Ok v -> cli_os := Some v
+    | Error _ ->
+      Printf.fprintf stderr "Error: invalid --os '%s' (expected linux or freebsd)\n" value;
+      exit 1
+  in
+  let rec aux = function
+    | [] -> []
+    | ["--os"] ->
+      Printf.fprintf stderr "Error: --os requires a value: linux or freebsd\n";
+      exit 1
+    | "--os" :: value :: rest -> set_os value; aux rest
+    | arg :: rest when String.length arg >= 5 && String.sub arg 0 5 = "--os=" ->
+      set_os (String.sub arg 5 (String.length arg - 5)); aux rest
+    | ("session" | "service" | "key" | "image" | "languages") as sub :: rest -> sub :: rest
+    | arg :: rest -> arg :: aux rest
+  in
+  aux args
+
 let () =
   Random.self_init ();
   let raw_args = Array.to_list Sys.argv in
-  let args = strip_account_arg (List.tl raw_args) in
+  let args = strip_account_arg (strip_os_arg (List.tl raw_args)) in
   match args with
   | [] ->
     Printf.printf "Usage: un.ml [--account N] [options] <source_file>\n";
@@ -2359,7 +2405,8 @@ let () =
     Printf.printf "       un.ml key [--extend]\n";
     Printf.printf "       un.ml key --rotate [--otp CODE]\n\n";
     Printf.printf "Global options:\n";
-    Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n\n";
+    Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n";
+    Printf.printf "  --os OS        Target OS: linux (default) or freebsd (execute, session, service)\n\n";
     Printf.printf "Service options: --name, --ports, --bootstrap, --bootstrap-file, -e KEY=VALUE, --env-file FILE\n";
     Printf.printf "Service env commands: status, set, export, delete\n";
     Printf.printf "Image options: --list, --info ID, --delete ID, --lock ID, --unlock ID,\n";

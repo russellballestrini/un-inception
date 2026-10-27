@@ -41,6 +41,7 @@
 \        gforth un.forth service [options]
 \        gforth un.forth key [options]
 \        gforth un.forth key --rotate [--otp CODE]
+\ Global: --os OS (linux or freebsd) before our subcommand or file
 
 \ Constants
 : portal-base ( -- addr len )
@@ -111,6 +112,33 @@ variable arg-shift
     arg-shift @ + arg
 ;
 
+\ Target OS for --os OS / --os=OS (empty = not given, our API default linux)
+create target-os 8 allot
+variable target-os-len
+0 target-os-len !
+
+: os-invalid ( addr len -- )
+    s\" Error: invalid --os '" stderr write-file drop
+    stderr write-file drop
+    s\" ' (expected linux or freebsd)" stderr write-line drop
+    1 (bye)
+;
+
+\ Validate, lowercase, and store a --os value; exits before any request
+: set-target-os ( addr len -- )
+    dup 0= over 7 > or if os-invalid then
+    dup target-os-len !
+    0 ?do
+        dup i + c@ dup [char] A [char] Z 1+ within if 32 + then
+        target-os i + c!
+    loop
+    drop
+    target-os target-os-len @ 2dup s\" linux" compare 0<> >r
+    s\" freebsd" compare 0<> r> and if
+        target-os target-os-len @ os-invalid
+    then
+;
+
 \ Buffer for the public key loaded from CSV
 256 constant MAX-KEY-LEN
 create csv-pk-buf MAX-KEY-LEN allot
@@ -174,6 +202,19 @@ warnings !
     s\"  -ge 0 ]; then R=$(unsb_csv " r@ write-file throw  idx-str r@ write-file throw
     s\" ); R=${R#*,}; SECRET_KEY=${R%%,*}; else SECRET_KEY=${UNSANDBOX_SECRET_KEY:-$UNSANDBOX_API_KEY}; fi" r@ write-line throw
     s\" unsb_hmac() { UNSB_SK=$SECRET_KEY; S=sha256sum; command -v sha256sum >/dev/null 2>&1 || S=\"openssl dgst -sha256 -r\"; if [ ${#UNSB_SK} -gt 64 ]; then kb=$(printf %s \"$UNSB_SK\" | $S | cut -c1-64 | sed \"s/../0x& /g\"); else kb=$(printf %s \"$UNSB_SK\" | od -An -v -tu1); fi; ip=; op=; n=0; for c in $kb; do v=$((c^54)); ip=\"$ip\\\\$((v>>6))$((v>>3&7))$((v&7))\"; v=$((c^92)); op=\"$op\\\\$((v>>6))$((v>>3&7))$((v&7))\"; n=$((n+1)); done; while [ $n -lt 64 ]; do ip=\"$ip\\\\066\"; op=\"$op\\\\134\"; n=$((n+1)); done; ih=$( { printf \"$ip\"; cat; } | $S | cut -c1-64 | sed \"s/../0x& /g\"); x=; for c in $ih; do x=\"$x\\\\$((c>>6))$((c>>3&7))$((c&7))\"; done; { printf \"$op\"; printf \"$x\"; } | $S | cut -c1-64; }" r@ write-line throw
+    r> drop
+;
+
+\ Request scripts: add "os" to JSON body variable VAR only when --os was given
+: write-os ( var-addr var-len fid -- )
+    target-os-len @ 0= if drop 2drop exit then
+    >r
+    2dup r@ write-file throw
+    s\" =$(printf '%s' \"$" r@ write-file throw
+    r@ write-file throw
+    s\" \" | jq -c '. + {os: \"" r@ write-file throw
+    target-os target-os-len @ r@ write-file throw
+    s\" \"}')" r@ write-line throw
     r> drop
 ;
 
@@ -259,6 +300,7 @@ warnings !
     r@ write-file throw
     s\" '" r@ write-line throw
     s\" BODY=$(jq -Rs '{language: \"'$LANG'\", code: .}' < \"$FILE\")" r@ write-line throw
+    s\" BODY" r@ write-os
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/execute:$BODY\"" r@ write-line throw
     s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
@@ -698,6 +740,7 @@ warnings !
     s\" if [ -n \"$INPUT_FILES\" ]; then" r@ write-line throw
     s\"   PAYLOAD=$(echo $PAYLOAD | jq --argjson f \"[$INPUT_FILES]\" '. + {input_files: $f}')" r@ write-line throw
     s\" fi" r@ write-line throw
+    s\" PAYLOAD" r@ write-os
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/services:$PAYLOAD\"" r@ write-line throw
     s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
@@ -893,6 +936,7 @@ variable rot-len
     s\" else" r@ write-line throw
     s\"   BODY=\"{\\\"shell\\\":\\\"$SHELL\\\"}\"" r@ write-line throw
     s\" fi" r@ write-line throw
+    s\" BODY" r@ write-os
     s\" TIMESTAMP=$(date +%s)" r@ write-line throw
     s\" MESSAGE=\"$TIMESTAMP:POST:/sessions:$BODY\"" r@ write-line throw
     s\" SIGNATURE=$(echo -n \"$MESSAGE\" | unsb_hmac)" r@ write-line throw
@@ -1948,20 +1992,41 @@ variable rot-len
         s\"        gforth un.forth key [options]" type cr
         s\"        gforth un.forth key --rotate [--otp CODE]" type cr
         s\"        gforth un.forth languages [--json]" type cr
+        s\" Global: --os OS   Target OS: linux (default) or freebsd (execute, session, service)" type cr
         1 (bye)
     then
 
-    \ Check for --account N as first argument (before arg-shift is applied)
-    1 arg 2dup s\" --account" compare 0= if
-        2drop
-        argc @ 3 < if
-            s\" Error: --account requires a numeric argument" type cr
-            1 (bye)
-        then
-        2 arg s>number drop account-index !
-        2 arg-shift !
-    else
-        2drop
+    \ Global options before our subcommand: --account N, --os OS, --os=OS
+    \ (consumed with shift-args, so handlers see our subcommand at arg 1)
+    begin
+        argc @ 2 < if false else
+        1 arg 2dup s\" --account" compare 0= if
+            2drop
+            argc @ 3 < if
+                s\" Error: --account requires a numeric argument" type cr
+                1 (bye)
+            then
+            2 arg s>number drop account-index !
+            shift-args shift-args true
+        else 2dup s\" --os" compare 0= if
+            2drop
+            argc @ 3 < if
+                s\" Error: --os requires a value: linux or freebsd" stderr write-line drop
+                1 (bye)
+            then
+            2 arg set-target-os
+            shift-args shift-args true
+        else 2dup 5 min s\" --os=" compare 0= if
+            5 /string set-target-os
+            shift-args true
+        else
+            2drop false
+        then then then then
+    0= until
+
+    argc @ 2 < if
+        s\" Error: missing source file or subcommand" type cr
+        1 (bye)
     then
 
     \ Get subcommand (adjusted for arg-shift)

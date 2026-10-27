@@ -317,13 +317,25 @@ execute_file(Filename) :-
         halt(1)
     ),
 
+    execute_source(Language, Filename).
+
+% Inline code: un.pro -s LANG 'CODE' (CLI_SPEC.md -s/--shell). Our code goes
+% through a temp file so the shared execute flow reads it with jq -Rs.
+execute_inline(Language, Code) :-
+    tmp_file_stream(text, TmpFile, Stream),
+    write(Stream, Code),
+    close(Stream),
+    execute_source(Language, TmpFile),
+    delete_file(TmpFile).
+
+execute_source(Language, Filename) :-
     % Get API keys
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
 
     % Build and execute curl command with HMAC
     format(atom(Cmd),
-        'BODY=$(jq -Rs \'{language: "~w", code: .}\' < "~w"); TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/execute:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_resp.json; RESP=$(cat /tmp/unsandbox_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_resp.json; exit 1; fi; jq -r ".stdout // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[34m/" | sed "s/$/\\x1b[0m/"; jq -r ".stderr // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[31m/" | sed "s/$/\\x1b[0m/" >&2; rm -f /tmp/unsandbox_resp.json',
+        'BODY=$(jq -Rs \'{language: "~w", code: .} + (if env.UN_OS != "" then {os: env.UN_OS} else {} end)\' < "~w"); TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/execute:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/execute -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" -o /tmp/unsandbox_resp.json; RESP=$(cat /tmp/unsandbox_resp.json); if echo "$RESP" | grep -qi "timestamp" && echo "$RESP" | grep -Eqi "(401|expired|invalid)"; then echo -e "\\x1b[31mError: Request timestamp expired (must be within 5 minutes of server time)\\x1b[0m" >&2; echo -e "\\x1b[33mYour computer\'s clock may have drifted.\\x1b[0m" >&2; echo "Check your system time and sync with NTP if needed:" >&2; echo "  Linux:   sudo ntpdate -s time.nist.gov" >&2; echo "  macOS:   sudo sntp -sS time.apple.com" >&2; echo "  Windows: w32tm /resync\\x1b[0m" >&2; rm -f /tmp/unsandbox_resp.json; exit 1; fi; jq -r ".stdout // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[34m/" | sed "s/$/\\x1b[0m/"; jq -r ".stderr // empty" /tmp/unsandbox_resp.json | sed "s/^/\\x1b[31m/" | sed "s/$/\\x1b[0m/" >&2; rm -f /tmp/unsandbox_resp.json',
         [Language, Filename, PublicKey]),
     signed_shell(SecretKey, Cmd, 0).
 
@@ -356,7 +368,7 @@ session_create(Shell, InputFiles) :-
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
+        'echo -e "\\x1b[33mCreating session...\\x1b[0m"; SHELL_VAL="~w"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\",\\\"input_files\\\":[$INPUT_FILES]${UN_OS:+,\\\"os\\\":\\\"$UN_OS\\\"}}"; else BODY="{\\\"shell\\\":\\\"$SHELL_VAL\\\"${UN_OS:+,\\\"os\\\":\\\"$UN_OS\\\"}}"; fi; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/sessions:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/sessions -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq .',
         [ShellVal, FileArgs, PublicKey]),
     signed_shell(SecretKey, Cmd, 0).
 
@@ -506,30 +518,30 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
     get_secret_key(SecretKey),
     % Build JSON payload
     (   Ports \= ''
-    ->  format(atom(PortsJson), ',"ports":[~w]', [Ports])
+    ->  format(atom(PortsJson), ',\\\"ports\\\":[~w]', [Ports])
     ;   PortsJson = ''
     ),
     (   Bootstrap \= ''
-    ->  format(atom(BootstrapJson), ',"bootstrap":"~w"', [Bootstrap])
+    ->  format(atom(BootstrapJson), ',\\\"bootstrap\\\":\\\"~w\\\"', [Bootstrap])
     ;   BootstrapJson = ''
     ),
     (   BootstrapFile \= ''
     ->  (   exists_file(BootstrapFile)
         ->  read_file_content(BootstrapFile, BootstrapContent),
-            format(atom(BootstrapContentJson), ',"bootstrap_content":"~w"', [BootstrapContent])
+            format(atom(BootstrapContentJson), ',\\\"bootstrap_content\\\":\\\"~w\\\"', [BootstrapContent])
         ;   format(user_error, 'Error: Bootstrap file not found: ~w~n', [BootstrapFile]),
             halt(1)
         )
     ;   BootstrapContentJson = ''
     ),
     (   ServiceType \= ''
-    ->  format(atom(ServiceTypeJson), ',"service_type":"~w"', [ServiceType])
+    ->  format(atom(ServiceTypeJson), ',\\\"service_type\\\":\\\"~w\\\"', [ServiceType])
     ;   ServiceTypeJson = ''
     ),
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON${UN_OS:+,\\\"os\\\":\\\"$UN_OS\\\"}}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY" | jq . && echo -e "\\x1b[32mService created\\x1b[0m"',
         [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, PublicKey]),
     signed_shell(SecretKey, Cmd, 0).
 
@@ -940,32 +952,53 @@ service_create_with_vault(Name, Ports, Bootstrap, BootstrapFile, ServiceType, In
     get_secret_key(SecretKey),
     % Build JSON payload
     (   Ports \= ''
-    ->  format(atom(PortsJson), ',"ports":[~w]', [Ports])
+    ->  format(atom(PortsJson), ',\\\"ports\\\":[~w]', [Ports])
     ;   PortsJson = ''
     ),
     (   Bootstrap \= ''
-    ->  format(atom(BootstrapJson), ',"bootstrap":"~w"', [Bootstrap])
+    ->  format(atom(BootstrapJson), ',\\\"bootstrap\\\":\\\"~w\\\"', [Bootstrap])
     ;   BootstrapJson = ''
     ),
     (   BootstrapFile \= ''
     ->  (   exists_file(BootstrapFile)
         ->  read_file_content(BootstrapFile, BootstrapContent),
-            format(atom(BootstrapContentJson), ',"bootstrap_content":"~w"', [BootstrapContent])
+            format(atom(BootstrapContentJson), ',\\\"bootstrap_content\\\":\\\"~w\\\"', [BootstrapContent])
         ;   format(user_error, 'Error: Bootstrap file not found: ~w~n', [BootstrapFile]),
             halt(1)
         )
     ;   BootstrapContentJson = ''
     ),
     (   ServiceType \= ''
-    ->  format(atom(ServiceTypeJson), ',"service_type":"~w"', [ServiceType])
+    ->  format(atom(ServiceTypeJson), ',\\\"service_type\\\":\\\"~w\\\"', [ServiceType])
     ;   ServiceTypeJson = ''
     ),
     % Build file arguments for bash script
     build_file_args(InputFiles, FileArgs),
     format(atom(Cmd),
-        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(hmac "$UN_SK" "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT"); curl -s -X PUT "$UN_API/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
+        'echo -e "\\x1b[33mCreating service...\\x1b[0m"; INPUT_FILES=""; ~w if [ -n "$INPUT_FILES" ]; then INPUT_FILES_JSON=",\\\"input_files\\\":[$INPUT_FILES]"; else INPUT_FILES_JSON=""; fi; BODY="{\\\"name\\\":\\\"~w\\\"~w~w~w~w$INPUT_FILES_JSON${UN_OS:+,\\\"os\\\":\\\"$UN_OS\\\"}}"; TIMESTAMP=$(date +%s); MESSAGE="$TIMESTAMP:POST:/services:$BODY"; SIGNATURE=$(hmac "$UN_SK" "$MESSAGE"); RESP=$(curl -s -X POST $UN_API/services -H "Content-Type: application/json" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TIMESTAMP" -H "X-Signature: $SIGNATURE" -d "$BODY"); SVC_ID=$(echo "$RESP" | jq -r ".id // empty"); if [ -n "$SVC_ID" ]; then echo -e "\\x1b[32m$SVC_ID created\\x1b[0m"; ENV_CONTENT=""; ENV_LINES="~w"; if [ -n "$ENV_LINES" ]; then ENV_CONTENT="$ENV_LINES"; fi; ENV_FILE="~w"; if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then while IFS= read -r line || [ -n "$line" ]; do case "$line" in "#"*|"") continue ;; esac; if [ -n "$ENV_CONTENT" ]; then ENV_CONTENT="$ENV_CONTENT\\n"; fi; ENV_CONTENT="$ENV_CONTENT$line"; done < "$ENV_FILE"; fi; if [ -n "$ENV_CONTENT" ]; then TS2=$(date +%s); SIG2=$(hmac "$UN_SK" "$TS2:PUT:/services/$SVC_ID/env:$ENV_CONTENT"); curl -s -X PUT "$UN_API/services/$SVC_ID/env" -H "Authorization: Bearer ~w" -H "X-Timestamp: $TS2" -H "X-Signature: $SIG2" -H "Content-Type: text/plain" --data-binary "$ENV_CONTENT" >/dev/null && echo -e "\\x1b[32mVault configured\\x1b[0m"; fi; else echo "$RESP" | jq .; fi',
         [FileArgs, Name, PortsJson, BootstrapJson, BootstrapContentJson, ServiceTypeJson, PublicKey, Envs, EnvFile, PublicKey]),
     signed_shell(SecretKey, Cmd, 0).
+
+% Global --os OS / --os=OS (linux | freebsd, case-insensitive). Strips our
+% flag from the front of Args; TargetOs is '' when not given. Invalid or
+% missing values exit 1 before any credential lookup or request.
+parse_os_flag(['--os'], _, _) :- !,
+    write(user_error, 'Error: --os requires a value: linux or freebsd\n'),
+    halt(1).
+parse_os_flag(['--os', Value|Rest], Rest, TargetOs) :- !,
+    normalize_os(Value, TargetOs).
+parse_os_flag([Arg|Rest], Rest, TargetOs) :-
+    atom(Arg), atom_concat('--os=', Value, Arg), !,
+    normalize_os(Value, TargetOs).
+parse_os_flag(Args, Args, '').
+
+normalize_os(Value, TargetOs) :-
+    downcase_atom(Value, Lower),
+    (   memberchk(Lower, [linux, freebsd])
+    ->  TargetOs = Lower
+    ;   format(user_error, 'Error: invalid --os \'~w\' (expected linux or freebsd)~n', [Value]),
+        halt(1)
+    ).
 
 % Main program
 main(Argv) :-
@@ -978,16 +1011,21 @@ main(Argv) :-
     (   Argv = ['--account', NStr|AfterAccount]
     ->  (   atom_number(NStr, N), integer(N)
         ->  nb_setval(account_index, N),
-            ActualArgv = AfterAccount
+            ActualArgv0 = AfterAccount
         ;   write(user_error, 'Error: --account requires an integer argument\n'),
             halt(1)
         )
-    ;   ActualArgv = Argv
+    ;   ActualArgv0 = Argv
     ),
+
+    % Parse --os OS / --os=OS global flag; our bash flows read it as UN_OS
+    parse_os_flag(ActualArgv0, ActualArgv, TargetOs),
+    setenv('UN_OS', TargetOs),
 
     % Check arguments
     (   ActualArgv = []
     ->  write(user_error, 'Usage: un.pro [options] <source_file>\n'),
+        write(user_error, '       un.pro [options] -s LANG \'CODE\'\n'),
         write(user_error, '       un.pro session [options]\n'),
         write(user_error, '       un.pro service [options]\n'),
         write(user_error, '       un.pro snapshot [options]\n'),
@@ -995,6 +1033,9 @@ main(Argv) :-
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
         write(user_error, '       un.pro key --rotate [--otp CODE]\n'),
+        write(user_error, '\n'),
+        write(user_error, 'Global options:\n'),
+        write(user_error, '  --os OS             Target OS: linux (default) or freebsd (execute, session, service)\n'),
         write(user_error, '\n'),
         write(user_error, 'Snapshot options:\n'),
         write(user_error, '  --list, -l          List all snapshots\n'),
@@ -1038,6 +1079,10 @@ main(Argv) :-
     ->  handle_languages(Rest)
     ;   ActualArgv = ['key'|Rest]
     ->  handle_key(Rest)
+    ;   ActualArgv = ['-s', Language, Code|_]
+    ->  execute_inline(Language, Code)
+    ;   ActualArgv = ['--shell', Language, Code|_]
+    ->  execute_inline(Language, Code)
     ;   ActualArgv = [Filename|_]
     ->  execute_file(Filename)
     ;   write(user_error, 'Error: Invalid arguments\n'),
