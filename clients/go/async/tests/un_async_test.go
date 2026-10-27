@@ -18,11 +18,13 @@
 Tests for the unsandbox Go SDK (Asynchronous)
 
 Run tests:
-    cd /home/fox/git/un-inception/clients/go/async
-    go test ./tests/...
+
+	cd /home/fox/git/un-inception/clients/go/async
+	go test ./tests/...
 
 Or run with verbose output:
-    go test -v ./tests/...
+
+	go test -v ./tests/...
 */
 package tests
 
@@ -49,11 +51,11 @@ func TestDetectLanguage(t *testing.T) {
 		{"app.rb", "ruby"},
 		{"test.php", "php"},
 		{"script.sh", "bash"},
-		{"data.R", "r"},       // Uppercase R
-		{"data.r", "r"},       // Lowercase r
-		{"unknown", ""},       // No extension
-		{"no_ext", ""},        // No extension
-		{"file.xyz", ""},      // Unknown extension
+		{"data.R", "r"},  // Uppercase R
+		{"data.r", "r"},  // Lowercase r
+		{"unknown", ""},  // No extension
+		{"no_ext", ""},   // No extension
+		{"file.xyz", ""}, // Unknown extension
 		{"test.ts", "typescript"},
 		{"code.java", "java"},
 		{"test.kt", "kotlin"},
@@ -278,6 +280,12 @@ func TestCSVCredentials(t *testing.T) {
 		t.Fatalf("Failed to change to temp dir: %v", err)
 	}
 
+	// Point HOME at the temp dir: ~/.unsandbox/accounts.csv is read before
+	// ./accounts.csv, and this test must never load (or print) real keys.
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
 	// Clear env vars
 	origPK := os.Getenv("UNSANDBOX_PUBLIC_KEY")
 	origSK := os.Getenv("UNSANDBOX_SECRET_KEY")
@@ -299,11 +307,11 @@ func TestCSVCredentials(t *testing.T) {
 	}
 
 	if creds.PublicKey != "public_key_1" {
-		t.Errorf("PublicKey = %q, want %q", creds.PublicKey, "public_key_1")
+		t.Errorf("PublicKey did not come from the test CSV (want public_key_1; value not printed)")
 	}
 
 	if creds.SecretKey != "secret_key_1" {
-		t.Errorf("SecretKey = %q, want %q", creds.SecretKey, "secret_key_1")
+		t.Errorf("SecretKey did not come from the test CSV (want secret_key_1; value not printed)")
 	}
 
 	// Test loading second account (index 1)
@@ -316,11 +324,11 @@ func TestCSVCredentials(t *testing.T) {
 	}
 
 	if creds.PublicKey != "public_key_2" {
-		t.Errorf("PublicKey = %q, want %q", creds.PublicKey, "public_key_2")
+		t.Errorf("PublicKey did not come from the test CSV (want public_key_2; value not printed)")
 	}
 
 	if creds.SecretKey != "secret_key_2" {
-		t.Errorf("SecretKey = %q, want %q", creds.SecretKey, "secret_key_2")
+		t.Errorf("SecretKey did not come from the test CSV (want secret_key_2; value not printed)")
 	}
 }
 

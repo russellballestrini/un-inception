@@ -26,7 +26,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -182,12 +181,14 @@ type CancelResult struct {
 
 // getUnsandboxDir returns ~/.unsandbox directory path, creating if necessary
 func getUnsandboxDir() (string, error) {
-	currentUser, err := user.Current()
+	// os.UserHomeDir honours $HOME (user.Current ignores it), so a test or a
+	// user can point the CLI at another accounts.csv.
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 
-	dir := filepath.Join(currentUser.HomeDir, ".unsandbox")
+	dir := filepath.Join(home, ".unsandbox")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
