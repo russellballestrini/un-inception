@@ -76,30 +76,26 @@ def _cli(monkeypatch, argv):
         assert e.code in (0, None), f"cli exited {e.code}"
 
 
-def _execute_via_cli(argv, code="echo hi"):
-    # Our argparse layout routes a bare positional to the subcommand slot, so
-    # parse the global flags and hand the code to our real execute handler.
-    args = un._build_parser().parse_args(argv)
-    args.source = code
-    pk, sk = un._resolve_credentials(None, None)
-    try:
-        un._handle_execute_command(args, pk, sk)
-    except SystemExit as e:
-        assert e.code in (0, None), f"execute exited {e.code}"
-
-
 class TestOsFlagCli:
-    def test_execute_sends_os_freebsd(self, api):
-        _execute_via_cli(["--os", "freebsd", "-s", "bash"])
+    def test_execute_sends_os_freebsd(self, api, monkeypatch):
+        _cli(monkeypatch, ["--os", "freebsd", "-s", "bash", "echo hi"])
         assert _body(api, "/execute")["os"] == "freebsd"
 
-    def test_execute_without_flag_omits_os(self, api):
-        _execute_via_cli(["-s", "bash"])
+    def test_execute_without_flag_omits_os(self, api, monkeypatch):
+        _cli(monkeypatch, ["-s", "bash", "echo hi"])
         assert "os" not in _body(api, "/execute")
 
-    def test_os_is_case_insensitive(self, api):
-        _execute_via_cli(["--os", "FreeBSD", "-s", "bash"])
+    def test_os_is_case_insensitive(self, api, monkeypatch):
+        _cli(monkeypatch, ["--os", "FreeBSD", "-s", "bash", "echo hi"])
         assert _body(api, "/execute")["os"] == "freebsd"
+
+    def test_os_equals_form_with_file(self, api, monkeypatch, tmp_path):
+        script = tmp_path / "hi.sh"
+        script.write_text("echo hi\n")
+        _cli(monkeypatch, ["--os=freebsd", str(script)])
+        body = _body(api, "/execute")
+        assert body["os"] == "freebsd"
+        assert body["language"] == "bash"
 
     def test_session_sends_os(self, api, monkeypatch):
         _cli(monkeypatch, ["--os", "freebsd", "session"])
@@ -118,8 +114,12 @@ class TestOsFlagCli:
         _cli(monkeypatch, ["service", "--name", "ostest", "--ports", "80", "--bootstrap", "true"])
         assert "os" not in _body(api, "/services")
 
-    def test_invalid_os_exits_nonzero_and_sends_nothing(self, api, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", ["un.py", "--os", "openbsd", "session"])
+    @pytest.mark.parametrize("argv", [
+        ["--os", "openbsd", "session"],
+        ["--os", "openbsd", "-s", "bash", "echo hi"],
+    ])
+    def test_invalid_os_exits_nonzero_and_sends_nothing(self, api, monkeypatch, capsys, argv):
+        monkeypatch.setattr(sys, "argv", ["un.py"] + argv)
         with pytest.raises(SystemExit) as exc:
             un.cli_main()
         assert exc.value.code != 0

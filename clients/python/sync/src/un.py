@@ -2797,8 +2797,14 @@ def _format_list_output(items: List[Dict[str, Any]], resource_type: str) -> str:
     return "\n".join(lines)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for the CLI."""
+def _build_parser(subcommands: bool = True) -> argparse.ArgumentParser:
+    """Build the argument parser for the CLI.
+
+    With subcommands=False our parser carries only global options plus the
+    execute positional (FILE or, with -s, inline code). argparse cannot mix an
+    optional positional with subparsers: it hands the first positional to the
+    subcommand slot, so cli_main picks one parser by our first positional.
+    """
     parser = argparse.ArgumentParser(
         prog="un.py",
         description="Unsandbox CLI - Execute code in secure containers",
@@ -2844,6 +2850,12 @@ Examples:
                         help="Select account row N from accounts.csv (overrides env vars)")
     parser.add_argument("--os", type=str.lower, choices=OS_CHOICES, metavar="OS",
                         help="Target OS: linux (default) or freebsd (execute, session, service)")
+
+    if not subcommands:
+        parser.add_argument("source", nargs="?",
+                            help="Source file or inline code (with -s)")
+        parser.set_defaults(command=None)
+        return parser
 
     # Subcommands
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -3014,19 +3026,49 @@ Examples:
     languages_parser.add_argument("--json", action="store_true",
                                    help="Output as JSON array")
 
-    # Positional argument for source file or inline code
+    # Positional argument for source file or inline code (listed in --help;
+    # cli_main routes execute invocations to our subcommands=False parser)
     parser.add_argument("source", nargs="?",
                         help="Source file or inline code (with -s)")
 
     return parser
 
 
+CLI_SUBCOMMANDS = ("session", "service", "service-env", "snapshot", "image", "key", "languages")
+
+
+def _first_positional(parser: argparse.ArgumentParser, argv: List[str]) -> Optional[str]:
+    """Return our first argv token that is not a global option or its value."""
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            return argv[i + 1] if i + 1 < len(argv) else None
+        if tok.startswith("-") and tok != "-":
+            if tok.startswith("--"):
+                name, has_inline = tok.split("=", 1)[0], "=" in tok
+            else:
+                name, has_inline = tok[:2], len(tok) > 2
+            action = parser._option_string_actions.get(name)
+            if action is not None and action.nargs != 0 and not has_inline:
+                i += 1  # skip this option's value
+            i += 1
+            continue
+        return tok
+    return None
+
+
 def cli_main():
     """Main entry point for CLI."""
     if len(sys.argv) > 1 and sys.argv[1] == "paas":
         sys.exit(_paas_command(sys.argv[2:]))
+    argv = sys.argv[1:]
     parser = _build_parser()
-    args = parser.parse_args()
+    first = _first_positional(parser, argv)
+    if first is not None and first not in CLI_SUBCOMMANDS:
+        # Execute mode: un.py FILE  or  un.py -s LANG 'code'
+        parser = _build_parser(subcommands=False)
+    args = parser.parse_args(argv)
 
     # Resolve credentials
     try:
