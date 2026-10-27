@@ -660,6 +660,29 @@ function saveLanguagesCache(languages) {
   }
 }
 
+const OS_CHOICES = ['linux', 'freebsd'];
+
+/**
+ * Normalize a target OS ("linux" or "freebsd", case-insensitive).
+ * Throws on any other value, including the empty string.
+ */
+function normalizeOS(value) {
+  const os = String(value).toLowerCase();
+  if (!OS_CHOICES.includes(os)) {
+    throw new Error(`invalid os '${value}' (expected linux or freebsd)`);
+  }
+  return os;
+}
+
+/**
+ * Add "os" to a request body only when a target OS was given, so bodies
+ * stay unchanged for API versions that predate the field.
+ */
+function withOS(data, os) {
+  if (os !== undefined && os !== null) data.os = normalizeOS(os);
+  return data;
+}
+
 /**
  * Execute code synchronously (awaits until completion).
  *
@@ -668,15 +691,14 @@ function saveLanguagesCache(languages) {
  *   code: Source code to execute
  *   publicKey: Optional API key (uses credentials resolution if not provided)
  *   secretKey: Optional API secret (uses credentials resolution if not provided)
+ *   opts: Optional { os: "linux" | "freebsd" } (omitted = API default, linux)
  *
  * Returns: Promise<Object> with stdout, stderr, exit code, etc.
  */
-async function executeCode(language, code, publicKey, secretKey) {
+async function executeCode(language, code, publicKey, secretKey, opts = {}) {
+  const data = withOS({ language, code }, opts.os);
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  const response = await makeRequest('POST', '/execute', publicKey, secretKey, {
-    language,
-    code,
-  });
+  const response = await makeRequest('POST', '/execute', publicKey, secretKey, data);
 
   // If we got a job_id, poll until completion
   const jobId = response.job_id;
@@ -691,15 +713,14 @@ async function executeCode(language, code, publicKey, secretKey) {
 
 /**
  * Execute code asynchronously (returns immediately with job_id).
+ * opts: Optional { os: "linux" | "freebsd" } (omitted = API default, linux)
  *
  * Returns: Promise<string> (job ID)
  */
-async function executeAsync(language, code, publicKey, secretKey) {
+async function executeAsync(language, code, publicKey, secretKey, opts = {}) {
+  const data = withOS({ language, code }, opts.os);
   [publicKey, secretKey] = resolveCredentials(publicKey, secretKey);
-  const response = await makeRequest('POST', '/execute', publicKey, secretKey, {
-    language,
-    code,
-  });
+  const response = await makeRequest('POST', '/execute', publicKey, secretKey, data);
   return response.job_id;
 }
 
@@ -985,6 +1006,7 @@ async function getSession(sessionId, publicKey, secretKey) {
  *     - multiplexer: "tmux", "screen", or null
  *     - vcpu: Number of vCPUs (1-8)
  *     - ttl: Time-to-live in seconds
+ *     - os: Target OS, "linux" or "freebsd" (omitted = API default, linux)
  *
  * Returns: Promise<Object> (session info with session_id, container_name)
  */
@@ -998,6 +1020,7 @@ async function createSession(language, opts = {}, publicKey, secretKey) {
   if (opts.shell) data.shell = opts.shell;
   if (opts.multiplexer) data.multiplexer = opts.multiplexer;
   if (opts.vcpu && opts.vcpu > 1) data.vcpu = opts.vcpu;
+  withOS(data, opts.os);
 
   return makeRequest('POST', '/sessions', publicKey, secretKey, data);
 }
@@ -1114,6 +1137,7 @@ async function listServices(publicKey, secretKey) {
  *     - serviceType: Service type for SRV records (minecraft, mumble, etc.)
  *     - unfreezeOnDemand: If true, frozen services wake automatically on HTTP traffic
  *     - inputFiles: Array of {filename, content} objects (content is base64-encoded)
+ *     - os: Target OS, "linux" or "freebsd" (omitted = API default, linux)
  *
  * Returns: Promise<Object> (service info with service_id)
  */
@@ -1136,6 +1160,7 @@ async function createService(name, ports, bootstrap, opts = {}, publicKey, secre
   if (opts.serviceType) data.service_type = opts.serviceType;
   if (opts.unfreezeOnDemand) data.unfreeze_on_demand = true;
   if (opts.inputFiles && opts.inputFiles.length > 0) data.input_files = opts.inputFiles;
+  withOS(data, opts.os);
 
   return makeRequest('POST', '/services', publicKey, secretKey, data);
 }
@@ -2154,6 +2179,7 @@ GLOBAL OPTIONS:
   -n, --network <mode>    Network mode: zerotrust (default) or semitrusted
   -v, --vcpu <n>          vCPU count (1-8)
   -y, --yes               Skip confirmation prompts
+  --os <os>               Target OS: linux (default) or freebsd (execute, session, service)
   -h, --help              Show this help message
 
 SESSION COMMANDS:
@@ -2230,6 +2256,7 @@ function parseArgs(args) {
     network: 'zerotrust',
     vcpu: 1,
     yes: false,
+    os: null,
     help: false,
     // Session options
     list: false,
@@ -2367,6 +2394,19 @@ function parseArgs(args) {
       i++;
     } else if (arg === '-y' || arg === '--yes') {
       result.yes = true;
+      i++;
+    } else if (arg === '--os' || arg.startsWith('--os=')) {
+      const value = arg === '--os' ? args[++i] : arg.slice(5);
+      if (value === undefined) {
+        console.error('Error: --os requires a value: linux or freebsd');
+        process.exit(2);
+      }
+      try {
+        result.os = normalizeOS(value);
+      } catch (e) {
+        console.error(`Error: invalid --os '${value}' (expected linux or freebsd)`);
+        process.exit(2);
+      }
       i++;
     } else if (arg === '--json') {
       result.json = true;
@@ -2622,6 +2662,7 @@ async function handleSession(opts) {
     networkMode: opts.network,
     vcpu: opts.vcpu,
   };
+  if (opts.os) sessionOpts.os = opts.os;
   if (opts.tmux) sessionOpts.multiplexer = 'tmux';
   if (opts.screen) sessionOpts.multiplexer = 'screen';
 
@@ -2843,6 +2884,7 @@ async function handleService(opts) {
     if (opts.type) {
       serviceOpts.serviceType = opts.type;
     }
+    if (opts.os) serviceOpts.os = opts.os;
     // Build input_files from -f args
     if (opts.files && opts.files.length > 0) {
       serviceOpts.inputFiles = [];
@@ -3325,6 +3367,7 @@ async function handleExecute(opts) {
   if (opts.network !== 'zerotrust') {
     execPayload.network_mode = opts.network;
   }
+  if (opts.os) execPayload.os = opts.os;
 
   // Execute code
   const [resolvedPk, resolvedSk] = resolveCredentials(pk, sk);

@@ -206,6 +206,7 @@ interface Args {
   redeploy: string | null;
   rotate: boolean;
   otp: string | null;
+  os: string | null;
 }
 
 interface ApiKeys {
@@ -320,7 +321,8 @@ function apiRequest(endpoint: string, method: string = "GET", data: any = null, 
         'Authorization': `Bearer ${keys.publicKey}`,
         'X-Timestamp': timestamp,
         'X-Signature': signature,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
       },
       timeout: 300000
     };
@@ -767,14 +769,20 @@ async function cmdExecute(args: Args): Promise<void> {
   const keys = getApiKeys(args.publicKey, args.apiKey, args.account);
 
   let code: string;
-  try {
-    code = fs.readFileSync(args.sourceFile!, 'utf-8');
-  } catch (e) {
-    console.error(`${RED}Error: File not found: ${args.sourceFile}${RESET}`);
-    process.exit(1);
+  let language: string;
+  if (args.shell) {
+    // Inline code: un.ts -s LANG 'code'
+    language = args.shell;
+    code = args.sourceFile!;
+  } else {
+    try {
+      code = fs.readFileSync(args.sourceFile!, 'utf-8');
+    } catch (e) {
+      console.error(`${RED}Error: File not found: ${args.sourceFile}${RESET}`);
+      process.exit(1);
+    }
+    language = detectLanguage(args.sourceFile!);
   }
-
-  const language = detectLanguage(args.sourceFile!);
   const payload: any = { language, code };
 
   if (args.env && args.env.length > 0) {
@@ -805,6 +813,7 @@ async function cmdExecute(args: Args): Promise<void> {
   if (args.artifacts) payload.return_artifacts = true;
   if (args.network) payload.network = args.network;
   if (args.vcpu) payload.vcpu = args.vcpu;
+  if (args.os) payload.os = args.os;
 
   const result = await apiRequest("/execute", "POST", payload, keys);
 
@@ -862,6 +871,7 @@ async function cmdSession(args: Args): Promise<void> {
   if (args.tmux) payload.persistence = "tmux";
   if (args.screen) payload.persistence = "screen";
   if (args.audit) payload.audit = true;
+  if (args.os) payload.os = args.os;
 
   // Add input files
   if (args.files && args.files.length > 0) {
@@ -1067,6 +1077,7 @@ async function cmdService(args: Args): Promise<void> {
     if (args.network) payload.network = args.network;
     if (args.vcpu) payload.vcpu = args.vcpu;
     if (args.unfreezeOnDemand) payload.unfreeze_on_demand = true;
+    if (args.os) payload.os = args.os;
 
     const result = await apiRequest("/services", "POST", payload, keys);
     const serviceId = result.id;
@@ -1547,6 +1558,7 @@ function parseArgs(argv: string[]): Args {
     redeploy: null,
     rotate: false,
     otp: null,
+    os: null,
   };
 
   let i = 2;
@@ -1558,6 +1570,19 @@ function parseArgs(argv: string[]): Args {
       i++;
     } else if (arg === '--json') {
       args.jsonOutput = true;
+      i++;
+    } else if (arg === '--os' || arg.startsWith('--os=')) {
+      const value = arg === '--os' ? argv[++i] : arg.slice(5);
+      if (value === undefined) {
+        console.error(`${RED}Error: --os requires a value: linux or freebsd${RESET}`);
+        process.exit(2);
+      }
+      const os = value.toLowerCase();
+      if (os !== 'linux' && os !== 'freebsd') {
+        console.error(`${RED}Error: invalid --os '${value}' (expected linux or freebsd)${RESET}`);
+        process.exit(2);
+      }
+      args.os = os;
       i++;
     } else if (arg === '-e' && i + 1 < argv.length) {
       args.env.push(argv[++i]);
@@ -1788,6 +1813,8 @@ Execute options:
   -p KEY           Public key (use with -k for secret key)
   -k KEY           Secret/API key
   --account N      Use row N from accounts.csv (0-based)
+  --os OS          Target OS: linux (default) or freebsd (execute, session, service)
+  -s LANG CODE     Execute inline code
 
 Session options:
   -s, --shell NAME  Shell/REPL (default: bash)

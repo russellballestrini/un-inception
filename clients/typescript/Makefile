@@ -1,6 +1,6 @@
 # UN TypeScript Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -19,6 +19,7 @@ help:
 	@echo "  make test             All 4 test modes"
 	@echo "  make test-cli         CLI mode"
 	@echo "  make test-library     Library mode"
+	@echo "  make test-os          Offline --os flag check (local mock API)"
 	@echo ""
 
 build:
@@ -65,6 +66,9 @@ test-functional:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
+
+test-os:
+	@bash $(ROOT_DIR)/tests/os_flag_cli.sh node $(SYNC_DIR)/src/un.ts
 
 clean:
 	@rm -rf $(SYNC_DIR)/dist $(ASYNC_DIR)/dist 2>/dev/null || true
