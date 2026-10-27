@@ -1,6 +1,6 @@
 # UN R Client - Build and Test
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -37,6 +37,10 @@ test-functional:
 	@echo ""
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) No credentials"; else echo "  $(YELLOW)⊘$(NC) Not implemented"; fi
+
+# Offline: global --os flag request bodies against a local mock API (no credentials)
+test-os:
+	@bash ../../tests/os_flag_cli.sh Rscript sync/src/un.r
 
 clean:
 	@rm -f $(SYNC_DIR)/*.Rcheck 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"

@@ -285,6 +285,26 @@ sub api_request_with_sudo {
     return { success => 1 };
 }
 
+# Target OS (--os): linux or freebsd, case-insensitive. Returns the lowercase
+# name, or undef (with last_error set) for any other value.
+sub normalize_os {
+    my ($value) = @_;
+    my $os = lc($value // '');
+    return $os if $os eq 'linux' || $os eq 'freebsd';
+    set_error("invalid os '" . ($value // '') . "' (expected linux or freebsd)");
+    return undef;
+}
+
+# Add "os" to a request body when $opts{os} is given. Returns false when invalid.
+sub _with_os {
+    my ($body, %opts) = @_;
+    return 1 unless defined $opts{os};
+    my $os = normalize_os($opts{os});
+    return 0 unless defined $os;
+    $body->{os} = $os;
+    return 1;
+}
+
 # ============================================================================
 # Execution Functions (8)
 # ============================================================================
@@ -300,6 +320,8 @@ sub execute {
     $body->{env} = $opts{env} if $opts{env};
     $body->{input_files} = $opts{input_files} if $opts{input_files};
     $body->{return_artifacts} = JSON::PP::true if $opts{return_artifacts};
+    _with_os($body, %opts) or return undef;
+    delete $opts{os};
     return api_request('POST', '/execute', $body, %opts);
 }
 
@@ -311,6 +333,8 @@ sub execute_async {
         network_mode => $opts{network_mode} || 'zerotrust',
         ttl => $opts{ttl} || 300
     };
+    _with_os($body, %opts) or return undef;
+    delete $opts{os};
     return api_request('POST', '/execute/async', $body, %opts);
 }
 
@@ -401,6 +425,8 @@ sub session_create {
     $body->{vcpu} = $opts{vcpu} if $opts{vcpu};
     $body->{input_files} = $opts{input_files} if $opts{input_files};
     $body->{persistence} = $opts{persistence} if $opts{persistence};
+    _with_os($body, %opts) or return undef;
+    delete $opts{os};
     return api_request('POST', '/sessions', $body, %opts);
 }
 
@@ -460,6 +486,8 @@ sub service_create {
     $body->{service_type} = $opts{service_type} if $opts{service_type};
     $body->{input_files} = $opts{input_files} if $opts{input_files};
     $body->{unfreeze_on_demand} = JSON::PP::true if $opts{unfreeze_on_demand};
+    _with_os($body, %opts) or return undef;
+    delete $opts{os};
     return api_request('POST', '/services', $body, %opts);
 }
 
@@ -1019,6 +1047,7 @@ sub cmd_execute {
 
     my %opts = (network_mode => $options->{network} || 'zerotrust');
     $opts{vcpu} = $options->{vcpu} if $options->{vcpu};
+    $opts{os} = $options->{os} if $options->{os};
 
     if ($options->{env} && @{$options->{env}}) {
         my %env_vars;
@@ -1141,6 +1170,7 @@ sub cmd_session {
     $opts{vcpu} = $options->{vcpu} if $options->{vcpu};
     $opts{persistence} = 'tmux' if $options->{tmux};
     $opts{persistence} = 'screen' if $options->{screen};
+    $opts{os} = $options->{os} if $options->{os};
 
     if ($options->{files} && @{$options->{files}}) {
         $opts{input_files} = build_input_files(@{$options->{files}});
@@ -1288,6 +1318,7 @@ sub cmd_service {
         $opts{network} = $options->{network} if $options->{network};
         $opts{vcpu} = $options->{vcpu} if $options->{vcpu};
         $opts{unfreeze_on_demand} = 1 if $options->{unfreeze_on_demand};
+        $opts{os} = $options->{os} if $options->{os};
 
         my $result = Un::service_create(%opts);
         print "${GREEN}Service created: " . ($result->{id} // 'N/A') . "${RESET}\n";
@@ -1799,6 +1830,10 @@ Usage:
   perl un.pl key [--extend]
   perl un.pl key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
+Global options:
+  --os OS           Target OS: linux (default) or freebsd (execute, session, service)
+  --account N       Use account N from accounts.csv
+
 Execute options:
   -e KEY=VALUE      Environment variable (multiple allowed)
   -f FILE           Input file (multiple allowed)
@@ -2013,6 +2048,22 @@ sub main {
             $options{env_target} = $ARGV[++$i] if defined $ARGV[$i+1] && $ARGV[$i+1] !~ /^-/;
         } elsif ($arg eq '--account') {
             $Un::ACCOUNT_INDEX = int($ARGV[++$i]);
+        } elsif ($arg eq '--os' || $arg =~ /^--os=/) {
+            my $value;
+            if ($arg eq '--os') {
+                if ($i + 1 >= @ARGV) {
+                    print STDERR "${RED}Error: --os requires a value: linux or freebsd${RESET}\n";
+                    exit 1;
+                }
+                $value = $ARGV[++$i];
+            } else {
+                $value = substr($arg, 5);
+            }
+            $options{os} = Un::normalize_os($value);
+            unless (defined $options{os}) {
+                print STDERR "${RED}Error: invalid --os '$value' (expected linux or freebsd)${RESET}\n";
+                exit 1;
+            }
         } elsif ($arg eq '--help' || $arg eq '-h') {
             show_help();
         } elsif ($arg =~ /^-/) {

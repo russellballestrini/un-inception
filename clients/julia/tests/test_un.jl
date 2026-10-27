@@ -134,4 +134,15 @@ end
     @test hasmethod(hmac_sign, Tuple{String, String})
 end
 
+# Target OS (--os), offline: validated before any request
+@testset "Target OS" begin
+    @test normalize_os("FreeBSD") == "freebsd"
+    @test normalize_os("linux") == "linux"
+    @test_throws ArgumentError normalize_os("openbsd")
+    @test_throws ArgumentError normalize_os("")
+    @test with_os!(Dict{String,Any}("shell" => "bash"), "FreeBSD")["os"] == "freebsd"
+    @test !haskey(with_os!(Dict{String,Any}("shell" => "bash"), nothing), "os")
+    @test_throws ArgumentError session_create(os="openbsd")
+end
+
 println("\nAll tests passed!")

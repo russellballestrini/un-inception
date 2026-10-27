@@ -7,7 +7,7 @@
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
 
-.PHONY: all test test-cli test-library test-integration test-functional clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -83,6 +83,10 @@ lint:
 	@echo "Linting Bash..."
 	@if [ -f "$(ROOT_DIR)/un.sh" ]; then shellcheck "$(ROOT_DIR)/un.sh" || true; fi
 	@if [ -f "$(SYNC_DIR)/src/un.sh" ]; then shellcheck "$(SYNC_DIR)/src/un.sh" || true; fi
+
+# Offline: global --os flag request bodies against a local mock API (no credentials)
+test-os:
+	@bash ../../tests/os_flag_cli.sh bash sync/src/un.sh
 
 clean:
 	@echo "$(GREEN)✓$(NC) Nothing to clean for Bash"

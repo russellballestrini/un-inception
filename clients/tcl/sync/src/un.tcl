@@ -19,6 +19,7 @@
 
 package require http
 package require json
+package require json::write
 package require tls
 package require base64
 package require sha256
@@ -34,6 +35,8 @@ namespace eval Un {
     variable LANGUAGES_CACHE_FILE [file join $::env(HOME) ".unsandbox" "languages.json"]
     variable LAST_ERROR ""
     variable ACCOUNT_INDEX -1
+    # Target OS (--os): "" = API default (linux), else linux | freebsd
+    variable TARGET_OS ""
 
     # Colors
     variable BLUE "\033\[34m"
@@ -452,25 +455,48 @@ namespace eval Un {
         error "API error ($ncode)"
     }
 
+    # Target OS: returns lowercase linux or freebsd, raises an error otherwise
+    proc normalize_os {value} {
+        set os [string tolower $value]
+        if {$os eq "linux" || $os eq "freebsd"} {
+            return $os
+        }
+        set_error "invalid os '$value' (expected linux or freebsd)"
+        error "invalid os '$value' (expected linux or freebsd)"
+    }
+
+    # Add "os" to a JSON object body when a target OS is given (or set via --os)
+    proc with_os {body target_os} {
+        variable TARGET_OS
+        if {$target_os eq ""} { set target_os $TARGET_OS }
+        if {$target_os eq ""} { return $body }
+        set os [normalize_os $target_os]
+        set body [string trimright $body "\}"]
+        append body ",\"os\":\"$os\"\}"
+        return $body
+    }
+
     # ============================================================================
     # Execution Functions (8)
     # ============================================================================
 
-    proc execute {language code {network_mode "zerotrust"} {public_key ""} {secret_key ""}} {
+    proc execute {language code {network_mode "zerotrust"} {public_key ""} {secret_key ""} {target_os ""}} {
         set body [::json::write object \
             language [::json::write string $language] \
             code [::json::write string $code] \
             network_mode [::json::write string $network_mode] \
             ttl 60]
+        set body [with_os $body $target_os]
         return [api_request_json "/execute" "POST" $body $public_key $secret_key]
     }
 
-    proc execute_async {language code {network_mode "zerotrust"} {public_key ""} {secret_key ""}} {
+    proc execute_async {language code {network_mode "zerotrust"} {public_key ""} {secret_key ""} {target_os ""}} {
         set body [::json::write object \
             language [::json::write string $language] \
             code [::json::write string $code] \
             network_mode [::json::write string $network_mode] \
             ttl 300]
+        set body [with_os $body $target_os]
         return [api_request_json "/execute/async" "POST" $body $public_key $secret_key]
     }
 
@@ -548,8 +574,9 @@ namespace eval Un {
         return [api_request_json "/sessions/$session_id" "GET" "" $public_key $secret_key]
     }
 
-    proc session_create {{shell "bash"} {network ""} {vcpu ""} {public_key ""} {secret_key ""}} {
+    proc session_create {{shell "bash"} {network ""} {vcpu ""} {public_key ""} {secret_key ""} {target_os ""}} {
         set body [::json::write object shell [::json::write string $shell]]
+        set body [with_os $body $target_os]
         if {$network ne ""} {
             set body [string trimright $body "\}"]
             append body ",\"network\":\"$network\"\}"
@@ -599,8 +626,9 @@ namespace eval Un {
         return [api_request_json "/services/$service_id" "GET" "" $public_key $secret_key]
     }
 
-    proc service_create {name {ports ""} {bootstrap ""} {public_key ""} {secret_key ""}} {
+    proc service_create {name {ports ""} {bootstrap ""} {public_key ""} {secret_key ""} {target_os ""}} {
         set body [::json::write object name [::json::write string $name]]
+        set body [with_os $body $target_os]
         if {$ports ne ""} {
             set body [string trimright $body "\}"]
             append body ",\"ports\":\[$ports\]\}"
@@ -1596,6 +1624,10 @@ Usage:
   tclsh un.tcl key [--extend]
   tclsh un.tcl key --rotate [--otp CODE]
 
+Global options:
+  --os OS       Target OS: linux (default) or freebsd (execute, session, service)
+  --account N   Use account N from accounts.csv
+
 Commands:
   languages     List available programming languages
   key           Validate API key
@@ -1610,15 +1642,30 @@ Environment:
     }
 
     proc main {argv} {
-        variable BLUE; variable RED; variable RESET; variable ACCOUNT_INDEX
+        variable BLUE; variable RED; variable RESET; variable ACCOUNT_INDEX; variable TARGET_OS
 
-        # Pre-scan for --account N; strip it from argv before dispatch
+        # Pre-scan for --account N and --os OS; strip them from argv before dispatch
         set filtered {}
         for {set i 0} {$i < [llength $argv]} {incr i} {
             set a [lindex $argv $i]
             if {$a eq "--account"} {
                 incr i
                 set ACCOUNT_INDEX [lindex $argv $i]
+            } elseif {$a eq "--os" || [string match "--os=*" $a]} {
+                if {$a eq "--os"} {
+                    if {$i + 1 >= [llength $argv]} {
+                        puts stderr "${RED}Error: --os requires a value: linux or freebsd${RESET}"
+                        exit 1
+                    }
+                    incr i
+                    set os_value [lindex $argv $i]
+                } else {
+                    set os_value [string range $a 5 end]
+                }
+                if {[catch {set TARGET_OS [normalize_os $os_value]}]} {
+                    puts stderr "${RED}Error: invalid --os '$os_value' (expected linux or freebsd)${RESET}"
+                    exit 1
+                }
             } else {
                 lappend filtered $a
             }

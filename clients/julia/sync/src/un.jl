@@ -81,6 +81,29 @@ const PORTAL_BASE = let u = get(ENV, "UNSANDBOX_PORTAL_URL", "")
 end
 const LANGUAGES_CACHE_TTL = 3600
 
+# Target OS from the global --os flag: nothing = API default (linux)
+const TARGET_OS = Ref{Union{String,Nothing}}(nothing)
+
+"""
+    normalize_os(value) -> String
+
+Target OS name, case-insensitive: returns "linux" or "freebsd", throws
+ArgumentError for any other value.
+"""
+function normalize_os(value::AbstractString)::String
+    v = lowercase(value)
+    v in ("linux", "freebsd") && return v
+    throw(ArgumentError("invalid os '$value' (expected linux or freebsd)"))
+end
+
+# Add "os" to a request payload when a target OS is given
+function with_os!(payload::Dict, os)
+    if os !== nothing
+        payload["os"] = normalize_os(os)
+    end
+    return payload
+end
+
 function detect_language(filename::String)::String
     ext = lowercase(match(r"\.[^.]+$", filename).match)
     return get(EXT_MAP, ext, "unknown")
@@ -490,22 +513,28 @@ end
 function cmd_execute(args)
     (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
 
-    filename = args["source_file"]
-    if !isfile(filename)
-        println(stderr, "$(RED)Error: File not found: $filename$(RESET)")
-        exit(1)
-    end
+    if args["language"] !== nothing
+        # -s LANGUAGE CODE: inline code
+        language = args["language"]
+        code = args["source_file"]
+    else
+        filename = args["source_file"]
+        if !isfile(filename)
+            println(stderr, "$(RED)Error: File not found: $filename$(RESET)")
+            exit(1)
+        end
 
-    language = detect_language(filename)
-    if language == "unknown"
-        println(stderr, "$(RED)Error: Cannot detect language for $filename$(RESET)")
-        exit(1)
-    end
+        language = detect_language(filename)
+        if language == "unknown"
+            println(stderr, "$(RED)Error: Cannot detect language for $filename$(RESET)")
+            exit(1)
+        end
 
-    code = read(filename, String)
+        code = read(filename, String)
+    end
 
     # Build request payload
-    payload = Dict("language" => language, "code" => code)
+    payload = with_os!(Dict{String,Any}("language" => language, "code" => code), TARGET_OS[])
 
     # Add environment variables
     if args["env"] !== nothing
@@ -605,7 +634,7 @@ function cmd_session(args)
     end
 
     # Create new session
-    payload = Dict("shell" => "bash")
+    payload = with_os!(Dict{String,Any}("shell" => "bash"), TARGET_OS[])
 
     if args["network"] !== nothing
         payload["network"] = args["network"]
@@ -748,7 +777,7 @@ function cmd_service(args)
 
     # Create new service
     if args["name"] !== nothing
-        payload = Dict("name" => args["name"])
+        payload = with_os!(Dict{String,Any}("name" => args["name"]), TARGET_OS[])
 
         if args["ports"] !== nothing
             ports = [parse(Int, strip(p)) for p in split(args["ports"], ',')]
@@ -1174,7 +1203,7 @@ end
 
 # First positional token of argv, skipping global options and their values.
 function first_positional(argv)
-    takes_value = ("-k", "--api-key", "--account", "-n", "--network", "-e", "--env", "-f", "--files", "-o", "--output-dir")
+    takes_value = ("-k", "--api-key", "--account", "-n", "--network", "-e", "--env", "-f", "--files", "-o", "--output-dir", "-s", "--language")
     i = 1
     while i <= length(argv)
         a = argv[i]
@@ -1189,15 +1218,42 @@ function first_positional(argv)
     return nothing
 end
 
+# Consume leading global --os OS / --os=OS: validates and sets TARGET_OS,
+# exits non-zero on a missing or invalid value. Returns the remaining args.
+function take_os_flag(argv::Vector{String})::Vector{String}
+    rest = copy(argv)
+    while !isempty(rest) && (rest[1] == "--os" || startswith(rest[1], "--os="))
+        if rest[1] == "--os"
+            if length(rest) < 2
+                println(stderr, "$(RED)Error: --os requires a value: linux or freebsd$(RESET)")
+                exit(1)
+            end
+            value = rest[2]
+            rest = rest[3:end]
+        else
+            value = rest[1][6:end]
+            rest = rest[2:end]
+        end
+        try
+            TARGET_OS[] = normalize_os(value)
+        catch
+            println(stderr, "$(RED)Error: invalid --os '$value' (expected linux or freebsd)$(RESET)")
+            exit(1)
+        end
+    end
+    return rest
+end
+
 function main()
-    if !isempty(ARGS) && ARGS[1] == "paas"
-        exit(cmd_paas(ARGS[2:end]))
+    argv = take_os_flag(collect(String, ARGS))
+    if !isempty(argv) && argv[1] == "paas"
+        exit(cmd_paas(argv[2:end]))
     end
     s = ArgParseSettings(description="Unsandbox CLI - Execute code in secure sandboxes")
 
     # ArgParse binds an optional positional before any command, so `un.jl key`
     # would land in source_file; declare source_file only when no command leads.
-    if !(first_positional(ARGS) in ("session", "service", "languages", "key", "image", "snapshot"))
+    if !(first_positional(argv) in ("session", "service", "languages", "key", "image", "snapshot"))
         @add_arg_table! s begin
             "source_file"
                 help = "Source file to execute"
@@ -1211,6 +1267,10 @@ function main()
         "--account"
             help = "Account index in ~/.unsandbox/accounts.csv (bypasses env vars)"
             arg_type = Int
+        "--language", "-s"
+            help = "Language for inline code (source_file is then the code)"
+        "--os"
+            help = "Target OS: linux (default) or freebsd (execute, session, service); global, before any command"
         "--network", "-n"
             help = "Network mode"
             arg_type = String
@@ -1447,7 +1507,11 @@ function main()
             arg_type = Int
     end
 
-    args = parse_args(ARGS, s)
+    args = parse_args(argv, s)
+    # --os given after other top-level options: validate it the same way
+    if get(args, "os", nothing) !== nothing
+        take_os_flag(["--os", args["os"]])
+    end
 
     if args["%COMMAND%"] == "session"
         cmd_session(args["session"])
@@ -1684,15 +1748,16 @@ println(result["stdout"])
 function execute(language::String, code::String;
                  env::Union{Dict{String,String}, Nothing}=nothing,
                  network::String="zerotrust",
+                 os::Union{String,Nothing}=nothing,
                  public_key::Union{String,Nothing}=nothing,
                  secret_key::Union{String,Nothing}=nothing)
+    payload = with_os!(Dict{String,Any}("language" => language, "code" => code), os)
     (pk, sk) = if public_key !== nothing && secret_key !== nothing
         (public_key, secret_key)
     else
         get_api_keys(nothing)
     end
 
-    payload = Dict("language" => language, "code" => code)
     if env !== nothing
         payload["env"] = env
     end
@@ -1714,15 +1779,16 @@ Job ID string for polling with `wait_job` or `get_job`.
 function execute_async(language::String, code::String;
                        env::Union{Dict{String,String}, Nothing}=nothing,
                        network::String="zerotrust",
+                       os::Union{String,Nothing}=nothing,
                        public_key::Union{String,Nothing}=nothing,
                        secret_key::Union{String,Nothing}=nothing)
+    payload = with_os!(Dict{String,Any}("language" => language, "code" => code, "async" => true), os)
     (pk, sk) = if public_key !== nothing && secret_key !== nothing
         (public_key, secret_key)
     else
         get_api_keys(nothing)
     end
 
-    payload = Dict("language" => language, "code" => code, "async" => true)
     if env !== nothing
         payload["env"] = env
     end
@@ -1878,15 +1944,16 @@ Create a new interactive session.
 function session_create(;
                         shell::String="bash",
                         network::String="zerotrust",
+                        os::Union{String,Nothing}=nothing,
                         public_key::Union{String,Nothing}=nothing,
                         secret_key::Union{String,Nothing}=nothing)
+    payload = with_os!(Dict{String,Any}("shell" => shell), os)
     (pk, sk) = if public_key !== nothing && secret_key !== nothing
         (public_key, secret_key)
     else
         get_api_keys(nothing)
     end
 
-    payload = Dict("shell" => shell)
     if network != "zerotrust"
         payload["network"] = network
     end
@@ -2046,15 +2113,16 @@ function service_create(name::String;
                         domains::Union{Vector{String}, Nothing}=nothing,
                         bootstrap::Union{String, Nothing}=nothing,
                         network::String="semitrusted",
+                        os::Union{String,Nothing}=nothing,
                         public_key::Union{String,Nothing}=nothing,
                         secret_key::Union{String,Nothing}=nothing)
+    payload = with_os!(Dict{String,Any}("name" => name), os)
     (pk, sk) = if public_key !== nothing && secret_key !== nothing
         (public_key, secret_key)
     else
         get_api_keys(nothing)
     end
 
-    payload = Dict("name" => name)
     if ports !== nothing
         payload["ports"] = ports
     end
@@ -3155,4 +3223,7 @@ function hmac_sign(secret_key::String, message::String)
     return bytes2hex(SHA.hmac_sha256(Vector{UInt8}(secret_key), Vector{UInt8}(message)))
 end
 
-main()
+# Run the CLI only when executed as a script, not when included as a library
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

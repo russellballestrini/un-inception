@@ -191,17 +191,17 @@ BEGIN {
     functions["escape_json"] = "escape_json"
     functions["handle_sudo_challenge"] = "handle_sudo_challenge"
 
-    for (func in functions) {
-        pattern = "function " func "\\("
+    for (fn_name in functions) {
+        pattern = "function " fn_name "\\("
         cmd = "grep -cE '" pattern "' " script_dir "/sync/src/un.awk"
         cmd | getline count
         close(cmd)
 
         if (count > 0) {
-            print "  " GREEN "[PASS]" RESET " " func "() exists"
+            print "  " GREEN "[PASS]" RESET " " fn_name "() exists"
             tests_passed++
         } else {
-            print "  " RED "[FAIL]" RESET " " func "() exists"
+            print "  " RED "[FAIL]" RESET " " fn_name "() exists"
             tests_failed++
         }
     }
@@ -294,6 +294,38 @@ BEGIN {
         tests_passed++
     } else {
         print "  " RED "[FAIL]" RESET " Languages cache write function exists"
+        tests_failed++
+    }
+
+    # ============================================================================
+    # Test: --os validation (offline: rejected before any request; request
+    # bodies are covered by `make test-os` against a local mock API)
+    # ============================================================================
+
+    print ""
+    print "Testing --os flag..."
+
+    os_cmd = "UNSANDBOX_API_URL=http://127.0.0.1:9 awk -f " script_dir "/sync/src/un.awk -- --os openbsd -s bash 'echo hi' 2>&1; echo \"rc=$?\""
+    result = ""
+    while ((os_cmd | getline line) > 0) result = result line "\n"
+    close(os_cmd)
+    if (result ~ /invalid --os 'openbsd'/ && result !~ /rc=0/) {
+        print "  " GREEN "[PASS]" RESET " --os openbsd rejected with an error"
+        tests_passed++
+    } else {
+        print "  " RED "[FAIL]" RESET " --os openbsd rejected with an error"
+        tests_failed++
+    }
+
+    os_cmd = "UNSANDBOX_API_URL=http://127.0.0.1:9 awk -f " script_dir "/sync/src/un.awk -- --os 2>&1; echo \"rc=$?\""
+    result = ""
+    while ((os_cmd | getline line) > 0) result = result line "\n"
+    close(os_cmd)
+    if (result ~ /--os requires a value/ && result !~ /rc=0/) {
+        print "  " GREEN "[PASS]" RESET " --os without a value rejected"
+        tests_passed++
+    } else {
+        print "  " RED "[FAIL]" RESET " --os without a value rejected"
         tests_failed++
     }
 

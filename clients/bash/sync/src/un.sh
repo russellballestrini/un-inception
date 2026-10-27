@@ -24,6 +24,7 @@ PORTAL_BASE="${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}"
 while [ "${PORTAL_BASE%/}" != "$PORTAL_BASE" ]; do PORTAL_BASE="${PORTAL_BASE%/}"; done
 LAST_ERROR=""
 ACCOUNT_INDEX=-1
+TARGET_OS=""  # --os: linux | freebsd, empty = API default (linux)
 
 # Colors
 BLUE='\033[34m'
@@ -308,6 +309,29 @@ api_request_with_sudo() {
     echo "$response_body"
 }
 
+# Normalize a target OS name: prints linux or freebsd (lowercased), returns 1 otherwise
+normalize_os() {
+    local value
+    value=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    case "$value" in
+        linux|freebsd) printf '%s' "$value" ;;
+        *) set_error "invalid os '$1' (expected linux or freebsd)"; return 1 ;;
+    esac
+}
+
+# Add "os" to a JSON body when a target OS is given; body unchanged otherwise
+_with_os() {
+    local body="$1"
+    local target_os="${2:-}"
+    if [ -z "$target_os" ]; then
+        printf '%s' "$body"
+        return 0
+    fi
+    local value
+    value=$(normalize_os "$target_os") || { echo "Error: invalid os '$target_os' (expected linux or freebsd)" >&2; return 1; }
+    echo "$body" | jq --arg os "$value" '. + {os: $os}'
+}
+
 # ============================================================================
 # Execution Functions (8)
 # ============================================================================
@@ -316,10 +340,12 @@ execute() {
     local language="$1"
     local code="$2"
     local network_mode="${3:-zerotrust}"
+    local target_os="${4:-$TARGET_OS}"
 
     local body
     body=$(jq -n --arg lang "$language" --arg code "$code" --arg net "$network_mode" \
         '{language: $lang, code: $code, network_mode: $net, ttl: 60}')
+    body=$(_with_os "$body" "$target_os") || return 1
 
     api_request "POST" "/execute" "$body"
 }
@@ -328,10 +354,12 @@ execute_async() {
     local language="$1"
     local code="$2"
     local network_mode="${3:-zerotrust}"
+    local target_os="${4:-$TARGET_OS}"
 
     local body
     body=$(jq -n --arg lang "$language" --arg code "$code" --arg net "$network_mode" \
         '{language: $lang, code: $code, network_mode: $net, ttl: 300}')
+    body=$(_with_os "$body" "$target_os") || return 1
 
     api_request "POST" "/execute/async" "$body"
 }
@@ -408,9 +436,11 @@ session_create() {
     local shell="${1:-bash}"
     local network="${2:-}"
     local vcpu="${3:-}"
+    local target_os="${4:-$TARGET_OS}"
 
     local body
     body=$(jq -n --arg shell "$shell" '{shell: $shell}')
+    body=$(_with_os "$body" "$target_os") || return 1
 
     if [ -n "$network" ]; then
         body=$(echo "$body" | jq --arg net "$network" '. + {network: $net}')
@@ -472,9 +502,11 @@ service_create() {
     local ports="${2:-}"
     local bootstrap="${3:-}"
     local input_files_json="${4:-}"
+    local target_os="${5:-$TARGET_OS}"
 
     local body
     body=$(jq -n --arg name "$name" '{name: $name}')
+    body=$(_with_os "$body" "$target_os") || return 1
 
     if [ -n "$ports" ]; then
         body=$(echo "$body" | jq --argjson ports "[$ports]" '. + {ports: $ports}')
@@ -1701,6 +1733,10 @@ Usage:
   bash un.sh key [--extend]
   bash un.sh key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
+Global options:
+  --os OS       Target OS: linux (default) or freebsd (execute, session, service)
+  --account N   Use account N from accounts.csv
+
 Commands:
   languages     List available programming languages
   key           Validate API key
@@ -1778,6 +1814,21 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         if [ "${_args[$_i]}" = "--account" ]; then
             _i=$((_i + 1))
             ACCOUNT_INDEX="${_args[$_i]}"
+        elif [ "${_args[$_i]}" = "--os" ] || [ "${_args[$_i]#--os=}" != "${_args[$_i]}" ]; then
+            if [ "${_args[$_i]}" = "--os" ]; then
+                if [ $((_i + 1)) -ge ${#_args[@]} ]; then
+                    echo -e "${RED}Error: --os requires a value: linux or freebsd${RESET}" >&2
+                    exit 1
+                fi
+                _i=$((_i + 1))
+                _os_val="${_args[$_i]}"
+            else
+                _os_val="${_args[$_i]#--os=}"
+            fi
+            TARGET_OS=$(normalize_os "$_os_val") || {
+                echo -e "${RED}Error: invalid --os '$_os_val' (expected linux or freebsd)${RESET}" >&2
+                exit 1
+            }
         else
             _new_args+=("${_args[$_i]}")
         fi

@@ -62,6 +62,23 @@ $EXT_MAP = @{
 }
 
 $script:AccountIndex = $null
+# Target OS from the global --os flag: $null = API default (linux)
+$script:TargetOs = $null
+
+# Normalize a target OS name, case-insensitive: "linux" or "freebsd"; throws otherwise
+function ConvertTo-TargetOs {
+    param($Value)
+    $os = "$Value".ToLower()
+    if ($os -eq "linux" -or $os -eq "freebsd") { return $os }
+    throw "invalid os '$Value' (expected linux or freebsd)"
+}
+
+# Add "os" to a request payload when a target OS is given
+function Add-TargetOs {
+    param($Payload, $TargetOs = $script:TargetOs)
+    if ($null -ne $TargetOs) { $Payload["os"] = ConvertTo-TargetOs $TargetOs }
+    return $Payload
+}
 
 function Load-AccountsCSV {
     param($Path, $Index)
@@ -461,27 +478,33 @@ function Invoke-ServiceEnv {
 }
 
 function Invoke-Execute {
-    param($SourceFile, $EnvVars = @{}, $Network = $null)
+    param($SourceFile, $EnvVars = @{}, $Network = $null, $Language = $null, $TargetOs = $script:TargetOs)
 
-    if (-not (Test-Path $SourceFile)) {
-        Write-Error "Error: File not found: $SourceFile"
-        exit 1
+    if ($Language) {
+        # -s LANGUAGE CODE: SourceFile holds the inline code
+        $language = $Language
+        $code = $SourceFile
+    } else {
+        if (-not (Test-Path $SourceFile)) {
+            Write-Error "Error: File not found: $SourceFile"
+            exit 1
+        }
+
+        $ext = [System.IO.Path]::GetExtension($SourceFile).ToLower()
+        $language = $EXT_MAP[$ext]
+
+        if (-not $language) {
+            Write-Error "Error: Unknown extension: $ext"
+            exit 1
+        }
+
+        $code = Get-Content -Raw $SourceFile
     }
 
-    $ext = [System.IO.Path]::GetExtension($SourceFile).ToLower()
-    $language = $EXT_MAP[$ext]
-
-    if (-not $language) {
-        Write-Error "Error: Unknown extension: $ext"
-        exit 1
-    }
-
-    $code = Get-Content -Raw $SourceFile
-
-    $payload = @{
+    $payload = Add-TargetOs -Payload @{
         language = $language
         code = $code
-    }
+    } -TargetOs $TargetOs
 
     if ($EnvVars.Count -gt 0) {
         $payload["env"] = $EnvVars
@@ -504,17 +527,17 @@ function Invoke-Execute {
 }
 
 function Invoke-Session {
-    param($Args)
+    param($CmdArgs)
 
-    if ($Args -contains "--list" -or $Args -contains "-l") {
+    if ($CmdArgs -contains "--list" -or $CmdArgs -contains "-l") {
         $result = Invoke-Api -Endpoint "/sessions"
         $result | ConvertTo-Json -Depth 5
         return
     }
 
-    if ($Args -contains "--kill") {
-        $idx = [array]::IndexOf($Args, "--kill")
-        $sessionId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--kill") {
+        $idx = [array]::IndexOf($CmdArgs, "--kill")
+        $sessionId = $CmdArgs[$idx + 1]
         Invoke-Api -Endpoint "/sessions/$sessionId" -Method "DELETE"
         Write-Host "`e[32mSession terminated: $sessionId`e[0m"
         return
@@ -522,16 +545,16 @@ function Invoke-Session {
 
     # Create session
     $shell = "bash"
-    if ($Args -contains "--shell" -or $Args -contains "-s") {
-        $idx = if ($Args -contains "--shell") { [array]::IndexOf($Args, "--shell") } else { [array]::IndexOf($Args, "-s") }
-        $shell = $Args[$idx + 1]
+    if ($CmdArgs -contains "--shell" -or $CmdArgs -contains "-s") {
+        $idx = if ($CmdArgs -contains "--shell") { [array]::IndexOf($CmdArgs, "--shell") } else { [array]::IndexOf($CmdArgs, "-s") }
+        $shell = $CmdArgs[$idx + 1]
     }
 
     # Parse input files
     $inputFiles = @()
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-        if ($Args[$i] -eq "-f" -and ($i + 1) -lt $Args.Count) {
-            $filepath = $Args[$i + 1]
+    for ($i = 0; $i -lt $CmdArgs.Count; $i++) {
+        if ($CmdArgs[$i] -eq "-f" -and ($i + 1) -lt $CmdArgs.Count) {
+            $filepath = $CmdArgs[$i + 1]
             if (-not (Test-Path $filepath)) {
                 Write-Error "Error: Input file not found: $filepath"
                 exit 1
@@ -546,7 +569,7 @@ function Invoke-Session {
         }
     }
 
-    $payload = @{ shell = $shell }
+    $payload = Add-TargetOs -Payload @{ shell = $shell }
     if ($inputFiles.Count -gt 0) {
         $payload["input_files"] = $inputFiles
     }
@@ -603,9 +626,9 @@ function Save-LanguagesCache {
 }
 
 function Invoke-Languages {
-    param($Args)
+    param($CmdArgs)
 
-    $jsonOutput = $Args -contains "--json"
+    $jsonOutput = $CmdArgs -contains "--json"
 
     # Check cache first
     $languages = Get-CachedLanguages
@@ -792,9 +815,9 @@ function Invoke-KeyRotate {
 }
 
 function Invoke-Key {
-    param($Args)
+    param($CmdArgs)
 
-    $extend = $Args -contains "--extend"
+    $extend = $CmdArgs -contains "--extend"
     $publicKey, $secretKey = Get-ApiKeys
 
     if ($extend) {
@@ -894,10 +917,10 @@ function Invoke-Key {
 }
 
 function Invoke-Image {
-    param($Args)
+    param($CmdArgs)
 
     # Parse arguments
-    $listMode = $Args -contains "--list" -or $Args -contains "-l"
+    $listMode = $CmdArgs -contains "--list" -or $CmdArgs -contains "-l"
     $infoId = $null
     $deleteId = $null
     $lockId = $null
@@ -911,23 +934,23 @@ function Invoke-Image {
     $name = $null
     $ports = $null
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-        switch ($Args[$i]) {
-            "--info" { $infoId = $Args[$i + 1]; $i++ }
-            "--delete" { $deleteId = $Args[$i + 1]; $i++ }
-            "--lock" { $lockId = $Args[$i + 1]; $i++ }
-            "--unlock" { $unlockId = $Args[$i + 1]; $i++ }
-            "--publish" { $publishId = $Args[$i + 1]; $i++ }
-            "--source-type" { $sourceType = $Args[$i + 1]; $i++ }
+    for ($i = 0; $i -lt $CmdArgs.Count; $i++) {
+        switch ($CmdArgs[$i]) {
+            "--info" { $infoId = $CmdArgs[$i + 1]; $i++ }
+            "--delete" { $deleteId = $CmdArgs[$i + 1]; $i++ }
+            "--lock" { $lockId = $CmdArgs[$i + 1]; $i++ }
+            "--unlock" { $unlockId = $CmdArgs[$i + 1]; $i++ }
+            "--publish" { $publishId = $CmdArgs[$i + 1]; $i++ }
+            "--source-type" { $sourceType = $CmdArgs[$i + 1]; $i++ }
             "--visibility" {
-                $visibilityId = $Args[$i + 1]
-                $visibilityMode = $Args[$i + 2]
+                $visibilityId = $CmdArgs[$i + 1]
+                $visibilityMode = $CmdArgs[$i + 2]
                 $i += 2
             }
-            "--spawn" { $spawnId = $Args[$i + 1]; $i++ }
-            "--clone" { $cloneId = $Args[$i + 1]; $i++ }
-            "--name" { $name = $Args[$i + 1]; $i++ }
-            "--ports" { $ports = $Args[$i + 1]; $i++ }
+            "--spawn" { $spawnId = $CmdArgs[$i + 1]; $i++ }
+            "--clone" { $cloneId = $CmdArgs[$i + 1]; $i++ }
+            "--name" { $name = $CmdArgs[$i + 1]; $i++ }
+            "--ports" { $ports = $CmdArgs[$i + 1]; $i++ }
         }
     }
 
@@ -1014,10 +1037,10 @@ function Invoke-Image {
 }
 
 function Invoke-Snapshot {
-    param($Args)
+    param($CmdArgs)
 
     # Parse arguments
-    $listMode = $Args -contains "--list" -or $Args -contains "-l"
+    $listMode = $CmdArgs -contains "--list" -or $CmdArgs -contains "-l"
     $infoId = $null
     $deleteId = $null
     $lockId = $null
@@ -1029,19 +1052,19 @@ function Invoke-Snapshot {
     $shell = $null
     $ports = $null
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-        switch ($Args[$i]) {
-            "--info" { $infoId = $Args[$i + 1]; $i++ }
-            "--delete" { $deleteId = $Args[$i + 1]; $i++ }
-            "--lock" { $lockId = $Args[$i + 1]; $i++ }
-            "--unlock" { $unlockId = $Args[$i + 1]; $i++ }
-            "--restore" { $restoreId = $Args[$i + 1]; $i++ }
-            "--clone" { $cloneId = $Args[$i + 1]; $i++ }
-            "--type" { $cloneType = $Args[$i + 1]; $i++ }
-            "--name" { $name = $Args[$i + 1]; $i++ }
-            "--shell" { $shell = $Args[$i + 1]; $i++ }
-            "-s" { $shell = $Args[$i + 1]; $i++ }
-            "--ports" { $ports = $Args[$i + 1]; $i++ }
+    for ($i = 0; $i -lt $CmdArgs.Count; $i++) {
+        switch ($CmdArgs[$i]) {
+            "--info" { $infoId = $CmdArgs[$i + 1]; $i++ }
+            "--delete" { $deleteId = $CmdArgs[$i + 1]; $i++ }
+            "--lock" { $lockId = $CmdArgs[$i + 1]; $i++ }
+            "--unlock" { $unlockId = $CmdArgs[$i + 1]; $i++ }
+            "--restore" { $restoreId = $CmdArgs[$i + 1]; $i++ }
+            "--clone" { $cloneId = $CmdArgs[$i + 1]; $i++ }
+            "--type" { $cloneType = $CmdArgs[$i + 1]; $i++ }
+            "--name" { $name = $CmdArgs[$i + 1]; $i++ }
+            "--shell" { $shell = $CmdArgs[$i + 1]; $i++ }
+            "-s" { $shell = $CmdArgs[$i + 1]; $i++ }
+            "--ports" { $ports = $CmdArgs[$i + 1]; $i++ }
         }
     }
 
@@ -1105,7 +1128,7 @@ function Invoke-Snapshot {
 }
 
 function Invoke-Service {
-    param($Args)
+    param($CmdArgs)
 
     # Parse env subcommand and -e/--env-file
     $envAction = $null
@@ -1113,25 +1136,25 @@ function Invoke-Service {
     $envs = @()
     $envFile = $null
 
-    for ($i = 0; $i -lt $Args.Count; $i++) {
-        if ($Args[$i] -eq "env" -and ($i + 1) -lt $Args.Count) {
-            $next = $Args[$i + 1]
+    for ($i = 0; $i -lt $CmdArgs.Count; $i++) {
+        if ($CmdArgs[$i] -eq "env" -and ($i + 1) -lt $CmdArgs.Count) {
+            $next = $CmdArgs[$i + 1]
             if (-not $next.StartsWith("-")) {
                 $envAction = $next
                 $i++
-                if (($i + 1) -lt $Args.Count) {
-                    $next2 = $Args[$i + 1]
+                if (($i + 1) -lt $CmdArgs.Count) {
+                    $next2 = $CmdArgs[$i + 1]
                     if (-not $next2.StartsWith("-")) {
                         $envTarget = $next2
                         $i++
                     }
                 }
             }
-        } elseif ($Args[$i] -eq "-e" -and ($i + 1) -lt $Args.Count) {
-            $envs += $Args[$i + 1]
+        } elseif ($CmdArgs[$i] -eq "-e" -and ($i + 1) -lt $CmdArgs.Count) {
+            $envs += $CmdArgs[$i + 1]
             $i++
-        } elseif ($Args[$i] -eq "--env-file" -and ($i + 1) -lt $Args.Count) {
-            $envFile = $Args[$i + 1]
+        } elseif ($CmdArgs[$i] -eq "--env-file" -and ($i + 1) -lt $CmdArgs.Count) {
+            $envFile = $CmdArgs[$i + 1]
             $i++
         }
     }
@@ -1142,64 +1165,64 @@ function Invoke-Service {
         return
     }
 
-    if ($Args -contains "--list" -or $Args -contains "-l") {
+    if ($CmdArgs -contains "--list" -or $CmdArgs -contains "-l") {
         $result = Invoke-Api -Endpoint "/services"
         $result | ConvertTo-Json -Depth 5
         return
     }
 
-    if ($Args -contains "--info") {
-        $idx = [array]::IndexOf($Args, "--info")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--info") {
+        $idx = [array]::IndexOf($CmdArgs, "--info")
+        $serviceId = $CmdArgs[$idx + 1]
         $result = Invoke-Api -Endpoint "/services/$serviceId"
         $result | ConvertTo-Json -Depth 5
         return
     }
 
-    if ($Args -contains "--logs") {
-        $idx = [array]::IndexOf($Args, "--logs")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--logs") {
+        $idx = [array]::IndexOf($CmdArgs, "--logs")
+        $serviceId = $CmdArgs[$idx + 1]
         $result = Invoke-Api -Endpoint "/services/$serviceId/logs"
         Write-Host $result.logs
         return
     }
 
-    if ($Args -contains "--freeze") {
-        $idx = [array]::IndexOf($Args, "--freeze")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--freeze") {
+        $idx = [array]::IndexOf($CmdArgs, "--freeze")
+        $serviceId = $CmdArgs[$idx + 1]
         Invoke-Api -Endpoint "/services/$serviceId/freeze" -Method "POST" -Body "{}"
         Write-Host "`e[32mService frozen: $serviceId`e[0m"
         return
     }
 
-    if ($Args -contains "--unfreeze") {
-        $idx = [array]::IndexOf($Args, "--unfreeze")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--unfreeze") {
+        $idx = [array]::IndexOf($CmdArgs, "--unfreeze")
+        $serviceId = $CmdArgs[$idx + 1]
         Invoke-Api -Endpoint "/services/$serviceId/unfreeze" -Method "POST" -Body "{}"
         Write-Host "`e[32mService unfreezing: $serviceId`e[0m"
         return
     }
 
-    if ($Args -contains "--destroy") {
-        $idx = [array]::IndexOf($Args, "--destroy")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--destroy") {
+        $idx = [array]::IndexOf($CmdArgs, "--destroy")
+        $serviceId = $CmdArgs[$idx + 1]
         Invoke-ApiWithSudo -Endpoint "/services/$serviceId" -Method "DELETE"
         Write-Host "`e[32mService destroyed: $serviceId`e[0m"
         return
     }
 
-    if ($Args -contains "--resize") {
-        $idx = [array]::IndexOf($Args, "--resize")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--resize") {
+        $idx = [array]::IndexOf($CmdArgs, "--resize")
+        $serviceId = $CmdArgs[$idx + 1]
 
         # Get vcpu value from --vcpu or -v
         $vcpuValue = 0
-        if ($Args -contains "--vcpu") {
-            $vIdx = [array]::IndexOf($Args, "--vcpu")
-            $vcpuValue = [int]$Args[$vIdx + 1]
-        } elseif ($Args -contains "-v") {
-            $vIdx = [array]::IndexOf($Args, "-v")
-            $vcpuValue = [int]$Args[$vIdx + 1]
+        if ($CmdArgs -contains "--vcpu") {
+            $vIdx = [array]::IndexOf($CmdArgs, "--vcpu")
+            $vcpuValue = [int]$CmdArgs[$vIdx + 1]
+        } elseif ($CmdArgs -contains "-v") {
+            $vIdx = [array]::IndexOf($CmdArgs, "-v")
+            $vcpuValue = [int]$CmdArgs[$vIdx + 1]
         }
 
         if ($vcpuValue -le 0) {
@@ -1218,10 +1241,10 @@ function Invoke-Service {
         return
     }
 
-    if ($Args -contains "--set-unfreeze-on-demand") {
-        $idx = [array]::IndexOf($Args, "--set-unfreeze-on-demand")
-        $serviceId = $Args[$idx + 1]
-        $enabled = $Args[$idx + 2]
+    if ($CmdArgs -contains "--set-unfreeze-on-demand") {
+        $idx = [array]::IndexOf($CmdArgs, "--set-unfreeze-on-demand")
+        $serviceId = $CmdArgs[$idx + 1]
+        $enabled = $CmdArgs[$idx + 2]
 
         if ($enabled -eq "true" -or $enabled -eq "1") {
             $payload = @{ unfreeze_on_demand = $true } | ConvertTo-Json
@@ -1238,9 +1261,9 @@ function Invoke-Service {
         return
     }
 
-    if ($Args -contains "--dump-bootstrap") {
-        $idx = [array]::IndexOf($Args, "--dump-bootstrap")
-        $serviceId = $Args[$idx + 1]
+    if ($CmdArgs -contains "--dump-bootstrap") {
+        $idx = [array]::IndexOf($CmdArgs, "--dump-bootstrap")
+        $serviceId = $CmdArgs[$idx + 1]
         Write-Host "Fetching bootstrap script from $serviceId..." -ForegroundColor Yellow
 
         $payload = @{ command = "cat /tmp/bootstrap.sh" } | ConvertTo-Json
@@ -1248,9 +1271,9 @@ function Invoke-Service {
 
         if ($result.stdout -and $result.stdout.Length -gt 0) {
             $bootstrap = $result.stdout
-            if ($Args -contains "--dump-file") {
-                $dumpIdx = [array]::IndexOf($Args, "--dump-file")
-                $dumpFile = $Args[$dumpIdx + 1]
+            if ($CmdArgs -contains "--dump-file") {
+                $dumpIdx = [array]::IndexOf($CmdArgs, "--dump-file")
+                $dumpFile = $CmdArgs[$dumpIdx + 1]
                 # Write to file
                 $bootstrap | Set-Content -Path $dumpFile -NoNewline
                 if ($IsLinux -or $IsMacOS) {
@@ -1269,26 +1292,26 @@ function Invoke-Service {
     }
 
     # Create service
-    if ($Args -contains "--name") {
-        $idx = [array]::IndexOf($Args, "--name")
-        $name = $Args[$idx + 1]
+    if ($CmdArgs -contains "--name") {
+        $idx = [array]::IndexOf($CmdArgs, "--name")
+        $name = $CmdArgs[$idx + 1]
 
-        $payload = @{ name = $name }
+        $payload = Add-TargetOs -Payload @{ name = $name }
 
-        if ($Args -contains "--ports") {
-            $pIdx = [array]::IndexOf($Args, "--ports")
-            $ports = $Args[$pIdx + 1] -split "," | ForEach-Object { [int]$_ }
+        if ($CmdArgs -contains "--ports") {
+            $pIdx = [array]::IndexOf($CmdArgs, "--ports")
+            $ports = $CmdArgs[$pIdx + 1] -split "," | ForEach-Object { [int]$_ }
             $payload["ports"] = $ports
         }
 
-        if ($Args -contains "--bootstrap") {
-            $bIdx = [array]::IndexOf($Args, "--bootstrap")
-            $payload["bootstrap"] = $Args[$bIdx + 1]
+        if ($CmdArgs -contains "--bootstrap") {
+            $bIdx = [array]::IndexOf($CmdArgs, "--bootstrap")
+            $payload["bootstrap"] = $CmdArgs[$bIdx + 1]
         }
 
-        if ($Args -contains "--bootstrap-file") {
-            $bfIdx = [array]::IndexOf($Args, "--bootstrap-file")
-            $bootstrapFile = $Args[$bfIdx + 1]
+        if ($CmdArgs -contains "--bootstrap-file") {
+            $bfIdx = [array]::IndexOf($CmdArgs, "--bootstrap-file")
+            $bootstrapFile = $CmdArgs[$bfIdx + 1]
             if (Test-Path $bootstrapFile) {
                 $payload["bootstrap_content"] = Get-Content -Raw $bootstrapFile
             } else {
@@ -1297,20 +1320,20 @@ function Invoke-Service {
             }
         }
 
-        if ($Args -contains "--type") {
-            $tIdx = [array]::IndexOf($Args, "--type")
-            $payload["service_type"] = $Args[$tIdx + 1]
+        if ($CmdArgs -contains "--type") {
+            $tIdx = [array]::IndexOf($CmdArgs, "--type")
+            $payload["service_type"] = $CmdArgs[$tIdx + 1]
         }
 
-        if ($Args -contains "--unfreeze-on-demand") {
+        if ($CmdArgs -contains "--unfreeze-on-demand") {
             $payload["unfreeze_on_demand"] = $true
         }
 
         # Parse input files
         $inputFiles = @()
-        for ($i = 0; $i -lt $Args.Count; $i++) {
-            if ($Args[$i] -eq "-f" -and ($i + 1) -lt $Args.Count) {
-                $filepath = $Args[$i + 1]
+        for ($i = 0; $i -lt $CmdArgs.Count; $i++) {
+            if ($CmdArgs[$i] -eq "-f" -and ($i + 1) -lt $CmdArgs.Count) {
+                $filepath = $CmdArgs[$i + 1]
                 if (-not (Test-Path $filepath)) {
                     Write-Error "Error: Input file not found: $filepath"
                     exit 1
@@ -1353,15 +1376,23 @@ function Invoke-Service {
 }
 
 # Main
+# Dot-sourced (. ./un.ps1) as a library: define functions only, skip the CLI
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 if ($args.Count -eq 0 -or $args[0] -eq "--help" -or $args[0] -eq "-h") {
     Write-Host @"
 Usage: pwsh un.ps1 [options] <source_file>
+       pwsh un.ps1 -s <language> '<code>'
        pwsh un.ps1 session [options]
        pwsh un.ps1 service [options]
        pwsh un.ps1 snapshot [options]
        pwsh un.ps1 image [options]
        pwsh un.ps1 languages [--json]
        pwsh un.ps1 key [options]
+
+Global options:
+  --os OS             Target OS: linux (default) or freebsd (execute, session, service)
+  --account N         Use account N from accounts.csv
 
 Languages options:
   --json              Output as JSON array
@@ -1443,21 +1474,38 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     if ($args[$i] -eq "--account" -and ($i + 1) -lt $args.Count) {
         try { $script:AccountIndex = [int]$args[$i + 1] } catch {}
         $i++
+    } elseif ($args[$i] -eq "--os" -or "$($args[$i])".StartsWith("--os=")) {
+        if ($args[$i] -eq "--os") {
+            if (($i + 1) -ge $args.Count) {
+                [Console]::Error.WriteLine("Error: --os requires a value: linux or freebsd")
+                exit 1
+            }
+            $osValue = "$($args[$i + 1])"
+            $i++
+        } else {
+            $osValue = "$($args[$i])".Substring(5)
+        }
+        try {
+            $script:TargetOs = ConvertTo-TargetOs $osValue
+        } catch {
+            [Console]::Error.WriteLine("Error: invalid --os '$osValue' (expected linux or freebsd)")
+            exit 1
+        }
     } else {
         $effectiveArgs += $args[$i]
     }
 }
 
 if ($effectiveArgs[0] -eq "session") {
-    Invoke-Session -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+    Invoke-Session -CmdArgs $effectiveArgs[1..($effectiveArgs.Count-1)]
 } elseif ($effectiveArgs[0] -eq "service") {
-    Invoke-Service -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+    Invoke-Service -CmdArgs $effectiveArgs[1..($effectiveArgs.Count-1)]
 } elseif ($effectiveArgs[0] -eq "snapshot") {
-    Invoke-Snapshot -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+    Invoke-Snapshot -CmdArgs $effectiveArgs[1..($effectiveArgs.Count-1)]
 } elseif ($effectiveArgs[0] -eq "image") {
-    Invoke-Image -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+    Invoke-Image -CmdArgs $effectiveArgs[1..($effectiveArgs.Count-1)]
 } elseif ($effectiveArgs[0] -eq "languages") {
-    Invoke-Languages -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+    Invoke-Languages -CmdArgs $effectiveArgs[1..($effectiveArgs.Count-1)]
 } elseif ($effectiveArgs[0] -eq "key" -and $effectiveArgs -contains "--rotate") {
     $otp = $null
     for ($i = 1; $i -lt $effectiveArgs.Count; $i++) {
@@ -1465,12 +1513,13 @@ if ($effectiveArgs[0] -eq "session") {
     }
     Invoke-KeyRotate -Otp $otp
 } elseif ($effectiveArgs[0] -eq "key") {
-    Invoke-Key -Args $effectiveArgs[1..($effectiveArgs.Count-1)]
+    Invoke-Key -CmdArgs $effectiveArgs[1..($effectiveArgs.Count-1)]
 } else {
     # Parse execute args
     $sourceFile = $null
     $envVars = @{}
     $network = $null
+    $inlineLanguage = $null
 
     for ($i = 0; $i -lt $effectiveArgs.Count; $i++) {
         switch ($effectiveArgs[$i]) {
@@ -1480,6 +1529,7 @@ if ($effectiveArgs[0] -eq "session") {
                 $i++
             }
             "-n" { $network = $effectiveArgs[$i+1]; $i++ }
+            "-s" { $inlineLanguage = $effectiveArgs[$i+1]; $i++ }
             default {
                 if ($effectiveArgs[$i].StartsWith("-")) {
                     Write-Error "${RED}Unknown option: $($effectiveArgs[$i])${RESET}"
@@ -1496,5 +1546,5 @@ if ($effectiveArgs[0] -eq "session") {
         exit 1
     }
 
-    Invoke-Execute -SourceFile $sourceFile -EnvVars $envVars -Network $network
+    Invoke-Execute -SourceFile $sourceFile -EnvVars $envVars -Network $network -Language $inlineLanguage
 }

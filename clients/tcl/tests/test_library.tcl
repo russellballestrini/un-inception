@@ -216,10 +216,28 @@ set functions {
 
 foreach func $functions {
     if {[llength [info procs Un::$func]] > 0 || [llength [info commands Un::$func]] > 0} {
-        PASS "Un::$func() exists"
+        PASS "Un::${func}() exists"
     } else {
-        FAIL "Un::$func() exists"
+        FAIL "Un::${func}() exists"
     }
+}
+
+# ============================================================================
+# Test: target OS (--os) helpers, offline
+# ============================================================================
+
+puts "\nTesting target OS helpers..."
+
+assert_equal [Un::normalize_os FreeBSD] "freebsd" "normalize_os lowercases FreeBSD"
+assert_equal [Un::normalize_os linux] "linux" "normalize_os accepts linux"
+if {[catch {Un::normalize_os openbsd}]} { PASS "normalize_os rejects openbsd" } else { FAIL "normalize_os rejects openbsd" }
+if {[catch {Un::normalize_os ""}]} { PASS "normalize_os rejects empty" } else { FAIL "normalize_os rejects empty" }
+assert_equal [Un::with_os {{"shell":"bash"}} FreeBSD] {{"shell":"bash","os":"freebsd"}} "with_os adds os field"
+assert_equal [Un::with_os {{"shell":"bash"}} ""] {{"shell":"bash"}} "with_os leaves body unchanged without os"
+if {[catch {Un::session_create bash "" "" "" "" openbsd}]} {
+    PASS "session_create rejects invalid os before any request"
+} else {
+    FAIL "session_create rejects invalid os before any request"
 }
 
 # ============================================================================

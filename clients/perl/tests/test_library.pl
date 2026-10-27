@@ -236,4 +236,27 @@ subtest 'Library function existence' => sub {
     can_ok('Un', 'last_error');
 };
 
+# ============================================================================
+# Test: target OS (--os) helpers, offline
+# ============================================================================
+
+subtest 'Un::normalize_os() and Un::_with_os()' => sub {
+    is(Un::normalize_os('FreeBSD'), 'freebsd', 'normalize_os lowercases FreeBSD');
+    is(Un::normalize_os('linux'), 'linux', 'normalize_os accepts linux');
+    ok(!defined Un::normalize_os('openbsd'), 'normalize_os rejects openbsd');
+    ok(!defined Un::normalize_os(''), 'normalize_os rejects empty');
+
+    my $body = { shell => 'bash' };
+    ok(Un::_with_os($body, os => 'FreeBSD'), '_with_os accepts FreeBSD');
+    is($body->{os}, 'freebsd', '_with_os adds os field');
+
+    my $plain = { shell => 'bash' };
+    ok(Un::_with_os($plain), '_with_os without os succeeds');
+    ok(!exists $plain->{os}, '_with_os leaves body unchanged without os');
+
+    ok(!Un::_with_os({}, os => 'openbsd'), '_with_os rejects openbsd');
+    ok(!defined Un::session_create(os => 'openbsd'), 'session_create rejects invalid os before any request');
+    like(Un::last_error(), qr/openbsd/, 'last_error names the invalid os');
+};
+
 done_testing();

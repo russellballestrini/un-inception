@@ -2,8 +2,15 @@
 # Test suite for R Unsandbox SDK
 # Run: Rscript tests/test_un.r
 
-# Load the SDK
-source(file.path(dirname(sys.frame(1)$ofile), "..", "sync", "src", "un.r"))
+# Load the SDK. Works under `Rscript tests/test_un.r` and `source()`: the SDK is
+# loaded into its own environment so its script entry point (main) does not run.
+.test_dir <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) {
+    f <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE))
+    if (length(f) > 0) dirname(f[1]) else "tests"
+})
+.sdk <- new.env()
+sys.source(file.path(.test_dir, "..", "sync", "src", "un.r"), envir = .sdk)
+attach(.sdk, name = "unsandbox_sdk")
 
 # Test helper
 test_that <- function(description, test_expr) {
@@ -202,6 +209,27 @@ all_passed <- all_passed && test_that("health_check function exists", {
 })
 all_passed <- all_passed && test_that("logs_fetch function exists", {
     stopifnot(exists("logs_fetch") && is.function(logs_fetch))
+})
+
+# Target OS (--os), offline: validated before any request
+cat("\n=== Target OS ===\n")
+all_passed <- all_passed && test_that("normalize_os lowercases FreeBSD", {
+    stopifnot(normalize_os("FreeBSD") == "freebsd")
+})
+all_passed <- all_passed && test_that("normalize_os accepts linux", {
+    stopifnot(normalize_os("linux") == "linux")
+})
+all_passed <- all_passed && test_that("normalize_os rejects openbsd and empty", {
+    stopifnot(inherits(tryCatch(normalize_os("openbsd"), error = function(e) e), "error"))
+    stopifnot(inherits(tryCatch(normalize_os(""), error = function(e) e), "error"))
+})
+all_passed <- all_passed && test_that("with_os adds os only when given", {
+    stopifnot(identical(with_os(list(shell = "bash"), "FreeBSD")$os, "freebsd"))
+    stopifnot(is.null(with_os(list(shell = "bash"), NULL)$os))
+})
+all_passed <- all_passed && test_that("session_create rejects invalid os before any request", {
+    err <- tryCatch(session_create(os = "openbsd"), error = function(e) e)
+    stopifnot(inherits(err, "error"), grepl("openbsd", conditionMessage(err)))
 })
 
 # Summary

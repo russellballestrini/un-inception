@@ -72,6 +72,9 @@ BEGIN {
     # Global credential state
     GLOBAL_ACCOUNT_INDEX = -1
 
+    # Target OS (--os): "" = API default (linux), else linux | freebsd
+    TARGET_OS = ""
+
     # Our CLI lives in END and reads ARGV itself; exit here so awk never tries
     # to open "key", "session", ... as input files. END still runs.
     exit
@@ -296,10 +299,21 @@ function escape_json(s) {
     return s
 }
 
-function execute(filename    , api_key) {
-    get_api_keys()
-    api_key = GLOBAL_PUBLIC_KEY
+# Target OS: lowercase linux or freebsd, "" for anything else
+function normalize_os(value    , v) {
+    v = tolower(value)
+    if (v == "linux" || v == "freebsd") return v
+    set_error("invalid os '" value "' (expected linux or freebsd)")
+    return ""
+}
 
+# JSON fragment ,"os":"..." when a target OS is set, "" otherwise
+function os_json(target_os) {
+    if (target_os == "") return ""
+    return ",\"os\":\"" target_os "\""
+}
+
+function execute(filename    , ext, language, code, line) {
     # Get extension and language
     ext = get_extension(filename)
     language = ext_map[ext]
@@ -317,11 +331,18 @@ function execute(filename    , api_key) {
     }
     close(filename)
 
+    execute_code(language, code)
+}
+
+function execute_code(language, code    , api_key) {
+    get_api_keys()
+    api_key = GLOBAL_PUBLIC_KEY
+
     # Escape for JSON
     escaped_code = escape_json(code)
 
     # Build JSON
-    json = "{\"language\":\"" language "\",\"code\":\"" escaped_code "\"}"
+    json = "{\"language\":\"" escape_json(language) "\",\"code\":\"" escaped_code "\"" os_json(TARGET_OS) "}"
 
     # Write to temp file
     tmp = body_file(json)
@@ -942,7 +963,7 @@ function session_create(shell, network, vcpu, input_files    , json, tmp, timest
     get_api_keys()
 
     # Build JSON payload
-    json = "{\"shell\":\"" (shell != "" ? shell : "bash") "\""
+    json = "{\"shell\":\"" (shell != "" ? shell : "bash") "\"" os_json(TARGET_OS)
 
     if (network != "") {
         json = json ",\"network\":\"" escape_json(network) "\""
@@ -996,7 +1017,7 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     get_api_keys()
 
     # Build JSON payload
-    json = "{\"name\":\"" escape_json(name) "\""
+    json = "{\"name\":\"" escape_json(name) "\"" os_json(TARGET_OS)
 
     if (ports != "") {
         json = json ",\"ports\":[" ports "]"
@@ -2728,7 +2749,8 @@ function service_env_delete(id    , endpoint, timestamp, sig_headers, signature,
 }
 
 function show_help() {
-    print "Usage: awk -f un.awk <source_file>"
+    print "Usage: awk -f un.awk [--os OS] <source_file>"
+    print "       awk -f un.awk [--os OS] -s LANGUAGE CODE"
     print "       awk -f un.awk languages [--json]"
     print "       awk -f un.awk session --list"
     print "       awk -f un.awk session --kill ID"
@@ -2760,6 +2782,9 @@ function show_help() {
     print "       awk -f un.awk image --visibility ID MODE"
     print "       awk -f un.awk image --spawn ID [--name NAME] [--ports PORTS]"
     print "       awk -f un.awk image --clone ID [--name NAME]"
+    print ""
+    print "Global options:"
+    print "  --os OS                Target OS: linux (default) or freebsd (execute, session, service)"
     print ""
     print "Session options:"
     print "  -s, --shell SHELL      Shell to use (default: bash)"
@@ -2824,7 +2849,34 @@ function show_help() {
     # For our CLI, we process ARGV instead
 }
 
+# Drop ARGV[1] .. ARGV[n] so dispatch below sees the subcommand at ARGV[1]
+function shift_argv(n    , i) {
+    for (i = 1; i + n < ARGC; i++) ARGV[i] = ARGV[i + n]
+    for (; i < ARGC; i++) delete ARGV[i]
+    ARGC -= n
+}
+
 END {
+    # Global --os OS / --os=OS (before the subcommand or source file)
+    while (ARGC >= 2 && (ARGV[1] == "--os" || substr(ARGV[1], 1, 5) == "--os=")) {
+        if (ARGV[1] == "--os") {
+            if (ARGC < 3) {
+                print RED "Error: --os requires a value: linux or freebsd" RESET > "/dev/stderr"
+                exit 1
+            }
+            _os_value = ARGV[2]
+            shift_argv(2)
+        } else {
+            _os_value = substr(ARGV[1], 6)
+            shift_argv(1)
+        }
+        TARGET_OS = normalize_os(_os_value)
+        if (TARGET_OS == "") {
+            print RED "Error: invalid --os '" _os_value "' (expected linux or freebsd)" RESET > "/dev/stderr"
+            exit 1
+        }
+    }
+
     if (ARGC < 2) {
         show_help()
         exit 0
@@ -3138,8 +3190,8 @@ END {
                 print "Usage: awk -f un.awk service env <status|set|export|delete> <service_id>" > "/dev/stderr"
                 exit 1
             }
-        } else if (ARGV[2] == "--create") {
-            # Parse service creation arguments
+        } else if (ARGV[2] == "--create" || ARGV[2] == "--name") {
+            # Parse service creation arguments (--create is optional before --name)
             name = ""
             ports = ""
             domains = ""
@@ -3150,7 +3202,7 @@ END {
             env_vars = ""
             env_file = ""
 
-            i = 3
+            i = (ARGV[2] == "--create") ? 3 : 2
             while (i < ARGC) {
                 if (ARGV[i] == "--name" && i + 1 < ARGC) {
                     name = ARGV[i + 1]
@@ -3205,6 +3257,16 @@ END {
         } else {
             print "Usage: awk -f un.awk service --list|--create|--destroy ID"
         }
+        exit 0
+    }
+
+    # Inline code: -s LANGUAGE CODE
+    if (ARGV[1] == "-s") {
+        if (ARGC < 4) {
+            print RED "Error: -s requires language and code" RESET > "/dev/stderr"
+            exit 1
+        }
+        execute_code(ARGV[2], ARGV[3])
         exit 0
     }
 

@@ -236,6 +236,19 @@ for _, func_name in ipairs(functions) do
 end
 
 -- ============================================================================
+-- Test: target OS (--os) validation, offline
+-- ============================================================================
+
+print("\nTesting target OS validation...")
+
+assert_equal(Un.normalize_os("FreeBSD"), "freebsd", "normalize_os lowercases FreeBSD")
+assert_equal(Un.normalize_os("linux"), "linux", "normalize_os accepts linux")
+assert_equal(Un.normalize_os("openbsd"), nil, "normalize_os rejects openbsd")
+assert_equal(Un.normalize_os(""), nil, "normalize_os rejects empty")
+assert_equal(Un.session_create({ os = "openbsd" }), nil, "session_create rejects invalid os before any request")
+assert_true(Un.last_error():find("openbsd", 1, true) ~= nil, "last_error names the invalid os")
+
+-- ============================================================================
 -- Summary
 -- ============================================================================
 

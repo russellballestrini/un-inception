@@ -1,6 +1,6 @@
 # UN PowerShell Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -27,6 +27,10 @@ test-integration:
 test-functional:
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@echo "  $(YELLOW)⊘$(NC) Not implemented"
+
+# Offline: global --os flag request bodies against a local mock API (no credentials)
+test-os:
+	@bash ../../tests/os_flag_cli.sh pwsh -NoProfile -File sync/src/un.ps1
 
 clean:
 	@echo "$(GREEN)✓$(NC) Cleaned"

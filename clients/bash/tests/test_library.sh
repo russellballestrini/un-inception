@@ -215,6 +215,21 @@ done
 PASS "1000 version calls without crash"
 
 # ============================================================================
+# Test: target OS (--os) body helper
+# ============================================================================
+
+echo ""
+echo "Testing target OS helpers..."
+
+assert_equal "$(normalize_os FreeBSD)" "freebsd" "normalize_os lowercases FreeBSD"
+assert_equal "$(normalize_os linux)" "linux" "normalize_os accepts linux"
+if normalize_os openbsd > /dev/null 2>&1; then FAIL "normalize_os rejects openbsd"; else PASS "normalize_os rejects openbsd"; fi
+if normalize_os "" > /dev/null 2>&1; then FAIL "normalize_os rejects empty"; else PASS "normalize_os rejects empty"; fi
+assert_equal "$(_with_os '{"shell":"bash"}' FreeBSD | jq -r .os)" "freebsd" "_with_os adds os field"
+assert_equal "$(_with_os '{"shell":"bash"}' "" | jq -r 'has("os")')" "false" "_with_os leaves body unchanged without os"
+if _with_os '{}' openbsd > /dev/null 2>&1; then FAIL "_with_os rejects openbsd"; else PASS "_with_os rejects openbsd"; fi
+
+# ============================================================================
 # Test: Function existence
 # ============================================================================
 

@@ -426,6 +426,23 @@ api_request_text <- function(endpoint, public_key, secret_key, body) {
 # Library API Functions
 # =============================================================================
 
+#' Normalize Target OS
+#'
+#' @param value Target OS name, case-insensitive
+#' @return "linux" or "freebsd"; stops with an error for any other value
+#' @export
+normalize_os <- function(value) {
+    v <- tolower(as.character(value))
+    if (length(v) == 1 && v %in% c("linux", "freebsd")) return(v)
+    stop(sprintf("invalid os '%s' (expected linux or freebsd)", paste(value, collapse = " ")), call. = FALSE)
+}
+
+# Add "os" to a request payload when a target OS is given (NULL = API default, linux)
+with_os <- function(payload, os) {
+    if (!is.null(os)) payload$os <- normalize_os(os)
+    payload
+}
+
 #' Execute Code Synchronously
 #'
 #' Executes code in a specified language and waits for completion.
@@ -436,6 +453,7 @@ api_request_text <- function(endpoint, public_key, secret_key, body) {
 #' @param input_files List of input files with filename and content_base64 (optional)
 #' @param network Network mode: "zerotrust" (default) or "semitrusted"
 #' @param timeout Maximum execution time in seconds (optional)
+#' @param os Target OS: "linux" or "freebsd" (optional, API default linux)
 #' @param public_key API public key (optional, uses credentials chain)
 #' @param secret_key API secret key (optional, uses credentials chain)
 #' @return A list containing stdout, stderr, exit_code, and optionally artifacts
@@ -450,10 +468,10 @@ api_request_text <- function(endpoint, public_key, secret_key, body) {
 #' }
 execute <- function(code, language, env = NULL, input_files = NULL,
                     network = "zerotrust", timeout = NULL,
-                    public_key = NULL, secret_key = NULL) {
+                    public_key = NULL, secret_key = NULL, os = NULL) {
+    payload <- with_os(list(language = language, code = code), os)
     creds <- get_credentials(public_key, secret_key)
 
-    payload <- list(language = language, code = code)
     if (!is.null(env)) payload$env <- env
     if (!is.null(input_files)) payload$input_files <- input_files
     if (network != "zerotrust") payload$network <- network
@@ -476,6 +494,7 @@ execute <- function(code, language, env = NULL, input_files = NULL,
 #' @param network Network mode: "zerotrust" or "semitrusted"
 #' @param public_key API public key (optional)
 #' @param secret_key API secret key (optional)
+#' @param os Target OS: "linux" or "freebsd" (optional, API default linux)
 #' @return A list containing job_id for tracking the execution
 #' @export
 #' @examples
@@ -485,10 +504,10 @@ execute <- function(code, language, env = NULL, input_files = NULL,
 #' }
 execute_async <- function(code, language, env = NULL, input_files = NULL,
                           network = "zerotrust",
-                          public_key = NULL, secret_key = NULL) {
+                          public_key = NULL, secret_key = NULL, os = NULL) {
+    payload <- with_os(list(language = language, code = code, async = TRUE), os)
     creds <- get_credentials(public_key, secret_key)
 
-    payload <- list(language = language, code = code, async = TRUE)
     if (!is.null(env)) payload$env <- env
     if (!is.null(input_files)) payload$input_files <- input_files
     if (network != "zerotrust") payload$network <- network
@@ -740,12 +759,13 @@ session_get <- function(session_id, public_key = NULL, secret_key = NULL) {
 #' @param network Network mode (default: "zerotrust")
 #' @param public_key API public key (optional)
 #' @param secret_key API secret key (optional)
+#' @param os Target OS: "linux" or "freebsd" (optional, API default linux)
 #' @return Created session details
 #' @export
 session_create <- function(shell = "bash", network = "zerotrust",
-                           public_key = NULL, secret_key = NULL) {
+                           public_key = NULL, secret_key = NULL, os = NULL) {
+    payload <- with_os(list(shell = shell), os)
     creds <- get_credentials(public_key, secret_key)
-    payload <- list(shell = shell)
     if (network != "zerotrust") payload$network <- network
     return(api_request("/sessions", creds$public_key, creds$secret_key,
                        method = "POST", data = payload))
@@ -873,12 +893,14 @@ service_get <- function(service_id, public_key = NULL, secret_key = NULL) {
 #' @param network Network mode
 #' @param public_key API public key (optional)
 #' @param secret_key API secret key (optional)
+#' @param os Target OS: "linux" or "freebsd" (optional, API default linux)
 #' @return Created service details
 #' @export
 service_create <- function(name, ports = NULL, domains = NULL, bootstrap = NULL,
-                           network = "semitrusted", public_key = NULL, secret_key = NULL) {
+                           network = "semitrusted", public_key = NULL, secret_key = NULL,
+                           os = NULL) {
+    payload <- with_os(list(name = name), os)
     creds <- get_credentials(public_key, secret_key)
-    payload <- list(name = name)
     if (!is.null(ports)) payload$ports <- as.integer(strsplit(ports, ",")[[1]])
     if (!is.null(domains)) payload$domains <- strsplit(domains, ",")[[1]]
     if (!is.null(bootstrap)) payload$bootstrap <- bootstrap
@@ -1992,22 +2014,28 @@ cmd_execute <- function(args) {
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
-    filename <- args$source_file
-    if (!file.exists(filename)) {
-        cat(sprintf("%sError: File not found: %s%s\n", RED, filename, RESET), file = stderr())
-        quit(status = 1)
-    }
+    if (!is.null(args$language)) {
+        # -s LANGUAGE CODE: inline code
+        language <- args$language
+        code <- args$source_file
+    } else {
+        filename <- args$source_file
+        if (!file.exists(filename)) {
+            cat(sprintf("%sError: File not found: %s%s\n", RED, filename, RESET), file = stderr())
+            quit(status = 1)
+        }
 
-    language <- detect_language(filename)
-    if (language == "unknown") {
-        cat(sprintf("%sError: Cannot detect language for %s%s\n", RED, filename, RESET), file = stderr())
-        quit(status = 1)
-    }
+        language <- detect_language(filename)
+        if (language == "unknown") {
+            cat(sprintf("%sError: Cannot detect language for %s%s\n", RED, filename, RESET), file = stderr())
+            quit(status = 1)
+        }
 
-    code <- paste(readLines(filename, warn = FALSE), collapse = "\n")
+        code <- paste(readLines(filename, warn = FALSE), collapse = "\n")
+    }
 
     # Build request payload
-    payload <- list(language = language, code = code)
+    payload <- with_os(list(language = language, code = code), args$os)
 
     # Add environment variables
     if (!is.null(args$env)) {
@@ -2135,7 +2163,7 @@ cmd_session <- function(args) {
     }
 
     # Create new session
-    payload <- list(shell = "bash")
+    payload <- with_os(list(shell = "bash"), args$os)
 
     if (!is.null(args$network)) {
         payload$network <- args$network
@@ -2855,7 +2883,7 @@ cmd_service <- function(args) {
     }
 
     if (!is.null(args$name)) {
-        payload <- list(name = args$name)
+        payload <- with_os(list(name = args$name), args$os)
 
         if (!is.null(args$ports)) {
             ports_vec <- as.integer(strsplit(args$ports, ",")[[1]])
@@ -3047,6 +3075,27 @@ parse_args <- function() {
         } else if (arg == "--account") {
             i <- i + 1
             result$account_index <- as.integer(args[i])
+            i <- i + 1
+        } else if (arg == "--os" || startsWith(arg, "--os=")) {
+            if (arg == "--os") {
+                if (i + 1 > length(args)) {
+                    cat(sprintf("%sError: --os requires a value: linux or freebsd%s\n", RED, RESET), file = stderr())
+                    quit(status = 1)
+                }
+                os_value <- args[i + 1]
+                i <- i + 2
+            } else {
+                os_value <- substring(arg, 6)
+                i <- i + 1
+            }
+            if (!(tolower(os_value) %in% c("linux", "freebsd"))) {
+                cat(sprintf("%sError: invalid --os '%s' (expected linux or freebsd)%s\n", RED, os_value, RESET), file = stderr())
+                quit(status = 1)
+            }
+            result$os <- tolower(os_value)
+        } else if (arg %in% c("-s", "--language") && is.null(result$command)) {
+            i <- i + 1
+            result$language <- args[i]
             i <- i + 1
         } else if (arg %in% c("-n", "--network")) {
             i <- i + 1
@@ -3294,6 +3343,7 @@ main <- function() {
         cmd_execute(args)
     } else {
         cat("Usage: un.r [options] <source_file>\n", file = stderr())
+        cat("       un.r -s <language> '<code>'\n", file = stderr())
         cat("       un.r session [options]\n", file = stderr())
         cat("       un.r service [options]\n", file = stderr())
         cat("       un.r service env <action> <service_id> [options]\n", file = stderr())
@@ -3303,6 +3353,8 @@ main <- function() {
         cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
         cat("       un.r paas logs [options]\n", file = stderr())
+        cat("\nGlobal options:\n", file = stderr())
+        cat("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)\n", file = stderr())
         cat("\nLanguages options:\n", file = stderr())
         cat("  --json              Output as JSON array\n", file = stderr())
         cat("\nService env commands:\n", file = stderr())

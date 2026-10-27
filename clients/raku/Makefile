@@ -1,6 +1,6 @@
 # UN Raku Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -26,6 +26,10 @@ test-integration:
 test-functional:
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@echo "  $(YELLOW)⊘$(NC) Not implemented"
+
+# Offline: global --os flag request bodies against a local mock API (no credentials)
+test-os:
+	@bash ../../tests/os_flag_cli.sh raku sync/src/un.raku
 
 clean:
 	@rm -rf $(SYNC_DIR)/.precomp 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"

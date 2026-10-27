@@ -318,6 +318,10 @@ function Un.api_request(method, endpoint, body, opts, extra_headers)
         ["Authorization"] = "Bearer " .. pk,
         ["Content-Type"] = content_type
     }
+    -- Explicit length: without it LuaSocket sends a chunked body
+    if body_str ~= "" then
+        headers["Content-Length"] = tostring(#body_str)
+    end
 
     if signature then
         headers["X-Timestamp"] = timestamp
@@ -422,6 +426,24 @@ function Un.api_request_with_sudo(method, endpoint, body, opts)
     return { success = true }
 end
 
+-- Target OS (--os): returns "linux" or "freebsd" (lowercased), or nil with
+-- last_error set for any other value
+function Un.normalize_os(value)
+    local v = string.lower(tostring(value or ""))
+    if v == "linux" or v == "freebsd" then return v end
+    Un.set_error("invalid os '" .. tostring(value or "") .. "' (expected linux or freebsd)")
+    return nil
+end
+
+-- Add "os" to a request body when opts.os is given; false when it is invalid
+local function with_os(body, opts)
+    if opts.os == nil then return true end
+    local v = Un.normalize_os(opts.os)
+    if not v then return false end
+    body.os = v
+    return true
+end
+
 -- ============================================================================
 -- Execution Functions (8)
 -- ============================================================================
@@ -437,6 +459,7 @@ function Un.execute(language, code, opts)
     if opts.env then body.env = opts.env end
     if opts.input_files then body.input_files = opts.input_files end
     if opts.return_artifacts then body.return_artifacts = true end
+    if not with_os(body, opts) then return nil end
     return Un.api_request("POST", "/execute", body, opts)
 end
 
@@ -448,6 +471,7 @@ function Un.execute_async(language, code, opts)
         network_mode = opts.network_mode or "zerotrust",
         ttl = opts.ttl or 300
     }
+    if not with_os(body, opts) then return nil end
     return Un.api_request("POST", "/execute/async", body, opts)
 end
 
@@ -535,6 +559,7 @@ function Un.session_create(opts)
     if opts.vcpu then body.vcpu = opts.vcpu end
     if opts.input_files then body.input_files = opts.input_files end
     if opts.persistence then body.persistence = opts.persistence end
+    if not with_os(body, opts) then return nil end
     return Un.api_request("POST", "/sessions", body, opts)
 end
 
@@ -586,6 +611,7 @@ function Un.service_create(opts)
     if opts.service_type then body.service_type = opts.service_type end
     if opts.input_files then body.input_files = opts.input_files end
     if opts.unfreeze_on_demand then body.unfreeze_on_demand = true end
+    if not with_os(body, opts) then return nil end
     return Un.api_request("POST", "/services", body, opts)
 end
 
@@ -1106,7 +1132,7 @@ end
 -- CLI Implementation
 -- ============================================================================
 
-local function run_file(filename)
+local function run_file(filename, target_os)
     local f = io.open(filename, "r")
     if not f then
         io.stderr:write(RED .. "Error: File not found: " .. filename .. RESET .. "\n")
@@ -1121,7 +1147,7 @@ local function run_file(filename)
         os.exit(1)
     end
 
-    local result = Un.execute(lang, code)
+    local result = Un.execute(lang, code, { os = target_os })
     if result then
         if result.stdout then print(result.stdout) end
         if result.stderr then io.stderr:write(result.stderr) end
@@ -1310,17 +1336,36 @@ local function cli_key_rotate(otp_arg)
 end
 
 -- CLI entry point
-if arg and arg[0] then
+-- CLI only when run as a script, not when loaded with require("un")
+if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
     local args = arg
     local i = 1
 
-    -- Pre-scan for --account N; strip it from args before dispatch
+    -- Pre-scan for --account N and --os OS; strip them from args before dispatch
     local _filtered = {}
     local _j = 1
+    local target_os = nil
     while _j <= #args do
         if args[_j] == "--account" then
             _j = _j + 1
             Un.ACCOUNT_INDEX = tonumber(args[_j]) or -1
+        elseif args[_j] == "--os" or string.sub(args[_j], 1, 5) == "--os=" then
+            local os_value
+            if args[_j] == "--os" then
+                if _j + 1 > #args then
+                    io.stderr:write(RED .. "Error: --os requires a value: linux or freebsd" .. RESET .. "\n")
+                    os.exit(1)
+                end
+                _j = _j + 1
+                os_value = args[_j]
+            else
+                os_value = string.sub(args[_j], 6)
+            end
+            target_os = Un.normalize_os(os_value)
+            if not target_os then
+                io.stderr:write(RED .. "Error: invalid --os '" .. os_value .. "' (expected linux or freebsd)" .. RESET .. "\n")
+                os.exit(1)
+            end
         else
             table.insert(_filtered, args[_j])
         end
@@ -1734,7 +1779,7 @@ if arg and arg[0] then
             io.stderr:write(RED .. "Error: -s requires language and code" .. RESET .. "\n")
             os.exit(1)
         end
-        local result = Un.execute(lang, code)
+        local result = Un.execute(lang, code, { os = target_os })
         if result then
             if result.stdout then print(result.stdout) end
             if result.stderr then io.stderr:write(result.stderr) end
@@ -1753,9 +1798,13 @@ if arg and arg[0] then
         print("       lua un.lua languages [--json]")
         print("       lua un.lua key [--extend]")
         print("       lua un.lua key --rotate [--otp CODE]")
+        print("")
+        print("Global options:")
+        print("  --os OS       Target OS: linux (default) or freebsd (execute, session, service)")
+        print("  --account N   Use account N from accounts.csv")
     else
         -- Assume it's a file to execute
-        run_file(cmd)
+        run_file(cmd, target_os)
     end
 end
 

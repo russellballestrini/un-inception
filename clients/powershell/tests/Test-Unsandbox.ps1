@@ -57,6 +57,21 @@ function Test-Unit {
     $hasKey1 = $result -match "KEY1=value1"
     $hasKey2 = $result -match "KEY2=value2"
     Write-TestResult "BuildEnvContent" ($hasKey1 -and $hasKey2)
+
+    # Test target OS (--os) helpers, offline
+    Write-Host "Testing target OS helpers..."
+    Write-TestResult "NormalizeOsFreeBSD" ((ConvertTo-TargetOs "FreeBSD") -eq "freebsd")
+    Write-TestResult "NormalizeOsLinux" ((ConvertTo-TargetOs "linux") -eq "linux")
+    $rejected = $false
+    try { ConvertTo-TargetOs "openbsd" | Out-Null } catch { $rejected = $_.Exception.Message -match "openbsd" }
+    Write-TestResult "NormalizeOsRejectsOpenBSD" $rejected
+    $rejectedEmpty = $false
+    try { ConvertTo-TargetOs "" | Out-Null } catch { $rejectedEmpty = $true }
+    Write-TestResult "NormalizeOsRejectsEmpty" $rejectedEmpty
+    $withOs = Add-TargetOs -Payload @{ shell = "bash" } -TargetOs "FreeBSD"
+    Write-TestResult "AddTargetOsSetsField" ($withOs["os"] -eq "freebsd")
+    $withoutOs = Add-TargetOs -Payload @{ shell = "bash" } -TargetOs $null
+    Write-TestResult "AddTargetOsOmitsField" (-not $withoutOs.ContainsKey("os"))
 }
 
 function Test-Functional {

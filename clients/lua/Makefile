@@ -1,6 +1,6 @@
 # UN Lua Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-os clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -62,6 +62,10 @@ test-functional:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
+
+# Offline: global --os flag request bodies against a local mock API (no credentials)
+test-os:
+	@bash ../../tests/os_flag_cli.sh lua sync/src/un.lua
 
 clean:
 	@echo "$(GREEN)✓$(NC) Nothing to clean for Lua"

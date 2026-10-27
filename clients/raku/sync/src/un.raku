@@ -74,6 +74,23 @@ our $PORTAL_BASE is export = (%*ENV<UNSANDBOX_PORTAL_URL> || "https://unsandbox.
 constant $DEFAULT_TIMEOUT is export = 300;
 constant $DEFAULT_TTL is export = 60;
 
+# Target OS from the global --os flag: Str (undefined) = API default (linux)
+our $TARGET-OS = Str;
+
+#| Normalize a target OS name, case-insensitive: "linux" or "freebsd".
+#| Dies for any other value.
+sub normalize-os(Str() $value) returns Str is export {
+    my $os = $value.lc;
+    return $os if $os eq 'linux' | 'freebsd';
+    die "invalid os '$value' (expected linux or freebsd)";
+}
+
+# Add "os" to a request payload when a target OS is given
+sub with-os(%payload, $os) {
+    %payload<os> = normalize-os($os) if $os.defined;
+    return %payload;
+}
+
 # Polling delays (ms) - exponential backoff
 my @POLL_DELAYS = (300, 450, 700, 900, 650, 1600, 2000);
 
@@ -430,11 +447,13 @@ sub execute(
     Int :$ttl = $DEFAULT_TTL,
     Int :$vcpu = 1,
     Bool :$return-artifact = False,
+    Str :$os,
     Str :$public-key,
     Str :$secret-key,
     Int :$timeout = $DEFAULT_TIMEOUT
 ) returns Hash is export {
     my %payload = language => $language, code => $code, network_mode => $network-mode, ttl => $ttl, vcpu => $vcpu;
+    with-os(%payload, $os);
 
     %payload<env> = %env if %env;
 
@@ -479,10 +498,12 @@ sub execute-async(
     Int :$ttl = $DEFAULT_TTL,
     Int :$vcpu = 1,
     Bool :$return-artifact = False,
+    Str :$os,
     Str :$public-key,
     Str :$secret-key
 ) returns Hash is export {
     my %payload = language => $language, code => $code, network_mode => $network-mode, ttl => $ttl, vcpu => $vcpu;
+    with-os(%payload, $os);
 
     %payload<env> = %env if %env;
 
@@ -758,10 +779,12 @@ sub session-get(Str $session-id, Str :$public-key, Str :$secret-key) returns Has
 sub session-create(
     Str :$network-mode = 'zerotrust',
     Str :$shell = 'bash',
+    Str :$os,
     Str :$public-key,
     Str :$secret-key
 ) returns Hash is export {
     my %payload = shell => $shell, network_mode => $network-mode;
+    with-os(%payload, $os);
     return api-request('/sessions', 'POST', %payload, :$public-key, :$secret-key);
 }
 
@@ -824,10 +847,12 @@ sub service-create(
     Str :$domains,
     Str :$bootstrap,
     Str :$network-mode,
+    Str :$os,
     Str :$public-key,
     Str :$secret-key
 ) returns Str is export {
     my %payload = name => $name;
+    with-os(%payload, $os);
     %payload<ports> = $ports.split(',')>>.Int if $ports;
     %payload<domains> = $domains.split(',') if $domains;
     %payload<bootstrap> = $bootstrap if $bootstrap;
@@ -1461,11 +1486,16 @@ sub cmd-execute(@args, Int :$account-index = -1) {
     my $output-dir = '.';
     my $network = '';
     my $vcpu = 0;
+    my $inline-language = '';
 
     # Parse arguments
     my $i = 0;
     while $i < @args.elems {
         given @args[$i] {
+            when '-s' {
+                $i++;
+                $inline-language = @args[$i] // '';
+            }
             when '-e' {
                 $i++;
                 my ($key, $value) = @args[$i].split('=', 2);
@@ -1507,14 +1537,21 @@ sub cmd-execute(@args, Int :$account-index = -1) {
         exit 1;
     }
 
-    unless $source-file.IO.e {
-        note "{$RED}Error: File not found: $source-file{$RESET}";
-        exit 1;
-    }
+    my ($code, $language);
+    if $inline-language {
+        # -s LANGUAGE CODE: inline code
+        $code = $source-file;
+        $language = $inline-language;
+    } else {
+        unless $source-file.IO.e {
+            note "{$RED}Error: File not found: $source-file{$RESET}";
+            exit 1;
+        }
 
-    # Read source file
-    my $code = $source-file.IO.slurp;
-    my $language = detect-language($source-file);
+        # Read source file
+        $code = $source-file.IO.slurp;
+        $language = detect-language($source-file);
+    }
 
     unless $language {
         note "{$RED}Error: Cannot detect language for $source-file{$RESET}";
@@ -1523,6 +1560,7 @@ sub cmd-execute(@args, Int :$account-index = -1) {
 
     # Build request payload
     my %payload = language => $language, code => $code;
+    with-os(%payload, $TARGET-OS);
 
     # Add environment variables
     %payload<env> = %env-vars if %env-vars;
@@ -1639,6 +1677,7 @@ sub cmd-session(@args, Int :$account-index = -1) {
 
     # Create new session
     my %payload = shell => ($shell || 'bash');
+    with-os(%payload, $TARGET-OS);
     %payload<network> = $network if $network;
     %payload<vcpu> = $vcpu if $vcpu > 0;
 
@@ -1845,6 +1884,7 @@ sub cmd-service(@args, Int :$account-index = -1) {
     # Create new service
     if $name {
         my %payload = name => $name;
+        with-os(%payload, $TARGET-OS);
 
         if $ports {
             %payload<ports> = $ports.split(',')>>.Int;
@@ -2619,8 +2659,30 @@ sub MAIN(*@args is copy) is export {
         }
     }
 
+    # Global --os OS / --os=OS before the subcommand or source file
+    while @args && (@args[0] eq '--os' || @args[0].starts-with('--os=')) {
+        my $os-value;
+        if @args[0] eq '--os' {
+            unless @args.elems > 1 {
+                note "{$RED}Error: --os requires a value: linux or freebsd{$RESET}";
+                exit 1;
+            }
+            $os-value = @args[1];
+            @args.splice(0, 2);
+        } else {
+            $os-value = @args[0].substr(5);
+            @args.splice(0, 1);
+        }
+        $TARGET-OS = try normalize-os($os-value);
+        unless $TARGET-OS.defined {
+            note "{$RED}Error: invalid --os '$os-value' (expected linux or freebsd){$RESET}";
+            exit 1;
+        }
+    }
+
     unless @args {
         note "Usage: un.raku [options] <source_file>";
+        note "       un.raku -s <language> '<code>'";
         note "       un.raku session [options]";
         note "       un.raku service [options]";
         note "       un.raku snapshot [options]";
@@ -2628,6 +2690,10 @@ sub MAIN(*@args is copy) is export {
         note "       un.raku key [options]";
         note "       un.raku languages [--json]";
         note "       un.raku paas logs [options]";
+        note "";
+        note "Global options:";
+        note "  --os OS             Target OS: linux (default) or freebsd (execute, session, service)";
+        note "  --account N         Use account N from accounts.csv";
         note "";
         note "Languages options:";
         note "  --json              Output as JSON array";
