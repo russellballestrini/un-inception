@@ -1631,10 +1631,24 @@ getApiKey = do
   return publicKey
 
 -- HMAC-SHA256
+-- | UTF-8 bytes of a String: what curl's argv, a file or a pipe carries.
+-- BSC.pack keeps only the low 8 bits of each Char, so any non-ASCII code
+-- point in code or env was signed as different bytes than it was sent as.
+utf8Bytes :: String -> BS.ByteString
+utf8Bytes = BS.pack . concatMap (map fromIntegral . encodeChar . ord)
+  where
+    encodeChar :: Int -> [Int]
+    encodeChar c
+      | c < 0x80 = [c]
+      | c < 0x800 = [0xC0 + c `div` 0x40, 0x80 + c `mod` 0x40]
+      | c < 0x10000 = [0xE0 + c `div` 0x1000, 0x80 + (c `div` 0x40) `mod` 0x40, 0x80 + c `mod` 0x40]
+      | otherwise = [ 0xF0 + c `div` 0x40000, 0x80 + (c `div` 0x1000) `mod` 0x40
+                    , 0x80 + (c `div` 0x40) `mod` 0x40, 0x80 + c `mod` 0x40 ]
+
 hmacSha256 :: String -> String -> String
 hmacSha256 secret message =
-  let secretBS = BSC.pack secret
-      messageBS = BSC.pack message
+  let secretBS = utf8Bytes secret
+      messageBS = utf8Bytes message
       mac = hmac secretBS messageBS :: HMAC SHA256
   in show (hmacGetDigest mac)
 
