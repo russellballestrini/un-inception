@@ -396,7 +396,7 @@ Future<Map<String, dynamic>> apiRequestCurl(String endpoint, String method, Stri
     }
 
     if (jsonData != null) {
-      args.addAll(['-d', '@${tempFile.path}']);
+      args.addAll(['--data-binary', '@${tempFile.path}']);
     }
 
     final result = await Process.run(args[0], args.sublist(1));
@@ -462,7 +462,7 @@ Future<(int, String)> apiRequestCurlWithStatus(String endpoint, String method, S
     }
 
     if (jsonData != null) {
-      args.addAll(['-d', '@${tempFile.path}']);
+      args.addAll(['--data-binary', '@${tempFile.path}']);
     }
 
     final result = await Process.run(args[0], args.sublist(1));
@@ -553,7 +553,7 @@ Future<Map<String, dynamic>?> apiRequestTextCurl(String endpoint, String method,
       args.addAll(['-H', 'Authorization: Bearer $publicKey']);
     }
 
-    args.addAll(['-d', '@${tempFile.path}', '-w', '%{http_code}']);
+    args.addAll(['--data-binary', '@${tempFile.path}', '-w', '%{http_code}']);
 
     final result = await Process.run(args[0], args.sublist(1));
     final output = result.stdout as String;

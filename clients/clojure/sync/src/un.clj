@@ -234,7 +234,7 @@
                         (str api-base endpoint)
                         "-H" "Content-Type: application/json"]
                        auth-headers
-                       ["-d" (str "@" tmp-file)])
+                       ["--data-binary" (str "@" tmp-file)])
           {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
       (check-clock-drift-error out)
@@ -338,7 +338,7 @@
                         (str api-base endpoint)
                         "-H" "Content-Type: application/json"]
                        auth-headers
-                       ["-d" (str "@" tmp-file)])
+                       ["--data-binary" (str "@" tmp-file)])
           {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
       (let [http-code (extract-http-code out)
@@ -357,7 +357,7 @@
                         (str api-base endpoint)
                         "-H" "Content-Type: text/plain"]
                        auth-headers
-                       ["-d" (str "@" tmp-file)])
+                       ["--data-binary" (str "@" tmp-file)])
           {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
       (let [status (Integer/parseInt (str/trim out))]
@@ -372,7 +372,7 @@
                         (str api-base endpoint)
                         "-H" "Content-Type: application/json"]
                        auth-headers
-                       ["-d" (str "@" tmp-file)])
+                       ["--data-binary" (str "@" tmp-file)])
           {:keys [out]} (apply sh args)]
       (io/delete-file tmp-file true)
       (check-clock-drift-error out)

@@ -2081,7 +2081,8 @@ HELP;
     private function makeRequest(string $method, string $path, string $publicKey, string $secretKey, ?array $data = null): array {
         $url = self::apiBase() . $path;
         $timestamp = time();
-        $body = $data !== null ? json_encode($data) : '';
+        // Sign exactly the body we send: a GET sends none
+        $body = ($data !== null && $method !== 'GET') ? json_encode($data) : '';
 
         $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $data !== null ? $body : null);
 
@@ -2113,6 +2114,9 @@ HELP;
                 break;
             case 'DELETE':
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                if ($body !== '') {
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                }
                 break;
             case 'GET':
             default:
@@ -2162,7 +2166,8 @@ HELP;
     private function makeRequestWithSudo(string $method, string $path, string $publicKey, string $secretKey, ?array $data = null): array {
         $url = self::apiBase() . $path;
         $timestamp = time();
-        $body = $data !== null ? json_encode($data) : '';
+        // Sign exactly the body we send: a GET sends none
+        $body = ($data !== null && $method !== 'GET') ? json_encode($data) : '';
 
         $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $data !== null ? $body : null);
 
@@ -2194,6 +2199,9 @@ HELP;
                 break;
             case 'DELETE':
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                if ($body !== '') {
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                }
                 break;
             case 'GET':
             default:
@@ -2265,6 +2273,9 @@ HELP;
                     break;
                 case 'DELETE':
                     curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                    if ($body !== '') {
+                        curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                    }
                     break;
                 case 'GET':
                 default:

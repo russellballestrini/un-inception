@@ -288,9 +288,10 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
                         sudo_otp = NULL, sudo_challenge = NULL) {
     url <- paste0(API_BASE, endpoint)
 
+    # Sign exactly the body we send: a GET sends none
     body_content <- ""
-    if (!is.null(data)) {
-        body_content <- toJSON(data, auto_unbox = TRUE)
+    if (!is.null(data) && method != "GET") {
+        body_content <- as.character(toJSON(data, auto_unbox = TRUE))
     }
 
     headers <- build_auth_headers(method, endpoint, body_content, public_key, secret_key)
@@ -309,7 +310,7 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
         } else if (method == "POST") {
             response <- POST(url, headers, body = body_content, encode = "raw", timeout(300))
         } else if (method == "DELETE") {
-            response <- DELETE(url, headers, timeout(300))
+            response <- DELETE(url, headers, body = body_content, encode = "raw", timeout(300))
         } else if (method == "PATCH") {
             response <- PATCH(url, headers, body = body_content, encode = "raw", timeout(300))
         } else {
@@ -350,9 +351,10 @@ handle_sudo_challenge <- function(endpoint, public_key, secret_key, method, data
 api_request_with_sudo <- function(endpoint, public_key, secret_key, method = "DELETE", data = NULL) {
     url <- paste0(API_BASE, endpoint)
 
+    # Sign exactly the body we send: a GET sends none
     body_content <- ""
-    if (!is.null(data)) {
-        body_content <- toJSON(data, auto_unbox = TRUE)
+    if (!is.null(data) && method != "GET") {
+        body_content <- as.character(toJSON(data, auto_unbox = TRUE))
     }
 
     headers <- build_auth_headers(method, endpoint, body_content, public_key, secret_key)
@@ -363,7 +365,7 @@ api_request_with_sudo <- function(endpoint, public_key, secret_key, method = "DE
         } else if (method == "POST") {
             response <- POST(url, headers, body = body_content, encode = "raw", timeout(300))
         } else if (method == "DELETE") {
-            response <- DELETE(url, headers, timeout(300))
+            response <- DELETE(url, headers, body = body_content, encode = "raw", timeout(300))
         } else if (method == "PATCH") {
             response <- PATCH(url, headers, body = body_content, encode = "raw", timeout(300))
         } else {
@@ -1065,9 +1067,9 @@ service_env_get <- function(service_id, public_key = NULL, secret_key = NULL) {
 #' @export
 service_env_set <- function(service_id, env_content, public_key = NULL, secret_key = NULL) {
     creds <- get_credentials(public_key, secret_key)
-    api_request(paste0("/services/", service_id, "/env"), creds$public_key, creds$secret_key,
-                method = "POST", data = list(env = env_content))
-    return(TRUE)
+    # PUT /services/{id}/env takes the .env text as text/plain
+    return(api_request_text(paste0("/services/", service_id, "/env"), creds$public_key, creds$secret_key,
+                            env_content))
 }
 
 #' Delete Service Environment

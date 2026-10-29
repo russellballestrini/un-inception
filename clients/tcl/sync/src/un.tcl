@@ -362,6 +362,9 @@ namespace eval Un {
 
         lassign [get_credentials $public_key $secret_key] pk sk
 
+        # Sign exactly the body we send: a GET sends none
+        if {$method eq "GET"} { set body "" }
+
         set headers [list Authorization "Bearer $pk" Content-Type $content_type]
 
         # Add HMAC signature if secret key exists
@@ -385,7 +388,7 @@ namespace eval Un {
 
         if {$method eq "GET"} {
             set token [::http::geturl $url -headers $headers -timeout 300000]
-        } elseif {$method eq "DELETE"} {
+        } elseif {$method eq "DELETE" && $body eq ""} {
             set token [::http::geturl $url -method DELETE -headers $headers -timeout 300000]
         } else {
             set token [::http::geturl $url -method $method -headers $headers -query $body -timeout 300000]

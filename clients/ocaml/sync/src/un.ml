@@ -548,7 +548,7 @@ let api_post ?public_key ?secret_key endpoint json =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -627,7 +627,7 @@ let handle_sudo_challenge response method_ endpoint body =
         let oc = open_out tmp_file in
         output_string oc body;
         close_out oc;
-        let result = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s%s%s -d @%s"
+        let result = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s%s%s --data-binary @%s"
           api_base endpoint auth_headers sudo_headers challenge_header tmp_file in
         result
       | _ ->
@@ -701,7 +701,7 @@ let api_post_with_sudo ?public_key ?secret_key endpoint json =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -w '\\n%%{http_code}' -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -w '\\n%%{http_code}' -X POST %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -1169,7 +1169,7 @@ let session_boost ?public_key ?secret_key session_id vcpu =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -1254,7 +1254,7 @@ let service_set_unfreeze_on_demand ?public_key ?secret_key service_id enabled =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -1304,7 +1304,7 @@ let service_env_set_lib ?public_key ?secret_key service_id env_content =
   let oc = open_out tmp_file in
   output_string oc env_content;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT %s%s -H 'Content-Type: text/plain'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT %s%s -H 'Content-Type: text/plain'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let status = try input_line ic with End_of_file -> "0" in
@@ -1335,7 +1335,7 @@ let service_resize ?public_key ?secret_key service_id vcpu =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -1517,7 +1517,7 @@ let curl_put_text endpoint body =
   let oc = open_out tmp_file in
   output_string oc body;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT %s%s -H 'Content-Type: text/plain'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -o /dev/null -w '%%{http_code}' -X PUT %s%s -H 'Content-Type: text/plain'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let status = try input_line ic with End_of_file -> "0" in
@@ -1569,7 +1569,7 @@ let service_env_export service_id =
   let oc = open_out tmp_file in
   output_string oc "{}";
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X POST %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -1712,7 +1712,7 @@ let execute_command file env_vars artifacts out_dir network vcpu =
 
   let (public_key, secret_key) = get_api_keys () in
   let auth_headers = build_auth_headers public_key secret_key "POST" "/execute" json in
-  let cmd = Printf.sprintf "curl -s -X POST %s/execute -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X POST %s/execute -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base auth_headers tmp_file in
   let ic = Unix.open_process_in cmd in
   let rec read_all acc =
@@ -2042,7 +2042,7 @@ let set_service_unfreeze_on_demand service_id enabled =
   let oc = open_out tmp_file in
   output_string oc json;
   close_out oc;
-  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+  let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
     api_base endpoint auth_headers tmp_file in
   let _ = Sys.command cmd in
   Sys.remove tmp_file;
@@ -2122,7 +2122,7 @@ let service_command action name ports bootstrap bootstrap_file service_type netw
        let oc = open_out tmp_file in
        output_string oc json;
        close_out oc;
-       let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s -d @%s"
+       let cmd = Printf.sprintf "curl -s -X PATCH %s%s -H 'Content-Type: application/json'%s --data-binary @%s"
          api_base endpoint auth_headers tmp_file in
        let _ = Sys.command cmd in
        Sys.remove tmp_file;

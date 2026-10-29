@@ -284,7 +284,7 @@ proc execCurlPut(endpoint, body, publicKey, secretKey: string): bool =
   let tmpFile = fmt"/tmp/un_nim_{epochTime().int mod 999999}.txt"
   writeFile(tmpFile, body)
   let authHeaders = buildAuthHeaders("PUT", endpoint, body, publicKey, secretKey)
-  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X PUT '{API_BASE}{endpoint}' -H 'Content-Type: text/plain' {authHeaders} -d @{tmpFile}"""
+  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X PUT '{API_BASE}{endpoint}' -H 'Content-Type: text/plain' {authHeaders} --data-binary @{tmpFile}"""
   let output = execProcess(cmd).strip()
   removeFile(tmpFile)
   try:

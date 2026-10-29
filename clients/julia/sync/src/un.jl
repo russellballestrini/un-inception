@@ -199,7 +199,8 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
     url = API_BASE * endpoint
 
     # Prepare body
-    body = data !== nothing ? JSON.json(data) : ""
+    # Sign exactly the body we send: a GET sends none
+    body = (data !== nothing && method != "GET") ? JSON.json(data) : ""
 
     # Generate timestamp and signature
     timestamp = Int64(floor(time()))
@@ -226,7 +227,7 @@ function api_request(endpoint::String, public_key::String, secret_key::String; m
         elseif method == "POST"
             response = HTTP.post(url, headers, body, readtimeout=300)
         elseif method == "DELETE"
-            response = HTTP.delete(url, headers, readtimeout=300)
+            response = HTTP.delete(url, headers, body, readtimeout=300)
         else
             error("Unsupported method: $method")
         end
@@ -276,7 +277,8 @@ function api_request_with_sudo(endpoint::String, public_key::String, secret_key:
     url = API_BASE * endpoint
 
     # Prepare body
-    body = data !== nothing ? JSON.json(data) : ""
+    # Sign exactly the body we send: a GET sends none
+    body = (data !== nothing && method != "GET") ? JSON.json(data) : ""
 
     # Generate timestamp and signature
     timestamp = Int64(floor(time()))
@@ -295,7 +297,7 @@ function api_request_with_sudo(endpoint::String, public_key::String, secret_key:
         elseif method == "POST"
             response = HTTP.post(url, headers, body, readtimeout=300, status_exception=false)
         elseif method == "DELETE"
-            response = HTTP.delete(url, headers, readtimeout=300, status_exception=false)
+            response = HTTP.delete(url, headers, body, readtimeout=300, status_exception=false)
         else
             error("Unsupported method: $method")
         end
@@ -2356,8 +2358,8 @@ function service_env_set(service_id::String, env_content::String;
         get_api_keys(nothing)
     end
 
-    api_request("/services/$service_id/env", pk, sk, method="POST", data=Dict("env" => env_content))
-    return true
+    # PUT /services/{id}/env takes the .env text as text/plain
+    return api_request_text("/services/$service_id/env", pk, sk, env_content)
 end
 
 """
