@@ -923,18 +923,18 @@ contains
 
         status = 0
 
-        write(cmd, '(20A)') &
+        write(cmd, '(30A)') &
             'TMPFILE=$(mktemp); ', &
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
             'BODY=$(cat "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
             'SIG=$(printf %s "$TS:POST:/run:$BODY" | sh -c "$UNSB_HMAC"); ', &
-            'curl -s -X POST ', trim(api_base_url()), '/run ', &
+            'printf %s "$BODY" | curl -s -X POST ', trim(api_base_url()), '/run ', &
             '-H "Content-Type: text/plain" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" ', &
-            '--data-binary "@$TMPFILE" | jq .; ', &
+            '--data-binary @- | jq .; ', &
             'rm -f "$TMPFILE"'
 
         call execute_command_line(trim(cmd), wait=.true., exitstat=status)
@@ -961,18 +961,18 @@ contains
         status = 0
         job_id = ''
 
-        write(cmd, '(20A)') &
+        write(cmd, '(30A)') &
             'TMPFILE=$(mktemp); ', &
             'cat > "$TMPFILE" << ''CODEEOF''', char(10), trim(code), char(10), 'CODEEOF', char(10), &
             'BODY=$(cat "$TMPFILE"); ', &
             'TS=$(date +%s); ', &
             'SIG=$(printf %s "$TS:POST:/run/async:$BODY" | sh -c "$UNSB_HMAC"); ', &
-            'curl -s -X POST ', trim(api_base_url()), '/run/async ', &
+            'printf %s "$BODY" | curl -s -X POST ', trim(api_base_url()), '/run/async ', &
             '-H "Content-Type: text/plain" ', &
             '-H "Authorization: Bearer ', trim(self%public_key), '" ', &
             '-H "X-Timestamp: $TS" ', &
             '-H "X-Signature: $SIG" ', &
-            '--data-binary "@$TMPFILE" | jq -r ".job_id // empty"; ', &
+            '--data-binary @- | jq -r ".job_id // empty"; ', &
             'rm -f "$TMPFILE"'
 
         call execute_command_line(trim(cmd), wait=.true., exitstat=status)
