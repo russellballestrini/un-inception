@@ -153,19 +153,20 @@ test-library: check-go
 	@echo "LIBRARY MODE: Testing Go package imports"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@# Go requires test files in the same directory as the package.
-	@# Copy tests into src/ temporarily, run, clean up.
+	@# Sync tests are package un, so they run from src/: copy them in, run,
+	@# remove only the copies src/ did not already hold. Async tests are
+	@# package tests importing un_async, so they run in place.
 	@if [ -d "$(SYNC_DIR)/tests" ] && [ -d "$(SYNC_DIR)/src" ]; then \
+		new=$$(for f in $(SYNC_DIR)/tests/*_test.go; do b=$(SYNC_DIR)/src/$$(basename $$f); [ -e $$b ] || echo $$b; done); \
 		cp $(SYNC_DIR)/tests/*_test.go $(SYNC_DIR)/src/ 2>/dev/null; \
-		cd $(SYNC_DIR)/src && $(GO) test -short -v . 2>&1; \
-		rm -f $(SYNC_DIR)/src/*_test.go; \
+		(cd $(SYNC_DIR)/src && $(GO) test -short -v . 2>&1); rc=$$?; \
+		rm -f $$new; \
+		exit $$rc; \
 	elif [ -d "$(SYNC_DIR)/src" ]; then \
 		cd $(SYNC_DIR)/src && $(GO) test -short -v . 2>&1 | head -20 || echo "  $(YELLOW)⊘$(NC) Library: No tests defined yet"; \
 	fi
 	@if [ -d "$(ASYNC_DIR)/tests" ] && [ -d "$(ASYNC_DIR)/src" ]; then \
-		cp $(ASYNC_DIR)/tests/*_test.go $(ASYNC_DIR)/src/ 2>/dev/null; \
-		cd $(ASYNC_DIR)/src && $(GO) test -short -v . 2>&1; \
-		rm -f $(ASYNC_DIR)/src/*_test.go; \
+		cd $(ASYNC_DIR) && $(GO) test -short -v ./tests/ 2>&1; \
 	elif [ -d "$(ASYNC_DIR)/src" ]; then \
 		cd $(ASYNC_DIR)/src && $(GO) test -short -v . 2>&1 | head -20 || echo "  $(YELLOW)⊘$(NC) Library: Async tests not defined"; \
 	fi
@@ -205,9 +206,11 @@ test-functional: check-go
 	else \
 		echo "  Running functional tests..."; \
 		if [ -d "$(SYNC_DIR)/tests" ] && [ -d "$(SYNC_DIR)/src" ]; then \
+			new=$$(for f in $(SYNC_DIR)/tests/functional_test.go; do b=$(SYNC_DIR)/src/$$(basename $$f); [ -e $$b ] || echo $$b; done); \
 			cp $(SYNC_DIR)/tests/functional_test.go $(SYNC_DIR)/src/ 2>/dev/null; \
-			cd $(SYNC_DIR)/src && $(GO) test -v -run TestFunctional . 2>&1; \
-			rm -f $(SYNC_DIR)/src/functional_test.go; \
+			(cd $(SYNC_DIR)/src && $(GO) test -v -run TestFunctional . 2>&1); rc=$$?; \
+			rm -f $$new; \
+			exit $$rc; \
 		fi; \
 	fi
 
@@ -218,9 +221,11 @@ test-functional: check-go
 test-sync: check-go
 	@echo "Testing Sync SDK..."
 	@if [ -d "$(SYNC_DIR)/tests" ] && [ -d "$(SYNC_DIR)/src" ]; then \
+		new=$$(for f in $(SYNC_DIR)/tests/*_test.go; do b=$(SYNC_DIR)/src/$$(basename $$f); [ -e $$b ] || echo $$b; done); \
 		cp $(SYNC_DIR)/tests/*_test.go $(SYNC_DIR)/src/ 2>/dev/null; \
-		cd $(SYNC_DIR)/src && $(GO) test -v .; \
-		rm -f $(SYNC_DIR)/src/*_test.go; \
+		(cd $(SYNC_DIR)/src && $(GO) test -v .); rc=$$?; \
+		rm -f $$new; \
+		exit $$rc; \
 	elif [ -d "$(SYNC_DIR)/src" ]; then \
 		cd $(SYNC_DIR)/src && $(GO) test -v .; \
 	else \
@@ -230,9 +235,7 @@ test-sync: check-go
 test-async: check-go
 	@echo "Testing Async SDK..."
 	@if [ -d "$(ASYNC_DIR)/tests" ] && [ -d "$(ASYNC_DIR)/src" ]; then \
-		cp $(ASYNC_DIR)/tests/*_test.go $(ASYNC_DIR)/src/ 2>/dev/null; \
-		cd $(ASYNC_DIR)/src && $(GO) test -v .; \
-		rm -f $(ASYNC_DIR)/src/*_test.go; \
+		cd $(ASYNC_DIR) && $(GO) test -v ./tests/; \
 	elif [ -d "$(ASYNC_DIR)/src" ]; then \
 		cd $(ASYNC_DIR)/src && $(GO) test -v .; \
 	else \
