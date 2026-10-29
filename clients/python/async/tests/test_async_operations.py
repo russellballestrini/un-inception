@@ -224,3 +224,140 @@ class TestAsyncSignature:
         # These should NOT be coroutine functions (sync helpers)
         assert not inspect.iscoroutinefunction(un_async.detect_language)
         assert not inspect.iscoroutinefunction(un_async._resolve_credentials)
+
+
+class _FakeResponse:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status = status
+        self.url = "http://test.invalid/"
+        self.headers = {"Content-Type": "application/json"}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def text(self):
+        import json
+
+        return json.dumps(self._payload)
+
+
+class _FakeSession:
+    """Stands in for aiohttp.ClientSession; records every request it is asked to make."""
+
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def request(self, method, url, **kwargs):
+        _FakeSession.calls.append((method, url, kwargs))
+        return _FakeResponse({"success": True, "count": 2})
+
+
+class TestServiceEnvRequest:
+    """set_service_env must PUT /services/{id}/env with JSON {"env": {...}}"""
+
+    @pytest.mark.asyncio
+    async def test_set_service_env_puts_json_map(self):
+        import hashlib
+        import hmac
+        import json
+
+        _FakeSession.calls = []
+        with patch.object(un_async.aiohttp, "ClientSession", _FakeSession), patch(
+            "un_async.time.time", return_value=1700000000
+        ):
+            result = await un_async.set_service_env(
+                "unsb-service-abc", {"API_KEY": "x", "DEBUG": "true"}, "pk_test", "sk_test"
+            )
+
+        assert result == {"success": True, "count": 2}
+        assert len(_FakeSession.calls) == 1
+        method, url, kwargs = _FakeSession.calls[0]
+        assert method == "PUT"
+        assert url == f"{un_async.API_BASE}/services/unsb-service-abc/env"
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+
+        sent = kwargs["data"]
+        assert json.loads(sent) == {"env": {"API_KEY": "x", "DEBUG": "true"}}
+
+        # The signature covers exactly the bytes sent
+        message = f"1700000000:PUT:/services/unsb-service-abc/env:{sent.decode('utf-8')}"
+        expected = hmac.new(b"sk_test", message.encode(), hashlib.sha256).hexdigest()
+        assert kwargs["headers"]["X-Signature"] == expected
+
+
+class TestSignedBytesAreSentBytes:
+    """_make_request must sign exactly the body it sends ({} and None included)"""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data,expected_body", [({}, b"{}"), (None, None), ({"a": 1}, b'{"a": 1}')])
+    async def test_signature_verifies_against_sent_body(self, data, expected_body):
+        import hashlib
+        import hmac
+
+        _FakeSession.calls = []
+        with patch.object(un_async.aiohttp, "ClientSession", _FakeSession):
+            await un_async._make_request("POST", "/services/unsb-service-abc/freeze", "pk_test", "sk_test", data)
+
+        method, _url, kwargs = _FakeSession.calls[0]
+        assert method == "POST"
+        assert "json" not in kwargs
+        sent = kwargs["data"]
+        assert sent == expected_body
+        ts = kwargs["headers"]["X-Timestamp"]
+        message = f"{ts}:POST:/services/unsb-service-abc/freeze:{(sent or b'').decode('utf-8')}"
+        expected = hmac.new(b"sk_test", message.encode(), hashlib.sha256).hexdigest()
+        assert kwargs["headers"]["X-Signature"] == expected
+
+
+class TestSnapshotRoutes:
+    """Snapshots are made at POST /sessions/{id}/snapshot & /services/{id}/snapshot"""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["session", "service"])
+    async def test_snapshot_posts_to_resource_route(self, kind):
+        import json
+
+        _FakeSession.calls = []
+        make = un_async.session_snapshot if kind == "session" else un_async.service_snapshot
+        with patch.object(un_async.aiohttp, "ClientSession", _FakeSession):
+            await make("unsb-x-1", "pk_test", "sk_test", name="nightly", hot=True)
+
+        method, url, kwargs = _FakeSession.calls[0]
+        assert method == "POST"
+        assert url == f"{un_async.API_BASE}/{kind}s/unsb-x-1/snapshot"
+        assert json.loads(kwargs["data"]) == {"hot": True, "name": "nightly"}
+
+
+class TestSyncAsyncParity:
+    """Every public function of the sync client exists in the async client with the same parameters"""
+
+    def test_same_public_functions_and_parameters(self):
+        import inspect
+
+        sync_dir = os.path.join(os.path.dirname(__file__), "..", "..", "sync", "src")
+        sys.path.insert(0, sync_dir)
+        try:
+            import un
+        finally:
+            sys.path.remove(sync_dir)
+
+        def public(mod):
+            return {
+                name: [p.name for p in inspect.signature(fn).parameters.values()]
+                for name, fn in vars(mod).items()
+                if inspect.isfunction(fn) and not name.startswith("_") and fn.__module__ == mod.__name__
+            }
+
+        assert public(un) == public(un_async)

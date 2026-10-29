@@ -256,3 +256,101 @@ class TestIntegrationMocked:
 
         with pytest.raises(requests.Timeout):
             get_job("job_123")
+
+
+class TestServiceEnvRequest:
+    """set_service_env must PUT /services/{id}/env with JSON {"env": {...}}"""
+
+    @patch("un.requests.post")
+    @patch("un.requests.put")
+    @patch("un.time.time", return_value=1700000000)
+    def test_set_service_env_puts_json_map(self, _mock_time, mock_put, mock_post):
+        import hashlib
+        import hmac
+
+        import un
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"success": True, "count": 2}
+        mock_put.return_value = mock_response
+
+        result = un.set_service_env(
+            "unsb-service-abc", {"API_KEY": "x", "DEBUG": "true"}, "pk_test", "sk_test"
+        )
+
+        assert result == {"success": True, "count": 2}
+        mock_post.assert_not_called()
+        mock_put.assert_called_once()
+        url = mock_put.call_args[0][0]
+        kwargs = mock_put.call_args[1]
+        assert url == f"{un.API_BASE}/services/unsb-service-abc/env"
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+
+        sent = kwargs["data"]
+        assert json.loads(sent) == {"env": {"API_KEY": "x", "DEBUG": "true"}}
+
+        # The signature covers exactly the bytes sent
+        message = f"1700000000:PUT:/services/unsb-service-abc/env:{sent.decode('utf-8')}"
+        expected = hmac.new(b"sk_test", message.encode(), hashlib.sha256).hexdigest()
+        assert kwargs["headers"]["X-Signature"] == expected
+        assert kwargs["headers"]["X-Timestamp"] == "1700000000"
+
+
+class TestSignedBytesAreSentBytes:
+    """_make_request must sign exactly the body it sends, for every method"""
+
+    @staticmethod
+    def _verify(kwargs, method, path):
+        import hashlib
+        import hmac
+
+        sent = kwargs.get("data")
+        sent_str = sent.decode("utf-8") if sent else ""
+        ts = kwargs["headers"]["X-Timestamp"]
+        message = f"{ts}:{method}:{path}:{sent_str}"
+        expected = hmac.new(b"sk_test", message.encode(), hashlib.sha256).hexdigest()
+        assert kwargs["headers"]["X-Signature"] == expected
+        assert "json" not in kwargs
+        return sent
+
+    @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+    @pytest.mark.parametrize("data,expected_body", [({}, b"{}"), (None, None), ({"a": 1}, b'{"a": 1}')])
+    def test_signature_verifies_against_sent_body(self, method, data, expected_body):
+        import un
+
+        with patch(f"un.requests.{method.lower()}") as mock_send:
+            mock_send.return_value = MagicMock(**{"json.return_value": {"ok": True}})
+            un._make_request(method, "/services/unsb-service-abc/freeze", "pk_test", "sk_test", data)
+
+        kwargs = mock_send.call_args[1]
+        sent = self._verify(kwargs, method, "/services/unsb-service-abc/freeze")
+        assert sent == expected_body
+
+    @patch("un.requests.post")
+    def test_freeze_service_signs_empty_object(self, mock_post):
+        """freeze_service passes {}: signed "{}" must equal sent "{}" (was 401)"""
+        import un
+
+        mock_post.return_value = MagicMock(**{"json.return_value": {"ok": True}})
+        un.freeze_service("unsb-service-abc", "pk_test", "sk_test")
+
+        kwargs = mock_post.call_args[1]
+        assert self._verify(kwargs, "POST", "/services/unsb-service-abc/freeze") == b"{}"
+
+
+class TestSnapshotRoutes:
+    """Snapshots are made at POST /sessions/{id}/snapshot & /services/{id}/snapshot"""
+
+    @pytest.mark.parametrize("kind", ["session", "service"])
+    @patch("un.requests.post")
+    def test_snapshot_posts_to_resource_route(self, mock_post, kind):
+        import un
+
+        mock_post.return_value = MagicMock(**{"json.return_value": {"id": "unsb-snapshot-1"}})
+        make = un.session_snapshot if kind == "session" else un.service_snapshot
+        snapshot_id = make("unsb-x-1", "pk_test", "sk_test", name="nightly", hot=True)
+
+        assert snapshot_id == "unsb-snapshot-1"
+        url = mock_post.call_args[0][0]
+        assert url == f"{un.API_BASE}/{kind}s/unsb-x-1/snapshot"
+        assert json.loads(mock_post.call_args[1]["data"]) == {"hot": True, "name": "nightly"}

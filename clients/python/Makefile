@@ -15,7 +15,7 @@
 # The Makefile manages a .venv automatically. No manual pip install needed.
 
 .PHONY: all test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async lint format clean help examples venv
+.PHONY: test-sync test-async lint format clean help examples venv gen-async
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -49,6 +49,7 @@ help:
 	@echo ""
 	@echo "Development:"
 	@echo "  make venv               Create/update virtual environment"
+	@echo "  make gen-async          Regenerate async/src/un_async.py from sync/src/un.py"
 	@echo "  make lint               Lint both SDKs"
 	@echo "  make format             Format both SDKs"
 	@echo "  make examples           Run example scripts"
@@ -196,6 +197,9 @@ test-async: $(VENV)/.deps-installed
 # ============================================================================
 # Development
 # ============================================================================
+
+gen-async:
+	@python3 scripts/gen_async.py $(SYNC_DIR)/src/un.py $(ASYNC_DIR)/src/un_async.py
 
 lint: $(VENV)/.deps-installed
 	@echo "Linting Python SDKs..."

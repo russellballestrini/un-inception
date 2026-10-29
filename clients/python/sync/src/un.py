@@ -187,9 +187,11 @@ def _make_request(
     _check_requests()
     url = f"{API_BASE}{path}"
     timestamp = int(time.time())
-    body = json.dumps(data) if data else ""
+    # Serialize once: the bytes we sign are the bytes we send ({} included)
+    body = json.dumps(data) if data is not None else ""
+    payload = body.encode("utf-8") if body and method != "GET" else None
 
-    signature = _sign_request(secret_key, timestamp, method, path, body if data else None)
+    signature = _sign_request(secret_key, timestamp, method, path, body if payload else "")
 
     headers = {
         "Authorization": f"Bearer {public_key}",
@@ -201,11 +203,13 @@ def _make_request(
     if method == "GET":
         response = requests.get(url, headers=headers, timeout=120)
     elif method == "POST":
-        response = requests.post(url, headers=headers, json=data, timeout=120)
+        response = requests.post(url, headers=headers, data=payload, timeout=120)
+    elif method == "PUT":
+        response = requests.put(url, headers=headers, data=payload, timeout=120)
     elif method == "PATCH":
-        response = requests.patch(url, headers=headers, json=data, timeout=120)
+        response = requests.patch(url, headers=headers, data=payload, timeout=120)
     elif method == "DELETE":
-        response = requests.delete(url, headers=headers, timeout=120)
+        response = requests.delete(url, headers=headers, data=payload, timeout=120)
     else:
         raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -233,9 +237,11 @@ def _make_request_with_sudo(
 
     url = f"{API_BASE}{path}"
     timestamp = int(time.time())
-    body = json.dumps(data) if data else ""
+    # Serialize once: the bytes we sign are the bytes we send ({} included)
+    body = json.dumps(data) if data is not None else ""
+    payload = body.encode("utf-8") if body and method != "GET" else None
 
-    signature = _sign_request(secret_key, timestamp, method, path, body if data else None)
+    signature = _sign_request(secret_key, timestamp, method, path, body if payload else "")
 
     headers = {
         "Authorization": f"Bearer {public_key}",
@@ -247,11 +253,13 @@ def _make_request_with_sudo(
     if method == "GET":
         response = requests.get(url, headers=headers, timeout=120)
     elif method == "POST":
-        response = requests.post(url, headers=headers, json=data, timeout=120)
+        response = requests.post(url, headers=headers, data=payload, timeout=120)
+    elif method == "PUT":
+        response = requests.put(url, headers=headers, data=payload, timeout=120)
     elif method == "PATCH":
-        response = requests.patch(url, headers=headers, json=data, timeout=120)
+        response = requests.patch(url, headers=headers, data=payload, timeout=120)
     elif method == "DELETE":
-        response = requests.delete(url, headers=headers, timeout=120)
+        response = requests.delete(url, headers=headers, data=payload, timeout=120)
     else:
         raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -274,7 +282,7 @@ def _make_request_with_sudo(
 
         # Retry with sudo headers
         retry_timestamp = int(time.time())
-        retry_signature = _sign_request(secret_key, retry_timestamp, method, path, body if data else None)
+        retry_signature = _sign_request(secret_key, retry_timestamp, method, path, body if payload else "")
 
         retry_headers = {
             "Authorization": f"Bearer {public_key}",
@@ -288,11 +296,13 @@ def _make_request_with_sudo(
         if method == "GET":
             response = requests.get(url, headers=retry_headers, timeout=120)
         elif method == "POST":
-            response = requests.post(url, headers=retry_headers, json=data, timeout=120)
+            response = requests.post(url, headers=retry_headers, data=payload, timeout=120)
+        elif method == "PUT":
+            response = requests.put(url, headers=retry_headers, data=payload, timeout=120)
         elif method == "PATCH":
-            response = requests.patch(url, headers=retry_headers, json=data, timeout=120)
+            response = requests.patch(url, headers=retry_headers, data=payload, timeout=120)
         elif method == "DELETE":
-            response = requests.delete(url, headers=retry_headers, timeout=120)
+            response = requests.delete(url, headers=retry_headers, data=payload, timeout=120)
 
     response.raise_for_status()
     return response.json()
@@ -673,7 +683,8 @@ def session_snapshot(
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     name: Optional[str] = None,
-    ephemeral: bool = False,
+    hot: bool = False,
+    ephemeral: Optional[bool] = None,
 ) -> str:
     """
     Create a snapshot of a session.
@@ -683,7 +694,8 @@ def session_snapshot(
         public_key: Optional API key
         secret_key: Optional API secret
         name: Optional snapshot name
-        ephemeral: If True, snapshot is temporary and may be auto-deleted
+        hot: If True, snapshot the running session without stopping it
+        ephemeral: Deprecated and ignored (the API never read it); use hot
 
     Returns:
         Snapshot ID
@@ -694,12 +706,12 @@ def session_snapshot(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    data = {"session_id": session_id, "ephemeral": ephemeral}
+    data: Dict[str, Any] = {"hot": bool(hot)}
     if name:
         data["name"] = name
 
-    response = _make_request("POST", "/snapshots", public_key, secret_key, data)
-    return response.get("snapshot_id")
+    response = _make_request("POST", f"/sessions/{session_id}/snapshot", public_key, secret_key, data)
+    return response.get("snapshot_id") or response.get("id")
 
 
 def service_snapshot(
@@ -707,6 +719,7 @@ def service_snapshot(
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
     name: Optional[str] = None,
+    hot: bool = False,
 ) -> str:
     """
     Create a snapshot of a service.
@@ -716,6 +729,7 @@ def service_snapshot(
         public_key: Optional API key
         secret_key: Optional API secret
         name: Optional snapshot name
+        hot: If True, snapshot the running service without stopping it
 
     Returns:
         Snapshot ID
@@ -726,12 +740,12 @@ def service_snapshot(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    data = {"service_id": service_id}
+    data: Dict[str, Any] = {"hot": bool(hot)}
     if name:
         data["name"] = name
 
-    response = _make_request("POST", "/snapshots", public_key, secret_key, data)
-    return response.get("snapshot_id")
+    response = _make_request("POST", f"/services/{service_id}/snapshot", public_key, secret_key, data)
+    return response.get("snapshot_id") or response.get("id")
 
 
 def list_snapshots(
@@ -1572,17 +1586,13 @@ def set_service_env(
         CredentialsError: Missing credentials
     """
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
-    # Convert dict to .env format for the API
-    env_content = "\n".join(f"{k}={v}" for k, v in env_dict.items())
-
-    # Note: This endpoint expects text/plain body, but we'll send as JSON
-    # and let the API handle conversion
+    # PUT /services/{id}/env takes JSON {"env": {KEY: value, ...}}
     return _make_request(
-        "POST",
+        "PUT",
         f"/services/{service_id}/env",
         public_key,
         secret_key,
-        {"env": env_content},
+        {"env": dict(env_dict)},
     )
 
 
@@ -3210,7 +3220,7 @@ def _handle_session_command(args, public_key: str, secret_key: str):
         snapshot_id = session_snapshot(
             args.snapshot, public_key, secret_key,
             name=args.snapshot_name,
-            ephemeral=not args.hot
+            hot=args.hot
         )
         print(f"Snapshot created: {snapshot_id}")
     else:
@@ -3337,7 +3347,8 @@ def _handle_service_command(args, public_key: str, secret_key: str):
     elif args.snapshot:
         snapshot_id = service_snapshot(
             args.snapshot, public_key, secret_key,
-            name=getattr(args, 'snapshot_name', None)
+            name=getattr(args, 'snapshot_name', None),
+            hot=getattr(args, 'hot', False)
         )
         print(f"Snapshot created: {snapshot_id}")
     elif args.name:
