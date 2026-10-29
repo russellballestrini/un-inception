@@ -333,8 +333,9 @@ func handleSudoChallenge(responseData: [String: Any], publicKey: String, secretK
     request.timeoutInterval = 120
 
     let timestamp = Int(Date().timeIntervalSince1970)
-    let bodyStr = body ?? ""
-    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: method != "GET" && method != "DELETE" ? bodyStr : nil)
+    // Sign exactly the body we send (none for GET)
+    let sentBody: String? = (method != "GET" && !(body ?? "").isEmpty) ? body : nil
+    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: sentBody)
 
     request.setValue("Bearer \(publicKey)", forHTTPHeaderField: "Authorization")
     request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
@@ -345,8 +346,8 @@ func handleSudoChallenge(responseData: [String: Any], publicKey: String, secretK
         request.setValue(challengeId, forHTTPHeaderField: "X-Sudo-Challenge")
     }
 
-    if let body = body, !body.isEmpty {
-        request.httpBody = body.data(using: .utf8)
+    if let sentBody = sentBody {
+        request.httpBody = sentBody.data(using: .utf8)
     }
 
     var result: [String: Any]?
@@ -409,13 +410,14 @@ func makeRequestWithSudo(method: String, path: String, publicKey: String, secret
     let timestamp = Int(Date().timeIntervalSince1970)
     var bodyStr: String? = nil
 
-    if let data = data {
+    // Sign exactly the body we send: every method but GET sends its data ({} included)
+    if let data = data, method != "GET" {
         let jsonData = try JSONSerialization.data(withJSONObject: data)
         bodyStr = String(data: jsonData, encoding: .utf8)
         request.httpBody = jsonData
     }
 
-    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: method != "GET" && method != "DELETE" ? bodyStr : nil)
+    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: bodyStr)
 
     request.setValue("Bearer \(publicKey)", forHTTPHeaderField: "Authorization")
     request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
@@ -481,13 +483,14 @@ func makeRequest(method: String, path: String, publicKey: String, secretKey: Str
     let timestamp = Int(Date().timeIntervalSince1970)
     var bodyStr: String? = nil
 
-    if let data = data {
+    // Sign exactly the body we send: every method but GET sends its data ({} included)
+    if let data = data, method != "GET" {
         let jsonData = try JSONSerialization.data(withJSONObject: data)
         bodyStr = String(data: jsonData, encoding: .utf8)
         request.httpBody = jsonData
     }
 
-    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: method != "GET" && method != "DELETE" ? bodyStr : nil)
+    let signature = signRequest(secretKey: secretKey, timestamp: timestamp, method: method, path: path, body: bodyStr)
 
     request.setValue("Bearer \(publicKey)", forHTTPHeaderField: "Authorization")
     request.setValue("\(timestamp)", forHTTPHeaderField: "X-Timestamp")
@@ -1055,8 +1058,8 @@ func getServiceEnv(_ serviceId: String, publicKey: String? = nil, secretKey: Str
 /// Set environment variables for a service
 func setServiceEnv(_ serviceId: String, envDict: [String: String], publicKey: String? = nil, secretKey: String? = nil) throws -> [String: Any] {
     let (pk, sk) = try resolveCredentials(publicKey: publicKey, secretKey: secretKey)
-    let envContent = envDict.map { "\($0.key)=\($0.value)" }.joined(separator: "\n")
-    return try makeRequest(method: "POST", path: "/services/\(serviceId)/env", publicKey: pk, secretKey: sk, data: ["env": envContent])
+    // PUT /services/{id}/env takes JSON {"env": {KEY: value, ...}}
+    return try makeRequest(method: "PUT", path: "/services/\(serviceId)/env", publicKey: pk, secretKey: sk, data: ["env": envDict])
 }
 
 /// Delete environment vault from a service
