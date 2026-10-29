@@ -1400,7 +1400,7 @@ func SetServiceEnv(creds *Credentials, serviceID string, env map[string]string) 
 	go func() {
 		defer close(resultChan)
 
-		response, err := makeRequest("POST", fmt.Sprintf("/services/%s/env", serviceID), creds, env)
+		response, err := makeRequest("PUT", fmt.Sprintf("/services/%s/env", serviceID), creds, map[string]interface{}{"env": env})
 		resultChan <- ServiceResult{Data: response, Err: err}
 	}()
 

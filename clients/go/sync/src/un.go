@@ -1040,7 +1040,7 @@ func GetServiceEnv(creds *Credentials, serviceID string) (map[string]interface{}
 //	serviceID: Service ID
 //	env: Map of environment variable names to values
 func SetServiceEnv(creds *Credentials, serviceID string, env map[string]string) (map[string]interface{}, error) {
-	return makeRequest("POST", fmt.Sprintf("/services/%s/env", serviceID), creds, env)
+	return makeRequest("PUT", fmt.Sprintf("/services/%s/env", serviceID), creds, map[string]interface{}{"env": env})
 }
 
 // DeleteServiceEnv deletes environment variables from a service.

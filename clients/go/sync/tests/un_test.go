@@ -19,7 +19,14 @@
 package un
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -375,5 +382,73 @@ func TestListImages(t *testing.T) {
 	// Should return a list (possibly empty)
 	if images == nil {
 		t.Error("ListImages returned nil")
+	}
+}
+
+// captureTransport records the outgoing request and answers with a canned JSON body,
+// so a test can see exactly what the SDK puts on the wire without calling the API.
+type captureTransport struct {
+	method string
+	url    string
+	header http.Header
+	body   []byte
+}
+
+func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.method = req.Method
+	c.url = req.URL.String()
+	c.header = req.Header.Clone()
+	if req.Body != nil {
+		c.body, _ = io.ReadAll(req.Body)
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"success":true,"count":2}`)),
+		Request:    req,
+	}, nil
+}
+
+func TestSetServiceEnvPutsJSONMap(t *testing.T) {
+	capture := &captureTransport{}
+	saved := http.DefaultTransport
+	http.DefaultTransport = capture
+	defer func() { http.DefaultTransport = saved }()
+
+	creds := &Credentials{PublicKey: "pk_test", SecretKey: "sk_test"}
+	env := map[string]string{"API_KEY": "x", "DEBUG": "true"}
+	result, err := SetServiceEnv(creds, "unsb-service-abc", env)
+	if err != nil {
+		t.Fatalf("SetServiceEnv returned error: %v", err)
+	}
+	if result["success"] != true {
+		t.Errorf("result = %v, want success", result)
+	}
+	if capture.method != "PUT" {
+		t.Errorf("method = %q, want PUT", capture.method)
+	}
+	if capture.url != APIBase+"/services/unsb-service-abc/env" {
+		t.Errorf("url = %q", capture.url)
+	}
+	if ct := capture.header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var sent struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(capture.body, &sent); err != nil {
+		t.Fatalf("body is not JSON: %v (%s)", err, capture.body)
+	}
+	if len(sent.Env) != 2 || sent.Env["API_KEY"] != "x" || sent.Env["DEBUG"] != "true" {
+		t.Errorf("body env = %v, want %v", sent.Env, env)
+	}
+
+	// The signature covers exactly the bytes sent
+	ts := capture.header.Get("X-Timestamp")
+	mac := hmac.New(sha256.New, []byte("sk_test"))
+	mac.Write([]byte(ts + ":PUT:/services/unsb-service-abc/env:" + string(capture.body)))
+	if want := hex.EncodeToString(mac.Sum(nil)); capture.header.Get("X-Signature") != want {
+		t.Errorf("X-Signature = %q, want %q", capture.header.Get("X-Signature"), want)
 	}
 }
