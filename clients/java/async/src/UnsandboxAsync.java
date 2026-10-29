@@ -1950,42 +1950,32 @@ public class UnsandboxAsync {
 
         String signature = signRequest(secretKey, timestamp, method, path, data != null ? body : null);
 
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setRequestMethod(method);
-        conn.setConnectTimeout(DEFAULT_TIMEOUT_MS);
-        conn.setReadTimeout(DEFAULT_TIMEOUT_MS);
-
-        conn.setRequestProperty("Authorization", "Bearer " + publicKey);
-        conn.setRequestProperty("X-Timestamp", String.valueOf(timestamp));
-        conn.setRequestProperty("X-Signature", signature);
-        conn.setRequestProperty("Content-Type", "application/json");
-
-        if (data != null) {
-            conn.setDoOutput(true);
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(body.getBytes(StandardCharsets.UTF_8));
-            }
+        // HttpURLConnection refuses PATCH (ProtocolException); java.net.http.HttpClient
+        // sends any method, with exactly the body we signed.
+        java.net.http.HttpRequest.BodyPublisher publisher = data != null
+            ? java.net.http.HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)
+            : java.net.http.HttpRequest.BodyPublishers.noBody();
+        java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+            .timeout(java.time.Duration.ofMillis(DEFAULT_TIMEOUT_MS))
+            .header("Authorization", "Bearer " + publicKey)
+            .header("X-Timestamp", String.valueOf(timestamp))
+            .header("X-Signature", signature)
+            .header("Content-Type", "application/json")
+            .method(method, publisher)
+            .build();
+        java.net.http.HttpResponse<String> response;
+        try {
+            response = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofMillis(DEFAULT_TIMEOUT_MS))
+                .build()
+                .send(request, java.net.http.HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Request interrupted", e);
         }
 
-        int responseCode = conn.getResponseCode();
-        String responseBody;
-
-        InputStream inputStream = (responseCode >= 200 && responseCode < 300)
-            ? conn.getInputStream()
-            : conn.getErrorStream();
-
-        if (inputStream == null) {
-            responseBody = "";
-        } else {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
-                }
-                responseBody = sb.toString();
-            }
-        }
+        int responseCode = response.statusCode();
+        String responseBody = response.body();
 
         if (responseCode < 200 || responseCode >= 300) {
             throw new ApiException(
