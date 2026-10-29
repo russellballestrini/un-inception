@@ -2082,7 +2082,8 @@ HELP;
         $url = self::apiBase() . $path;
         $timestamp = time();
         // Sign exactly the body we send: a GET sends none
-        $body = ($data !== null && $method !== 'GET') ? json_encode($data) : '';
+        // An empty body is the object {} (json_encode([]) gives [])
+        $body = ($data !== null && $method !== 'GET') ? ($data === [] ? '{}' : json_encode($data)) : '';
 
         $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $data !== null ? $body : null);
 
@@ -2167,7 +2168,8 @@ HELP;
         $url = self::apiBase() . $path;
         $timestamp = time();
         // Sign exactly the body we send: a GET sends none
-        $body = ($data !== null && $method !== 'GET') ? json_encode($data) : '';
+        // An empty body is the object {} (json_encode([]) gives [])
+        $body = ($data !== null && $method !== 'GET') ? ($data === [] ? '{}' : json_encode($data)) : '';
 
         $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $data !== null ? $body : null);
 

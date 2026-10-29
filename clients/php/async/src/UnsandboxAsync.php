@@ -1275,7 +1275,8 @@ class UnsandboxAsync {
      */
     private function makeRequest(string $method, string $path, string $publicKey, string $secretKey, ?array $data = null): PromiseInterface {
         $timestamp = time();
-        $body = $data !== null ? json_encode($data) : '';
+        // An empty body is the object {} (json_encode([]) gives [])
+        $body = $data !== null ? ($data === [] ? '{}' : json_encode($data)) : '';
 
         $signature = $this->signRequest($secretKey, $timestamp, $method, $path, $data !== null ? $body : null);
 
