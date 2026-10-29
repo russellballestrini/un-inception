@@ -271,6 +271,24 @@ const CurlResult = struct {
     status: i32,
 };
 
+/// Quote a value for a POSIX shell: wrap it in single quotes, '\'' for each
+/// quote inside. Request bodies reach curl through `sh -c`; unquoted, a ' in
+/// code or a name would change the bytes sent but not the bytes signed.
+fn shellQuote(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var list = std.ArrayList(u8).init(allocator);
+    errdefer list.deinit();
+    try list.append('\'');
+    for (s) |c| {
+        if (c == '\'') {
+            try list.appendSlice("'\\''");
+        } else {
+            try list.append(c);
+        }
+    }
+    try list.append('\'');
+    return list.toOwnedSlice();
+}
+
 fn execCurlWithStatus(allocator: std.mem.Allocator, method: []const u8, endpoint: []const u8, body: []const u8, public_key: []const u8, secret_key: []const u8, extra_headers: []const u8) !CurlResult {
     const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ apiBase(), endpoint });
     defer allocator.free(url);
@@ -1793,7 +1811,9 @@ pub fn main() !u8 {
             defer allocator.free(json);
             const auth_headers = try buildAuthCmd(allocator, "POST", "/sessions", json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/sessions' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), auth_headers, json });
+            const q_body1 = try shellQuote(allocator, json);
+            defer allocator.free(q_body1);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/sessions' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), auth_headers, q_body1 });
             defer allocator.free(cmd);
             std.debug.print("\x1b[33mCreating session...\x1b[0m\n", .{});
             _ = runShell(cmd);
@@ -1934,7 +1954,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), exec_id, auth_headers, json });
+            const q_body2 = try shellQuote(allocator, json);
+            defer allocator.free(q_body2);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), exec_id, auth_headers, q_body2 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
             std.debug.print("\n", .{});
@@ -1946,7 +1968,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ apiBase(), bootstrap_id, auth_headers, json, tmp_file });
+            const q_body3 = try shellQuote(allocator, json);
+            defer allocator.free(q_body3);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services/{s}/execute' -H 'Content-Type: application/json' {s} --data-binary {s} -o {s}", .{ apiBase(), bootstrap_id, auth_headers, q_body3, tmp_file });
             defer allocator.free(cmd);
             _ = runShell(cmd);
 
@@ -2010,7 +2034,9 @@ pub fn main() !u8 {
             defer allocator.free(auth_headers);
 
             // Execute PATCH request
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), resize_id, auth_headers, json });
+            const q_body4 = try shellQuote(allocator, json);
+            defer allocator.free(q_body4);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), resize_id, auth_headers, q_body4 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
 
@@ -2033,7 +2059,9 @@ pub fn main() !u8 {
             const auth_headers = try buildAuthCmd(allocator, "PATCH", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
 
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), svc_id, auth_headers, json });
+            const q_body5 = try shellQuote(allocator, json);
+            defer allocator.free(q_body5);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X PATCH '{s}/services/{s}' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), svc_id, auth_headers, q_body5 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
 
@@ -2108,7 +2136,9 @@ pub fn main() !u8 {
             if (has_env) {
                 // Capture response to temp file to extract service_id
                 const response_file = "/tmp/unsandbox_service_create.json";
-                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}' -o {s}", .{ apiBase(), auth_headers, json_str, response_file });
+                const q_body6 = try shellQuote(allocator, json_str);
+                defer allocator.free(q_body6);
+                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} --data-binary {s} -o {s}", .{ apiBase(), auth_headers, q_body6, response_file });
                 defer allocator.free(cmd);
                 std.debug.print("{s}Creating service...{s}\n", .{ YELLOW, RESET });
                 _ = runShell(cmd);
@@ -2136,7 +2166,9 @@ pub fn main() !u8 {
                     }
                 }
             } else {
-                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), auth_headers, json_str });
+                const q_body7 = try shellQuote(allocator, json_str);
+                defer allocator.free(q_body7);
+                const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/services' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), auth_headers, q_body7 });
                 defer allocator.free(cmd);
                 std.debug.print("{s}Creating service...{s}\n", .{ YELLOW, RESET });
                 _ = runShell(cmd);
@@ -2394,7 +2426,9 @@ pub fn main() !u8 {
             defer allocator.free(json);
             const auth_headers = try buildAuthCmd(allocator, "POST", "/images/publish", json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/publish' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), auth_headers, json });
+            const q_body8 = try shellQuote(allocator, json);
+            defer allocator.free(q_body8);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/publish' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), auth_headers, q_body8 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
             std.debug.print("\n", .{});
@@ -2409,7 +2443,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/visibility' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), vis_id, auth_headers, json });
+            const q_body9 = try shellQuote(allocator, json);
+            defer allocator.free(q_body9);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/visibility' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), vis_id, auth_headers, q_body9 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
             std.debug.print("\n{s}Image visibility set to {s}: {s}{s}\n", .{ GREEN, visibility_mode.?, vis_id, RESET });
@@ -2422,7 +2458,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/spawn' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), spawn_id, auth_headers, json });
+            const q_body10 = try shellQuote(allocator, json);
+            defer allocator.free(q_body10);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/spawn' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), spawn_id, auth_headers, q_body10 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
             std.debug.print("\n", .{});
@@ -2434,7 +2472,9 @@ pub fn main() !u8 {
             defer allocator.free(path);
             const auth_headers = try buildAuthCmd(allocator, "POST", path, json, public_key, secret_key);
             defer allocator.free(auth_headers);
-            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/clone' -H 'Content-Type: application/json' {s} -d '{s}'", .{ apiBase(), clone_id, auth_headers, json });
+            const q_body11 = try shellQuote(allocator, json);
+            defer allocator.free(q_body11);
+            const cmd = try std.fmt.allocPrint(allocator, "curl -s -X POST '{s}/images/{s}/clone' -H 'Content-Type: application/json' {s} --data-binary {s}", .{ apiBase(), clone_id, auth_headers, q_body11 });
             defer allocator.free(cmd);
             _ = runShell(cmd);
             std.debug.print("\n", .{});
