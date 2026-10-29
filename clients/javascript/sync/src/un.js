@@ -470,7 +470,11 @@ function sleep(ms) {
 async function makeRequest(method, urlPath, publicKey, secretKey, data) {
   const url = `${API_BASE}${urlPath}`;
   const timestamp = Math.floor(Date.now() / 1000);
-  const body = data ? JSON.stringify(data) : '';
+  // A string is sent as-is (text/plain); anything else as JSON. A GET carries no
+  // body, so it signs none: the bytes we sign are always the bytes we send.
+  const isText = typeof data === 'string';
+  const sendsBody = method !== 'GET' && data !== undefined && data !== null && (!isText || data !== '');
+  const body = sendsBody ? (isText ? data : JSON.stringify(data)) : '';
 
   const signature = await signRequest(secretKey, timestamp, method, urlPath, body || null);
 
@@ -478,7 +482,7 @@ async function makeRequest(method, urlPath, publicKey, secretKey, data) {
     'Authorization': `Bearer ${publicKey}`,
     'X-Timestamp': timestamp.toString(),
     'X-Signature': signature,
-    'Content-Type': 'application/json',
+    'Content-Type': isText ? 'text/plain' : 'application/json',
     'User-Agent': 'un-js/2.0',
   };
 
@@ -488,8 +492,7 @@ async function makeRequest(method, urlPath, publicKey, secretKey, data) {
     signal: AbortSignal.timeout(120000), // 120 seconds timeout
   };
 
-  // Add body for methods that support it
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && body) {
+  if (sendsBody) {
     options.body = body;
   }
 
@@ -1339,9 +1342,8 @@ async function setServiceEnv(serviceId, env, publicKey, secretKey) {
       .map(([key, value]) => `${key}=${value}`)
       .join('\n');
   }
-  // Note: This endpoint uses PUT with text/plain body
-  // The makeRequest function sends JSON, so we need to handle this specially
-  return makeRequest('PUT', `/services/${serviceId}/env`, publicKey, secretKey, { content: envContent });
+  // PUT /services/{id}/env takes a raw .env body as text/plain
+  return makeRequest('PUT', `/services/${serviceId}/env`, publicKey, secretKey, String(envContent));
 }
 
 /**
