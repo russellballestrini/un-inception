@@ -325,7 +325,7 @@ def apiRequest(String endpoint, String method, data, String publicKey, String se
         def body = ""
         if (data) {
             body = data instanceof Map ? JsonOutput.toJson(data) : data.toString()
-            tempFile.text = body
+            tempFile.setText(body, 'UTF-8')
         }
 
         def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
@@ -344,7 +344,7 @@ def apiRequest(String endpoint, String method, data, String publicKey, String se
         }
 
         if (data) {
-            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+            curlCmd += ['--data-binary', "@${tempFile.absolutePath}"]
         }
 
         def proc = curlCmd.execute()
@@ -403,7 +403,7 @@ def apiRequestDestructive(String endpoint, String method, data, String publicKey
         def body = ""
         if (data) {
             body = data instanceof Map ? JsonOutput.toJson(data) : data.toString()
-            tempFile.text = body
+            tempFile.setText(body, 'UTF-8')
         }
 
         def timestamp = (System.currentTimeMillis() / 1000) as long
@@ -418,7 +418,7 @@ def apiRequestDestructive(String endpoint, String method, data, String publicKey
                        '-o', statusFile.absolutePath]
 
         if (data) {
-            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+            curlCmd += ['--data-binary', "@${tempFile.absolutePath}"]
         }
 
         def proc = curlCmd.execute()
@@ -470,7 +470,7 @@ def apiRequestWithSudo(String endpoint, String method, data, String publicKey, S
         def body = ""
         if (data) {
             body = data instanceof Map ? JsonOutput.toJson(data) : data.toString()
-            tempFile.text = body
+            tempFile.setText(body, 'UTF-8')
         }
 
         def timestamp = (System.currentTimeMillis() / 1000) as long
@@ -490,7 +490,7 @@ def apiRequestWithSudo(String endpoint, String method, data, String publicKey, S
         }
 
         if (data) {
-            curlCmd += ['-d', "@${tempFile.absolutePath}"]
+            curlCmd += ['--data-binary', "@${tempFile.absolutePath}"]
         }
 
         def proc = curlCmd.execute()
@@ -553,7 +553,7 @@ def apiRequestText(endpoint, method, body, publicKey, secretKey) {
     def tempFile = File.createTempFile('un_env_', '.txt')
     try {
         if (body) {
-            tempFile.text = body
+            tempFile.setText(body, 'UTF-8')
         }
 
         def curlCmd = ['curl', '-s', '-X', method, "${API_BASE}${endpoint}",
