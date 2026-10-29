@@ -291,7 +291,8 @@ api_request <- function(endpoint, public_key, secret_key, method = "GET", data =
     # Sign exactly the body we send: a GET sends none
     body_content <- ""
     if (!is.null(data) && method != "GET") {
-        body_content <- as.character(toJSON(data, auto_unbox = TRUE))
+        # An empty list is the object {} (toJSON(list()) gives [])
+        body_content <- if (length(data) == 0) "{}" else as.character(toJSON(data, auto_unbox = TRUE))
     }
 
     headers <- build_auth_headers(method, endpoint, body_content, public_key, secret_key)
@@ -354,7 +355,8 @@ api_request_with_sudo <- function(endpoint, public_key, secret_key, method = "DE
     # Sign exactly the body we send: a GET sends none
     body_content <- ""
     if (!is.null(data) && method != "GET") {
-        body_content <- as.character(toJSON(data, auto_unbox = TRUE))
+        # An empty list is the object {} (toJSON(list()) gives [])
+        body_content <- if (length(data) == 0) "{}" else as.character(toJSON(data, auto_unbox = TRUE))
     }
 
     headers <- build_auth_headers(method, endpoint, body_content, public_key, secret_key)
