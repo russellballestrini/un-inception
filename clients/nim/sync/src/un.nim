@@ -392,7 +392,7 @@ proc handleSudoChallenge(responseData, meth, endpoint, body, publicKey, secretKe
     cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X DELETE '{API_BASE}{endpoint}' {authHeaders} {otpHeader}{challengeHeader}"""
   elif meth == "POST":
     let contentType = if body != "": "-H 'Content-Type: application/json'" else: ""
-    cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X POST '{API_BASE}{endpoint}' {contentType} {authHeaders} {otpHeader}{challengeHeader} -d '{body}'"""
+    cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X POST '{API_BASE}{endpoint}' {contentType} {authHeaders} {otpHeader}{challengeHeader} --data-binary {quoteShell($body)}"""
   else:
     return false
 
@@ -435,7 +435,7 @@ proc execCurlDeleteWithSudo(endpoint, publicKey, secretKey: string): int =
 
 proc execCurlPostWithSudo(endpoint, body, publicKey, secretKey: string): int =
   let authHeaders = buildAuthHeaders("POST", endpoint, body, publicKey, secretKey)
-  let cmd = fmt"""curl -s -w '\n%{{http_code}}' -X POST '{API_BASE}{endpoint}' -H 'Content-Type: application/json' {authHeaders} -d '{body}'"""
+  let cmd = fmt"""curl -s -w '\n%{{http_code}}' -X POST '{API_BASE}{endpoint}' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($body)}"""
   let output = execProcess(cmd)
 
   # Parse response body and status code
@@ -533,7 +533,7 @@ proc cmdExecute(sourceFile: string, envs: seq[string], artifacts: bool, network:
   json.add("}")
 
   let authHeaders = buildAuthHeaders("POST", "/execute", json, publicKey, secretKey)
-  let cmd = fmt"""curl -s -X POST '{API_BASE}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+  let cmd = fmt"""curl -s -X POST '{API_BASE}/execute' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
   echo execCurl(cmd)
 
 proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execute, command, shell, network: string, vcpu: int, tmux, screen: bool, inputFiles: seq[string], publicKey: string, secretKey: string) =
@@ -579,7 +579,7 @@ proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execut
     let json = fmt"""{{"vcpu":{boostVcpu}}}"""
     let path = fmt"/sessions/{boost}/boost"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{boost}/boost' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{boost}/boost' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     discard execCurl(cmd)
     echo GREEN & "Session boosted to " & $boostVcpu & " vCPU: " & boost & RESET
     return
@@ -596,7 +596,7 @@ proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execut
     let json = fmt"""{{"command":"{escapeJson(command)}"}}"""
     let path = fmt"/sessions/{execute}/execute"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let result = execCurl(cmd)
 
     let stdoutStart = result.find("\"stdout\":\"")
@@ -638,7 +638,7 @@ proc cmdSession(list: bool, kill, info, freeze, unfreeze, boost, unboost, execut
 
   echo YELLOW & "Creating session..." & RESET
   let authHeaders = buildAuthHeaders("POST", "/sessions", json, publicKey, secretKey)
-  let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+  let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
   echo execCurl(cmd)
 
 proc setServiceUnfreezeOnDemand(serviceId: string, enabled: bool, publicKey: string, secretKey: string): bool =
@@ -646,7 +646,7 @@ proc setServiceUnfreezeOnDemand(serviceId: string, enabled: bool, publicKey: str
   let json = fmt"""{{"unfreeze_on_demand":{enabledStr}}}"""
   let path = fmt"/services/{serviceId}"
   let authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey)
-  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X PATCH '{API_BASE}/services/{serviceId}' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+  let cmd = fmt"""curl -s -o /dev/null -w '%{{http_code}}' -X PATCH '{API_BASE}/services/{serviceId}' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
   let output = execProcess(cmd).strip()
   try:
     let status = parseInt(output)
@@ -723,7 +723,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     let json = fmt"""{{"vcpu":{resizeVcpu}}}"""
     let path = fmt"/services/{resize}"
     let authHeaders = buildAuthHeaders("PATCH", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X PATCH '{API_BASE}/services/{resize}' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X PATCH '{API_BASE}/services/{resize}' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     discard execCurl(cmd)
     let ram = resizeVcpu * 2
     echo GREEN & "Service resized to " & $resizeVcpu & " vCPU, " & $ram & " GB RAM" & RESET
@@ -774,7 +774,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     json.add("}")
     let path = fmt"/services/{redeploy}/redeploy"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{redeploy}/redeploy' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{redeploy}/redeploy' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Service redeployed: " & redeploy & RESET
     echo response
@@ -784,7 +784,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     let json = fmt"""{{"command":"{escapeJson(command)}"}}"""
     let path = fmt"/services/{execute}/execute"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{execute}/execute' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let result = execCurl(cmd)
 
     # Simple parsing for stdout/stderr
@@ -820,7 +820,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
     let json = """{"command":"cat /tmp/bootstrap.sh"}"""
     let path = fmt"/services/{dumpBootstrap}/execute"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{dumpBootstrap}/execute' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{dumpBootstrap}/execute' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let result = execCurl(cmd)
 
     let stdoutStart = result.find("\"stdout\":\"")
@@ -876,7 +876,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
 
     echo YELLOW & "Creating service..." & RESET
     let authHeaders = buildAuthHeaders("POST", "/services", json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo response
 
@@ -1046,7 +1046,7 @@ proc cmdSnapshot(list: bool, infoId, sessionId, serviceId, restoreId, deleteId, 
     json.add("}")
     let path = fmt"/sessions/{sessionId}/snapshot"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{sessionId}/snapshot' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/sessions/{sessionId}/snapshot' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Snapshot created" & RESET
     echo response
@@ -1064,7 +1064,7 @@ proc cmdSnapshot(list: bool, infoId, sessionId, serviceId, restoreId, deleteId, 
     json.add("}")
     let path = fmt"/services/{serviceId}/snapshot"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{serviceId}/snapshot' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/services/{serviceId}/snapshot' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Snapshot created" & RESET
     echo response
@@ -1115,7 +1115,7 @@ proc cmdSnapshot(list: bool, infoId, sessionId, serviceId, restoreId, deleteId, 
     json.add("}")
     let path = fmt"/snapshots/{cloneId}/clone"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/snapshots/{cloneId}/clone' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/snapshots/{cloneId}/clone' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Snapshot cloned" & RESET
     echo response
@@ -1444,7 +1444,7 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     if name != "": json.add(fmt""","name":"{name}"""")
     json.add("}")
     let authHeaders = buildAuthHeaders("POST", "/images/publish", json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/publish' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/publish' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Image published" & RESET
     echo response
@@ -1454,7 +1454,7 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     let json = fmt"""{{"visibility":"{visibilityMode}"}}"""
     let path = fmt"/images/{visibilityId}/visibility"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{visibilityId}/visibility' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{visibilityId}/visibility' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     discard execCurl(cmd)
     echo GREEN & "Image visibility set to " & visibilityMode & ": " & visibilityId & RESET
     return
@@ -1471,7 +1471,7 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     json.add("}")
     let path = fmt"/images/{spawnId}/spawn"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{spawnId}/spawn' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{spawnId}/spawn' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Service spawned from image" & RESET
     echo response
@@ -1484,7 +1484,7 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     json.add("}")
     let path = fmt"/images/{cloneId}/clone"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{cloneId}/clone' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{cloneId}/clone' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     let response = execCurl(cmd)
     echo GREEN & "Image cloned" & RESET
     echo response
@@ -1497,7 +1497,7 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     let json = fmt"""{{"trusted_api_key":"{trustedKey}"}}"""
     let path = fmt"/images/{grantId}/grant"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{grantId}/grant' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{grantId}/grant' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     discard execCurl(cmd)
     echo GREEN & "Access granted to " & trustedKey & RESET
     return
@@ -1509,7 +1509,7 @@ proc cmdImage(list: bool, infoId, deleteId, lockId, unlockId, publishId, sourceT
     let json = fmt"""{{"trusted_api_key":"{trustedKey}"}}"""
     let path = fmt"/images/{revokeId}/revoke"
     let authHeaders = buildAuthHeaders("POST", path, json, publicKey, secretKey)
-    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{revokeId}/revoke' -H 'Content-Type: application/json' {authHeaders} -d '{json}'"""
+    let cmd = fmt"""curl -s -X POST '{API_BASE}/images/{revokeId}/revoke' -H 'Content-Type: application/json' {authHeaders} --data-binary {quoteShell($json)}"""
     discard execCurl(cmd)
     echo GREEN & "Access revoked from " & trustedKey & RESET
     return
