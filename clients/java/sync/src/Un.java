@@ -314,9 +314,11 @@ public class Un {
     ) throws IOException {
         String url = API_BASE + path;
         long timestamp = System.currentTimeMillis() / 1000;
-        String body = (data != null) ? mapToJson(data) : "";
+        // A GET carries no body, so it signs none; every other method signs what it sends
+        boolean sendsBody = data != null && !"GET".equals(method);
+        String body = sendsBody ? mapToJson(data) : "";
 
-        String signature = signRequest(secretKey, timestamp, method, path, data != null ? body : null);
+        String signature = signRequest(secretKey, timestamp, method, path, sendsBody ? body : null);
 
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod(method);
@@ -328,7 +330,8 @@ public class Un {
         conn.setRequestProperty("X-Signature", signature);
         conn.setRequestProperty("Content-Type", "application/json");
 
-        if ("POST".equals(method) && data != null) {
+        // Send every signed body (POST, PUT, DELETE): signed bytes == sent bytes
+        if (sendsBody) {
             conn.setDoOutput(true);
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(body.getBytes(StandardCharsets.UTF_8));
@@ -399,9 +402,11 @@ public class Un {
     ) throws IOException {
         String url = API_BASE + path;
         long timestamp = System.currentTimeMillis() / 1000;
-        String body = (data != null) ? mapToJson(data) : "";
+        // A GET carries no body, so it signs none; every other method signs what it sends
+        boolean sendsBody = data != null && !"GET".equals(method);
+        String body = sendsBody ? mapToJson(data) : "";
 
-        String signature = signRequest(secretKey, timestamp, method, path, data != null ? body : null);
+        String signature = signRequest(secretKey, timestamp, method, path, sendsBody ? body : null);
 
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setRequestMethod(method);
@@ -417,7 +422,8 @@ public class Un {
             conn.setRequestProperty("X-Sudo-Challenge", challengeId);
         }
 
-        if ("POST".equals(method) && data != null) {
+        // Send every signed body (POST, PUT, DELETE): signed bytes == sent bytes
+        if (sendsBody) {
             conn.setDoOutput(true);
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(body.getBytes(StandardCharsets.UTF_8));
@@ -2008,7 +2014,7 @@ public class Un {
         String[] creds = resolveCredentials(publicKey, secretKey);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("env", env);
-        return makeRequest("POST", "/services/" + serviceId + "/env", creds[0], creds[1], data);
+        return makeRequest("PUT", "/services/" + serviceId + "/env", creds[0], creds[1], data);
     }
 
     /**
