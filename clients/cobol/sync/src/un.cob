@@ -581,7 +581,10 @@
            MOVE WS-EXIT-CODE TO RETURN-CODE.
 
        SESSION-LIST.
-           STRING "curl -s -X GET $UN_API/sessions "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:GET:/sessions:"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X GET $UN_API/sessions "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq -r '.sessions[] | "
                '"\(.id) \(.shell) \(.status) \(.created_at)"'' '
@@ -592,9 +595,12 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SESSION-KILL.
-           STRING "curl -s -X DELETE "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:DELETE:/sessions/" FUNCTION TRIM(WS-ID) ":"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X DELETE "
                "$UN_API/sessions/"
                FUNCTION TRIM(WS-ID) " "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
                "echo -e '\x1b[32mSession terminated: "
@@ -659,10 +665,13 @@
                ",""input_files"":['""$INPUT_FILES""']}'; "
                "else JSON='{""shell"":""bash""" FUNCTION TRIM(WS-OS-JSON)
                "}'; fi; "
+               "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:POST:/sessions:$JSON"" | sh -c ""$UNSB_HMAC""); "
                "curl -s -X POST $UN_API/sessions "
                "-H 'Content-Type: application/json' "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -d ""$JSON"" && "
+               "' --data-binary ""$JSON"" && "
                "echo -e '\x1b[33mSession created (WebSocket required)\x1b[0m'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
            END-STRING.
@@ -670,7 +679,10 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-LIST.
-           STRING "curl -s -X GET $UN_API/services "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:GET:/services:"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X GET $UN_API/services "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq -r '.services[] | "
                '"\(.id) \(.name) \(.status)"'' '
@@ -681,9 +693,12 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-INFO.
-           STRING "curl -s -X GET "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:GET:/services/" FUNCTION TRIM(WS-ID) ":"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X GET "
                "$UN_API/services/"
                FUNCTION TRIM(WS-ID) " "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq ."
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -692,9 +707,12 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-LOGS.
-           STRING "curl -s -X GET "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:GET:/services/" FUNCTION TRIM(WS-ID) "/logs:"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X GET "
                "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/logs "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' | jq -r '.logs'"
                DELIMITED BY SIZE INTO WS-CURL-CMD
@@ -703,9 +721,12 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-SLEEP.
-           STRING "curl -s -X POST "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:POST:/services/" FUNCTION TRIM(WS-ID) "/freeze:"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X POST "
                "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/freeze "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
                "echo -e '\x1b[32mService frozen: "
@@ -716,9 +737,12 @@
            CALL "SYSTEM" USING WS-CURL-CMD.
 
        SERVICE-WAKE.
-           STRING "curl -s -X POST "
+           STRING "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:POST:/services/" FUNCTION TRIM(WS-ID) "/unfreeze:"" | sh -c ""$UNSB_HMAC""); "
+               "curl -s -X POST "
                "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/unfreeze "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
                "' >/dev/null && "
                "echo -e '\x1b[32mService unfreezing: "
@@ -795,12 +819,16 @@
 
            STRING "echo 'Fetching bootstrap script from "
                FUNCTION TRIM(WS-ID) "...' >&2; "
+               "DBODY='{""command"":""cat /tmp/bootstrap.sh""}'; "
+               "TS=$(date +%s); "
+               "SIG=$(printf %s ""$TS:POST:/services/" FUNCTION TRIM(WS-ID) "/execute:$DBODY"" | sh -c ""$UNSB_HMAC""); "
                "RESP=$(curl -s -X POST "
                "$UN_API/services/"
                FUNCTION TRIM(WS-ID) "/execute "
                "-H 'Content-Type: application/json' "
+               "-H ""X-Timestamp: $TS"" -H ""X-Signature: $SIG"" "
                "-H 'Authorization: Bearer " FUNCTION TRIM(WS-API-KEY)
-               "' -d '{""command"":""cat /tmp/bootstrap.sh""}'); "
+               "' --data-binary ""$DBODY""); "
                "STDOUT=$(echo ""$RESP"" | jq -r '.stdout // empty'); "
                "if [ -n ""$STDOUT"" ]; then "
                DELIMITED BY SIZE INTO WS-CURL-CMD
