@@ -172,6 +172,19 @@ pair<string,string> loadAccountsCSV(const string& path, int index) {
     return {"", ""};
 }
 
+// Quote a value for a POSIX shell: wrap it in single quotes, '\'' for each
+// quote inside. Our request bodies go to curl through the shell; unquoted,
+// a ' in code or env would change the bytes sent but not the bytes signed.
+string shell_quote(const string& s) {
+    string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+
 string escape_json(const string& s) {
     ostringstream o;
     for (char c : s) {
@@ -320,7 +333,7 @@ bool handle_sudo_challenge(const string& method, const string& path, const strin
         cmd = "curl -s -X POST '" + API_BASE + path + "' "
               "-H 'Content-Type: application/json' "
               + auth_headers + " "
-              "-d '" + body + "'";
+              "--data-binary " + shell_quote(body);
     } else {
         cmd = "curl -s -X " + method + " '" + API_BASE + path + "' " + auth_headers;
     }
@@ -361,7 +374,7 @@ bool exec_destructive_curl(const string& method, const string& path, const strin
         cmd = "curl -s -X POST '" + API_BASE + path + "' "
               "-H 'Content-Type: application/json' "
               + auth_headers + " "
-              "-d '" + body + "'";
+              "--data-binary " + shell_quote(body);
     } else if (method == "POST") {
         cmd = "curl -s -X POST '" + API_BASE + path + "' " + auth_headers;
     } else {
@@ -617,7 +630,7 @@ bool service_env_set(const string& service_id, const string& env_content, const 
                  "-H 'Authorization: Bearer " + public_key + "' "
                  "-H 'X-Timestamp: " + timestamp + "' "
                  "-H 'X-Signature: " + signature + "' "
-                 "-d '" + env_content + "'";
+                 "--data-binary " + shell_quote(env_content);
     exec_curl(cmd);
     return true;
 }
@@ -645,7 +658,7 @@ void set_unfreeze_on_demand(const string& service_id, bool enabled, const string
     string cmd = "curl -s -X PATCH '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers + " "
-                 "-d '" + body + "'";
+                 "--data-binary " + shell_quote(body);
     exec_curl(cmd);
     cout << GREEN << "Service unfreeze_on_demand set to " << enabled_str << RESET << endl;
 }
@@ -666,7 +679,7 @@ string execute(const string& language, const string& code, const string& public_
     string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers + " "
-                 "-d '" + body + "'";
+                 "--data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -679,7 +692,7 @@ string execute_async(const string& language, const string& code, const string& p
     string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers + " "
-                 "-d '" + body + "'";
+                 "--data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -757,7 +770,7 @@ string session_create(const string& shell, const string& network, const string& 
     string auth_headers = build_auth_headers("POST", "/sessions", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/sessions' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -788,7 +801,7 @@ string session_boost(const string& session_id, int vcpu, const string& public_ke
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -805,7 +818,7 @@ string session_execute(const string& session_id, const string& command, const st
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -835,7 +848,7 @@ string service_create(const string& name, const string& ports, const string& boo
     string auth_headers = build_auth_headers("POST", "/services", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/services' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -903,7 +916,7 @@ string service_redeploy(const string& service_id, const string& bootstrap, const
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -922,7 +935,7 @@ string service_execute(const string& service_id, const string& command, int time
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -932,7 +945,7 @@ string service_resize(const string& service_id, int vcpu, const string& public_k
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -958,7 +971,7 @@ string snapshot_session(const string& session_id, const string& name, bool hot, 
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -970,7 +983,7 @@ string snapshot_service(const string& service_id, const string& name, bool hot, 
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1012,7 +1025,7 @@ string snapshot_clone(const string& snapshot_id, const string& clone_type, const
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1039,7 +1052,7 @@ string image_publish(const string& source_type, const string& source_id, const s
     string auth_headers = build_auth_headers("POST", "/images", body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + "/images' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1070,7 +1083,7 @@ string image_set_visibility(const string& image_id, const string& visibility, co
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1080,7 +1093,7 @@ string image_grant_access(const string& image_id, const string& trusted_key, con
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1090,7 +1103,7 @@ string image_revoke_access(const string& image_id, const string& trusted_key, co
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1107,7 +1120,7 @@ string image_transfer(const string& image_id, const string& to_api_key, const st
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1123,7 +1136,7 @@ string image_spawn(const string& image_id, const string& name, const string& por
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1137,7 +1150,7 @@ string image_clone(const string& image_id, const string& name, const string& des
     string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
     string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl(cmd);
 }
 
@@ -1610,7 +1623,7 @@ void cmd_execute(const string& source_file, const vector<string>& envs, const ve
     string cmd = "curl -s -X POST '" + API_BASE + "/execute' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers + " "
-                 "-d '" + json.str() + "'";
+                 "--data-binary " + shell_quote(json.str());
 
     string result = exec_curl(cmd);
 
@@ -1705,7 +1718,7 @@ void cmd_session(bool list, const string& kill, const string& shell, const strin
     string cmd = "curl -s -X POST '" + API_BASE + "/sessions' "
                  "-H 'Content-Type: application/json' "
                  + auth_headers + " "
-                 "-d '" + json.str() + "'";
+                 "--data-binary " + shell_quote(json.str());
     cout << exec_curl(cmd) << endl;
 }
 
@@ -1777,7 +1790,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X PATCH '" + API_BASE + "/services/" + resize + "' "
                      "-H 'Content-Type: application/json' "
                      + auth_headers + " "
-                     "-d '" + json.str() + "'";
+                     "--data-binary " + shell_quote(json.str());
         exec_curl(cmd);
         cout << GREEN << "Service resized to " << vcpu << " vCPU, " << (vcpu * 2) << " GB RAM" << RESET << endl;
         return;
@@ -1799,7 +1812,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X POST '" + API_BASE + "/services/" + execute + "/execute' "
                      "-H 'Content-Type: application/json' "
                      + auth_headers + " "
-                     "-d '" + json.str() + "'";
+                     "--data-binary " + shell_quote(json.str());
         string result = exec_curl(cmd);
 
         size_t stdout_pos = result.find("\"stdout\":\"");
@@ -1885,7 +1898,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                      "-H 'Content-Type: application/json' "
                      + auth_headers + " "
-                     "-d '" + json.str() + "'";
+                     "--data-binary " + shell_quote(json.str());
         string result = exec_curl(cmd);
         cout << result << endl;
         return;
@@ -1898,7 +1911,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X POST '" + API_BASE + "/services/" + dump_bootstrap + "/execute' "
                      "-H 'Content-Type: application/json' "
                      + auth_headers + " "
-                     "-d '" + json_body + "'";
+                     "--data-binary " + shell_quote(json_body);
         string result = exec_curl(cmd);
 
         size_t stdout_pos = result.find("\"stdout\":\"");
@@ -1985,7 +1998,7 @@ void cmd_service(const string& name, const string& ports, const string& type, co
         string cmd = "curl -s -X POST '" + API_BASE + "/services' "
                      "-H 'Content-Type: application/json' "
                      + auth_headers + " "
-                     "-d '" + json.str() + "'";
+                     "--data-binary " + shell_quote(json.str());
         string result = exec_curl(cmd);
         cout << result << endl;
 
@@ -2087,7 +2100,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
         string auth_headers = build_auth_headers("POST", path, body, public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                      "-H 'Content-Type: application/json' "
-                     + auth_headers + " -d '" + body + "'";
+                     + auth_headers + " --data-binary " + shell_quote(body);
         exec_curl(cmd);
         cout << GREEN << "Image locked: " << lock << RESET << endl;
         return;
@@ -2114,7 +2127,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
         string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                      "-H 'Content-Type: application/json' "
-                     + auth_headers + " -d '" + json.str() + "'";
+                     + auth_headers + " --data-binary " + shell_quote(json.str());
         cout << GREEN << "Image published" << RESET << endl;
         cout << exec_curl(cmd) << endl;
         return;
@@ -2131,7 +2144,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
         string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                      "-H 'Content-Type: application/json' "
-                     + auth_headers + " -d '" + json.str() + "'";
+                     + auth_headers + " --data-binary " + shell_quote(json.str());
         exec_curl(cmd);
         cout << GREEN << "Image visibility set to: " << visibility << RESET << endl;
         return;
@@ -2154,7 +2167,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
         string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                      "-H 'Content-Type: application/json' "
-                     + auth_headers + " -d '" + json.str() + "'";
+                     + auth_headers + " --data-binary " + shell_quote(json.str());
         cout << GREEN << "Service spawned from image" << RESET << endl;
         cout << exec_curl(cmd) << endl;
         return;
@@ -2171,7 +2184,7 @@ void cmd_image(bool list, const string& info, const string& del, const string& l
         string auth_headers = build_auth_headers("POST", path, json.str(), public_key, secret_key);
         string cmd = "curl -s -X POST '" + API_BASE + path + "' "
                      "-H 'Content-Type: application/json' "
-                     + auth_headers + " -d '" + json.str() + "'";
+                     + auth_headers + " --data-binary " + shell_quote(json.str());
         cout << GREEN << "Image cloned" << RESET << endl;
         cout << exec_curl(cmd) << endl;
         return;
@@ -2345,7 +2358,7 @@ static pair<string, int> rotate_secret_post(const string& public_key, const stri
     }
     string cmd = "curl -s --max-time 120 -X POST '" + API_BASE + path + "' "
                  "-H 'Content-Type: application/json' "
-                 + auth_headers + " -d '" + body + "'";
+                 + auth_headers + " --data-binary " + shell_quote(body);
     return exec_curl_with_status(cmd);
 }
 
