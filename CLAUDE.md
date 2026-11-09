@@ -606,10 +606,6 @@ clients/
       clients/python/sync/src/un.py --help
    ```
 
-## Git Access
-
-**Port 2222** — GitLab Docker maps 2222:22. Add `Port 2222` to ~/.ssh/config or SSH hits host sshd instead.
-
 ## Related Repos
 
 - `~/git/unsandbox.com/` - Portal (contains un.c CLI at cli/un.c)
