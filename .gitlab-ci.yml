@@ -75,6 +75,18 @@ manual-burn-pool-trigger:
 
 # CI variables UNSANDBOX_PUBLIC_KEY, UNSANDBOX_SECRET_KEY, DEPLOY_KEY
 # are configured in GitLab Settings > CI/CD > Variables
+#
+# ROTATION: UNSANDBOX_PUBLIC_KEY / UNSANDBOX_SECRET_KEY is ONE key pair
+# (unsb-pk-ehm4-...) held as a project CI variable in EACH project below.
+# GitLab does not share project variables, so rotating the secret in one
+# project leaves the others on the old one. Rotate it in all of them together:
+#   - engineering/unturf/unsandbox.com   (build_release: static un via our API)
+#   - engineering/unturf/un-inception    (SDK validation and benchmarks)
+#   - engineering/unturf/training.ai.unturf.com  (gated on $UNSANDBOX_PUBLIC_KEY;
+#     not set there today, so those jobs skip)
+# A missed project fails with HTTP 401. In 2026-10 unsandbox.com kept an old
+# secret for three weeks, shipped dynamic un binaries, and leaked build
+# services. Check after rotating: compare md5 of each copy, never the value.
 
 # ============================================================================
 # STAGE 1: Detect Changes
