@@ -1220,13 +1220,13 @@ Requires a partner API key with log access enabled."
     proc cmd_key {args} {
         variable GREEN; variable RED; variable YELLOW; variable PORTAL_BASE; variable RESET
 
-        set extend 0
+        set buy_credit 0
         set rotate 0
         set otp_given 0
         set otp ""
         for {set i 0} {$i < [llength $args]} {incr i} {
             set arg [lindex $args $i]
-            if {$arg eq "--buy-credit"} { set extend 1 }
+            if {$arg eq "--buy-credit"} { set buy_credit 1 }
             if {$arg eq "--rotate"} { set rotate 1 }
             if {$arg eq "--otp" && $i + 1 < [llength $args]} {
                 set otp_given 1
@@ -1245,7 +1245,7 @@ Requires a partner API key with log access enabled."
         }
         set pk [lindex $creds 0]
 
-        if {$extend} {
+        if {$buy_credit} {
             set url "$PORTAL_BASE/buy-credit?key=$pk"
             puts "Opening buy credit page in browser..."
             puts "If browser doesn't open, visit: $url"

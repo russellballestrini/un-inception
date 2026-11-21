@@ -172,7 +172,7 @@ interface Args {
   resize: string | null;
   execute: string | null;
   command_arg: string | null;
-  extend: boolean;
+  buyCredit: boolean;
   snapshot: string | null;
   restore: string | null;
   from: string | null;
@@ -1158,9 +1158,9 @@ function keyValidatePost(keys: ApiKeys): Promise<{ status: number; data: any }> 
 
 // `un key` output per CLI_SPEC.md: the payload carries no public key, so we
 // print the one we signed with; expiry comes from valid_through (ms).
-async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
+async function validateKey(keys: ApiKeys, shouldBuyCredit: boolean): Promise<void> {
   const pk = keys.publicKey;
-  if (shouldExtend) {
+  if (shouldBuyCredit) {
     const buyCreditUrl = `${PORTAL_BASE}/buy-credit?key=${encodeURIComponent(pk)}`;
     console.log('Opening buy credit page in browser...');
     console.log(`If browser doesn't open, visit: ${buyCreditUrl}`);
@@ -1346,7 +1346,7 @@ async function cmdKey(args: Args): Promise<void> {
     await keyRotate(args, keys);
     return;
   }
-  await validateKey(keys, args.extend);
+  await validateKey(keys, args.buyCredit);
 }
 
 /**
@@ -1546,7 +1546,7 @@ function parseArgs(argv: string[]): Args {
     command_arg: null,
     dumpBootstrap: null,
     dumpFile: null,
-    extend: false,
+    buyCredit: false,
     envFile: null,
     envAction: null,
     envTarget: null,
@@ -1739,7 +1739,7 @@ function parseArgs(argv: string[]): Args {
       args.dumpFile = argv[++i];
       i++;
     } else if (arg === '--buy-credit') {
-      args.extend = true;
+      args.buyCredit = true;
       i++;
     } else if (arg === '--clone' && i + 1 < argv.length) {
       if (args.command === 'image') {

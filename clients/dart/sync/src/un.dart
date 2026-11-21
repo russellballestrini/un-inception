@@ -184,7 +184,7 @@ class Args {
   bool serviceCreateUnfreezeOnDemand = false;
   String? serviceShowFreezePage;
   bool serviceShowFreezePageEnabled = true;
-  bool keyExtend = false;
+  bool keyBuyCredit = false;
   bool keyRotate = false;
   String? keyOtp;
   String? envFile;
@@ -1883,7 +1883,7 @@ Future<void> cmdKey(Args args) async {
   final secretKey = keys[1];
 
   // Handle --buy-credit: open our portal's buy credit page
-  if (args.keyExtend) {
+  if (args.keyBuyCredit) {
     final url = '$portalBase/buy-credit?key=$publicKey';
     print('Opening buy credit page in browser...');
     print("If browser doesn't open, visit: $url");
@@ -2155,7 +2155,7 @@ Args parseArgs(List<String> argv) {
         args.serviceShowFreezePageEnabled = argv[++i].toLowerCase() == 'true';
         break;
       case '--buy-credit':
-        args.keyExtend = true;
+        args.keyBuyCredit = true;
         break;
       case '--rotate':
         args.keyRotate = true;

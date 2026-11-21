@@ -1331,11 +1331,11 @@ cmd_key_rotate() {
 }
 
 cmd_key() {
-    local extend=0 rotate=0 otp=""
+    local buy_credit=0 rotate=0 otp=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --buy-credit) extend=1 ;;
+            --buy-credit) buy_credit=1 ;;
             --rotate) rotate=1 ;;
             --otp) otp="${2:-}"; shift ;;
         esac
@@ -1351,7 +1351,7 @@ cmd_key() {
     creds=$(get_credentials) || exit 3
     pk="${creds%%:*}"
 
-    if [ "$extend" -eq 1 ]; then
+    if [ "$buy_credit" -eq 1 ]; then
         local url="$PORTAL_BASE/buy-credit?key=$pk"
         echo "Opening buy credit page in browser..."
         echo "If browser doesn't open, visit: $url"

@@ -2046,7 +2046,7 @@ class Args {
     String snapshotName = null
     String snapshotShell = null
     String snapshotPorts = null
-    Boolean keyExtend = false
+    Boolean keyBuyCredit = false
     Boolean keyRotate = false
     String keyOtp = null
     Boolean imageList = false
@@ -2615,7 +2615,7 @@ def cmdKeyRotate(args) {
 def cmdKey(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
-    if (args.keyExtend) {
+    if (args.keyBuyCredit) {
         def buyCreditUrl = "${PORTAL_BASE}/buy-credit?key=${publicKey}"
         println("Opening buy credit page in browser...")
         println("If browser doesn't open, visit: ${buyCreditUrl}")
@@ -3088,7 +3088,7 @@ def parseArgs(argv) {
                 args.serviceDumpFile = argv[++i]
                 break
             case '--buy-credit':
-                args.keyExtend = true
+                args.keyBuyCredit = true
                 break
             case '--rotate':
                 args.keyRotate = true

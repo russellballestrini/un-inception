@@ -671,10 +671,10 @@
   (let ((raw (parse-json-field json field)))
     (when raw (ignore-errors (parse-integer raw :junk-allowed t)))))
 
-(defun validate-key (extend-flag)
+(defun validate-key (buy-credit-flag)
   "un key: POST /keys/validate (empty body, signed); display per CLI_SPEC.md."
   (destructuring-bind (public-key secret-key) (get-api-keys)
-    (when extend-flag
+    (when buy-credit-flag
       ;; --buy-credit: open our portal's buy credit page
       (let ((url (format nil "~a/buy-credit?key=~a" *portal-base* public-key)))
         (format t "Opening buy credit page in browser...~%")
@@ -764,8 +764,8 @@
          (finish-output)
          (uiop:quit 3))))))
 
-(defun key-cmd (extend-flag)
-  (validate-key extend-flag))
+(defun key-cmd (buy-credit-flag)
+  (validate-key buy-credit-flag))
 
 ;; ---------------------------------------------------------------------------
 ;; un key --rotate [--otp CODE]  (see CLI_SPEC.md)
@@ -1644,7 +1644,7 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))
           ((string= (first args) "key")
-           (let ((extend-flag (member "--buy-credit" (cdr args) :test #'string=))
+           (let ((buy-credit-flag (member "--buy-credit" (cdr args) :test #'string=))
                  (rotate-flag (member "--rotate" (cdr args) :test #'string=))
                  (otp-tail (member "--otp" (cdr args) :test #'string=)))
              (when (and otp-tail (null (second otp-tail)))
@@ -1652,7 +1652,7 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
                (uiop:quit 2))
              (if (or rotate-flag otp-tail)
                  (key-rotate-cmd (second otp-tail))
-                 (key-cmd extend-flag))))
+                 (key-cmd buy-credit-flag))))
           ((string= (first args) "snapshot")
            (cond
              ((and (> (length args) 1) (string= (second args) "--list"))

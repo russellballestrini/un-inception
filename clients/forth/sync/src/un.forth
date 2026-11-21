@@ -763,8 +763,8 @@ warnings !
 ;
 
 \ Key validate
-: validate-key ( extend-flag -- )
-    get-api-key 2drop  \ ( extend-flag ) -- the script re-reads our public key
+: validate-key ( buy-credit-flag -- )
+    get-api-key 2drop  \ ( buy-credit-flag ) -- the script re-reads our public key
     script-begin >r
     s\" #!/bin/bash\nUN_API=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ \"${UN_API%/}\" != \"$UN_API\" ]; do UN_API=${UN_API%/}; done" r@ write-line throw
     s\" PUBLIC_KEY='" r@ write-file throw

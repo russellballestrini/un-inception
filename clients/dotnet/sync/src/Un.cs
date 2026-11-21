@@ -233,7 +233,7 @@ void CmdKey(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
-    if (args.KeyExtend)
+    if (args.KeyBuyCredit)
     {
         // key --buy-credit: open our portal's buy credit page
         var url = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
@@ -1335,7 +1335,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--show-freeze-page") result.ServiceShowFreezePage = args[++i];
         else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--buy-credit") result.KeyExtend = true;
+        else if (arg == "--buy-credit") result.KeyBuyCredit = true;
         else if (arg == "--rotate") result.KeyRotate = true;
         else if (arg == "--otp") result.KeyOtp = args[++i];
         else if (arg == "--account") result.Account = int.Parse(args[++i]);
@@ -2640,7 +2640,7 @@ class Args
     public bool ServiceShowFreezePageEnabled = true;
     public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
-    public bool KeyExtend, KeyRotate;
+    public bool KeyBuyCredit, KeyRotate;
     public string? KeyOtp;
     public int Account = -1;
     public bool SnapshotList;

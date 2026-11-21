@@ -427,12 +427,12 @@ fn extract_json_bare(json string, key string) string {
 
 // Display per CLI_SPEC.md "`un key` output": the API returns no public key, so
 // we print ours; expiry derives from valid_through (ms since epoch).
-fn cmd_key(extend bool, api_key string) {
+fn cmd_key(buy_credit bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
 	// --buy-credit: open our portal's buy credit page
-	if extend {
+	if buy_credit {
 		url := '${portal_base}/buy-credit?key=${pub_key}'
 		println('Opening buy credit page in browser...')
 		println("If browser doesn't open, visit: ${url}")
@@ -2315,14 +2315,14 @@ fn main() {
 	}
 
 	if args[1] == 'key' {
-		mut extend := false
+		mut buy_credit := false
 		mut rotate := false
 		mut otp_flag := ''
 
 		mut i := 2
 		for i < args.len {
 			match args[i] {
-				'--buy-credit' { extend = true }
+				'--buy-credit' { buy_credit = true }
 				'--rotate' { rotate = true }
 				'--otp' {
 					i++
@@ -2346,7 +2346,7 @@ fn main() {
 			cmd_key_rotate(otp_flag, creds_csv)
 			return
 		}
-		cmd_key(extend, api_key)
+		cmd_key(buy_credit, api_key)
 		return
 	}
 

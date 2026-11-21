@@ -894,13 +894,13 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
   stderr.writeLine(RED & "Error: Specify --name to create a service" & RESET)
   quit(1)
 
-proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
-  if extend:
+proc cmdKey(buyCredit: bool, publicKey: string, secretKey: string) =
+  if buyCredit:
     # --buy-credit: open our portal's buy credit page
-    let extendUrl = PORTAL_BASE & "/buy-credit?key=" & publicKey
+    let buyCreditUrl = PORTAL_BASE & "/buy-credit?key=" & publicKey
     echo "Opening buy credit page in browser..."
-    echo "If browser doesn't open, visit: " & extendUrl
-    discard execProcess(fmt"xdg-open '{extendUrl}'")
+    echo "If browser doesn't open, visit: " & buyCreditUrl
+    discard execProcess(fmt"xdg-open '{buyCreditUrl}'")
     return
   # Display per CLI_SPEC.md "`un key` output": the API returns no public key,
   # so we print ours; expiry derives from valid_through (ms since epoch).
@@ -2009,13 +2009,13 @@ proc main() =
     return
 
   if args[0] == "key":
-    var extend = false
+    var buyCredit = false
     var rotate = false
     var otpFlag = ""
     var i = 1
     while i < args.len:
       case args[i]
-      of "--buy-credit": extend = true
+      of "--buy-credit": buyCredit = true
       of "--rotate": rotate = true
       of "--otp":
         if i + 1 < args.len:
@@ -2026,7 +2026,7 @@ proc main() =
     if rotate:
       cmdKeyRotate(otpFlag, publicKey, secretKey, credsCsv)
       return
-    cmdKey(extend, publicKey, secretKey)
+    cmdKey(buyCredit, publicKey, secretKey)
     return
 
   if args[0] == "session":

@@ -131,7 +131,7 @@ type Args = {
     mutable EnvFile: string option
     mutable EnvAction: string option
     mutable EnvTarget: string option
-    mutable KeyExtend: bool
+    mutable KeyBuyCredit: bool
     mutable KeyRotate: bool
     mutable KeyOtp: string option
     // Image command options
@@ -841,7 +841,7 @@ let signedPost (publicKey: string) (secretKey: string) (path: string) (body: str
 let cmdKey (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
-    if args.KeyExtend then
+    if args.KeyBuyCredit then
         // key --buy-credit: open our portal's buy credit page
         let url = sprintf "%s/buy-credit?key=%s" portalBase publicKey
         printfn "Opening buy credit page in browser..."
@@ -1425,7 +1425,7 @@ let parseArgs (argv: string[]) =
         EnvFile = None
         EnvAction = None
         EnvTarget = None
-        KeyExtend = false
+        KeyBuyCredit = false
         KeyRotate = false
         KeyOtp = None
         ImageList = false
@@ -1568,7 +1568,7 @@ let parseArgs (argv: string[]) =
         | "--command" -> i <- i + 1; args.ServiceCommand <- Some argv.[i]
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
         | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
-        | "--buy-credit" -> args.KeyExtend <- true
+        | "--buy-credit" -> args.KeyBuyCredit <- true
         | "--rotate" -> args.KeyRotate <- true
         | "--otp" ->
             i <- i + 1

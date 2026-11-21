@@ -1626,7 +1626,7 @@ sub cmd_key {
     my ($options) = @_;
     return cmd_key_rotate($options) if $options->{rotate};
 
-    if ($options->{extend}) {
+    if ($options->{buy_credit}) {
         my ($pk) = Un::get_credentials();
         my $url = "$Un::PORTAL_BASE/buy-credit?key=$pk";
         print "Opening buy credit page in browser...\n";
@@ -2051,7 +2051,7 @@ sub main {
         } elsif ($arg eq '--json') {
             $options{json} = 1;
         } elsif ($arg eq '--buy-credit') {
-            $options{extend} = 1;
+            $options{buy_credit} = 1;
         } elsif ($arg eq '--rotate') {
             $options{rotate} = 1;
         } elsif ($arg eq '--otp') {

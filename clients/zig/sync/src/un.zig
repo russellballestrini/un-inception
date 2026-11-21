@@ -2501,13 +2501,13 @@ pub fn main() !u8 {
 
     // Handle key command
     if (mem.eql(u8, args[1], "key")) {
-        var extend = false;
+        var buy_credit = false;
         var rotate = false;
         var otp_flag: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
             if (mem.eql(u8, args[i], "--buy-credit")) {
-                extend = true;
+                buy_credit = true;
             } else if (mem.eql(u8, args[i], "--rotate")) {
                 rotate = true;
             } else if (mem.eql(u8, args[i], "--otp") and i + 1 < args.len) {
@@ -2524,7 +2524,7 @@ pub fn main() !u8 {
             return try cmdKeyRotate(allocator, public_key, secret_key, otp_flag, arg_pk, arg_sk, account_index);
         }
 
-        if (extend) {
+        if (buy_credit) {
             const url = try std.fmt.allocPrint(allocator, "{s}/buy-credit?key={s}", .{ portalBase(), public_key });
             defer allocator.free(url);
             const out = std.io.getStdOut().writer();

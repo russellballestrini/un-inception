@@ -705,11 +705,11 @@
       (delete-file hdr-file)
       (parse-http-response-with-code output))))
 
-(define (validate-key-cmd extend)
+(define (validate-key-cmd buy-credit)
   (let* ((keys (get-api-keys))
          (public-key (car keys))
          (secret-key (cadr keys)))
-    (if extend
+    (if buy-credit
         ;; --buy-credit: open our portal's buy credit page
         (let ((url (format #f "~a/buy-credit?key=~a" portal-base public-key)))
           (format #t "Opening buy credit page in browser...\n")
@@ -1665,13 +1665,13 @@
          (let ((json-output (and (> (length args) 1) (equal? (cadr args) "--json"))))
            (languages-cmd json-output)))
         ((equal? (car args) "key")
-         (let ((extend (member "--buy-credit" (cdr args)))
+         (let ((buy-credit (member "--buy-credit" (cdr args)))
                (rotate (member "--rotate" (cdr args)))
                (otp (let ((m (member "--otp" (cdr args))))
                       (and m (pair? (cdr m)) (cadr m)))))
            (if (or rotate otp)
                (key-rotate-cmd otp)
-               (validate-key-cmd (and extend #t)))))
+               (validate-key-cmd (and buy-credit #t)))))
         ((equal? (car args) "snapshot")
          (cond
            ((and (> (length args) 1) (equal? (cadr args) "--list"))

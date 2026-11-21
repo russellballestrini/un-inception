@@ -2104,16 +2104,16 @@ sub cmd-key-rotate(@args, Int :$account-index = -1) {
 sub cmd-key(@args, Int :$account-index = -1) {
     return cmd-key-rotate(@args, :$account-index) if '--rotate' (elem) @args;
     my ($public-key, $secret-key) = get-credentials(:$account-index);
-    my $extend = False;
+    my $buy-credit = False;
 
     for @args -> $arg {
         if $arg eq '--buy-credit' {
-            $extend = True;
+            $buy-credit = True;
         }
     }
 
     # --buy-credit: open our portal's buy credit page
-    if $extend {
+    if $buy-credit {
         my $buy-credit-url = "$PORTAL_BASE/buy-credit?key=$public-key";
         say "Opening buy credit page in browser...";
         say "If browser doesn't open, visit: $buy-credit-url";

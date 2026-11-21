@@ -2215,8 +2215,8 @@ static bool json_number_field(const string& json, const string& key, long long& 
 }
 
 // un key — response handling per CLI_SPEC.md "`un key` output".
-void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
-    if (extend) {
+void cmd_validate_key(bool buy_credit, const string& public_key, const string& secret_key) {
+    if (buy_credit) {
         string url = PORTAL_BASE + "/buy-credit?key=" + public_key;
         cout << "Opening buy credit page in browser..." << endl;
         cout << "If browser doesn't open, visit: " << url << endl;
@@ -2751,13 +2751,13 @@ int main(int argc, char* argv[]) {
     }
 
     if (cmd_type == "key") {
-        bool extend = false;
+        bool buy_credit = false;
         bool rotate = false;
         string otp;
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
-            if (arg == "--buy-credit") extend = true;
+            if (arg == "--buy-credit") buy_credit = true;
             else if (arg == "--rotate") rotate = true;
             else if (arg == "--otp" && i+1 < argc) otp = argv[++i];
             else if (arg == "-k" && i+1 < argc) { public_key = argv[++i]; creds_csv_path.clear(); }
@@ -2765,7 +2765,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (rotate) return cmd_rotate_key(public_key, secret_key, otp, creds_csv_path);
-        cmd_validate_key(extend, public_key, secret_key);
+        cmd_validate_key(buy_credit, public_key, secret_key);
         return 0;
     }
 

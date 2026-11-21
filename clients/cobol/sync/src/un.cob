@@ -87,7 +87,7 @@
        01  WS-PORTAL-BASE      PIC X(256) VALUE
            "https://unsandbox.com".
        01  WS-LANGUAGES-CACHE-TTL PIC 9(8) VALUE 3600.
-       01  WS-EXTEND-FLAG      PIC X(8).
+       01  WS-BUY-CREDIT-FLAG      PIC X(8).
        01  WS-SVC-ENVS         PIC X(2048).
        01  WS-SVC-ENV-FILE     PIC X(256).
        01  WS-ENV-ACTION       PIC X(32).
@@ -1156,7 +1156,7 @@
            END-IF.
 
       *> Parse key arguments: --buy-credit, --rotate, --otp CODE
-           MOVE SPACES TO WS-EXTEND-FLAG.
+           MOVE SPACES TO WS-BUY-CREDIT-FLAG.
            MOVE SPACES TO WS-ROTATE-FLAG.
            MOVE SPACES TO WS-OTP.
            MOVE "x" TO WS-ARG2.
@@ -1166,7 +1166,7 @@
                    ON EXCEPTION MOVE SPACES TO WS-ARG2
                END-ACCEPT
                EVALUATE WS-ARG2
-                   WHEN "--buy-credit" MOVE "true" TO WS-EXTEND-FLAG
+                   WHEN "--buy-credit" MOVE "true" TO WS-BUY-CREDIT-FLAG
                    WHEN "--rotate" MOVE "true" TO WS-ROTATE-FLAG
                    WHEN "--otp"
                        ACCEPT WS-OTP FROM ARGUMENT-VALUE
@@ -1322,7 +1322,7 @@
       *> we print ours; expiry derives from valid_through (ms).
       *> --buy-credit: open our portal's buy credit page
       *> (ticket #155); portal base honors UNSANDBOX_PORTAL_URL.
-           IF WS-EXTEND-FLAG = "true"
+           IF WS-BUY-CREDIT-FLAG = "true"
                MOVE SPACES TO WS-ROT-CMD
                STRING "PK='" FUNCTION TRIM(WS-API-KEY) "'"
                X"0A"

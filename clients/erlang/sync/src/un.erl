@@ -1628,9 +1628,9 @@ key_command(Args) ->
 
 key_command_validate(Args) ->
     {PublicKey, SecretKey} = get_api_keys(),
-    case has_extend_flag(Args) of
+    case has_buy_credit_flag(Args) of
         true ->
-            open_extend_page(PublicKey);
+            open_buy_credit_page(PublicKey);
         false ->
             {Code, Resp} = key_validate_post(PublicKey, SecretKey),
             display_key_result(Code, Resp, PublicKey)
@@ -1751,7 +1751,7 @@ key_billing(Resp) ->
     end.
 
 %% key --buy-credit: open our portal's buy credit page.
-open_extend_page(PublicKey) ->
+open_buy_credit_page(PublicKey) ->
     Url = ?PORTAL_BASE ++ "/buy-credit?key=" ++ PublicKey,
     io:format("Opening buy credit page in browser...~n"),
     io:format("If browser doesn't open, visit: ~s~n", [Url]),
@@ -2562,9 +2562,9 @@ get_input_files([], Acc) -> lists:reverse(Acc);
 get_input_files(["-f", File | Rest], Acc) -> get_input_files(Rest, [File | Acc]);
 get_input_files([_ | Rest], Acc) -> get_input_files(Rest, Acc).
 
-has_extend_flag([]) -> false;
-has_extend_flag(["--buy-credit" | _]) -> true;
-has_extend_flag([_ | Rest]) -> has_extend_flag(Rest).
+has_buy_credit_flag([]) -> false;
+has_buy_credit_flag(["--buy-credit" | _]) -> true;
+has_buy_credit_flag([_ | Rest]) -> has_buy_credit_flag(Rest).
 
 get_env_vars(Args) -> get_env_vars(Args, []).
 

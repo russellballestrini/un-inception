@@ -273,7 +273,7 @@ class Un
     {
         var (publicKey, secretKey) = GetApiKeys(args.ApiKey, args.Account);
 
-        if (args.KeyExtend)
+        if (args.KeyBuyCredit)
         {
             // key --buy-credit: open our portal's buy credit page
             string url = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
@@ -1624,7 +1624,7 @@ class Un
         public string EnvFile = null;
         public string EnvAction = null;
         public string EnvTarget = null;
-        public bool KeyExtend = false;
+        public bool KeyBuyCredit = false;
         public bool KeyRotate = false;
         public string KeyOtp = null;
         public bool LanguagesJson = false;
@@ -1690,7 +1690,7 @@ class Un
             else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
             else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
             else if (arg == "--redeploy") result.ServiceRedeploy = args[++i];
-            else if (arg == "--buy-credit") result.KeyExtend = true;
+            else if (arg == "--buy-credit") result.KeyBuyCredit = true;
             else if (arg == "--rotate") result.KeyRotate = true;
             else if (arg == "--otp") result.KeyOtp = args[++i];
             else if (arg == "--json") result.LanguagesJson = true;

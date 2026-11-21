@@ -1829,7 +1829,7 @@ class Args {
     String snapshotName = null
     String snapshotShell = null
     String snapshotPorts = null
-    Boolean keyExtend = false
+    Boolean keyBuyCredit = false
     Boolean keyRotate = false
     String keyOtp = null
     Boolean imageList = false
@@ -2435,11 +2435,11 @@ def cmdKey(args) {
     def concurrency = result.concurrency ?: 'N/A'
     def expired = result.expired ?: false
 
-    if (args.keyExtend && fetchedPublicKey != 'N/A') {
-        def extendUrl = "${PORTAL_BASE}/buy-credit?key=${fetchedPublicKey}"
+    if (args.keyBuyCredit && fetchedPublicKey != 'N/A') {
+        def buyCreditUrl = "${PORTAL_BASE}/buy-credit?key=${fetchedPublicKey}"
         println("Opening buy credit page in browser...")
-        println("If browser doesn't open, visit: ${extendUrl}")
-        openBrowser(extendUrl)
+        println("If browser doesn't open, visit: ${buyCreditUrl}")
+        openBrowser(buyCreditUrl)
         return
     }
 
@@ -2846,7 +2846,7 @@ def parseArgs(argv) {
                 args.serviceDumpFile = argv[++i]
                 break
             case '--buy-credit':
-                args.keyExtend = true
+                args.keyBuyCredit = true
                 break
             case '--rotate':
                 args.keyRotate = true

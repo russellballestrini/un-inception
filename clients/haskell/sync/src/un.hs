@@ -250,7 +250,7 @@ data ImageAction = ImageList | ImageInfo String | ImageDelete String
                  | ImageVisibility String | ImageSpawn String | ImageClone String
 
 data KeyOpts = KeyOpts
-  { keyExtend :: Bool
+  { keyBuyCredit :: Bool
   , keyRotate :: Bool
   , keyOtp :: Maybe String
   }
@@ -278,7 +278,7 @@ parseKey args = return $ parseKeyArgs args defaultKeyOpts
   where
     defaultKeyOpts = KeyOpts False False Nothing
     parseKeyArgs [] opts = opts
-    parseKeyArgs ("--buy-credit":rest) opts = parseKeyArgs rest opts { keyExtend = True }
+    parseKeyArgs ("--buy-credit":rest) opts = parseKeyArgs rest opts { keyBuyCredit = True }
     parseKeyArgs ("--rotate":rest) opts = parseKeyArgs rest opts { keyRotate = True }
     parseKeyArgs ("--otp":code:rest) opts = parseKeyArgs rest opts { keyOtp = Just code }
     parseKeyArgs (_:rest) opts = parseKeyArgs rest opts
@@ -1908,8 +1908,8 @@ keyCommand opts | keyRotate opts = rotateKeyCommand (keyOtp opts)
 keyCommand opts = do
   apiKey <- getApiKey
 
-  if keyExtend opts
-    then extendKey apiKey
+  if keyBuyCredit opts
+    then buyCreditKey apiKey
     else validateKey apiKey
 
 -- POST /keys/validate, empty body, signed; headers reach curl on stdin (-K -)
@@ -2014,14 +2014,14 @@ validateKey _ = do
       exitWith (ExitFailure 3)
 
 -- un key --buy-credit: open our portal's buy credit page
-extendKey :: String -> IO ()
-extendKey _ = do
+buyCreditKey :: String -> IO ()
+buyCreditKey _ = do
   (publicKey, _) <- getApiKeys
-  let extendUrl = portalBase ++ "/buy-credit?key=" ++ publicKey
+  let buyCreditUrl = portalBase ++ "/buy-credit?key=" ++ publicKey
   putStrLn "Opening buy credit page in browser..."
-  putStrLn $ "If browser doesn't open, visit: " ++ extendUrl
+  putStrLn $ "If browser doesn't open, visit: " ++ buyCreditUrl
   _ <- readProcessWithExitCode "sh"
-    ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]
+    ["-c", "xdg-open '" ++ buyCreditUrl ++ "' 2>/dev/null || sensible-browser '" ++ buyCreditUrl ++ "' 2>/dev/null || true"]
     ""
   return ()
 

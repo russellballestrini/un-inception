@@ -2477,11 +2477,11 @@ cmd_key <- function(args) {
     secret_key <- keys$secret_key
 
     # --buy-credit: open our portal's buy credit page
-    if (!is.null(args$extend) && args$extend) {
-        extend_url <- paste0(PORTAL_BASE, "/buy-credit?key=", public_key)
+    if (!is.null(args$buy_credit) && args$buy_credit) {
+        buy_credit_url <- paste0(PORTAL_BASE, "/buy-credit?key=", public_key)
         cat("Opening buy credit page in browser...\n")
-        cat(sprintf("If browser doesn't open, visit: %s\n", extend_url))
-        system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", extend_url, extend_url, extend_url))
+        cat(sprintf("If browser doesn't open, visit: %s\n", buy_credit_url))
+        system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", buy_credit_url, buy_credit_url, buy_credit_url))
         return(invisible(NULL))
     }
 
@@ -3030,7 +3030,7 @@ parse_args <- function() {
         bootstrap = NULL,
         bootstrap_file = NULL,
         vcpu = NULL,
-        extend = FALSE,
+        buy_credit = FALSE,
         svc_envs = NULL,
         svc_env_file = NULL,
         env_action = NULL,
@@ -3279,7 +3279,7 @@ parse_args <- function() {
             result$shell <- args[i]
             i <- i + 1
         } else if (arg == "--buy-credit") {
-            result$extend <- TRUE
+            result$buy_credit <- TRUE
             i <- i + 1
         } else if (arg == "--rotate") {
             result$rotate <- TRUE

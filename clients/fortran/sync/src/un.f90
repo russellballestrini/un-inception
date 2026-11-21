@@ -2331,11 +2331,11 @@ contains
         character(len=256) :: arg, otp_code
         character(len=1024) :: public_key, secret_key, source_csv
         integer :: i, stat
-        logical :: extend_mode, rotate_mode
+        logical :: buy_credit_mode, rotate_mode
         character(len=:), allocatable :: script
         character(len=1), parameter :: nl = achar(10)
 
-        extend_mode = .false.
+        buy_credit_mode = .false.
         rotate_mode = .false.
         otp_code = ''
 
@@ -2343,7 +2343,7 @@ contains
         do i = 2, arg_count()
             call get_arg(i, arg)
             if (trim(arg) == '--buy-credit') then
-                extend_mode = .true.
+                buy_credit_mode = .true.
             else if (trim(arg) == '--rotate') then
                 rotate_mode = .true.
             else if (trim(arg) == '--otp' .and. i < arg_count()) then
@@ -2367,7 +2367,7 @@ contains
         ! already exported UNSB_SK/UNSB_HMAC for the shell). Display per CLI_SPEC.md
         ! "`un key` output": the API returns no public key, so we print ours.
         ! --buy-credit: open our portal's buy credit page (ticket #155)
-        if (extend_mode) then
+        if (buy_credit_mode) then
             script = 'PK=''' // trim(public_key) // '''' // nl // &
                 'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done' // nl // &
                 'echo "Opening buy credit page in browser..."; echo "If browser doesn''t open, visit: $PB/buy-credit?key=$PK"' // nl // &

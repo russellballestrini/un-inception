@@ -1160,27 +1160,27 @@ function cmd_key(args)
                 exit(1)
             end
 
-            # Build extend URL
-            extend_url = "$(PORTAL_BASE)/buy-credit?key=$(public_key)"
+            # Build buy credit URL
+            buy_credit_url = "$(PORTAL_BASE)/buy-credit?key=$(public_key)"
 
             println("Opening buy credit page in browser...")
-            println("If browser doesn't open, visit: $extend_url")
+            println("If browser doesn't open, visit: $buy_credit_url")
 
             # Try to open browser
             if Sys.isapple()
-                run(`open $extend_url`)
+                run(`open $buy_credit_url`)
             elseif Sys.islinux()
                 try
-                    run(`xdg-open $extend_url`)
+                    run(`xdg-open $buy_credit_url`)
                 catch
                     try
-                        run(`sensible-browser $extend_url`)
+                        run(`sensible-browser $buy_credit_url`)
                     catch
                         # Already printed the URL
                     end
                 end
             elseif Sys.iswindows()
-                run(`cmd /c start $extend_url`)
+                run(`cmd /c start $buy_credit_url`)
             end
 
             exit(0)

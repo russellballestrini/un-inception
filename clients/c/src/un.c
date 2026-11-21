@@ -10067,7 +10067,7 @@ int main(int argc, char *argv[]) {
 
     // Check for key command first
     if (argc >= 2 && strcmp(argv[1], "key") == 0) {
-        int do_extend = 0;
+        int do_buy_credit = 0;
         int do_rotate = 0;
         const char *rotate_otp = NULL;
 
@@ -10083,7 +10083,7 @@ int main(int argc, char *argv[]) {
                 i++;
                 cli_account_index = atoi(argv[i]);
             } else if (strcmp(argv[i], "--buy-credit") == 0) {
-                do_extend = 1;
+                do_buy_credit = 1;
             } else if (strcmp(argv[i], "--rotate") == 0) {
                 do_rotate = 1;
             } else if (strcmp(argv[i], "--otp") == 0 && i + 1 < argc) {
@@ -10105,26 +10105,26 @@ int main(int argc, char *argv[]) {
         }
 
         // Handle --buy-credit: open our portal's buy credit page
-        if (do_extend) {
+        if (do_buy_credit) {
             // If we have public_key from credentials, use it directly
             if (creds->public_key) {
-                char extend_url[512];
-                snprintf(extend_url, sizeof(extend_url), "%s/buy-credit?key=%s", PORTAL_BASE, creds->public_key);
+                char buy_credit_url[512];
+                snprintf(buy_credit_url, sizeof(buy_credit_url), "%s/buy-credit?key=%s", PORTAL_BASE, creds->public_key);
                 printf("Opening buy credit page in browser...\n");
-                printf("If browser doesn't open, visit: %s\n", extend_url);
+                printf("If browser doesn't open, visit: %s\n", buy_credit_url);
 
                 // Try to open URL in browser
                 #ifdef __APPLE__
                 char cmd[1024];
-                snprintf(cmd, sizeof(cmd), "open '%s'", extend_url);
+                snprintf(cmd, sizeof(cmd), "open '%s'", buy_credit_url);
                 if (system(cmd) != 0) { /* ignore */ }
                 #elif defined(__linux__)
                 char cmd[2048];
-                snprintf(cmd, sizeof(cmd), "xdg-open '%s' 2>/dev/null || sensible-browser '%s' 2>/dev/null", extend_url, extend_url);
+                snprintf(cmd, sizeof(cmd), "xdg-open '%s' 2>/dev/null || sensible-browser '%s' 2>/dev/null", buy_credit_url, buy_credit_url);
                 if (system(cmd) != 0) { /* ignore */ }
                 #elif defined(_WIN32)
                 char cmd[1024];
-                snprintf(cmd, sizeof(cmd), "start %s", extend_url);
+                snprintf(cmd, sizeof(cmd), "start %s", buy_credit_url);
                 if (system(cmd) != 0) { /* ignore */ }
                 #endif
 

@@ -228,7 +228,7 @@ async Task CmdKeyAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
 
-    if (args.KeyExtend)
+    if (args.KeyBuyCredit)
     {
         // key --buy-credit: open our portal's buy credit page
         var buyCreditUrl = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
@@ -972,7 +972,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--unfreeze-on-demand") result.ServiceUnfreezeOnDemand = args[++i];
         else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--buy-credit") result.KeyExtend = true;
+        else if (arg == "--buy-credit") result.KeyBuyCredit = true;
         // Snapshot options
         else if (arg == "--delete")
         {
@@ -1125,7 +1125,7 @@ class Args
     public bool ServiceUnfreezeOnDemandEnabled = true;
     public bool ServiceCreateUnfreezeOnDemand;
     public string? EnvFile, EnvAction, EnvTarget;
-    public bool KeyExtend;
+    public bool KeyBuyCredit;
     // Snapshot command
     public bool SnapshotList;
     public string? SnapshotInfo, SnapshotDelete, SnapshotLock, SnapshotUnlock, SnapshotClone;

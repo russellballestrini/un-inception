@@ -1110,11 +1110,11 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     print response
 }
 
-function validate_key(do_extend    , timestamp, sig_headers, signature, sig_input, cmd, response, line, code, nl, arr, state, reason, pk, url, vt, secs, left, expires, remaining, billing, concurrency, credit, status) {
+function validate_key(do_buy_credit    , timestamp, sig_headers, signature, sig_input, cmd, response, line, code, nl, arr, state, reason, pk, url, vt, secs, left, expires, remaining, billing, concurrency, credit, status) {
     get_api_keys()
     pk = GLOBAL_PUBLIC_KEY
 
-    if (do_extend) {
+    if (do_buy_credit) {
         url = PORTAL_BASE "/buy-credit?key=" pk
         print "Opening buy credit page in browser..."
         print "If browser doesn't open, visit: " url
@@ -1221,8 +1221,8 @@ function validate_keys() {
     validate_key(0)
 }
 
-function cmd_key(do_extend) {
-    validate_key(do_extend)
+function cmd_key(do_buy_credit) {
+    validate_key(do_buy_credit)
 }
 
 # Does accounts.csv at path hold a credential row number row?
@@ -2980,14 +2980,14 @@ END {
     }
 
     if (ARGV[1] == "key") {
-        do_extend = 0; do_rotate = 0; otp_given = 0; otp = ""
+        do_buy_credit = 0; do_rotate = 0; otp_given = 0; otp = ""
         for (i = 2; i < ARGC; i++) {
-            if (ARGV[i] == "--buy-credit") do_extend = 1
+            if (ARGV[i] == "--buy-credit") do_buy_credit = 1
             else if (ARGV[i] == "--rotate") do_rotate = 1
             else if (ARGV[i] == "--otp" && i + 1 < ARGC) { otp_given = 1; otp = ARGV[++i] }
         }
         if (do_rotate) cmd_key_rotate(otp_given, otp)
-        else cmd_key(do_extend)
+        else cmd_key(do_buy_credit)
         exit 0
     }
 

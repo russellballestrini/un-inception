@@ -819,10 +819,10 @@ function Invoke-Key {
     param($CmdArgs)
 
     # --buy-credit: buy credit page
-    $extend = ($CmdArgs -contains "--buy-credit")
+    $buyCredit = ($CmdArgs -contains "--buy-credit")
     $publicKey, $secretKey = Get-ApiKeys
 
-    if ($extend) {
+    if ($buyCredit) {
         $url = "$PORTAL_BASE/buy-credit?key=$publicKey"
         Write-Host "Opening buy credit page in browser..."
         Write-Host "If browser doesn't open, visit: $url"

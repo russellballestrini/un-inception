@@ -1868,16 +1868,16 @@ string formatDuration(long totalMinutes) {
     }
 }
 
-void validateKey(string publicKey, string secretKey, bool extend) {
+void validateKey(string publicKey, string secretKey, bool buyCredit) {
     import std.json;
     import std.datetime;
 
-    if (extend) {
+    if (buyCredit) {
         // --buy-credit: open our portal's buy credit page
-        string extendURL = PORTAL_BASE ~ "/buy-credit?key=" ~ publicKey;
+        string buyCreditURL = PORTAL_BASE ~ "/buy-credit?key=" ~ publicKey;
         writeln("Opening buy credit page in browser...");
-        writefln("If browser doesn't open, visit: %s", extendURL);
-        openBrowser(extendURL);
+        writefln("If browser doesn't open, visit: %s", buyCreditURL);
+        openBrowser(buyCreditURL);
         return;
     }
 
@@ -2373,12 +2373,12 @@ int main(string[] args) {
     }
 
     if (args[1] == "key") {
-        bool extend = false;
+        bool buyCredit = false;
         bool rotate = false;
         string otp;
 
         for (size_t i = 2; i < args.length; i++) {
-            if (args[i] == "--buy-credit") extend = true;
+            if (args[i] == "--buy-credit") buyCredit = true;
             else if (args[i] == "--rotate") rotate = true;
             else if (args[i] == "--otp" && i+1 < args.length) otp = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) { publicKey = args[++i]; credsCsvPath = ""; }
@@ -2392,7 +2392,7 @@ int main(string[] args) {
 
         if (rotate) return rotateKey(publicKey, secretKey, otp, credsCsvPath);
 
-        validateKey(publicKey, secretKey, extend);
+        validateKey(publicKey, secretKey, buyCredit);
         return 0;
     }
 

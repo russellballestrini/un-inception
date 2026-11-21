@@ -645,9 +645,9 @@
            (str (quot left 86400) "d " (quot (mod left 86400) 3600) "h " (quot (mod left 3600) 60) "m"))])
     ["N/A" "N/A"]))
 
-(defn validate-key [api-key extend?]
+(defn validate-key [api-key buy-credit?]
   (let [[public-key secret-key] (get-api-keys)]
-    (if extend?
+    (if buy-credit?
       (let [url (str portal-base "/buy-credit?key=" public-key)]
         (println "Opening buy credit page in browser...")
         (println (str "If browser doesn't open, visit: " url))
@@ -706,9 +706,9 @@
               (println (str "Reason: " reason))
               (System/exit 3)))))))
 
-(defn key-command [extend?]
+(defn key-command [buy-credit?]
   (let [api-key (get-api-key)]
-    (validate-key api-key extend?)))
+    (validate-key api-key buy-credit?)))
 
 ;; ---------------------------------------------------------------------------
 ;; un key --rotate [--otp CODE]: rotate this key's secret (see CLI_SPEC.md)
@@ -1427,7 +1427,7 @@
          service-envs []
          service-env-file nil
          service-unfreeze-on-demand nil
-         key-extend false
+         key-buy-credit false
          image-action nil
          image-id nil
          image-source-type nil
@@ -1440,7 +1440,7 @@
       (case mode
         :session (session-command (or session-action :create) session-id session-shell network vcpu session-input-files)
         :service (service-command (or service-action :create) service-id service-name service-ports service-bootstrap service-bootstrap-file service-type network vcpu service-input-files service-envs service-env-file service-unfreeze-on-demand)
-        :key (key-command key-extend)
+        :key (key-command key-buy-credit)
         :languages (languages-command false)
         :image (image-command (or image-action :list) image-id image-source-type image-visibility image-name image-ports)
         :execute (if file
@@ -1459,23 +1459,23 @@
 
       (= (first args) "session")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports :session)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports :session)
 
       (= (first args) "service")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports :service)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports :service)
 
       (= (first args) "key")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports :key)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports :key)
 
       (= (first args) "languages")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports :languages)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports :languages)
 
       (= (first args) "image")
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports :image)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports :image)
 
       (= (first args) "snapshot")
       (let [rest-args (rest args)]
@@ -1496,51 +1496,51 @@
       ;; Image options
       (and (= mode :image) (or (= (first args) "--list") (= (first args) "-l")))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :list image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :list image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--info"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :info (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :info (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--delete"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :delete (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :delete (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--lock"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :lock (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :lock (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--unlock"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :unlock (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :unlock (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--publish"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :publish (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :publish (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--source-type"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id (second args) image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id (second args) image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--visibility"))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :visibility (second args) image-source-type (nth args 2) image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :visibility (second args) image-source-type (nth args 2) image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--spawn"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :spawn (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :spawn (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--clone"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend :clone (second args) image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit :clone (second args) image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :image) (= (first args) "--name"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility (second args) image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility (second args) image-ports mode)
 
       (and (= mode :image) (= (first args) "--ports"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name (second args) mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name (second args) mode)
 
       ;; Key options
       (and (= mode :key) (#{"--buy-credit"} (first args)))
@@ -1556,134 +1556,134 @@
       ;; Session options
       (and (= mode :session) (= (first args) "--list"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu :list session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :session) (= (first args) "--kill"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu :kill (second args) session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :session) (or (= (first args) "--shell") (= (first args) "-s")))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id (second args) session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :session) (= (first args) "-f"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell (conj session-input-files (second args))
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Service options
       (and (= mode :service) (= (first args) "--list"))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :list service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :list service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--info"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :info (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :info (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--logs"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :logs (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :logs (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--freeze"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :sleep (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :sleep (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--unfreeze"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :wake (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :wake (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--destroy"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :destroy (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :destroy (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--resize"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :resize (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :resize (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--set-unfreeze-on-demand"))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :set-unfreeze-on-demand (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file (= (nth args 2) "true") key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :set-unfreeze-on-demand (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file (= (nth args 2) "true") key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--execute"))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :execute (second args) service-name service-ports (nth args 2) service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :execute (second args) service-name service-ports (nth args 2) service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--dump-bootstrap") (>= (count args) 3) (not (.startsWith (nth args 2) "-")))
       (recur (rest (rest (rest args))) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap (nth args 2) service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--dump-bootstrap"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :dump-bootstrap (second args) service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--name"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             :create service-id (second args) service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             :create service-id (second args) service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--ports"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name (second args) service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name (second args) service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--bootstrap"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports (second args) service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports (second args) service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--bootstrap-file"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap (second args) service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap (second args) service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--type"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file (second args) service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file (second args) service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "-f"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type (conj service-input-files (second args)) service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type (conj service-input-files (second args)) service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "env") (>= (count args) 2))
       (let [env-action (second args)
             env-target (when (and (>= (count args) 3) (not (.startsWith (nth args 2) "-"))) (nth args 2))
             rest-args (if env-target (drop 3 args) (drop 2 args))]
         (recur rest-args file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-               :env env-action env-target service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))
+               :env env-action env-target service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode))
 
       (and (= mode :service) (= (first args) "-e"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files (conj service-envs (second args)) service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files (conj service-envs (second args)) service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--env-file"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs (second args) service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs (second args) service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (and (= mode :service) (= (first args) "--unfreeze-on-demand"))
       (recur (rest (rest args)) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file (= (second args) "true") key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file (= (second args) "true") key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Execute options
       (= (first args) "-e")
       (let [[k v] (str/split (second args) #"=" 2)]
         (recur (rest (rest args)) file (conj env-vars [k v]) artifacts out-dir network vcpu
-               session-action session-id session-shell session-input-files service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))
+               session-action session-id session-shell session-input-files service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode))
 
       (= (first args) "-a")
       (recur (rest args) file env-vars true out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (= (first args) "-o")
       (recur (rest (rest args)) file env-vars artifacts (second args) network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (= (first args) "-n")
       (recur (rest (rest args)) file env-vars artifacts out-dir (second args) vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       (= (first args) "-v")
       (recur (rest (rest args)) file env-vars artifacts out-dir network (Integer/parseInt (second args)) session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Source file
       (and (= mode :execute) (not (.startsWith (first args) "-")) (nil? file))
       (recur (rest args) (first args) env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode)
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode)
 
       ;; Unknown option check
       (and (= mode :session) (.startsWith (first args) "-"))
@@ -1695,7 +1695,7 @@
 
       :else
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
-             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name image-ports mode))))
+             service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-buy-credit image-action image-id image-source-type image-visibility image-name image-ports mode))))
 
 (let [raw-args *command-line-args*
       account-val (second (drop-while #(not= % "--account") raw-args))

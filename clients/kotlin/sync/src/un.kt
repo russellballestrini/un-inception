@@ -107,7 +107,7 @@ data class Args(
     var serviceUnfreezeOnDemandValue: Boolean? = null,
     var serviceShowFreezePage: String? = null,
     var serviceshowFreezePageValue: Boolean? = null,
-    var keyExtend: Boolean = false,
+    var keyBuyCredit: Boolean = false,
     var keyRotate: Boolean = false,
     var keyOtp: String? = null,
     var envFile: String? = null,
@@ -693,10 +693,10 @@ fun cmdKey(args: Args) {
     val (publicKeyOpt, secretKey) = getApiKeys(args.apiKey, args.accountIndex)
     val publicKey = publicKeyOpt ?: ""
 
-    if (args.keyExtend) {
-        val extendUrl = "$PORTAL_BASE/buy-credit?key=$publicKey"
+    if (args.keyBuyCredit) {
+        val buyCreditUrl = "$PORTAL_BASE/buy-credit?key=$publicKey"
         println("Opening buy credit page in browser...")
-        println("If browser doesn't open, visit: $extendUrl")
+        println("If browser doesn't open, visit: $buyCreditUrl")
 
         // Try to open browser using common commands
         val osName = System.getProperty("os.name").lowercase()
@@ -707,7 +707,7 @@ fun cmdKey(args: Args) {
         }
 
         try {
-            Runtime.getRuntime().exec(arrayOf(openCmd, extendUrl))
+            Runtime.getRuntime().exec(arrayOf(openCmd, buyCreditUrl))
         } catch (e: Exception) {
             // no browser: the URL above is enough
         }
@@ -1584,7 +1584,7 @@ fun parseArgs(args: Array<String>): Args {
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
-            "--buy-credit" -> result.keyExtend = true
+            "--buy-credit" -> result.keyBuyCredit = true
             "--rotate" -> result.keyRotate = true
             "--otp" -> result.keyOtp = args[++i]
             "--account" -> result.accountIndex = args[++i].toInt()

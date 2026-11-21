@@ -1858,10 +1858,10 @@ let display_key_result code response public_key =
     Printf.printf "Reason: %s\n" reason;
     exit 3
 
-(* Key command; extend = --buy-credit (buy credit page) *)
-let key_command extend =
+(* Key command; buy_credit = --buy-credit (buy credit page) *)
+let key_command buy_credit =
   let (public_key, secret_key) = get_api_keys () in
-  if extend then begin
+  if buy_credit then begin
     let url = Printf.sprintf "%s/buy-credit?key=%s" portal_base public_key in
     Printf.printf "Opening buy credit page in browser...\n";
     Printf.printf "If browser doesn't open, visit: %s\n%!" url;
@@ -2449,14 +2449,14 @@ let () =
   | "image" :: rest ->
     image_command rest
   | "key" :: rest ->
-    let extend = List.mem "--buy-credit" rest in
+    let buy_credit = List.mem "--buy-credit" rest in
     let rec find_otp = function
       | "--otp" :: code :: _ -> Some code
       | _ :: rest -> find_otp rest
       | [] -> None
     in
     if List.mem "--rotate" rest then key_rotate_command (find_otp rest)
-    else key_command extend
+    else key_command buy_credit
   | "session" :: rest ->
     let input_files = parse_input_files [] rest in
     let rec parse_session action shell network vcpu = function

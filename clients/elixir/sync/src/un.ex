@@ -2112,16 +2112,16 @@ defmodule Un do
     api_key = get_api_key()
 
     if "--buy-credit" in args do
-      validate_key(api_key, extend: true)
+      validate_key(api_key, buy_credit: true)
     else
-      validate_key(api_key, extend: false)
+      validate_key(api_key, buy_credit: false)
     end
   end
 
-  defp validate_key(_api_key, extend: extend) do
+  defp validate_key(_api_key, buy_credit: buy_credit) do
     {public_key, secret_key} = get_api_keys()
 
-    if extend do
+    if buy_credit do
       url = "#{portal_base()}/buy-credit?key=#{public_key}"
       IO.puts("Opening buy credit page in browser...")
       IO.puts("If browser doesn't open, visit: #{url}")
