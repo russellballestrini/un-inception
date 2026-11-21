@@ -1,6 +1,6 @@
 # UN Clojure Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -28,6 +28,10 @@ test-library:
 	@echo "━━━ LIBRARY MODE ━━━"
 	@if [ -f "$(SYNC_DIR)/project.clj" ]; then cd $(SYNC_DIR) && lein test 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Run lein deps"; \
 	elif [ -f "$(SYNC_DIR)/deps.edn" ]; then cd $(SYNC_DIR) && clj -M:test 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Check deps.edn"; fi
+
+# Offline un key output + --topup contract check (local mock API, no credentials)
+test-key:
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh clojure -M $(SYNC_DIR)/src/un.clj
 
 test-integration:
 	@echo ""

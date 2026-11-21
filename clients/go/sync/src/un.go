@@ -29,8 +29,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -1493,7 +1495,7 @@ func CloneImage(creds *Credentials, imageID string, opts *CloneImageOptions) (ma
 // PaaS Logs API
 // ============================================================================
 
-// PortalBase is the portal endpoint (/logs, /keys/extend), overridable via
+// PortalBase is the portal endpoint (/logs, /topup), overridable via
 // UNSANDBOX_PORTAL_URL (trailing slash stripped).
 var PortalBase = func() string {
 	if v := os.Getenv("UNSANDBOX_PORTAL_URL"); v != "" {
@@ -1985,6 +1987,7 @@ Usage:
   un service [options]              Manage services
   un snapshot [options]             Manage snapshots
   un key                            Check API key
+  un key --topup                    Open portal to top up credit (alias: --extend)
   un key --rotate [--otp CODE]      Rotate API secret (sudo OTP)
   un languages [--json]             List available languages
 
@@ -3423,6 +3426,25 @@ func runImage(creds *Credentials, args []string, opts *CLIOptions) int {
 	return ExitInvalidArgs
 }
 
+// runKeyTopup handles `un key --topup` (alias --extend): open our portal's
+// credit top-up page (CLI_SPEC.md "`un key --topup`").
+func runKeyTopup(creds *Credentials) int {
+	url := PortalBase + "/topup?key=" + creds.PublicKey
+	fmt.Println("Opening top-up page in browser...")
+	fmt.Printf("If browser doesn't open, visit: %s\n", url)
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Run()
+	return ExitSuccess
+}
+
 // runKey handles the key command (CLI_SPEC.md "`un key` output").
 func runKey(creds *Credentials) int {
 	result, status, body, err := makeRequestWithSudo("POST", "/keys/validate", creds, nil, "", "")
@@ -3477,7 +3499,7 @@ func runKey(creds *Credentials) int {
 	case "expired":
 		fmt.Println("Expired")
 		fmt.Printf("Public Key: %s\n", pk)
-		fmt.Println("To renew: Visit " + PortalBase + "/keys/extend")
+		fmt.Println("To top up: Visit " + PortalBase + "/topup?key=" + pk)
 		return ExitAuthError
 	case "suspended":
 		fmt.Println("Suspended")
@@ -3490,14 +3512,25 @@ func runKey(creds *Credentials) int {
 		return ExitAuthError
 	}
 
-	tier, statusStr, expires, remaining := "N/A", "N/A", "N/A", "N/A"
-	if t, ok := result["tier"]; ok && t != nil {
-		if f, ok := t.(float64); ok {
-			tier = strconv.FormatInt(int64(f), 10)
-		} else {
-			tier = fmt.Sprint(t)
+	// Billing (ticket #155): billing, else derived from deprecated tier
+	// (-1 free, 0 demo, other credit). Tier itself is never printed.
+	billing, concurrency, statusStr, expires, remaining := "N/A", "N/A", "N/A", "N/A", "N/A"
+	if b, ok := result["billing"].(string); ok && b != "" {
+		billing = b
+	} else if t, ok := result["tier"].(float64); ok {
+		switch int64(t) {
+		case -1:
+			billing = "free"
+		case 0:
+			billing = "demo"
+		default:
+			billing = "credit"
 		}
 	}
+	if c, ok := result["concurrency"].(float64); ok {
+		concurrency = strconv.FormatInt(int64(c), 10)
+	}
+	credit, hasCredit := result["credit_balance_usd"].(string)
 	if st, ok := result["status"].(string); ok {
 		statusStr = st
 	}
@@ -3513,7 +3546,11 @@ func runKey(creds *Credentials) int {
 	}
 	fmt.Println("Valid")
 	fmt.Printf("Public Key: %s\n", pk)
-	fmt.Printf("Tier: %s\n", tier)
+	fmt.Printf("Billing: %s\n", billing)
+	fmt.Printf("Concurrency: %s\n", concurrency)
+	if billing == "credit" && hasCredit {
+		fmt.Printf("Credit: $%s\n", credit)
+	}
 	fmt.Printf("Status: %s\n", statusStr)
 	fmt.Printf("Expires: %s\n", expires)
 	fmt.Printf("Time Remaining: %s\n", remaining)
@@ -3937,9 +3974,11 @@ func CliMain() {
 	case "image":
 		exitCode = runImage(creds, cmdArgs, opts)
 	case "key":
-		rotate, otp := false, ""
+		rotate, topup, otp := false, false, ""
 		for i := 0; i < len(cmdArgs); i++ {
 			switch cmdArgs[i] {
+			case "--topup", "--extend": // --extend: alias kept from before tiers retired
+				topup = true
 			case "--rotate":
 				rotate = true
 			case "--otp":
@@ -3951,6 +3990,8 @@ func CliMain() {
 		}
 		if rotate {
 			exitCode = runKeyRotate(creds, opts, otp)
+		} else if topup {
+			exitCode = runKeyTopup(creds)
 		} else {
 			exitCode = runKey(creds)
 		}

@@ -133,7 +133,7 @@ fn apiBase() []const u8 {
 const DEFAULT_PORTAL_BASE = "https://unsandbox.com";
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
-// Serves /logs/{source} (partner log access) and /keys/extend.
+// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 fn portalBase() []const u8 {
     const v = std.posix.getenv("UNSANDBOX_PORTAL_URL") orelse return DEFAULT_PORTAL_BASE;
     const trimmed = mem.trimRight(u8, v, "/");
@@ -1541,7 +1541,7 @@ fn cmdKeyValidate(allocator: std.mem.Allocator, public_key: []const u8, secret_k
     }
 
     if (mem.eql(u8, state, "expired")) {
-        try stdout.print("{s}Expired{s}\nPublic Key: {s}\n{s}To renew: Visit {s}/keys/extend{s}\n", .{ RED, RESET, public_key, YELLOW, portalBase(), RESET });
+        try stdout.print("{s}Expired{s}\nPublic Key: {s}\n{s}To top up: Visit {s}/topup?key={s}{s}\n", .{ RED, RESET, public_key, YELLOW, portalBase(), public_key, RESET });
         return 3;
     } else if (mem.eql(u8, state, "suspended")) {
         try stdout.print("{s}Suspended{s}\nPublic Key: {s}\n", .{ RED, RESET, public_key });
@@ -1551,8 +1551,20 @@ fn cmdKeyValidate(allocator: std.mem.Allocator, public_key: []const u8, secret_k
         return 3;
     }
 
-    var tier_buf: [32]u8 = undefined;
-    const tier: []const u8 = if (jsonNumberField(body, "tier")) |t| (std.fmt.bufPrint(&tier_buf, "{d}", .{t}) catch "N/A") else "N/A";
+    // Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+    // (-1 free, 0 demo, other credit). Tier itself is never printed.
+    var billing: []const u8 = "N/A";
+    if (jsonStringField(body, "billing")) |b| {
+        if (b.len > 0) billing = b;
+    }
+    if (mem.eql(u8, billing, "N/A")) {
+        if (jsonNumberField(body, "tier")) |t| {
+            billing = if (t == -1) "free" else if (t == 0) "demo" else "credit";
+        }
+    }
+    var conc_buf: [32]u8 = undefined;
+    const concurrency: []const u8 = if (jsonNumberField(body, "concurrency")) |c| (std.fmt.bufPrint(&conc_buf, "{d}", .{c}) catch "N/A") else "N/A";
+    const credit_usd: ?[]const u8 = if (mem.eql(u8, billing, "credit")) jsonStringField(body, "credit_balance_usd") else null;
     const status = jsonStringField(body, "status") orelse "N/A";
     var exp_buf: [32]u8 = undefined;
     var rem_buf: [64]u8 = undefined;
@@ -1574,7 +1586,9 @@ fn cmdKeyValidate(allocator: std.mem.Allocator, public_key: []const u8, secret_k
             remaining = std.fmt.bufPrint(&rem_buf, "{d}d {d}h {d}m", .{ @divFloor(left, 86400), @divFloor(@mod(left, 86400), 3600), @divFloor(@mod(left, 3600), 60) }) catch "N/A";
         }
     }
-    try stdout.print("{s}Valid{s}\nPublic Key: {s}\nTier: {s}\nStatus: {s}\nExpires: {s}\nTime Remaining: {s}\n", .{ GREEN, RESET, public_key, tier, status, expires, remaining });
+    try stdout.print("{s}Valid{s}\nPublic Key: {s}\nBilling: {s}\nConcurrency: {s}\n", .{ GREEN, RESET, public_key, billing, concurrency });
+    if (credit_usd) |cu| try stdout.print("Credit: ${s}\n", .{cu});
+    try stdout.print("Status: {s}\nExpires: {s}\nTime Remaining: {s}\n", .{ status, expires, remaining });
     return 0;
 }
 
@@ -1697,7 +1711,7 @@ pub fn main() !u8 {
         std.debug.print("       {s} service [options]\n", .{args[0]});
         std.debug.print("       {s} service env <action> <service_id> [options]\n", .{args[0]});
         std.debug.print("       {s} image [options]\n", .{args[0]});
-        std.debug.print("       {s} key [--extend]\n", .{args[0]});
+        std.debug.print("       {s} key [--topup]   (top up credit; alias: --extend)\n", .{args[0]});
         std.debug.print("       {s} key --rotate [--otp CODE]\n", .{args[0]});
         std.debug.print("       {s} languages [--json]\n", .{args[0]});
         std.debug.print("\nVault commands:\n", .{});
@@ -2492,8 +2506,8 @@ pub fn main() !u8 {
         var otp_flag: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
-            if (mem.eql(u8, args[i], "--extend")) {
-                extend = true;
+            if (mem.eql(u8, args[i], "--topup") or mem.eql(u8, args[i], "--extend")) {
+                extend = true; // --extend: alias kept from before tiers retired
             } else if (mem.eql(u8, args[i], "--rotate")) {
                 rotate = true;
             } else if (mem.eql(u8, args[i], "--otp") and i + 1 < args.len) {
@@ -2511,9 +2525,10 @@ pub fn main() !u8 {
         }
 
         if (extend) {
-            const url = try std.fmt.allocPrint(allocator, "{s}/keys/extend?pk={s}", .{ portalBase(), public_key });
+            const url = try std.fmt.allocPrint(allocator, "{s}/topup?key={s}", .{ portalBase(), public_key });
             defer allocator.free(url);
-            std.debug.print("\x1b[33mOpening browser to extend key...\x1b[0m\n", .{});
+            const out = std.io.getStdOut().writer();
+            try out.print("Opening top-up page in browser...\nIf browser doesn't open, visit: {s}\n", .{url});
             const open_cmd = try std.fmt.allocPrint(allocator, "xdg-open '{s}' 2>/dev/null || open '{s}' 2>/dev/null || start '{s}' 2>/dev/null", .{ url, url, url });
             defer allocator.free(open_cmd);
             _ = runShell(open_cmd);

@@ -150,7 +150,7 @@ public class FunctionalTests
         Console.Write("ValidateKeys: ");
         var result = Unsandbox.ValidateKeys();
         if (result != null && result.Valid)
-            Console.WriteLine($"PASS (tier: {result.Tier})");
+            Console.WriteLine($"PASS (billing: {result.Billing})");
         else
             Console.WriteLine($"FAIL ({Unsandbox.LastError()})");
     }

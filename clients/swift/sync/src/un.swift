@@ -1748,6 +1748,7 @@ func printHelp() {
         un service --list                      List all services
         un snapshot --list                     List all snapshots
         un key                                 Check API key
+        un key --topup                         Open portal to top up credit (alias: --extend)
         un key --rotate                        Rotate key secret (sudo OTP), update accounts.csv
         un key --rotate --otp CODE             Finish a rotation started without a terminal
     """
@@ -1839,7 +1840,8 @@ class CLIArgs {
     // Credential selection
     var accountIndex: Int? = nil
 
-    // Key rotation
+    // Key top-up (--topup, alias --extend) and rotation
+    var topup: Bool = false
     var rotate: Bool = false
     var otp: String?
 
@@ -1880,6 +1882,8 @@ class CLIArgs {
             case "--account":
                 i += 1
                 if i < args.count { accountIndex = Int(args[i]) }
+            case "--topup", "--extend":
+                topup = true
             case "--rotate":
                 rotate = true
             case "--otp":
@@ -2943,6 +2947,23 @@ func handleKeyRotate(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
     }
 }
 
+/// un key --topup (alias --extend): open our portal's credit top-up page.
+func handleKeyTopup(_ pk: String) {
+    let url = "\(PORTAL_BASE)/topup?key=\(pk)"
+    print("Opening top-up page in browser...")
+    print("If browser doesn't open, visit: \(url)")
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    #if os(macOS)
+    proc.arguments = ["open", url]
+    #else
+    proc.arguments = ["xdg-open", url]
+    #endif
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    try? proc.run()
+}
+
 /// Handle key command: display per CLI_SPEC.md "`un key` output".
 /// The payload carries no public key: print the one we signed with.
 func handleKeyCommand(_ pk: String, _ sk: String) throws {
@@ -2982,7 +3003,7 @@ func handleKeyCommand(_ pk: String, _ sk: String) throws {
     case "expired":
         print("Expired")
         print("Public Key: \(pk)")
-        print("To renew: Visit \(PORTAL_BASE)/keys/extend")
+        print("To top up: Visit \(PORTAL_BASE)/topup?key=\(pk)")
         exit(3)
     case "suspended":
         print("Suspended")
@@ -2995,8 +3016,18 @@ func handleKeyCommand(_ pk: String, _ sk: String) throws {
         exit(3)
     }
 
-    var tier = "N/A"
-    if let t = result["tier"] as? NSNumber { tier = "\(t.int64Value)" } else if let t = result["tier"] as? String { tier = t }
+    // Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+    // (-1 free, 0 demo, other credit). Tier itself is never printed.
+    var billing = "N/A"
+    if let b = result["billing"] as? String, !b.isEmpty {
+        billing = b
+    } else if let t = result["tier"] as? NSNumber {
+        let tv = t.int64Value
+        billing = tv == -1 ? "free" : (tv == 0 ? "demo" : "credit")
+    }
+    var concurrency = "N/A"
+    if let c = result["concurrency"] as? NSNumber { concurrency = "\(c.int64Value)" }
+    let creditUsd: String? = billing == "credit" ? result["credit_balance_usd"] as? String : nil
     let status = result["status"] as? String ?? "N/A"
     var expires = "N/A"
     var remaining = "N/A"
@@ -3012,7 +3043,9 @@ func handleKeyCommand(_ pk: String, _ sk: String) throws {
     }
     print("Valid")
     print("Public Key: \(pk)")
-    print("Tier: \(tier)")
+    print("Billing: \(billing)")
+    print("Concurrency: \(concurrency)")
+    if let cu = creditUsd { print("Credit: $\(cu)") }
     print("Status: \(status)")
     print("Expires: \(expires)")
     print("Time Remaining: \(remaining)")
@@ -3100,6 +3133,8 @@ struct UnCLI {
             case "key":
                 if args.rotate {
                     try handleKeyRotate(args, pk, sk)
+                } else if args.topup {
+                    handleKeyTopup(pk)
                 } else {
                     try handleKeyCommand(pk, sk)
                 }

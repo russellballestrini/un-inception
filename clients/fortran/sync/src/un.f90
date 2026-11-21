@@ -61,7 +61,7 @@
 !   ./un script.py
 !   ./un session [options]
 !   ./un service [options]
-!   ./un key [--extend]
+!   ./un key [--topup]   (top up credit; alias --extend)
 !
 ! Authentication (in priority order):
 !   1. --account N flag -> accounts.csv row N (bypasses env vars)
@@ -1204,7 +1204,7 @@ contains
         write(*, '(A)') '       ./un service [options]'
         write(*, '(A)') '       ./un snapshot [options]'
         write(*, '(A)') '       ./un image [options]'
-        write(*, '(A)') '       ./un key [--extend]'
+        write(*, '(A)') '       ./un key [--topup]'
         write(*, '(A)') '       ./un key --rotate [--otp CODE]'
         write(*, '(A)') '       ./un languages [--json]'
         write(*, '(A)') ''
@@ -1262,7 +1262,7 @@ contains
         write(*, '(A)') '  --ports PORTS       Ports for spawn'
         write(*, '(A)') ''
         write(*, '(A)') 'Key options:'
-        write(*, '(A)') '  --extend        Open browser to extend key'
+        write(*, '(A)') '  --topup         Open portal to top up credit (alias: --extend)'
         write(*, '(A)') ''
         write(*, '(A)') 'Languages options:'
         write(*, '(A)') '  --json          Output as JSON array'
@@ -2328,24 +2328,21 @@ contains
     end subroutine handle_image
 
     subroutine handle_key()
-        character(len=4096) :: full_cmd
         character(len=256) :: arg, otp_code
         character(len=1024) :: public_key, secret_key, source_csv
         integer :: i, stat
         logical :: extend_mode, rotate_mode
-        character(len=32) :: portal_base
         character(len=:), allocatable :: script
         character(len=1), parameter :: nl = achar(10)
 
-        portal_base = 'https://unsandbox.com'
         extend_mode = .false.
         rotate_mode = .false.
         otp_code = ''
 
-        ! Check for --extend, --rotate, --otp CODE
+        ! Check for --topup/--extend, --rotate, --otp CODE
         do i = 2, arg_count()
             call get_arg(i, arg)
-            if (trim(arg) == '--extend') then
+            if (trim(arg) == '--extend' .or. trim(arg) == '--topup') then
                 extend_mode = .true.
             else if (trim(arg) == '--rotate') then
                 rotate_mode = .true.
@@ -2369,14 +2366,18 @@ contains
         ! Key validation: signed POST $UN_API/keys/validate, empty body (get_credentials
         ! already exported UNSB_SK/UNSB_HMAC for the shell). Display per CLI_SPEC.md
         ! "`un key` output": the API returns no public key, so we print ours.
+        ! --topup (alias --extend): open our portal's credit top-up page (ticket #155)
         if (extend_mode) then
-            write(full_cmd, '(*(A))') 'echo "Opening browser to extend key..."; xdg-open "', &
-                trim(portal_base), '/keys/extend?pk=', trim(public_key), '" 2>/dev/null &'
-            call execute_command_line(trim(full_cmd), wait=.true., exitstat=stat)
+            script = 'PK=''' // trim(public_key) // '''' // nl // &
+                'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done' // nl // &
+                'echo "Opening top-up page in browser..."; echo "If browser doesn''t open, visit: $PB/topup?key=$PK"' // nl // &
+                '(xdg-open "$PB/topup?key=$PK" || open "$PB/topup?key=$PK") >/dev/null 2>&1 || true' // nl
+            call execute_command_line(script, wait=.true., exitstat=stat)
             return
         end if
 
         script = 'PK=''' // trim(public_key) // '''' // nl // &
+            'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done' // nl // &
             'TS=$(date +%s); SIG=$(printf %s "$TS:POST:/keys/validate:" | sh -c "$UNSB_HMAC")' // nl // &
             'raw=$(curl -s -w ''\n%{http_code}'' -X POST "$UN_API/keys/validate" -H "Authorization: Bea' // &
             'rer $PK" -H "X-Timestamp: $TS" -H "X-Signature: $SIG") || { echo ''Error: request to /keys' // &
@@ -2388,18 +2389,25 @@ contains
             'nded|suspended) st=suspended;; *) st=invalid;; esac;; *) echo "Error: HTTP $code" >&2; exi' // &
             't 4;; esac' // nl // &
             'case "$st" in active) ;; expired) printf ''\033[31mExpired\033[0m\nPublic Key: %s\n\033[33' // &
-            'mTo renew: Visit https://unsandbox.com/keys/extend\033[0m\n'' "$PK"; exit 3;; suspended) p' // &
+            'mTo top up: Visit %s/topup?key=%s\033[0m\n'' "$PK" "$PB" "$PK"; exit 3;; suspended) p' // &
             'rintf ''\033[31mSuspended\033[0m\nPublic Key: %s\n'' "$PK"; exit 3;; *) printf ''\033[31mI' // &
             'nvalid\033[0m\nPublic Key: %s\nReason: %s\n'' "$PK" "$reason"; exit 3;; esac' // nl // &
-            'tier=$(printf ''%s'' "$resp" | jq -r ''.tier // "N/A"''); status=$(printf ''%s'' "$resp" |' // &
+            'billing=$(printf ''%s'' "$resp" | jq -r ''if (.billing|type)=="string" and .billing!="" th' // &
+            'en .billing elif (.tier|type)=="number" then (if .tier==-1 then "free" elif .tier==0 then "' // &
+            'demo" else "credit" end) else "N/A" end'')' // nl // &
+            'conc=$(printf ''%s'' "$resp" | jq -r ''.concurrency // "N/A"''); credit=$(printf ''%s'' "$r' // &
+            'esp" | jq -r ''.credit_balance_usd // empty'')' // nl // &
+            'status=$(printf ''%s'' "$resp" |' // &
             ' jq -r ''.status // "N/A"''); vt=$(printf ''%s'' "$resp" | jq -r ''.valid_through // empty' // &
             ' | floor''); exp=N/A; rem=N/A' // nl // &
             'if [ -n "$vt" ]; then s=$((vt / 1000)); exp=$(date -u -d "@$s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/' // &
             'null || date -u -r "$s" +%Y-%m-%dT%H:%M:%SZ); l=$((s - $(date +%s))); if [ "$l" -le 0 ]; t' // &
             'hen rem=expired; else rem="$((l / 86400))d $((l % 86400 / 3600))h $((l % 3600 / 60))m"; fi' // &
             '; fi' // nl // &
-            'printf ''\033[32mValid\033[0m\nPublic Key: %s\nTier: %s\nStatus: %s\nExpires: %s\nTime Rem' // &
-            'aining: %s\n'' "$PK" "$tier" "$status" "$exp" "$rem"' // nl
+            'printf ''\033[32mValid\033[0m\nPublic Key: %s\nBilling: %s\nConcurrency: %s\n'' "$PK" "$b' // &
+            'illing" "$conc"' // nl // &
+            'if [ "$billing" = credit ] && [ -n "$credit" ]; then printf ''Credit: $%s\n'' "$credit"; fi' // nl // &
+            'printf ''Status: %s\nExpires: %s\nTime Remaining: %s\n'' "$status" "$exp" "$rem"' // nl
         call execute_command_line(script, wait=.true., exitstat=stat)
         if (stat /= 0) call exit(stat)
     end subroutine handle_key

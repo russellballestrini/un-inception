@@ -183,7 +183,8 @@
                DISPLAY "Usage: un.cob <source_file>" UPON SYSERR
                DISPLAY "       un.cob session [options]" UPON SYSERR
                DISPLAY "       un.cob service [options]" UPON SYSERR
-               DISPLAY "       un.cob key [--extend | --rotate [--otp CODE]]"
+               DISPLAY "       un.cob key [--topup | --rotate [--otp CODE]]"
+               DISPLAY "         --topup: open portal to top up credit (alias --extend)"
                    UPON SYSERR
                DISPLAY "  --os OS   Target OS: linux (default) or freebsd "
                    "(execute, session, service)" UPON SYSERR
@@ -1154,7 +1155,7 @@
                MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
-      *> Parse key arguments: --extend, --rotate, --otp CODE
+      *> Parse key arguments: --topup (alias --extend), --rotate, --otp CODE
            MOVE SPACES TO WS-EXTEND-FLAG.
            MOVE SPACES TO WS-ROTATE-FLAG.
            MOVE SPACES TO WS-OTP.
@@ -1166,6 +1167,7 @@
                END-ACCEPT
                EVALUATE WS-ARG2
                    WHEN "--extend" MOVE "true" TO WS-EXTEND-FLAG
+                   WHEN "--topup" MOVE "true" TO WS-EXTEND-FLAG
                    WHEN "--rotate" MOVE "true" TO WS-ROTATE-FLAG
                    WHEN "--otp"
                        ACCEPT WS-OTP FROM ARGUMENT-VALUE
@@ -1319,18 +1321,31 @@
       *> come from GET-CREDENTIALS through the environment). Display per
       *> CLI_SPEC.md "un key output": the API returns no public key, so
       *> we print ours; expiry derives from valid_through (ms).
+      *> --topup (alias --extend): open our portal's credit top-up page
+      *> (ticket #155); portal base honors UNSANDBOX_PORTAL_URL.
            IF WS-EXTEND-FLAG = "true"
-               MOVE SPACES TO WS-CURL-CMD
-               STRING "xdg-open '" FUNCTION TRIM(WS-PORTAL-BASE)
-                   "/keys/extend?pk=" FUNCTION TRIM(WS-API-KEY)
-                   "' 2>/dev/null"
-                   DELIMITED BY SIZE INTO WS-CURL-CMD
+               MOVE SPACES TO WS-ROT-CMD
+               STRING "PK='" FUNCTION TRIM(WS-API-KEY) "'"
+               X"0A"
+               "PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while"
+               " [ ""${PB%/}"" != ""$PB"" ]; do PB=${PB%/}; done"
+               X"0A"
+               "echo 'Opening top-up page in browser...'; echo ""If brow"
+               "ser doesn't open, visit: $PB/topup?key=$PK"""
+               X"0A"
+               "(xdg-open ""$PB/topup?key=$PK"" || open ""$PB/topup?key="
+               "$PK"") >/dev/null 2>&1; exit 0"
+               X"0A"
+                   DELIMITED BY SIZE INTO WS-ROT-CMD
                END-STRING
-               CALL "SYSTEM" USING WS-CURL-CMD
+               CALL "SYSTEM" USING WS-ROT-CMD
                EXIT PARAGRAPH
            END-IF.
            MOVE SPACES TO WS-ROT-CMD.
            STRING "PK='" FUNCTION TRIM(WS-API-KEY) "'"
+               X"0A"
+               "PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while"
+               " [ ""${PB%/}"" != ""$PB"" ]; do PB=${PB%/}; done"
                X"0A"
                "TS=$(date +%s); SIG=$(printf %s ""$TS:POST:/keys/validate"
                ":"" | sh -c ""$UNSB_HMAC"")"
@@ -1352,14 +1367,23 @@
                " $code"" >&2; exit 4;; esac"
                X"0A"
                "case ""$st"" in active) ;; expired) printf '\033[31mExpire"
-               "d\033[0m\nPublic Key: %s\n\033[33mTo renew: Visit https:"
-               "//unsandbox.com/keys/extend\033[0m\n' ""$PK""; exit 3;; su"
+               "d\033[0m\nPublic Key: %s\n\033[33mTo top up: Visit %s/to"
+               "pup?key=%s\033[0m\n' ""$PK"" ""$PB"" ""$PK""; exit 3;; su"
                "spended) printf '\033[31mSuspended\033[0m\nPublic Key: %"
                "s\n' ""$PK""; exit 3;; *) printf '\033[31mInvalid\033[0m\n"
                "Public Key: %s\nReason: %s\n' ""$PK"" ""$reason""; exit 3;; "
                "esac"
                X"0A"
-               "tier=$(printf '%s' ""$resp"" | jq -r '.tier // ""N/A""'); st"
+               "billing=$(printf '%s' ""$resp"" | jq -r 'if (.billing|type)"
+               "==""string"" and .billing!="""" then .billing elif (.tier|t"
+               "ype)==""number"" then (if .tier==-1 then ""free"" elif .ti"
+               "er==0 then ""demo"" else ""credit"" end) else ""N/A"" end')"
+               X"0A"
+               "conc=$(printf '%s' ""$resp"" | jq -r '.concurrency // ""N/A"
+               """'); credit=$(printf '%s' ""$resp"" | jq -r '.credit_bala"
+               "nce_usd // empty')"
+               X"0A"
+               "st"
                "atus=$(printf '%s' ""$resp"" | jq -r '.status // ""N/A""'); "
                "vt=$(printf '%s' ""$resp"" | jq -r '.valid_through // empt"
                "y | floor'); exp=N/A; rem=N/A"
@@ -1370,9 +1394,14 @@
                """ -le 0 ]; then rem=expired; else rem=""$((l / 86400))d $"
                "((l % 86400 / 3600))h $((l % 3600 / 60))m""; fi; fi"
                X"0A"
-               "printf '\033[32mValid\033[0m\nPublic Key: %s\nTier: %s\n"
-               "Status: %s\nExpires: %s\nTime Remaining: %s\n' ""$PK"" ""$t"
-               "ier"" ""$status"" ""$exp"" ""$rem"""
+               "printf '\033[32mValid\033[0m\nPublic Key: %s\nBilling: %s"
+               "\nConcurrency: %s\n' ""$PK"" ""$billing"" ""$conc"""
+               X"0A"
+               "if [ ""$billing"" = credit ] && [ -n ""$credit"" ]; then pr"
+               "intf 'Credit: $%s\n' ""$credit""; fi"
+               X"0A"
+               "printf 'Status: %s\nExpires: %s\nTime Remaining: %s\n' ""$"
+               "status"" ""$exp"" ""$rem"""
                X"0A"
                DELIMITED BY SIZE INTO WS-ROT-CMD
            END-STRING.

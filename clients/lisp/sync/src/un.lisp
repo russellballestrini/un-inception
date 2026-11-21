@@ -59,7 +59,7 @@
   (string-right-trim "/" (or (sb-ext:posix-getenv "UNSANDBOX_API_URL") "https://api.unsandbox.com")))
 
 (defparameter *portal-base*
-  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /keys/extend
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /topup?key= (credit top-up)
   (let ((u (sb-ext:posix-getenv "UNSANDBOX_PORTAL_URL")))
     (string-right-trim "/" (if (and u (plusp (length u))) u "https://unsandbox.com"))))
 
@@ -675,8 +675,12 @@
   "un key: POST /keys/validate (empty body, signed); display per CLI_SPEC.md."
   (destructuring-bind (public-key secret-key) (get-api-keys)
     (when extend-flag
-      (format t "~aOpening browser to extend key...~a~%" *blue* *reset*)
-      (open-browser (format nil "~a/keys/extend?pk=~a" *portal-base* public-key))
+      ;; --topup (alias --extend): open our portal's credit top-up page
+      (let ((url (format nil "~a/topup?key=~a" *portal-base* public-key)))
+        (format t "Opening top-up page in browser...~%")
+        (format t "If browser doesn't open, visit: ~a~%" url)
+        (finish-output)
+        (ignore-errors (open-browser url)))
       (return-from validate-key))
     (let* ((result (parse-response-with-status
                     (run-curl (append (list "curl" "-s" "-w" "\\n%{http_code}" "-X" "POST"
@@ -708,6 +712,17 @@
       (cond
         ((string= state "active")
          (let* ((tier (json-int-field response "tier"))
+                ;; Billing (ticket #155): "billing" wins; else derive from deprecated
+                ;; "tier" (-1 free, 0 demo, other credit). Tier itself is never printed.
+                (billing-raw (parse-json-field response "billing"))
+                (billing (cond ((and billing-raw (plusp (length billing-raw))) billing-raw)
+                               ((null tier) "N/A")
+                               ((= tier -1) "free")
+                               ((= tier 0) "demo")
+                               (t "credit")))
+                (concurrency (json-int-field response "concurrency"))
+                (credit (when (string= billing "credit")
+                          (parse-json-field response "credit_balance_usd")))
                 (status (parse-json-field response "status"))
                 (vt (json-int-field response "valid_through"))
                 (expires "N/A")
@@ -725,14 +740,16 @@
                                  (floor (mod left 3600) 60))))))
            (format t "~aValid~a~%" *green* *reset*)
            (format t "Public Key: ~a~%" public-key)
-           (format t "Tier: ~a~%" (or tier "N/A"))
+           (format t "Billing: ~a~%" billing)
+           (format t "Concurrency: ~a~%" (or concurrency "N/A"))
+           (when credit (format t "Credit: $~a~%" credit))
            (format t "Status: ~a~%" (or status "N/A"))
            (format t "Expires: ~a~%" expires)
            (format t "Time Remaining: ~a~%" remaining)))
         ((string= state "expired")
          (format t "~aExpired~a~%" *red* *reset*)
          (format t "Public Key: ~a~%" public-key)
-         (format t "~aTo renew: Visit ~a/keys/extend~a~%" *yellow* *portal-base* *reset*)
+         (format t "~aTo top up: Visit ~a/topup?key=~a~a~%" *yellow* *portal-base* public-key *reset*)
          (finish-output)
          (uiop:quit 3))
         ((string= state "suspended")
@@ -1493,7 +1510,7 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
           (format t "       un.lisp image [options]~%")
           (format t "       un.lisp languages [--json]~%")
           (format t "       un.lisp paas logs [options]~%")
-          (format t "       un.lisp key [--extend] | key --rotate [--otp CODE]~%")
+          (format t "       un.lisp key [--topup] (top up credit; alias: --extend) | key --rotate [--otp CODE]~%")
           (format t "~%Global options:~%")
           (format t "  --os OS             Target OS: linux (default) or freebsd (execute, session, service)~%")
           (format t "~%Image options:~%")
@@ -1627,7 +1644,8 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))
           ((string= (first args) "key")
-           (let ((extend-flag (member "--extend" (cdr args) :test #'string=))
+           (let ((extend-flag (or (member "--topup" (cdr args) :test #'string=)
+                                  (member "--extend" (cdr args) :test #'string=)))
                  (rotate-flag (member "--rotate" (cdr args) :test #'string=))
                  (otp-tail (member "--otp" (cdr args) :test #'string=)))
              (when (and otp-tail (null (second otp-tail)))

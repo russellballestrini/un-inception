@@ -1,6 +1,6 @@
 # UN OCaml Client
 
-.PHONY: test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -41,6 +41,10 @@ test-functional:
 # Offline --os flag contract check (local mock API, no credentials, no network)
 test-os:
 	@bash ../../tests/os_flag_cli.sh ocaml sync/src/un.ml
+
+# Offline un key output + --topup contract check (local mock API, no credentials)
+test-key:
+	@bash ../../tests/key_output_cli.sh ocaml sync/src/un.ml
 
 clean:
 	@rm -rf $(SYNC_DIR)/_build 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"

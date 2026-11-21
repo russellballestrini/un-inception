@@ -14,7 +14,7 @@
 # The Makefile auto-detects go from PATH, ~/.local/go, /usr/local/go.
 
 .PHONY: all build test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async clean help examples fmt vet
+.PHONY: test-sync test-async test-key clean help examples fmt vet
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -170,6 +170,18 @@ test-library: check-go
 	elif [ -d "$(ASYNC_DIR)/src" ]; then \
 		cd $(ASYNC_DIR)/src && $(GO) test -short -v . 2>&1 | head -20 || echo "  $(YELLOW)⊘$(NC) Library: Async tests not defined"; \
 	fi
+
+# ============================================================================
+# TEST: un key output + --topup (offline, mock API; ticket #155)
+# ============================================================================
+
+# Sync src/ is package un (library); build a throwaway main around CliMain.
+test-key: check-go
+	@tmp=$$(mktemp -d); \
+	printf 'package main\n\nimport un "github.com/russellballestrini/un-inception/clients/go/sync/src"\n\nfunc main() { un.CliMain() }\n' > $$tmp/main.go; \
+	printf 'module unkeytest\n\ngo 1.23.6\n\nrequire github.com/russellballestrini/un-inception/clients/go/sync/src v0.0.0\n\nreplace github.com/russellballestrini/un-inception/clients/go/sync/src => $(CURDIR)/$(SYNC_DIR)/src\n' > $$tmp/go.mod; \
+	$(GO) build -C $$tmp -o un-go . && bash $(ROOT_DIR)/tests/key_output_cli.sh $$tmp/un-go; rc=$$?; \
+	rm -rf $$tmp; exit $$rc
 
 # ============================================================================
 # TEST: Integration Mode

@@ -13,13 +13,14 @@
 #   make test-functional  # Functional mode only
 #   make test-sync    # Test sync SDK only
 #   make test-async   # Test async SDK only
+#   make test-key     # un key output + --topup (offline, mock API)
 #   make clean        # Remove build artifacts
 #
 # Dependencies:
 #   composer require phpunit/phpunit
 
 .PHONY: all test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async install dev-install lint format clean help examples
+.PHONY: test-sync test-async test-key install dev-install lint format clean help examples
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -72,9 +73,16 @@ deps:
 # TEST: All 4 Modes
 # ============================================================================
 
-test: test-cli test-library test-integration test-functional
+test: test-cli test-library test-key test-integration test-functional
 	@echo ""
 	@echo "$(GREEN)✓ PHP Client: All 4 test modes complete$(NC)"
+
+# ============================================================================
+# TEST: un key output + --topup (offline, mock API; ticket #155)
+# ============================================================================
+
+test-key:
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh php $(SYNC_DIR)/src/un.php
 
 # ============================================================================
 # TEST: CLI Mode

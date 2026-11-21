@@ -60,7 +60,7 @@ let API_BASE = block:
   if v.len > 0: v else: "https://api.unsandbox.com"
 
 # Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
-# Serves /logs/{source} (partner log access) and /keys/extend.
+# Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 let PORTAL_BASE = block:
   let v = getEnv("UNSANDBOX_PORTAL_URL", "").strip(leading = false, chars = {'/'})
   if v.len > 0: v else: "https://unsandbox.com"
@@ -896,8 +896,10 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
 
 proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
   if extend:
-    let extendUrl = fmt"{PORTAL_BASE}/keys/extend?pk={publicKey}"
-    echo BLUE & "Opening browser to extend key..." & RESET
+    # --topup / --extend: open our portal's credit top-up page
+    let extendUrl = PORTAL_BASE & "/topup?key=" & publicKey
+    echo "Opening top-up page in browser..."
+    echo "If browser doesn't open, visit: " & extendUrl
     discard execProcess(fmt"xdg-open '{extendUrl}'")
     return
   # Display per CLI_SPEC.md "`un key` output": the API returns no public key,
@@ -936,7 +938,7 @@ proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
   of "expired":
     echo RED & "Expired" & RESET
     echo "Public Key: " & publicKey
-    echo YELLOW & "To renew: Visit " & PORTAL_BASE & "/keys/extend" & RESET
+    echo YELLOW & "To top up: Visit " & PORTAL_BASE & "/topup?key=" & publicKey & RESET
     quit(3)
   of "suspended":
     echo RED & "Suspended" & RESET
@@ -947,7 +949,14 @@ proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
     echo "Public Key: " & publicKey
     echo "Reason: " & reason
     quit(3)
-  let tier = if kr.hasKey("tier") and kr["tier"].kind != JNull: ($kr["tier"]).strip(chars = {'"'}) else: "N/A"
+  # Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+  var billing = "N/A"
+  if kr.hasKey("billing") and kr["billing"].kind == JString and kr["billing"].getStr() != "":
+    billing = kr["billing"].getStr()
+  elif kr.hasKey("tier") and kr["tier"].kind in {JInt, JFloat}:
+    let t = if kr["tier"].kind == JInt: kr["tier"].getBiggestInt() else: int64(kr["tier"].getFloat())
+    billing = if t == -1: "free" elif t == 0: "demo" else: "credit"
+  let concurrency = if kr.hasKey("concurrency") and kr["concurrency"].kind in {JInt, JFloat}: ($kr["concurrency"]) else: "N/A"
   let status = if kr.hasKey("status"): kr["status"].getStr() else: "N/A"
   var expires = "N/A"
   var remaining = "N/A"
@@ -959,7 +968,10 @@ proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
     remaining = if left <= 0: "expired" else: $(left div 86400) & "d " & $(left mod 86400 div 3600) & "h " & $(left mod 3600 div 60) & "m"
   echo GREEN & "Valid" & RESET
   echo "Public Key: " & publicKey
-  echo "Tier: " & tier
+  echo "Billing: " & billing
+  echo "Concurrency: " & concurrency
+  if billing == "credit" and kr.hasKey("credit_balance_usd") and kr["credit_balance_usd"].kind == JString:
+    echo "Credit: $" & kr["credit_balance_usd"].getStr()
   echo "Status: " & status
   echo "Expires: " & expires
   echo "Time Remaining: " & remaining
@@ -1862,6 +1874,7 @@ proc main() =
     stderr.writeLine("       un.nim service env <action> <service_id> [options]")
     stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
+    stderr.writeLine("       un.nim key --topup             (top up credit; alias --extend)")
     stderr.writeLine("       un.nim key --rotate [--otp CODE]")
     stderr.writeLine("")
     stderr.writeLine("Global options:")
@@ -2002,7 +2015,7 @@ proc main() =
     var i = 1
     while i < args.len:
       case args[i]
-      of "--extend": extend = true
+      of "--extend", "--topup": extend = true
       of "--rotate": rotate = true
       of "--otp":
         if i + 1 < args.len:

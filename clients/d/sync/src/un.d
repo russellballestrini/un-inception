@@ -119,7 +119,7 @@ bool extractOsFlag(ref string[] args) {
 }
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
-// Serves /logs/{source} (partner log access) and /keys/extend.
+// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 string PORTAL_BASE() {
     static string cached;
     if (cached is null) {
@@ -1873,8 +1873,10 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     import std.datetime;
 
     if (extend) {
-        string extendURL = PORTAL_BASE ~ "/keys/extend?pk=" ~ publicKey;
-        writefln("%sOpening browser to extend key...%s", GREEN, RESET);
+        // --topup / --extend: open our portal's credit top-up page
+        string extendURL = PORTAL_BASE ~ "/topup?key=" ~ publicKey;
+        writeln("Opening top-up page in browser...");
+        writefln("If browser doesn't open, visit: %s", extendURL);
         openBrowser(extendURL);
         return;
     }
@@ -1930,7 +1932,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     if (state == "expired") {
         writefln("%sExpired%s", RED, RESET);
         writefln("Public Key: %s", publicKey);
-        writefln("%sTo renew: Visit %s/keys/extend%s", YELLOW, PORTAL_BASE, RESET);
+        writefln("%sTo top up: Visit %s/topup?key=%s%s", YELLOW, PORTAL_BASE, publicKey, RESET);
         exit(3);
     } else if (state == "suspended") {
         writefln("%sSuspended%s", RED, RESET);
@@ -1943,7 +1945,17 @@ void validateKey(string publicKey, string secretKey, bool extend) {
         exit(3);
     }
 
+    // Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
     string tier = field("tier"), status = field("status"), vt = field("valid_through");
+    string billing = field("billing");
+    if (billing.empty) {
+        if (tier == "-1") billing = "free";
+        else if (tier == "0") billing = "demo";
+        else if (!tier.empty) billing = "credit";
+        else billing = "N/A";
+    }
+    string concurrency = field("concurrency");
+    string credit = field("credit_balance_usd");
     string expires = "N/A", remaining = "N/A";
     if (!vt.empty) {
         long secs = std.conv.to!long(vt) / 1000;
@@ -1955,7 +1967,9 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     }
     writefln("%sValid%s", GREEN, RESET);
     writefln("Public Key: %s", publicKey);
-    writefln("Tier: %s", tier.empty ? "N/A" : tier);
+    writefln("Billing: %s", billing);
+    writefln("Concurrency: %s", concurrency.empty ? "N/A" : concurrency);
+    if (billing == "credit" && !credit.empty) writefln("Credit: $%s", credit);
     writefln("Status: %s", status.empty ? "N/A" : status);
     writefln("Expires: %s", expires);
     writefln("Time Remaining: %s", remaining);
@@ -2247,6 +2261,7 @@ int main(string[] args) {
         stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
         stderr.writefln("       %s image [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
+        stderr.writefln("       %s key --topup             (top up credit; alias --extend)", args[0]);
         stderr.writeln("");
         stderr.writeln("Global options:");
         stderr.writeln("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)");
@@ -2363,7 +2378,7 @@ int main(string[] args) {
         string otp;
 
         for (size_t i = 2; i < args.length; i++) {
-            if (args[i] == "--extend") extend = true;
+            if (args[i] == "--extend" || args[i] == "--topup") extend = true;
             else if (args[i] == "--rotate") rotate = true;
             else if (args[i] == "--otp" && i+1 < args.length) otp = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) { publicKey = args[++i]; credsCsvPath = ""; }

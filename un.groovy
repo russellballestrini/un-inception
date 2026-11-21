@@ -2436,8 +2436,9 @@ def cmdKey(args) {
     def expired = result.expired ?: false
 
     if (args.keyExtend && fetchedPublicKey != 'N/A') {
-        def extendUrl = "${PORTAL_BASE}/keys/extend?pk=${fetchedPublicKey}"
-        println("${BLUE}Opening browser to extend key...${RESET}")
+        def extendUrl = "${PORTAL_BASE}/topup?key=${fetchedPublicKey}"
+        println("Opening top-up page in browser...")
+        println("If browser doesn't open, visit: ${extendUrl}")
         openBrowser(extendUrl)
         return
     }
@@ -2445,15 +2446,19 @@ def cmdKey(args) {
     if (expired) {
         println("${RED}Expired${RESET}")
         println("Public Key: ${fetchedPublicKey}")
-        println("Tier: ${tier}")
         println("Expired: ${expiresAt}")
-        println("${YELLOW}To renew: Visit https://unsandbox.com/keys/extend${RESET}")
+        println("${YELLOW}To top up: Visit ${PORTAL_BASE}/topup?key=${fetchedPublicKey}${RESET}")
         System.exit(1)
     }
 
     println("${GREEN}Valid${RESET}")
     println("Public Key: ${fetchedPublicKey}")
-    println("Tier: ${tier}")
+    def billing = result.billing ?: (result.tier instanceof Number ? (result.tier == -1 ? 'free' : (result.tier == 0 ? 'demo' : 'credit')) : 'N/A')
+    println("Billing: ${billing}")
+    println("Concurrency: ${concurrency}")
+    if (billing == 'credit' && result.credit_balance_usd != null) {
+        println("Credit: \$${result.credit_balance_usd}")
+    }
     println("Status: ${status}")
     println("Expires: ${expiresAt}")
     println("Time Remaining: ${timeRemaining}")
@@ -2841,6 +2846,7 @@ def parseArgs(argv) {
                 args.serviceDumpFile = argv[++i]
                 break
             case '--extend':
+            case '--topup':
                 args.keyExtend = true
                 break
             case '--rotate':
@@ -2925,7 +2931,7 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --extend            Open browser to extend key
+  --topup             Open portal to top up credit (alias: --extend)
   --rotate            Rotate the key's secret (emailed one-time code)
   --otp CODE          Finish a rotation started without a terminal
 

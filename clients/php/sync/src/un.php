@@ -2484,6 +2484,8 @@ HELP;
                 case 'key':
                     if ($opts['rotate']) {
                         $this->cliHandleKeyRotate($opts);
+                    } elseif ($opts['topup']) {
+                        $this->cliHandleKeyTopup();
                     } else {
                         $this->cliHandleKey($opts);
                     }
@@ -2536,6 +2538,7 @@ HELP;
             'help' => false,
             'account' => null,
             'rotate' => false,
+            'topup' => false,
             'otp' => null,
         ];
         $args = [];
@@ -2607,6 +2610,8 @@ HELP;
                 }
             } elseif ($arg === '--rotate') {
                 $opts['rotate'] = true;
+            } elseif ($arg === '--topup' || $arg === '--extend') {
+                $opts['topup'] = true;
             } elseif ($arg === '--otp') {
                 $i++;
                 $opts['otp'] = $argv[$i] ?? null;
@@ -3634,6 +3639,40 @@ HELP;
     }
 
     /**
+     * Billing from a /keys/validate payload: "billing" when set, else derived from
+     * the deprecated "tier" (-1 free, 0 demo, other credit), else "N/A".
+     */
+    private static function keyBilling(array $result): string {
+        if (isset($result['billing']) && is_string($result['billing']) && $result['billing'] !== '') {
+            return $result['billing'];
+        }
+        if (isset($result['tier']) && is_numeric($result['tier'])) {
+            $tier = (int)$result['tier'];
+            return $tier === -1 ? 'free' : ($tier === 0 ? 'demo' : 'credit');
+        }
+        return 'N/A';
+    }
+
+    /**
+     * Handle key --topup (alias --extend): open our portal's credit top-up page.
+     */
+    private function cliHandleKeyTopup(): void {
+        [$pk, $sk] = $this->resolveCredentials(null, null);
+        $url = self::portalBase() . "/topup?key={$pk}";
+        echo "Opening top-up page in browser...\n";
+        echo "If browser doesn't open, visit: {$url}\n";
+        if (PHP_OS_FAMILY === 'Darwin') {
+            $cmd = 'open ' . escapeshellarg($url);
+        } elseif (PHP_OS_FAMILY === 'Windows') {
+            $cmd = 'start "" ' . escapeshellarg($url);
+        } else {
+            $cmd = 'xdg-open ' . escapeshellarg($url) . ' >/dev/null 2>&1 &';
+        }
+        @exec($cmd);
+        exit(0);
+    }
+
+    /**
      * Handle key subcommand.
      *
      * @param array $opts Global options
@@ -3673,7 +3712,7 @@ HELP;
             if ($state === 'expired') {
                 echo "Expired\n";
                 echo "Public Key: {$pk}\n";
-                echo "To renew: Visit " . self::portalBase() . "/keys/extend\n";
+                echo "To top up: Visit " . self::portalBase() . "/topup?key={$pk}\n";
             } elseif ($state === 'suspended') {
                 echo "Suspended\n";
                 echo "Public Key: {$pk}\n";
@@ -3696,7 +3735,12 @@ HELP;
         }
         echo "Valid\n";
         echo "Public Key: {$pk}\n";
-        echo "Tier: " . (isset($result['tier']) ? $result['tier'] : 'N/A') . "\n";
+        $billing = self::keyBilling($result);
+        echo "Billing: {$billing}\n";
+        echo "Concurrency: " . (isset($result['concurrency']) ? $result['concurrency'] : 'N/A') . "\n";
+        if ($billing === 'credit' && isset($result['credit_balance_usd'])) {
+            echo "Credit: \$" . $result['credit_balance_usd'] . "\n";
+        }
         echo "Status: " . ($result['status'] ?? 'N/A') . "\n";
         echo "Expires: {$expires}\n";
         echo "Time Remaining: {$remaining}\n";
@@ -4037,6 +4081,7 @@ USAGE:
     php un.php service [options]
     php un.php snapshot [options]
     php un.php key
+    php un.php key --topup                 Top up credit in browser (alias: --extend)
     php un.php key --rotate [--otp CODE]   Rotate key secret (sudo OTP)
     php un.php paas logs [options]         Platform logs (partner keys; -h for options)
     php un.php languages [--json]

@@ -1,6 +1,6 @@
 # UN F# Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -13,8 +13,9 @@ NC := \033[0m
 help:
 	@echo "UN F# Client"
 	@echo "  make test    All 4 test modes"
+	@echo "  make test-key  Offline un key output + --topup check (tests/key_output_cli.sh)"
 
-test: test-cli test-library test-integration test-functional
+test: test-cli test-library test-key test-integration test-functional
 	@echo "$(GREEN)✓ F# Client: All 4 test modes complete$(NC)"
 
 test-cli:
@@ -22,6 +23,9 @@ test-cli:
 	@echo "━━━ CLI MODE ━━━"
 	@if [ -f "$(ROOT_DIR)/un.fs" ]; then dotnet fsi "$(ROOT_DIR)/un.fs" --help 2>/dev/null && echo "  $(GREEN)✓$(NC) Runs" || echo "  $(YELLOW)⊘$(NC) Check syntax"; fi
 	@if ls $(SYNC_DIR)/*.fsproj 1>/dev/null 2>&1; then cd $(SYNC_DIR) && dotnet build 2>/dev/null && echo "  $(GREEN)✓$(NC) SDK compiles" || echo "  $(YELLOW)⊘$(NC) Run dotnet restore"; fi
+
+test-key:
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh dotnet fsi $(SYNC_DIR)/src/un.fs
 
 test-library:
 	@echo ""

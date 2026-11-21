@@ -918,6 +918,7 @@ dispatch([]) ->
     io:format("       un.erl [--account N] snapshot [options]~n"),
     io:format("       un.erl [--account N] image [options]~n"),
     io:format("       un.erl [--account N] key [options]~n"),
+    io:format("         key --topup    open portal to top up credit (alias: --extend)~n"),
     io:format("       un.erl languages [--json]~n"),
     io:format("       un.erl [--account N] paas logs [options]~n"),
     io:format("~nGlobal options:~n"),
@@ -1691,7 +1692,8 @@ display_key_result(Code, Resp, PublicKey) ->
         end,
     case State of
         "active" ->
-            Tier = case json_int_field(Resp, "tier") of undefined -> "N/A"; T -> integer_to_list(T) end,
+            Billing = key_billing(Resp),
+            Concurrency = case json_int_field(Resp, "concurrency") of undefined -> "N/A"; C -> integer_to_list(C) end,
             Status = case json_string_field(Resp, "status") of "" -> "N/A"; S2 -> S2 end,
             {Expires, Remaining} =
                 case json_int_field(Resp, "valid_through") of
@@ -1709,14 +1711,19 @@ display_key_result(Code, Resp, PublicKey) ->
                 end,
             io:format("\033[32mValid\033[0m~n"),
             io:format("Public Key: ~s~n", [PublicKey]),
-            io:format("Tier: ~s~n", [Tier]),
+            io:format("Billing: ~s~n", [Billing]),
+            io:format("Concurrency: ~s~n", [Concurrency]),
+            case {Billing, json_string_field(Resp, "credit_balance_usd")} of
+                {"credit", Usd} when Usd =/= "" -> io:format("Credit: $~s~n", [Usd]);
+                _ -> ok
+            end,
             io:format("Status: ~s~n", [Status]),
             io:format("Expires: ~s~n", [Expires]),
             io:format("Time Remaining: ~s~n", [Remaining]);
         "expired" ->
             io:format("\033[31mExpired\033[0m~n"),
             io:format("Public Key: ~s~n", [PublicKey]),
-            io:format("\033[33mTo renew: Visit ~s/keys/extend\033[0m~n", [?PORTAL_BASE]),
+            io:format("\033[33mTo top up: Visit ~s/topup?key=~s\033[0m~n", [?PORTAL_BASE, PublicKey]),
             halt(3);
         "suspended" ->
             io:format("\033[31mSuspended\033[0m~n"),
@@ -1729,9 +1736,25 @@ display_key_result(Code, Resp, PublicKey) ->
             halt(3)
     end.
 
+%% Billing (ticket #155): "billing" wins; else derived from deprecated "tier"
+%% (-1 free, 0 demo, other credit). Tier itself is never printed.
+key_billing(Resp) ->
+    case json_string_field(Resp, "billing") of
+        "" ->
+            case json_int_field(Resp, "tier") of
+                undefined -> "N/A";
+                -1 -> "free";
+                0 -> "demo";
+                _ -> "credit"
+            end;
+        B -> B
+    end.
+
+%% key --topup (alias --extend): open our portal's credit top-up page.
 open_extend_page(PublicKey) ->
-    Url = "https://unsandbox.com/keys/extend?pk=" ++ PublicKey,
-    io:format("\033[33mOpening browser to extend key...\033[0m~n"),
+    Url = ?PORTAL_BASE ++ "/topup?key=" ++ PublicKey,
+    io:format("Opening top-up page in browser...~n"),
+    io:format("If browser doesn't open, visit: ~s~n", [Url]),
     case os:type() of
         {unix, darwin} ->
             os:cmd("open " ++ sh_quote(Url));
@@ -2541,6 +2564,7 @@ get_input_files([_ | Rest], Acc) -> get_input_files(Rest, Acc).
 
 has_extend_flag([]) -> false;
 has_extend_flag(["--extend" | _]) -> true;
+has_extend_flag(["--topup" | _]) -> true;
 has_extend_flag([_ | Rest]) -> has_extend_flag(Rest).
 
 get_env_vars(Args) -> get_env_vars(Args, []).

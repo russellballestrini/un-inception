@@ -11,6 +11,7 @@
 #   make test-library # Library mode only
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
+#   make test-key     # un key output + --topup (offline, mock API)
 #   make build        # Build binaries
 #   make clean        # Remove build artifacts
 #
@@ -19,7 +20,7 @@
 #   cargo
 
 .PHONY: all build test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async clean help examples fmt clippy doc
+.PHONY: test-sync test-async test-key clean help examples fmt clippy doc
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -103,9 +104,17 @@ build-async:
 # TEST: All 4 Modes
 # ============================================================================
 
-test: test-cli test-library test-integration test-functional
+test: test-cli test-library test-key test-integration test-functional
 	@echo ""
 	@echo "$(GREEN)✓ Rust Client: All 4 test modes complete$(NC)"
+
+# ============================================================================
+# TEST: un key output + --topup (offline, mock API; ticket #155)
+# ============================================================================
+
+test-key:
+	@cd $(SYNC_DIR) && cargo build --release --bin un 2>&1 | tail -5
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh $(SYNC_DIR)/target/release/un
 
 # ============================================================================
 # TEST: CLI Mode

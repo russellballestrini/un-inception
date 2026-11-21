@@ -1,6 +1,6 @@
 # UN V Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -69,6 +69,10 @@ test-functional:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
+
+# Offline: un key output + --topup against a local mock API (ticket #155)
+test-key: $(BIN)
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./$(BIN)
 
 clean:
 	rm -f $(BIN)

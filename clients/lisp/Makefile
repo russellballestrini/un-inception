@@ -1,6 +1,6 @@
 # UN Common Lisp Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -38,6 +38,10 @@ test-library:
 	@echo "LIBRARY MODE: Testing Lisp package"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  $(YELLOW)⊘$(NC) Library: Use ASDF/Quicklisp for package management"
+
+# Offline un key output + --topup contract check (local mock API, no credentials)
+test-key:
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh sbcl --script $(SYNC_DIR)/src/un.lisp
 
 test-integration:
 	@echo ""

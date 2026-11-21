@@ -2217,8 +2217,9 @@ static bool json_number_field(const string& json, const string& key, long long& 
 // un key — response handling per CLI_SPEC.md "`un key` output".
 void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
     if (extend) {
-        string url = PORTAL_BASE + "/keys/extend?pk=" + public_key;
-        cout << "Opening browser to extend key..." << endl;
+        string url = PORTAL_BASE + "/topup?key=" + public_key;
+        cout << "Opening top-up page in browser..." << endl;
+        cout << "If browser doesn't open, visit: " << url << endl;
         string browser_cmd = "xdg-open '" + url + "' 2>/dev/null || open '" + url + "' 2>/dev/null";
         if (system(browser_cmd.c_str()) != 0) {}
         return;
@@ -2270,7 +2271,7 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
     if (state == "expired") {
         cout << RED << "Expired" << RESET << endl;
         cout << "Public Key: " << public_key << endl;
-        cout << YELLOW << "To renew: Visit " << PORTAL_BASE << "/keys/extend" << RESET << endl;
+        cout << YELLOW << "To top up: Visit " << PORTAL_BASE << "/topup?key=" << public_key << RESET << endl;
         exit(3);
     } else if (state == "suspended") {
         cout << RED << "Suspended" << RESET << endl;
@@ -2283,10 +2284,19 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
         exit(3);
     }
 
-    string tier = "N/A", status = json_string_field(body, "status"), expires = "N/A", remaining = "N/A";
+    string status = json_string_field(body, "status"), expires = "N/A", remaining = "N/A";
     if (status.empty()) status = "N/A";
     long long n = 0;
-    if (json_number_field(body, "tier", n)) tier = to_string(n);
+    // Billing (ticket #155): "billing" wins; else derived from deprecated "tier"
+    // (-1 free, 0 demo, other credit). Tier itself is never printed.
+    string billing = json_string_field(body, "billing");
+    if (billing.empty()) {
+        if (json_number_field(body, "tier", n)) billing = n == -1 ? "free" : n == 0 ? "demo" : "credit";
+        else billing = "N/A";
+    }
+    string concurrency = "N/A";
+    if (json_number_field(body, "concurrency", n)) concurrency = to_string(n);
+    string credit = billing == "credit" ? json_string_field(body, "credit_balance_usd") : "";
     if (json_number_field(body, "valid_through", n)) {
         time_t secs = static_cast<time_t>(n / 1000);
         struct tm tmv;
@@ -2299,7 +2309,9 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
 
     cout << GREEN << "Valid" << RESET << endl;
     cout << "Public Key: " << public_key << endl;
-    cout << "Tier: " << tier << endl;
+    cout << "Billing: " << billing << endl;
+    cout << "Concurrency: " << concurrency << endl;
+    if (!credit.empty()) cout << "Credit: $" << credit << endl;
     cout << "Status: " << status << endl;
     cout << "Expires: " << expires << endl;
     cout << "Time Remaining: " << remaining << endl;
@@ -2610,6 +2622,7 @@ int main(int argc, char* argv[]) {
         cerr << "       " << argv[0] << " service [options]" << endl;
         cerr << "       " << argv[0] << " image [options]" << endl;
         cerr << "       " << argv[0] << " key [options]" << endl;
+        cerr << "       " << argv[0] << " key --topup   (top up credit; alias --extend)" << endl;
         cerr << "  --os OS   Target OS: linux (default) or freebsd (execute, session, service)" << endl;
         return 1;
     }
@@ -2744,7 +2757,7 @@ int main(int argc, char* argv[]) {
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
-            if (arg == "--extend") extend = true;
+            if (arg == "--extend" || arg == "--topup") extend = true;
             else if (arg == "--rotate") rotate = true;
             else if (arg == "--otp" && i+1 < argc) otp = argv[++i];
             else if (arg == "-k" && i+1 < argc) { public_key = argv[++i]; creds_csv_path.clear(); }

@@ -94,8 +94,14 @@ apiBase = unsafePerformIO $ do
   let base = maybe "" id v
   return $ if null base then defaultApiBase else reverse (dropWhile (== '/') (reverse base))
 
+-- | Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
+-- Serves /logs/{source} and the /topup?key= credit top-up page.
+{-# NOINLINE portalBase #-}
 portalBase :: String
-portalBase = "https://unsandbox.com"
+portalBase = unsafePerformIO $ do
+  v <- lookupEnv "UNSANDBOX_PORTAL_URL"
+  let base = maybe "" id v
+  return $ if null base then "https://unsandbox.com" else reverse (dropWhile (== '/') (reverse base))
 
 languagesCacheTtl :: Int
 languagesCacheTtl = 3600  -- 1 hour in seconds
@@ -273,6 +279,7 @@ parseKey args = return $ parseKeyArgs args defaultKeyOpts
     defaultKeyOpts = KeyOpts False False Nothing
     parseKeyArgs [] opts = opts
     parseKeyArgs ("--extend":rest) opts = parseKeyArgs rest opts { keyExtend = True }
+    parseKeyArgs ("--topup":rest) opts = parseKeyArgs rest opts { keyExtend = True }
     parseKeyArgs ("--rotate":rest) opts = parseKeyArgs rest opts { keyRotate = True }
     parseKeyArgs ("--otp":code:rest) opts = parseKeyArgs rest opts { keyOtp = Just code }
     parseKeyArgs (_:rest) opts = parseKeyArgs rest opts
@@ -974,7 +981,7 @@ printHelp = do
   putStrLn "  un.hs snapshot [options]               Manage snapshots"
   putStrLn "  un.hs image [options]                  Manage images"
   putStrLn "  un.hs languages [--json]               List available languages"
-  putStrLn "  un.hs key [options]                    Validate/extend API key"
+  putStrLn "  un.hs key [options]                    Validate API key, top up credit"
   putStrLn ""
   putStrLn "Global options:"
   putStrLn "  --account N     Use accounts.csv row N (bypasses env vars)"
@@ -1027,7 +1034,7 @@ printHelp = do
   putStrLn "  --ports PORTS        Ports for cloned service"
   putStrLn ""
   putStrLn "Key options:"
-  putStrLn "  --extend        Open browser to extend/renew key"
+  putStrLn "  --topup         Open browser to top up credit (alias: --extend)"
   putStrLn "  --rotate        Rotate this key's secret (sudo OTP), update accounts.csv"
   putStrLn "  --otp CODE      Finish a rotation started without a terminal"
   putStrLn ""
@@ -1975,14 +1982,27 @@ validateKey _ = do
               in (exp', rem')
       putStrLn $ green ++ "Valid" ++ reset
       putStrLn $ "Public Key: " ++ publicKey
-      putStrLn $ "Tier: " ++ maybe "N/A" show (intField "tier")
+      -- Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+      -- (-1 free, 0 demo, other credit). Tier itself is never printed.
+      let billing = case strField "billing" of
+            Just b | not (null b) -> b
+            _ -> case intField "tier" of
+              Just (-1) -> "free"
+              Just 0 -> "demo"
+              Just _ -> "credit"
+              Nothing -> "N/A"
+      putStrLn $ "Billing: " ++ billing
+      putStrLn $ "Concurrency: " ++ maybe "N/A" show (intField "concurrency")
+      case strField "credit_balance_usd" of
+        Just c | billing == "credit" -> putStrLn $ "Credit: $" ++ c
+        _ -> return ()
       putStrLn $ "Status: " ++ maybe "N/A" id (strField "status")
       putStrLn $ "Expires: " ++ expires
       putStrLn $ "Time Remaining: " ++ remaining
     "expired" -> do
       putStrLn $ red ++ "Expired" ++ reset
       putStrLn $ "Public Key: " ++ publicKey
-      putStrLn $ yellow ++ "To renew: Visit " ++ portalBase ++ "/keys/extend" ++ reset
+      putStrLn $ yellow ++ "To top up: Visit " ++ portalBase ++ "/topup?key=" ++ publicKey ++ reset
       exitWith (ExitFailure 3)
     "suspended" -> do
       putStrLn $ red ++ "Suspended" ++ reset
@@ -1994,12 +2014,12 @@ validateKey _ = do
       putStrLn $ "Reason: " ++ reason
       exitWith (ExitFailure 3)
 
--- Extend key (open browser to extend page)
+-- un key --topup (alias --extend): open our portal's credit top-up page
 extendKey :: String -> IO ()
 extendKey _ = do
   (publicKey, _) <- getApiKeys
-  let extendUrl = portalBase ++ "/keys/extend?pk=" ++ publicKey
-  putStrLn "Opening extension page in browser..."
+  let extendUrl = portalBase ++ "/topup?key=" ++ publicKey
+  putStrLn "Opening top-up page in browser..."
   putStrLn $ "If browser doesn't open, visit: " ++ extendUrl
   _ <- readProcessWithExitCode "sh"
     ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]

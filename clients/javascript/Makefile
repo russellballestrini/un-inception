@@ -15,7 +15,7 @@
 # The Makefile runs npm install automatically when node_modules is missing.
 
 .PHONY: all test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async lint format clean help examples
+.PHONY: test-sync test-async test-key lint format clean help examples
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -74,13 +74,19 @@ async-deps: $(ASYNC_DIR)/node_modules/.package-lock.json
 # TEST: All 4 Modes
 # ============================================================================
 
-test: test-cli test-library test-integration test-functional
+test: test-cli test-library test-key test-integration test-functional
 	@echo ""
 	@echo "$(GREEN)✓ JavaScript Client: All 4 test modes complete$(NC)"
 
 # ============================================================================
 # TEST: CLI Mode
 # ============================================================================
+
+
+# un key output + --topup (offline, local mock API; ticket #155).
+# The async CLI prints the raw validate JSON, so only sync follows CLI_SPEC here.
+test-key:
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh node $(SYNC_DIR)/src/un.js
 
 test-cli:
 	@echo ""

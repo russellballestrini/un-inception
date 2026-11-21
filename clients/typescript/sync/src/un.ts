@@ -56,9 +56,10 @@ import * as http from 'http';
 import * as https from 'https';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as child_process from 'child_process';
 
 const API_BASE = (process.env.UNSANDBOX_API_URL || "https://api.unsandbox.com").replace(/\/+$/, "");
-const PORTAL_BASE = "https://unsandbox.com";
+const PORTAL_BASE = (process.env.UNSANDBOX_PORTAL_URL || "https://unsandbox.com").replace(/\/+$/, "");
 const LANGUAGES_CACHE_TTL = 3600;  // 1 hour in seconds
 const SDK_VERSION = "4.2.0";
 
@@ -1098,7 +1099,7 @@ async function cmdService(args: Args): Promise<void> {
 }
 
 function openBrowser(url: string): void {
-  const { exec } = require('child_process');
+  const { exec } = child_process;
   const platform = process.platform;
   let command: string;
 
@@ -1160,9 +1161,10 @@ function keyValidatePost(keys: ApiKeys): Promise<{ status: number; data: any }> 
 async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
   const pk = keys.publicKey;
   if (shouldExtend) {
-    const extendUrl = `${PORTAL_BASE}/keys/extend?pk=${encodeURIComponent(pk)}`;
-    console.log(`${BLUE}Opening browser to extend key...${RESET}`);
-    openBrowser(extendUrl);
+    const topupUrl = `${PORTAL_BASE}/topup?key=${encodeURIComponent(pk)}`;
+    console.log('Opening top-up page in browser...');
+    console.log(`If browser doesn't open, visit: ${topupUrl}`);
+    openBrowser(topupUrl);
     return;
   }
 
@@ -1185,7 +1187,7 @@ async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> 
     if (state === 'expired') {
       console.log(`${RED}Expired${RESET}`);
       console.log(`Public Key: ${pk}`);
-      console.log(`${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}`);
+      console.log(`${YELLOW}To top up: Visit ${PORTAL_BASE}/topup?key=${pk}${RESET}`);
     } else if (state === 'suspended') {
       console.log(`${RED}Suspended${RESET}`);
       console.log(`Public Key: ${pk}`);
@@ -1208,7 +1210,15 @@ async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> 
   }
   console.log(`${GREEN}Valid${RESET}`);
   console.log(`Public Key: ${pk}`);
-  console.log(`Tier: ${data.tier !== undefined && data.tier !== null ? data.tier : 'N/A'}`);
+  // Billing (ticket #155): `billing`, else derived from deprecated `tier`.
+  let billing = 'N/A';
+  if (typeof data.billing === 'string' && data.billing) billing = data.billing;
+  else if (typeof data.tier === 'number') billing = data.tier === -1 ? 'free' : data.tier === 0 ? 'demo' : 'credit';
+  console.log(`Billing: ${billing}`);
+  console.log(`Concurrency: ${data.concurrency !== undefined && data.concurrency !== null ? data.concurrency : 'N/A'}`);
+  if (billing === 'credit' && data.credit_balance_usd !== undefined && data.credit_balance_usd !== null) {
+    console.log(`Credit: $${data.credit_balance_usd}`);
+  }
   console.log(`Status: ${data.status || 'N/A'}`);
   console.log(`Expires: ${expires}`);
   console.log(`Time Remaining: ${remaining}`);
@@ -1728,7 +1738,7 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--dump-file' && i + 1 < argv.length) {
       args.dumpFile = argv[++i];
       i++;
-    } else if (arg === '--extend') {
+    } else if (arg === '--extend' || arg === '--topup') {
       args.extend = true;
       i++;
     } else if (arg === '--clone' && i + 1 < argv.length) {
@@ -1865,7 +1875,7 @@ Image options:
   --ports PORTS    Ports for spawned service
 
 Key options:
-  --extend         Open browser to extend key expiration
+  --topup          Open portal to top up credit (alias: --extend)
   --rotate         Rotate this key's secret (sudo OTP); updates accounts.csv
   --otp CODE       Finish a rotation started without a terminal (with --rotate)
 

@@ -42,7 +42,6 @@
 :- nb_setval(account_index, -1).
 
 % Constants
-portal_base('https://unsandbox.com').
 languages_cache_ttl(3600).  % 1 hour cache TTL
 
 % Get languages cache file path
@@ -547,12 +546,20 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
 
 % Key validate: POST /keys/validate (empty body, signed), display per
 % CLI_SPEC.md "un key output". Public key and secret reach bash via env only.
+% key --topup (alias --extend): open our portal's credit top-up page
+% (ticket #155); the portal base honors UNSANDBOX_PORTAL_URL.
 validate_key(true) :-
     get_public_key(PublicKey),
-    portal_base(PortalBase),
-    format(atom(Url), '~w/keys/extend?pk=~w', [PortalBase, PublicKey]),
-    format('Opening browser to extend key...~n'),
-    catch(process_create(path('xdg-open'), [Url], [stdout(null), stderr(null)]), _, true).
+    setenv('UN_PK', PublicKey),
+    atomic_list_concat([
+    'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done',
+    'U="$PB/topup?key=$UN_PK"; echo "Opening top-up page in browser..."; echo "If browser doesn''t open, visit: $U"',
+    '(xdg-open "$U" || open "$U") >/dev/null 2>&1; exit 0'
+    ], '\n', Script),
+    process_create(path(bash), ['-c', Script],
+                   [stdin(std), stdout(std), stderr(std), process(Pid)]),
+    process_wait(Pid, _),
+    halt(0).
 validate_key(false) :-
     get_public_key(PublicKey),
     get_secret_key(SecretKey),
@@ -568,6 +575,7 @@ key_script(Script) :-
     hmac_prelude(Prelude),
     atomic_list_concat([
     'A=${UNSANDBOX_API_URL:-https://api.unsandbox.com}; while [ "${A%/}" != "$A" ]; do A=${A%/}; done',
+    'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done',
     'E=$(printf "\\033"); P=/keys/validate; TS=$(date +%s); SIG=$(hmac "$UN_SK" "$TS:POST:$P:")',
     'R=$(curl -s -w "\\n%{http_code}" -X POST "$A$P" -H "Content-Type: application/json" -H "Authorization: Bearer $UN_PK" -H "X-Timestamp: $TS" -H "X-Signature: $SIG") || { echo "Error: request to $A$P failed" >&2; exit 1; }',
     'C=$(printf "%s\\n" "$R" | tail -n1); B=$(printf "%s\\n" "$R" | head -n -1)',
@@ -578,14 +586,16 @@ key_script(Script) :-
     'esac',
     'case "$ST" in',
     '  active) ;;',
-    '  expired) echo "$E[31mExpired$E[0m"; echo "Public Key: $UN_PK"; echo "$E[33mTo renew: Visit https://unsandbox.com/keys/extend$E[0m"; exit 3 ;;',
+    '  expired) echo "$E[31mExpired$E[0m"; echo "Public Key: $UN_PK"; echo "$E[33mTo top up: Visit $PB/topup?key=$UN_PK$E[0m"; exit 3 ;;',
     '  suspended) echo "$E[31mSuspended$E[0m"; echo "Public Key: $UN_PK"; exit 3 ;;',
     '  *) echo "$E[31mInvalid$E[0m"; echo "Public Key: $UN_PK"; echo "Reason: $RS"; exit 3 ;;',
     'esac',
-    'T=$(printf %s "$B" | jq -r ".tier // empty"); S=$(printf %s "$B" | jq -r ".status // empty"); VT=$(printf %s "$B" | jq -r ".valid_through // empty | floor")',
+    'BL=$(printf %s "$B" | jq -r ''if (.billing|type)=="string" and .billing!="" then .billing elif (.tier|type)=="number" then (if .tier==-1 then "free" elif .tier==0 then "demo" else "credit" end) else "N/A" end'')',
+    'CC=$(printf %s "$B" | jq -r ".concurrency // empty"); CR=$(printf %s "$B" | jq -r ".credit_balance_usd // empty")',
+    'S=$(printf %s "$B" | jq -r ".status // empty"); VT=$(printf %s "$B" | jq -r ".valid_through // empty | floor")',
     'EX=N/A; RM=N/A',
     'if [ -n "$VT" ]; then SEC=$((VT / 1000)); EX=$(date -u -d "@$SEC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$SEC" +%Y-%m-%dT%H:%M:%SZ); L=$((SEC - $(date +%s))); if [ "$L" -le 0 ]; then RM=expired; else RM="$((L / 86400))d $((L % 86400 / 3600))h $((L % 3600 / 60))m"; fi; fi',
-    'echo "$E[32mValid$E[0m"; echo "Public Key: $UN_PK"; echo "Tier: ${T:-N/A}"; echo "Status: ${S:-N/A}"; echo "Expires: $EX"; echo "Time Remaining: $RM"'
+    'echo "$E[32mValid$E[0m"; echo "Public Key: $UN_PK"; echo "Billing: $BL"; echo "Concurrency: ${CC:-N/A}"; if [ "$BL" = credit ] && [ -n "$CR" ]; then echo "Credit: \\$$CR"; fi; echo "Status: ${S:-N/A}"; echo "Expires: $EX"; echo "Time Remaining: $RM"'
     ], '\n', Body),
     atomic_list_concat([Prelude, Body], '\n', Script).
 
@@ -654,6 +664,7 @@ handle_languages(_) :- languages_command(false).
 % Handle key subcommand
 handle_key(Args) :- memberchk('--rotate', Args), !, rotate_key(Args).
 handle_key(['--extend'|_]) :- validate_key(true).
+handle_key(['--topup'|_]) :- validate_key(true).
 handle_key(_) :- validate_key(false).
 
 % Image list
@@ -1032,6 +1043,7 @@ main(Argv) :-
         write(user_error, '       un.pro image [options]\n'),
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
+        write(user_error, '       un.pro key --topup   (top up credit; alias --extend)\n'),
         write(user_error, '       un.pro key --rotate [--otp CODE]\n'),
         write(user_error, '\n'),
         write(user_error, 'Global options:\n'),

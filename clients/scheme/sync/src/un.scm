@@ -62,7 +62,7 @@
     (string-trim-right url #\/)))
 
 (define portal-base
-  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /keys/extend
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /topup?key= (credit top-up)
   (let ((url (getenv "UNSANDBOX_PORTAL_URL")))
     (string-trim-right (if (and url (> (string-length url) 0)) url "https://unsandbox.com") #\/)))
 
@@ -710,9 +710,12 @@
          (public-key (car keys))
          (secret-key (cadr keys)))
     (if extend
-        (begin
-          (format #t "~aOpening browser to extend key...~a\n" blue reset)
-          (open-browser (format #f "~a/keys/extend?pk=~a" portal-base public-key)))
+        ;; --topup (alias --extend): open our portal's credit top-up page
+        (let ((url (format #f "~a/topup?key=~a" portal-base public-key)))
+          (format #t "Opening top-up page in browser...\n")
+          (format #t "If browser doesn't open, visit: ~a\n" url)
+          (force-output)
+          (open-browser url))
         (let* ((result (key-validate-post public-key secret-key))
                (response (car result))
                (code (cdr result))
@@ -739,6 +742,17 @@
           (cond
            ((string=? state "active")
             (let* ((tier (key-json-int response "tier"))
+                   ;; Billing (ticket #155): "billing" wins; else derive from deprecated
+                   ;; "tier" (-1 free, 0 demo, other credit). Tier itself is never printed.
+                   (billing-raw (key-json-string response "billing"))
+                   (billing (cond ((and billing-raw (> (string-length billing-raw) 0)) billing-raw)
+                                  ((not tier) "N/A")
+                                  ((= tier -1) "free")
+                                  ((= tier 0) "demo")
+                                  (else "credit")))
+                   (concurrency (key-json-int response "concurrency"))
+                   (credit (and (string=? billing "credit")
+                                (key-json-string response "credit_balance_usd")))
                    (status (key-json-string response "status"))
                    (vt (key-json-int response "valid_through"))
                    (secs (and vt (quotient vt 1000)))
@@ -751,14 +765,16 @@
                                                   (quotient (remainder left 3600) 60))))))
               (format #t "~aValid~a\n" green reset)
               (format #t "Public Key: ~a\n" public-key)
-              (format #t "Tier: ~a\n" (or tier "N/A"))
+              (format #t "Billing: ~a\n" billing)
+              (format #t "Concurrency: ~a\n" (or concurrency "N/A"))
+              (when credit (format #t "Credit: $~a\n" credit))
               (format #t "Status: ~a\n" (or status "N/A"))
               (format #t "Expires: ~a\n" expires)
               (format #t "Time Remaining: ~a\n" remaining)))
            ((string=? state "expired")
             (format #t "~aExpired~a\n" red reset)
             (format #t "Public Key: ~a\n" public-key)
-            (format #t "~aTo renew: Visit ~a/keys/extend~a\n" yellow portal-base reset)
+            (format #t "~aTo top up: Visit ~a/topup?key=~a~a\n" yellow portal-base public-key reset)
             (exit 3))
            ((string=? state "suspended")
             (format #t "~aSuspended~a\n" red reset)
@@ -1619,7 +1635,7 @@
         (display "       un.scm session [options]\n")
         (display "       un.scm service [options]\n")
         (display "       un.scm image [options]\n")
-        (display "       un.scm key [--extend]\n")
+        (display "       un.scm key [--topup]   (top up credit; alias: --extend)\n")
         (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
         (display "       un.scm paas logs [options]\n")
@@ -1649,7 +1665,7 @@
          (let ((json-output (and (> (length args) 1) (equal? (cadr args) "--json"))))
            (languages-cmd json-output)))
         ((equal? (car args) "key")
-         (let ((extend (member "--extend" (cdr args)))
+         (let ((extend (or (member "--topup" (cdr args)) (member "--extend" (cdr args))))
                (rotate (member "--rotate" (cdr args)))
                (otp (let ((m (member "--otp" (cdr args))))
                       (and m (pair? (cdr m)) (cadr m)))))

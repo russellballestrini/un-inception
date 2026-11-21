@@ -89,8 +89,16 @@ let api_base =
   in
   strip url
 
-(** Portal base URL *)
-let portal_base = "https://unsandbox.com"
+(** Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
+    Serves the /topup?key= credit top-up page. *)
+let portal_base =
+  let url = try Sys.getenv "UNSANDBOX_PORTAL_URL" with Not_found -> "" in
+  let url = if url = "" then "https://unsandbox.com" else url in
+  let rec strip u =
+    let n = String.length u in
+    if n > 0 && u.[n - 1] = '/' then strip (String.sub u 0 (n - 1)) else u
+  in
+  strip url
 
 (** Default execution timeout in seconds *)
 let default_timeout = 300
@@ -1795,7 +1803,23 @@ let display_key_result code response public_key =
   in
   match state with
   | "active" ->
-    let tier = match extract_json_int response "tier" with Some t -> string_of_int t | None -> "N/A" in
+    (* Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+       (-1 free, 0 demo, other credit). Tier itself is never printed. *)
+    let billing =
+      match extract_json_value response "billing" with
+      | Some b when b <> "" -> b
+      | _ ->
+        let re = Str.regexp "\"tier\"[ \t\r\n]*:[ \t\r\n]*\\(-?[0-9]+\\)" in
+        (try
+           ignore (Str.search_forward re response 0);
+           (match int_of_string (Str.matched_group 1 response) with
+            | -1 -> "free"
+            | 0 -> "demo"
+            | _ -> "credit")
+         with Not_found | Failure _ -> "N/A")
+    in
+    let concurrency = match extract_json_int response "concurrency" with Some c -> string_of_int c | None -> "N/A" in
+    let credit_usd = if billing = "credit" then extract_json_value response "credit_balance_usd" else None in
     let status = match extract_json_value response "status" with Some s -> s | None -> "N/A" in
     let expires, remaining =
       match extract_json_int response "valid_through" with
@@ -1813,14 +1837,16 @@ let display_key_result code response public_key =
     in
     Printf.printf "%sValid%s\n" green reset;
     Printf.printf "Public Key: %s\n" public_key;
-    Printf.printf "Tier: %s\n" tier;
+    Printf.printf "Billing: %s\n" billing;
+    Printf.printf "Concurrency: %s\n" concurrency;
+    (match credit_usd with Some c -> Printf.printf "Credit: $%s\n" c | None -> ());
     Printf.printf "Status: %s\n" status;
     Printf.printf "Expires: %s\n" expires;
     Printf.printf "Time Remaining: %s\n" remaining
   | "expired" ->
     Printf.printf "%sExpired%s\n" red reset;
     Printf.printf "Public Key: %s\n" public_key;
-    Printf.printf "%sTo renew: Visit %s/keys/extend%s\n" yellow portal_base reset;
+    Printf.printf "%sTo top up: Visit %s/topup?key=%s%s\n" yellow portal_base public_key reset;
     exit 3
   | "suspended" ->
     Printf.printf "%sSuspended%s\n" red reset;
@@ -1832,12 +1858,15 @@ let display_key_result code response public_key =
     Printf.printf "Reason: %s\n" reason;
     exit 3
 
-(* Key command *)
+(* Key command; extend = --topup or its alias --extend (credit top-up page) *)
 let key_command extend =
   let (public_key, secret_key) = get_api_keys () in
-  if extend then
-    open_browser (Printf.sprintf "%s/keys/extend?pk=%s" portal_base public_key)
-  else begin
+  if extend then begin
+    let url = Printf.sprintf "%s/topup?key=%s" portal_base public_key in
+    Printf.printf "Opening top-up page in browser...\n";
+    Printf.printf "If browser doesn't open, visit: %s\n%!" url;
+    open_browser url
+  end else begin
     let code, response = key_validate_post public_key secret_key in
     display_key_result code response public_key
   end
@@ -2402,7 +2431,7 @@ let () =
     Printf.printf "       un.ml [--account N] image [options]\n";
     Printf.printf "       un.ml [--account N] service env <action> <service_id>\n";
     Printf.printf "       un.ml languages [--json]\n";
-    Printf.printf "       un.ml key [--extend]\n";
+    Printf.printf "       un.ml key [--topup]      (top up credit; alias: --extend)\n";
     Printf.printf "       un.ml key --rotate [--otp CODE]\n\n";
     Printf.printf "Global options:\n";
     Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n";
@@ -2420,7 +2449,7 @@ let () =
   | "image" :: rest ->
     image_command rest
   | "key" :: rest ->
-    let extend = List.mem "--extend" rest in
+    let extend = List.mem "--topup" rest || List.mem "--extend" rest in
     let rec find_otp = function
       | "--otp" :: code :: _ -> Some code
       | _ :: rest -> find_otp rest

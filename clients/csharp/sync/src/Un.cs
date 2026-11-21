@@ -275,9 +275,11 @@ class Un
 
         if (args.KeyExtend)
         {
-            string url = $"{PORTAL_BASE}/keys/extend?pk={publicKey}";
-            Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
-            OpenBrowser(url);
+            // key --topup (alias --extend): open our portal's credit top-up page
+            string url = $"{PORTAL_BASE}/topup?key={publicKey}";
+            Console.WriteLine("Opening top-up page in browser...");
+            Console.WriteLine($"If browser doesn't open, visit: {url}");
+            try { OpenBrowser(url); } catch (Exception) { }
             return;
         }
 
@@ -318,7 +320,7 @@ class Un
         {
             Console.WriteLine($"{RED}Expired{RESET}");
             Console.WriteLine($"Public Key: {publicKey}");
-            Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
+            Console.WriteLine($"{YELLOW}To top up: Visit {PORTAL_BASE}/topup?key={publicKey}{RESET}");
             Environment.Exit(3);
         }
         else if (state == "suspended")
@@ -346,7 +348,11 @@ class Un
 
         Console.WriteLine($"{GREEN}Valid{RESET}");
         Console.WriteLine($"Public Key: {publicKey}");
-        Console.WriteLine($"Tier: {Field(result, "tier") ?? "N/A"}");
+        string billing = Unsandbox.BillingOf(result);
+        Console.WriteLine($"Billing: {billing}");
+        Console.WriteLine($"Concurrency: {Field(result, "concurrency") ?? "N/A"}");
+        string creditUsd = Field(result, "credit_balance_usd");
+        if (billing == "credit" && creditUsd != null) Console.WriteLine($"Credit: ${creditUsd}");
         Console.WriteLine($"Status: {Field(result, "status") ?? "N/A"}");
         Console.WriteLine($"Expires: {expires}");
         Console.WriteLine($"Time Remaining: {remaining}");
@@ -1684,7 +1690,7 @@ class Un
             else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
             else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
             else if (arg == "--redeploy") result.ServiceRedeploy = args[++i];
-            else if (arg == "--extend") result.KeyExtend = true;
+            else if (arg == "--topup" || arg == "--extend") result.KeyExtend = true;
             else if (arg == "--rotate") result.KeyRotate = true;
             else if (arg == "--otp") result.KeyOtp = args[++i];
             else if (arg == "--json") result.LanguagesJson = true;
@@ -1834,7 +1840,7 @@ Service env commands:
   env delete ID     Delete vault
 
 Key options:
-  --extend          Open browser to extend expired key
+  --topup           Open browser to top up credit (alias: --extend)
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 
@@ -2602,6 +2608,22 @@ public static class Unsandbox
 
     // --- Utilities ---
 
+    /// <summary>
+    /// Billing from a /keys/validate payload: "billing" when set, else derived from
+    /// the deprecated "tier" (-1 free, 0 demo, other credit), else "N/A".
+    /// </summary>
+    public static string BillingOf(Dictionary<string, object> data)
+    {
+        if (data.ContainsKey("billing") && data["billing"] is string b && b.Length > 0) return b;
+        if (data.ContainsKey("tier") && data["tier"] != null &&
+            double.TryParse(Convert.ToString(data["tier"], System.Globalization.CultureInfo.InvariantCulture),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double t))
+        {
+            return t == -1 ? "free" : t == 0 ? "demo" : "credit";
+        }
+        return "N/A";
+    }
+
     public static KeyInfo ValidateKeys(string publicKey = null, string secretKey = null)
     {
         var (pk, sk) = ResolveKeys(publicKey, secretKey);
@@ -2612,6 +2634,7 @@ public static class Unsandbox
             {
                 Valid = result.ContainsKey("valid") && result["valid"] is bool v && v,
                 Tier = GetString(result, "tier"),
+                Billing = BillingOf(result),
                 RateLimitPerMinute = GetInt(result, "rate_limit"),
                 ConcurrencyLimit = GetInt(result, "concurrency")
             };
@@ -2993,7 +3016,10 @@ public class ImageInfo
 public class KeyInfo
 {
     public bool Valid { get; set; }
+    /// <summary>Deprecated (tiers retired, ticket #155): read Billing.</summary>
     public string Tier { get; set; }
+    /// <summary>"free", "credit" (prepaid credit) or "demo".</summary>
+    public string Billing { get; set; }
     public int RateLimitPerMinute { get; set; }
     public int RateLimitBurst { get; set; }
     public int ConcurrencyLimit { get; set; }

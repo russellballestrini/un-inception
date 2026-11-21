@@ -11,6 +11,7 @@
 #   make test-library # Library mode only
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
+#   make test-key     # un key output + --topup, sync CLI (offline, mock API)
 #   make build        # Build JAR files
 #   make clean        # Remove build artifacts
 #
@@ -19,7 +20,7 @@
 #   Maven or Gradle
 
 .PHONY: all build test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async test-os clean help examples
+.PHONY: test-sync test-async test-os test-key clean help examples
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -249,6 +250,16 @@ test-os:
 	@$(JAVAC) -nowarn -d build/os-async $(ASYNC_DIR)/src/UnsandboxAsync.java 2>&1 | grep -v '^Note:' || true
 	@bash $(ROOT_DIR)/tests/os_flag_cli.sh $(JAVA) -cp build/os-sync Un
 	@bash $(ROOT_DIR)/tests/os_flag_cli.sh $(JAVA) -cp build/os-async UnsandboxAsync
+
+# ============================================================================
+# TEST: un key output + --topup (offline, local mock API; ticket #155)
+# The async CLI prints the raw validate map, so only sync follows CLI_SPEC here.
+# ============================================================================
+
+test-key:
+	@rm -rf build/key-sync && mkdir -p build/key-sync
+	@$(JAVAC) -nowarn -d build/key-sync $(SYNC_DIR)/src/Un.java 2>&1 | grep -v '^Note:' || true
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh $(JAVA) -cp build/key-sync Un
 
 # ============================================================================
 # Clean

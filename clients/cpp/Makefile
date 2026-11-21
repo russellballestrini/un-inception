@@ -1,6 +1,6 @@
 # UN C++ Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional test-unit test-os clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-unit test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -81,6 +81,10 @@ test-unit:
 
 test-os: $(BIN)
 	@bash ../../tests/os_flag_cli.sh ./$(BIN)
+
+# Offline: un key output + --topup against a local mock API (ticket #155)
+test-key: $(BIN)
+	@bash ../../tests/key_output_cli.sh ./$(BIN)
 
 clean:
 	rm -f $(BIN) test_un

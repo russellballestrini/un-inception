@@ -1,6 +1,6 @@
 # UN Objective-C Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -24,6 +24,7 @@ help:
 	@echo "  make test             All 4 test modes"
 	@echo "  make test-cli         CLI mode"
 	@echo "  make test-library     Library mode"
+	@echo "  make test-key         Offline un key output + --topup check (tests/key_output_cli.sh)"
 	@echo ""
 
 all: build
@@ -56,6 +57,9 @@ test-library:
 	@echo "LIBRARY MODE: Testing Objective-C framework"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  $(YELLOW)⊘$(NC) Library: Requires header separation (un.h)"
+
+test-key: $(BIN)
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./$(BIN)
 
 test-integration:
 	@echo ""

@@ -227,6 +227,17 @@ async Task CmdSessionAsync(Args args)
 async Task CmdKeyAsync(Args args)
 {
     var (publicKey, secretKey) = GetApiKeys(args.ApiKey);
+
+    if (args.KeyExtend)
+    {
+        // key --topup (alias --extend): open our portal's credit top-up page
+        var topupUrl = $"{PORTAL_BASE}/topup?key={publicKey}";
+        Console.WriteLine("Opening top-up page in browser...");
+        Console.WriteLine($"If browser doesn't open, visit: {topupUrl}");
+        try { OpenBrowser(topupUrl); } catch (Exception) { }
+        return;
+    }
+
     var result = await ApiRequestAsync("/keys/validate", HttpMethod.Post, null, publicKey, secretKey);
 
     if (!result.TryGetValue("valid", out var validObj) || validObj is not JsonElement validEl)
@@ -241,25 +252,26 @@ async Task CmdKeyAsync(Args args)
     if (isValid && !isExpired)
     {
         Console.WriteLine($"{GREEN}Valid{RESET}");
-        if (result.TryGetValue("public_key", out var pk) && pk is JsonElement pkEl) Console.WriteLine($"Public Key: {pkEl.GetString()}");
-        if (result.TryGetValue("tier", out var tier) && tier is JsonElement tierEl) Console.WriteLine($"Tier: {tierEl.GetString()}");
+        Console.WriteLine($"Public Key: {publicKey}");
+        // Billing (ticket #155): "billing" wins; else derive from deprecated "tier".
+        string billing = "N/A";
+        if (result.TryGetValue("billing", out var b) && b is JsonElement bEl && bEl.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(bEl.GetString()))
+            billing = bEl.GetString()!;
+        else if (result.TryGetValue("tier", out var tier) && tier is JsonElement tierEl && tierEl.ValueKind == JsonValueKind.Number)
+            billing = tierEl.GetDouble() == -1 ? "free" : tierEl.GetDouble() == 0 ? "demo" : "credit";
+        Console.WriteLine($"Billing: {billing}");
+        Console.WriteLine(result.TryGetValue("concurrency", out var c) && c is JsonElement cEl && cEl.ValueKind == JsonValueKind.Number
+            ? $"Concurrency: {cEl}" : "Concurrency: N/A");
+        if (billing == "credit" && result.TryGetValue("credit_balance_usd", out var cr) && cr is JsonElement crEl && crEl.ValueKind == JsonValueKind.String)
+            Console.WriteLine($"Credit: ${crEl.GetString()}");
         if (result.TryGetValue("expires_at", out var exp) && exp is JsonElement expAtEl) Console.WriteLine($"Expires: {expAtEl.GetString()}");
     }
     else if (isExpired)
     {
         Console.WriteLine($"{RED}Expired{RESET}");
-        string? pkStr = null;
-        if (result.TryGetValue("public_key", out var pk) && pk is JsonElement pkEl) { pkStr = pkEl.GetString(); Console.WriteLine($"Public Key: {pkStr}"); }
-        if (result.TryGetValue("tier", out var tier) && tier is JsonElement tierEl) Console.WriteLine($"Tier: {tierEl.GetString()}");
+        Console.WriteLine($"Public Key: {publicKey}");
         if (result.TryGetValue("expired_at", out var expAt) && expAt is JsonElement expAtEl) Console.WriteLine($"Expired: {expAtEl.GetString()}");
-        Console.WriteLine($"{YELLOW}To renew: Visit {PORTAL_BASE}/keys/extend{RESET}");
-
-        if (args.KeyExtend && !string.IsNullOrEmpty(pkStr))
-        {
-            var url = $"{PORTAL_BASE}/keys/extend?pk={pkStr}";
-            Console.WriteLine($"{YELLOW}Opening: {url}{RESET}");
-            OpenBrowser(url);
-        }
+        Console.WriteLine($"{YELLOW}To top up: Visit {PORTAL_BASE}/topup?key={publicKey}{RESET}");
     }
     else
     {
@@ -960,7 +972,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--unfreeze-on-demand") result.ServiceUnfreezeOnDemand = args[++i];
         else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--topup" || arg == "--extend") result.KeyExtend = true;
         // Snapshot options
         else if (arg == "--delete")
         {
@@ -1087,7 +1099,7 @@ Languages options:
   --json            Output as JSON array
 
 Key options:
-  --extend          Open browser to extend expired key
+  --topup           Open browser to top up credit (alias: --extend)
 
 Environment:
   UNSANDBOX_PUBLIC_KEY   Your public API key

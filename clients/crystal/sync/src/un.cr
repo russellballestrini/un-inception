@@ -934,16 +934,17 @@ def cmd_key(args)
 
   body = ""
 
+  # --topup / --extend: open our portal's credit top-up page
   if args[:extend]?.as?(Bool)
-    extend_url = "#{PORTAL_BASE}/keys/extend?pk=#{public_key}"
-    puts "#{BLUE}Opening browser to extend key...#{RESET}"
+    extend_url = "#{PORTAL_BASE}/topup?key=#{public_key}"
+    puts "Opening top-up page in browser..."
+    puts "If browser doesn't open, visit: #{extend_url}"
     ["xdg-open", "open"].each do |browser|
       if system("which #{browser} > /dev/null 2>&1")
         system("#{browser} '#{extend_url}' > /dev/null 2>&1 &")
         break
       end
     end
-    puts extend_url
     return
   end
 
@@ -998,7 +999,7 @@ def cmd_key(args)
   when "expired"
     puts "#{RED}Expired#{RESET}"
     puts "Public Key: #{public_key}"
-    puts "#{YELLOW}To renew: Visit #{PORTAL_BASE}/keys/extend#{RESET}"
+    puts "#{YELLOW}To top up: Visit #{PORTAL_BASE}/topup?key=#{public_key}#{RESET}"
     exit 3
   when "suspended"
     puts "#{RED}Suspended#{RESET}"
@@ -1011,7 +1012,12 @@ def cmd_key(args)
     exit 3
   end
 
-  tier = result["tier"]?.try { |t| t.raw.nil? ? nil : t.to_s } || "N/A"
+  # Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+  billing = result["billing"]?.try(&.as_s?).presence
+  billing ||= result["tier"]?.try { |t| t.as_i64? || t.as_f?.try(&.to_i64) }.try { |t| t == -1 ? "free" : t == 0 ? "demo" : "credit" }
+  billing ||= "N/A"
+  concurrency = result["concurrency"]?.try { |c| c.as_i64? || c.as_f?.try(&.to_i64) }.try(&.to_s) || "N/A"
+  credit = result["credit_balance_usd"]?.try(&.as_s?)
   status = result["status"]?.try(&.as_s?) || "N/A"
   expires = "N/A"
   remaining = "N/A"
@@ -1024,7 +1030,9 @@ def cmd_key(args)
 
   puts "#{GREEN}Valid#{RESET}"
   puts "Public Key: #{public_key}"
-  puts "Tier: #{tier}"
+  puts "Billing: #{billing}"
+  puts "Concurrency: #{concurrency}"
+  puts "Credit: $#{credit}" if billing == "credit" && credit
   puts "Status: #{status}"
   puts "Expires: #{expires}"
   puts "Time Remaining: #{remaining}"
@@ -2021,7 +2029,8 @@ def main
     opts.on("--bootstrap=CMD", "Bootstrap command or URI") { |b| args[:bootstrap] = b }
     opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
     opts.on("--env-file=FILE", "Load env vars from file (for vault)") { |f| args[:svc_env_file] = f }
-    opts.on("--extend", "Open browser to extend/renew key") { args[:extend] = true }
+    opts.on("--topup", "Open browser to top up credit") { args[:extend] = true }
+    opts.on("--extend", "Alias of --topup") { args[:extend] = true }
     opts.on("--json", "Output as JSON array (for languages command)") { args[:json] = true }
     opts.on("--shell=SHELL", "Shell for session (bash, python3, etc.)") { |s| args[:shell] = s }
     opts.on("--lock=ID", "Lock service/snapshot/image") { |id| args[:service_lock] = id }

@@ -1,6 +1,6 @@
 # UN Zig Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -13,6 +13,7 @@ NC := \033[0m
 help:
 	@echo "UN Zig Client"
 	@echo "  make test    All 4 test modes"
+	@echo "  make test-key  Offline un key output + --topup check (tests/key_output_cli.sh)"
 
 test: test-cli test-library test-integration test-functional
 	@echo "$(GREEN)✓ Zig Client: All 4 test modes complete$(NC)"
@@ -28,6 +29,10 @@ test-library:
 	@echo "━━━ LIBRARY MODE ━━━"
 	@if [ -f "$(SYNC_DIR)/build.zig" ]; then cd $(SYNC_DIR) && zig build test 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Tests incomplete"; fi
 
+test-key:
+	@zig build-exe $(SYNC_DIR)/src/un.zig -lc -femit-bin=un-zig-key
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./un-zig-key
+
 test-integration:
 	@echo ""
 	@echo "━━━ INTEGRATION MODE ━━━"
@@ -39,4 +44,4 @@ test-functional:
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) No credentials"; else echo "  $(YELLOW)⊘$(NC) Not implemented"; fi
 
 clean:
-	@rm -rf $(SYNC_DIR)/zig-cache $(SYNC_DIR)/zig-out 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"
+	@rm -rf $(SYNC_DIR)/zig-cache $(SYNC_DIR)/zig-out un-zig-key un-zig-key.o 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"

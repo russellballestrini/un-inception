@@ -67,7 +67,7 @@ fn resolve_api_base() string {
 }
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
-// Serves /logs/{source} (partner log access) and /keys/extend.
+// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 fn resolve_portal_base() string {
 	v := os.getenv('UNSANDBOX_PORTAL_URL').trim_right('/')
 	return if v != '' { v } else { 'https://unsandbox.com' }
@@ -431,13 +431,13 @@ fn cmd_key(extend bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
+	// --topup / --extend: open our portal's credit top-up page
 	if extend {
-		url := '${portal_base}/keys/extend?pk=${pub_key}'
-		println('${blue}Opening browser to extend key...${reset}')
-		if os.execute('xdg-open "${url}"').exit_code != 0 {
-			if os.execute('open "${url}"').exit_code != 0 {
-				eprintln('${red}Error: Could not open browser${reset}')
-			}
+		url := '${portal_base}/topup?key=${pub_key}'
+		println('Opening top-up page in browser...')
+		println("If browser doesn't open, visit: ${url}")
+		if os.execute('xdg-open "${url}" >/dev/null 2>&1').exit_code != 0 {
+			os.execute('open "${url}" >/dev/null 2>&1')
 		}
 		return
 	}
@@ -486,7 +486,7 @@ fn cmd_key(extend bool, api_key string) {
 		'expired' {
 			println('${red}Expired${reset}')
 			println('Public Key: ${pub_key}')
-			println('${yellow}To renew: Visit ${portal_base}/keys/extend${reset}')
+			println('${yellow}To top up: Visit ${portal_base}/topup?key=${pub_key}${reset}')
 			exit(3)
 		}
 		'suspended' {
@@ -502,10 +502,25 @@ fn cmd_key(extend bool, api_key string) {
 		}
 	}
 
-	mut tier := extract_json_bare(result, 'tier')
-	if tier == '' {
-		tier = 'N/A'
+	// Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+	tier := extract_json_bare(result, 'tier')
+	mut billing := extract_json_string(result, 'billing')
+	if billing == '' {
+		billing = if tier == '' {
+			'N/A'
+		} else if tier == '-1' {
+			'free'
+		} else if tier == '0' {
+			'demo'
+		} else {
+			'credit'
+		}
 	}
+	mut concurrency := extract_json_bare(result, 'concurrency')
+	if concurrency == '' {
+		concurrency = 'N/A'
+	}
+	credit := extract_json_string(result, 'credit_balance_usd')
 	mut status := extract_json_string(result, 'status')
 	if status == '' {
 		status = 'N/A'
@@ -527,7 +542,11 @@ fn cmd_key(extend bool, api_key string) {
 
 	println('${green}Valid${reset}')
 	println('Public Key: ${pub_key}')
-	println('Tier: ${tier}')
+	println('Billing: ${billing}')
+	println('Concurrency: ${concurrency}')
+	if billing == 'credit' && credit != '' {
+		println('Credit: \$' + credit)
+	}
 	println('Status: ${status}')
 	println('Expires: ${expires}')
 	println('Time Remaining: ${remaining}')
@@ -2047,7 +2066,7 @@ fn main() {
 		eprintln('       ${args[0]} service [options]')
 		eprintln('       ${args[0]} service env <action> <service_id> [options]')
 		eprintln('       ${args[0]} image [options]')
-		eprintln('       ${args[0]} key [--extend]')
+		eprintln('       ${args[0]} key [--topup]    (top up credit; alias --extend)')
 		eprintln('       ${args[0]} key --rotate [--otp CODE]')
 		eprintln('       ${args[0]} languages [--json]')
 		eprintln('')
@@ -2303,7 +2322,7 @@ fn main() {
 		mut i := 2
 		for i < args.len {
 			match args[i] {
-				'--extend' { extend = true }
+				'--extend', '--topup' { extend = true }
 				'--rotate' { rotate = true }
 				'--otp' {
 					i++

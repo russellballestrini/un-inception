@@ -1,6 +1,6 @@
 # UN Groovy Client
 
-.PHONY: test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -23,6 +23,10 @@ test-library:
 test-os:
 	@echo "━━━ --os FLAG (offline, local mock API) ━━━"
 	@OS_FLAG_TIMEOUT=$${OS_FLAG_TIMEOUT:-120} bash $(ROOT_DIR)/tests/os_flag_cli.sh groovy $(SYNC_DIR)/src/un.groovy
+
+test-key:
+	@echo "━━━ un key output + --topup (offline, local mock API) ━━━"
+	@KEY_OUTPUT_TIMEOUT=$${KEY_OUTPUT_TIMEOUT:-120} bash $(ROOT_DIR)/tests/key_output_cli.sh groovy $(SYNC_DIR)/src/un.groovy
 
 test-integration:
 	@echo "━━━ INTEGRATION MODE ━━━"

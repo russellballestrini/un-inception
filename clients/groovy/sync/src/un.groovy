@@ -2616,8 +2616,10 @@ def cmdKey(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     if (args.keyExtend) {
-        println("${BLUE}Opening browser to extend key...${RESET}")
-        openBrowser("${PORTAL_BASE}/keys/extend?pk=${publicKey}")
+        def topupUrl = "${PORTAL_BASE}/topup?key=${publicKey}"
+        println("Opening top-up page in browser...")
+        println("If browser doesn't open, visit: ${topupUrl}")
+        openBrowser(topupUrl)
         return
     }
 
@@ -2647,7 +2649,7 @@ def cmdKey(args) {
     if (state == 'expired') {
         println("${RED}Expired${RESET}")
         println("Public Key: ${publicKey}")
-        println("${YELLOW}To renew: Visit ${PORTAL_BASE}/keys/extend${RESET}")
+        println("${YELLOW}To top up: Visit ${PORTAL_BASE}/topup?key=${publicKey}${RESET}")
         System.exit(3)
     } else if (state == 'suspended') {
         println("${RED}Suspended${RESET}")
@@ -2660,7 +2662,15 @@ def cmdKey(args) {
         System.exit(3)
     }
 
-    def tier = result.tier != null ? (result.tier instanceof Number ? (result.tier as long).toString() : result.tier.toString()) : 'N/A'
+    // Billing (ticket #155): billing, else derived from deprecated tier
+    String billing = 'N/A'
+    if (result.billing instanceof String && result.billing) {
+        billing = result.billing
+    } else if (result.tier instanceof Number) {
+        long t = result.tier as long
+        billing = t == -1 ? 'free' : (t == 0 ? 'demo' : 'credit')
+    }
+    def concurrency = result.concurrency != null ? (result.concurrency instanceof Number ? (result.concurrency as long).toString() : result.concurrency.toString()) : 'N/A'
     def status = result.status != null ? result.status.toString() : 'N/A'
     def expires = 'N/A'
     def remaining = 'N/A'
@@ -2674,7 +2684,11 @@ def cmdKey(args) {
 
     println("${GREEN}Valid${RESET}")
     println("Public Key: ${publicKey}")
-    println("Tier: ${tier}")
+    println("Billing: ${billing}")
+    println("Concurrency: ${concurrency}")
+    if (billing == 'credit' && result.credit_balance_usd != null) {
+        println("Credit: \$${result.credit_balance_usd}")
+    }
     println("Status: ${status}")
     println("Expires: ${expires}")
     println("Time Remaining: ${remaining}")
@@ -3074,6 +3088,7 @@ def parseArgs(argv) {
                 args.serviceDumpFile = argv[++i]
                 break
             case '--extend':
+            case '--topup':
                 args.keyExtend = true
                 break
             case '--rotate':
@@ -3164,7 +3179,7 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --extend            Open browser to extend key
+  --topup             Open portal to top up credit (alias: --extend)
   --rotate            Rotate the key's secret (emailed one-time code)
   --otp CODE          Finish a rotation started without a terminal
 

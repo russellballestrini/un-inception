@@ -1,6 +1,6 @@
 # UN Prolog Client
 
-.PHONY: test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -30,6 +30,10 @@ test-functional:
 # Offline: global --os flag request bodies against a local mock (no credentials)
 test-os:
 	@bash ../../tests/os_flag_cli.sh swipl $(SYNC_DIR)/src/un.pro
+
+# Offline: un key output + --topup against a local mock API (ticket #155)
+test-key:
+	@bash ../../tests/key_output_cli.sh swipl $(SYNC_DIR)/src/un.pro
 
 clean:
 	@echo "$(GREEN)✓$(NC) Cleaned"

@@ -1382,7 +1382,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         print("       lua un.lua snapshot [options]")
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
-        print("       lua un.lua key [--extend]")
+        print("       lua un.lua key [--topup]          (top up credit; alias --extend)")
         print("       lua un.lua key --rotate [--otp CODE]")
         print("       lua un.lua paas logs [options]")
         os.exit(1)
@@ -1413,11 +1413,13 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
             end
         end
     elseif cmd == "key" then
-        local rotate, otp = false, nil
+        local rotate, otp, topup = false, nil, false
         local k = 2
         while k <= #args do
             if args[k] == "--rotate" then
                 rotate = true
+            elseif args[k] == "--topup" or args[k] == "--extend" then
+                topup = true
             elseif args[k] == "--otp" then
                 k = k + 1
                 otp = args[k]
@@ -1429,6 +1431,14 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
             os.exit(0)
         end
         local pk = Un.get_credentials({})
+        if topup then
+            -- --topup / --extend: open our portal's credit top-up page
+            local url = Un.PORTAL_BASE .. "/topup?key=" .. pk
+            print("Opening top-up page in browser...")
+            print("If browser doesn't open, visit: " .. url)
+            os.execute("xdg-open '" .. url .. "' >/dev/null 2>&1 || open '" .. url .. "' >/dev/null 2>&1")
+            os.exit(0)
+        end
         local status, text = Un.validate_keys_raw()
         if type(status) ~= "number" then
             io.stderr:write(RED .. "Error: request to " .. Un.API_BASE .. "/keys/validate failed" .. RESET .. "\n")
@@ -1457,7 +1467,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         if state == "expired" then
             print(RED .. "Expired" .. RESET)
             print("Public Key: " .. pk)
-            print(YELLOW .. "To renew: Visit https://unsandbox.com/keys/extend" .. RESET)
+            print(YELLOW .. "To top up: Visit " .. Un.PORTAL_BASE .. "/topup?key=" .. pk .. RESET)
             os.exit(3)
         elseif state == "suspended" then
             print(RED .. "Suspended" .. RESET)
@@ -1482,7 +1492,20 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         end
         print(GREEN .. "Valid" .. RESET)
         print("Public Key: " .. pk)
-        print("Tier: " .. (result.tier ~= nil and str(result.tier) or "N/A"))
+        -- Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+        local billing = "N/A"
+        if type(result.billing) == "string" and result.billing ~= "" then
+            billing = result.billing
+        elseif type(result.tier) == "number" then
+            if result.tier == -1 then billing = "free"
+            elseif result.tier == 0 then billing = "demo"
+            else billing = "credit" end
+        end
+        print("Billing: " .. billing)
+        print("Concurrency: " .. (type(result.concurrency) == "number" and str(result.concurrency) or "N/A"))
+        if billing == "credit" and type(result.credit_balance_usd) == "string" then
+            print("Credit: $" .. result.credit_balance_usd)
+        end
         print("Status: " .. (result.status ~= nil and str(result.status) or "N/A"))
         print("Expires: " .. expires)
         print("Time Remaining: " .. remaining)
@@ -1796,7 +1819,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         print("       lua un.lua snapshot [options]")
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
-        print("       lua un.lua key [--extend]")
+        print("       lua un.lua key [--topup]          (top up credit; alias --extend)")
         print("       lua un.lua key --rotate [--otp CODE]")
         print("")
         print("Global options:")

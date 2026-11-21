@@ -116,7 +116,7 @@ final String apiBase = (() {
   return url.isEmpty ? 'https://api.unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
 })();
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
-// Serves /logs/{source} (partner log access) and /keys/extend.
+// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 final String portalBase = (() {
   final url = Platform.environment['UNSANDBOX_PORTAL_URL'] ?? '';
   return url.isEmpty ? 'https://unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
@@ -1882,19 +1882,20 @@ Future<void> cmdKey(Args args) async {
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
-  // Handle --extend flag
+  // Handle --topup / --extend: open our portal's credit top-up page
   if (args.keyExtend) {
-    final url = '$portalBase/keys/extend?pk=$publicKey';
-    print('${blue}Opening browser to extend key...$reset');
-    if (Platform.isMacOS) {
-      await Process.run('open', [url]);
-    } else if (Platform.isLinux) {
-      await Process.run('xdg-open', [url]);
-    } else if (Platform.isWindows) {
-      await Process.run('cmd', ['/c', 'start', url]);
-    } else {
-      print('${yellow}Please open manually: $url$reset');
-    }
+    final url = '$portalBase/topup?key=$publicKey';
+    print('Opening top-up page in browser...');
+    print("If browser doesn't open, visit: $url");
+    try {
+      if (Platform.isMacOS) {
+        await Process.run('open', [url]);
+      } else if (Platform.isLinux) {
+        await Process.run('xdg-open', [url]);
+      } else if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', url]);
+      }
+    } catch (_) {}
     return;
   }
 
@@ -1935,7 +1936,7 @@ Future<void> cmdKey(Args args) async {
   if (state == 'expired') {
     print('${red}Expired$reset');
     print('Public Key: $publicKey');
-    print('${yellow}To renew: Visit $portalBase/keys/extend$reset');
+    print('${yellow}To top up: Visit $portalBase/topup?key=$publicKey$reset');
     exit(3);
   } else if (state == 'suspended') {
     print('${red}Suspended$reset');
@@ -1963,7 +1964,19 @@ Future<void> cmdKey(Args args) async {
   }
   print('${green}Valid$reset');
   print('Public Key: $publicKey');
-  print('Tier: ${result['tier'] ?? 'N/A'}');
+  // Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+  final b = result['billing'];
+  final t = result['tier'];
+  final billing = (b is String && b.isNotEmpty)
+      ? b
+      : (t is num) ? (t == -1 ? 'free' : t == 0 ? 'demo' : 'credit') : 'N/A';
+  final conc = result['concurrency'];
+  final credit = result['credit_balance_usd'];
+  print('Billing: $billing');
+  print('Concurrency: ${conc is num ? conc.toInt() : 'N/A'}');
+  if (billing == 'credit' && credit is String) {
+    print('Credit: \$$credit');
+  }
   print('Status: ${result['status'] ?? 'N/A'}');
   print('Expires: $expires');
   print('Time Remaining: $remaining');
@@ -2142,6 +2155,7 @@ Args parseArgs(List<String> argv) {
         args.serviceShowFreezePageEnabled = argv[++i].toLowerCase() == 'true';
         break;
       case '--extend':
+      case '--topup':
         args.keyExtend = true;
         break;
       case '--rotate':
@@ -2354,7 +2368,7 @@ Snapshot options:
   --hot             Hot snapshot (without stopping)
 
 Key options:
-  --extend          Open browser to extend key
+  --topup           Open browser to top up credit (alias: --extend)
 
 Languages options:
   --json            Output as JSON array

@@ -84,7 +84,7 @@ public class Un {
         }
         return base;
     }
-    /** Portal base (/logs, /keys/extend): UNSANDBOX_PORTAL_URL, default https://unsandbox.com. */
+    /** Portal base (/logs, /topup): UNSANDBOX_PORTAL_URL, default https://unsandbox.com. */
     private static final String PORTAL_BASE = resolvePortalBase();
 
     private static String resolvePortalBase() {
@@ -3224,6 +3224,7 @@ public class Un {
         List<String> positionalArgs = new ArrayList<>();
         boolean showHelp = false;
         boolean rotateKey = false;
+        boolean topupKey = false;
         String otpCode = null;
 
         int i = 0;
@@ -3337,6 +3338,9 @@ public class Un {
             } else if (arg.equals("--rotate") && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
                 rotateKey = true;
                 i++;
+            } else if ((arg.equals("--topup") || arg.equals("--extend")) && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
+                topupKey = true;  // --extend: alias kept from before tiers retired
+                i++;
             } else if (arg.startsWith("-")) {
                 System.err.println("Error: Unknown option: " + arg);
                 System.exit(2);
@@ -3381,6 +3385,8 @@ public class Un {
             case "key":
                 if (rotateKey) {
                     handleKeyRotate(publicKey, secretKey, otpCode, credentialsCsvPath(cliPublicKey, cliSecretKey, accountIndex));
+                } else if (topupKey) {
+                    handleKeyTopup(publicKey);
                 } else {
                     handleKey(publicKey, secretKey);
                 }
@@ -3406,6 +3412,7 @@ public class Un {
         System.out.println("  java Un snapshot [options]             Manage snapshots");
         System.out.println("  java Un image [options]                Manage images");
         System.out.println("  java Un key                            Check API key");
+        System.out.println("  java Un key --topup                    Open portal to top up credit (alias: --extend)");
         System.out.println("  java Un key --rotate [--otp CODE]      Rotate API key secret (emailed OTP)");
         System.out.println("  java Un languages [--json]             List supported languages");
         System.out.println();
@@ -4261,6 +4268,23 @@ public class Un {
         }
     }
 
+    /** un key --topup (alias --extend): open our portal's credit top-up page. */
+    private static void handleKeyTopup(String publicKey) {
+        String url = PORTAL_BASE + "/topup?key=" + publicKey;
+        System.out.println("Opening top-up page in browser...");
+        System.out.println("If browser doesn't open, visit: " + url);
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String[] cmd = os.contains("mac") ? new String[] {"open", url}
+            : os.contains("win") ? new String[] {"rundll32", "url.dll,FileProtocolHandler", url}
+            : new String[] {"xdg-open", url};
+        try {
+            new ProcessBuilder(cmd).redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD).start();
+        } catch (IOException e) {
+            // no browser: the URL above is enough
+        }
+    }
+
     private static void handleKey(String publicKey, String secretKey) throws Exception {
         Object[] resp;
         try {
@@ -4298,7 +4322,7 @@ public class Un {
         if (state.equals("expired")) {
             System.out.println("Expired");
             System.out.println("Public Key: " + publicKey);
-            System.out.println("To renew: Visit " + PORTAL_BASE + "/keys/extend");
+            System.out.println("To top up: Visit " + PORTAL_BASE + "/topup?key=" + publicKey);
             System.exit(3);
         } else if (state.equals("suspended")) {
             System.out.println("Suspended");
@@ -4310,14 +4334,21 @@ public class Un {
             System.out.println("Reason: " + reason);
             System.exit(3);
         }
-        Object tier = data.get("tier");
         Object status = data.get("status");
-        String tierStr = "N/A";
-        if (tier instanceof Number) {
-            tierStr = String.valueOf(((Number) tier).longValue());
-        } else if (tier != null) {
-            tierStr = tier.toString();
+        // Billing (ticket #155): "billing", else derived from deprecated "tier".
+        String billing = "N/A";
+        Object b = data.get("billing");
+        Object tier = data.get("tier");
+        if (b instanceof String && !((String) b).isEmpty()) {
+            billing = (String) b;
+        } else if (tier instanceof Number) {
+            long t = ((Number) tier).longValue();
+            billing = t == -1 ? "free" : t == 0 ? "demo" : "credit";
         }
+        Object conc = data.get("concurrency");
+        String concurrency = conc instanceof Number ? String.valueOf(((Number) conc).longValue())
+            : conc != null ? conc.toString() : "N/A";
+        Object creditUsd = data.get("credit_balance_usd");
         String expires = "N/A";
         String remaining = "N/A";
         Object vt = data.get("valid_through");
@@ -4331,7 +4362,11 @@ public class Un {
         }
         System.out.println("Valid");
         System.out.println("Public Key: " + publicKey);
-        System.out.println("Tier: " + tierStr);
+        System.out.println("Billing: " + billing);
+        System.out.println("Concurrency: " + concurrency);
+        if (billing.equals("credit") && creditUsd != null) {
+            System.out.println("Credit: $" + creditUsd);
+        }
         System.out.println("Status: " + (status != null ? status.toString() : "N/A"));
         System.out.println("Expires: " + expires);
         System.out.println("Time Remaining: " + remaining);

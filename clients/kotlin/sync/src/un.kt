@@ -694,9 +694,9 @@ fun cmdKey(args: Args) {
     val publicKey = publicKeyOpt ?: ""
 
     if (args.keyExtend) {
-        val extendUrl = "$PORTAL_BASE/keys/extend?pk=$publicKey"
-        println("${YELLOW}Opening browser to extend key...${RESET}")
-        println(extendUrl)
+        val extendUrl = "$PORTAL_BASE/topup?key=$publicKey"
+        println("Opening top-up page in browser...")
+        println("If browser doesn't open, visit: $extendUrl")
 
         // Try to open browser using common commands
         val osName = System.getProperty("os.name").lowercase()
@@ -709,7 +709,7 @@ fun cmdKey(args: Args) {
         try {
             Runtime.getRuntime().exec(arrayOf(openCmd, extendUrl))
         } catch (e: Exception) {
-            println("${YELLOW}Could not open browser automatically. Please visit the URL above.${RESET}")
+            // no browser: the URL above is enough
         }
         return
     }
@@ -749,7 +749,7 @@ fun cmdKey(args: Args) {
         "expired" -> {
             println("${RED}Expired${RESET}")
             println("Public Key: $publicKey")
-            println("${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}")
+            println("${YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$publicKey${RESET}")
             exitProcess(3)
         }
         "suspended" -> {
@@ -765,12 +765,21 @@ fun cmdKey(args: Args) {
         }
     }
 
+    // Billing (ticket #155): billing, else derived from deprecated tier
+    val billingV = result["billing"]
     val tierV = result["tier"]
-    val tier = when (tierV) {
-        null, "null" -> "N/A"
-        is Number -> tierV.toLong().toString()
-        else -> tierV.toString()
+    val billing = when {
+        billingV is String && billingV.isNotEmpty() && billingV != "null" -> billingV
+        tierV is Number -> when (tierV.toLong()) { -1L -> "free"; 0L -> "demo"; else -> "credit" }
+        else -> "N/A"
     }
+    val concV = result["concurrency"]
+    val concurrency = when (concV) {
+        null, "null" -> "N/A"
+        is Number -> concV.toLong().toString()
+        else -> concV.toString()
+    }
+    val creditV = result["credit_balance_usd"]
     val statusV = result["status"]
     val status = if (statusV == null || statusV == "null") "N/A" else statusV.toString()
     var expires = "N/A"
@@ -786,7 +795,11 @@ fun cmdKey(args: Args) {
 
     println("${GREEN}Valid${RESET}")
     println("Public Key: $publicKey")
-    println("Tier: $tier")
+    println("Billing: $billing")
+    println("Concurrency: $concurrency")
+    if (billing == "credit" && creditV != null && creditV != "null") {
+        println("Credit: \$$creditV")
+    }
     println("Status: $status")
     println("Expires: $expires")
     println("Time Remaining: $remaining")
@@ -1571,7 +1584,7 @@ fun parseArgs(args: Array<String>): Args {
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
-            "--extend" -> result.keyExtend = true
+            "--extend", "--topup" -> result.keyExtend = true
             "--rotate" -> result.keyRotate = true
             "--otp" -> result.keyOtp = args[++i]
             "--account" -> result.accountIndex = args[++i].toInt()
@@ -2365,7 +2378,7 @@ Service env commands:
   env delete ID     Delete vault
 
 Key options:
-  --extend          Open browser to extend key
+  --topup           Open portal to top up credit (alias: --extend)
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 

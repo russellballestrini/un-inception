@@ -75,7 +75,7 @@ const API_BASE = let u = get(ENV, "UNSANDBOX_API_URL", "")
     isempty(u) ? "https://api.unsandbox.com" : String(rstrip(u, '/'))
 end
 # Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
-# Serves /logs/{source} (partner log access) and /keys/extend.
+# Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 const PORTAL_BASE = let u = get(ENV, "UNSANDBOX_PORTAL_URL", "")
     isempty(u) ? "https://unsandbox.com" : String(rstrip(u, '/'))
 end
@@ -909,7 +909,7 @@ function validate_key(api_key::String, secret_key=nothing)
     if state == "expired"
         println("$(RED)Expired$(RESET)")
         println("Public Key: $api_key")
-        println("$(YELLOW)To renew: Visit https://unsandbox.com/keys/extend$(RESET)")
+        println("$(YELLOW)To top up: Visit $(PORTAL_BASE)/topup?key=$(api_key)$(RESET)")
         return 3
     elseif state == "suspended"
         println("$(RED)Suspended$(RESET)")
@@ -932,11 +932,21 @@ function validate_key(api_key::String, secret_key=nothing)
         remaining = left <= 0 ? "expired" :
             "$(div(left, 86400))d $(div(rem(left, 86400), 3600))h $(div(rem(left, 3600), 60))m"
     end
+    # Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+    b = get(data, "billing", nothing)
     tier = get(data, "tier", nothing)
+    billing = (b isa AbstractString && !isempty(b)) ? String(b) :
+              tier isa Real ? (tier == -1 ? "free" : tier == 0 ? "demo" : "credit") : "N/A"
+    conc = get(data, "concurrency", nothing)
+    credit = get(data, "credit_balance_usd", nothing)
     status = get(data, "status", nothing)
     println("$(GREEN)Valid$(RESET)")
     println("Public Key: $api_key")
-    println("Tier: $(tier === nothing ? "N/A" : tier)")
+    println("Billing: $billing")
+    println("Concurrency: $(conc isa Real ? Int64(round(conc)) : "N/A")")
+    if billing == "credit" && credit isa AbstractString
+        println("Credit: \$$(credit)")
+    end
     println("Status: $(status === nothing ? "N/A" : status)")
     println("Expires: $expires")
     println("Time Remaining: $remaining")
@@ -1166,13 +1176,12 @@ function cmd_key(args)
     (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
     api_key = public_key
 
-    # Handle --extend flag
-    if args["extend"]
+    # Handle --topup / --extend: open our portal's credit top-up page
+    if args["topup"]
         try
-            # Build extend URL
-            extend_url = "$(PORTAL_BASE)/keys/extend?pk=$(public_key)"
+            extend_url = "$(PORTAL_BASE)/topup?key=$(public_key)"
 
-            println("Opening extension page in browser...")
+            println("Opening top-up page in browser...")
             println("If browser doesn't open, visit: $extend_url")
 
             # Try to open browser
@@ -1447,8 +1456,8 @@ function main()
     end
 
     @add_arg_table! s["key"] begin
-        "--extend"
-            help = "Open browser to extend/renew key"
+        "--topup", "--extend"
+            help = "Open browser to top up credit (--extend: alias)"
             action = :store_true
         "--rotate"
             help = "Rotate this key's secret (sudo OTP); updates accounts.csv in place"

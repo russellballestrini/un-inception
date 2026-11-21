@@ -1,6 +1,6 @@
 # UN TypeScript Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -20,6 +20,7 @@ help:
 	@echo "  make test-cli         CLI mode"
 	@echo "  make test-library     Library mode"
 	@echo "  make test-os          Offline --os flag check (local mock API)"
+	@echo "  make test-key         Offline un key output + --topup check (local mock API)"
 	@echo ""
 
 build:
@@ -69,6 +70,9 @@ test-functional:
 
 test-os:
 	@bash $(ROOT_DIR)/tests/os_flag_cli.sh node $(SYNC_DIR)/src/un.ts
+
+test-key:
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh node $(SYNC_DIR)/src/un.ts
 
 clean:
 	@rm -rf $(SYNC_DIR)/dist $(ASYNC_DIR)/dist 2>/dev/null || true

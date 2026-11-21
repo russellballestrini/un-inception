@@ -1,6 +1,6 @@
 # UN Swift Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -17,6 +17,7 @@ help:
 	@echo "  make build            Compile with swift build"
 	@echo "  make test             All 4 test modes"
 	@echo "  make test-os          Offline --os flag check (tests/os_flag_cli.sh)"
+	@echo "  make test-key         Offline un key output + --topup check (tests/key_output_cli.sh)"
 	@echo ""
 
 build:
@@ -67,6 +68,10 @@ test-functional:
 test-os:
 	swiftc -parse-as-library -o un-swift $(SYNC_DIR)/src/un.swift
 	@bash ../../tests/os_flag_cli.sh ./un-swift
+
+test-key:
+	swiftc -parse-as-library -o un-swift $(SYNC_DIR)/src/un.swift
+	@bash ../../tests/key_output_cli.sh ./un-swift
 
 clean:
 	@rm -rf $(SYNC_DIR)/.build un-swift 2>/dev/null || true

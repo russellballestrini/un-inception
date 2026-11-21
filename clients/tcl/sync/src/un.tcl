@@ -1226,7 +1226,7 @@ Requires a partner API key with log access enabled."
         set otp ""
         for {set i 0} {$i < [llength $args]} {incr i} {
             set arg [lindex $args $i]
-            if {$arg eq "--extend"} { set extend 1 }
+            if {$arg eq "--topup" || $arg eq "--extend"} { set extend 1 }
             if {$arg eq "--rotate"} { set rotate 1 }
             if {$arg eq "--otp" && $i + 1 < [llength $args]} {
                 set otp_given 1
@@ -1246,9 +1246,10 @@ Requires a partner API key with log access enabled."
         set pk [lindex $creds 0]
 
         if {$extend} {
-            set url "$PORTAL_BASE/keys/extend?pk=$pk"
-            puts "${YELLOW}Opening browser to extend key...${RESET}"
-            catch {exec xdg-open $url &}
+            set url "$PORTAL_BASE/topup?key=$pk"
+            puts "Opening top-up page in browser..."
+            puts "If browser doesn't open, visit: $url"
+            catch {exec xdg-open $url >/dev/null 2>/dev/null}
             return
         }
 
@@ -1289,7 +1290,7 @@ Requires a partner API key with log access enabled."
             expired {
                 puts "${RED}Expired${RESET}"
                 puts "Public Key: $pk"
-                puts "${YELLOW}To renew: Visit $PORTAL_BASE/keys/extend${RESET}"
+                puts "${YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$pk${RESET}"
                 exit 3
             }
             suspended {
@@ -1305,8 +1306,22 @@ Requires a partner API key with log access enabled."
             }
         }
 
-        set tier "N/A"; set status "N/A"; set expires "N/A"; set remaining "N/A"
-        if {[dict exists $result tier]} { set tier [dict get $result tier] }
+        # Billing (ticket #155): billing, else derived from deprecated tier
+        # (-1 free, 0 demo, other credit). Tier itself is never printed.
+        set billing "N/A"; set concurrency "N/A"; set credit ""
+        set status "N/A"; set expires "N/A"; set remaining "N/A"
+        if {[dict exists $result billing] && [dict get $result billing] ni {"" null}} {
+            set billing [dict get $result billing]
+        } elseif {[dict exists $result tier] && [string is integer -strict [dict get $result tier]]} {
+            set t [dict get $result tier]
+            set billing [expr {$t == -1 ? "free" : $t == 0 ? "demo" : "credit"}]
+        }
+        if {[dict exists $result concurrency] && [dict get $result concurrency] ne "null"} {
+            set concurrency [dict get $result concurrency]
+        }
+        if {[dict exists $result credit_balance_usd] && [dict get $result credit_balance_usd] ne "null"} {
+            set credit [dict get $result credit_balance_usd]
+        }
         if {[dict exists $result status]} { set status [dict get $result status] }
         if {[dict exists $result valid_through] && [string is double -strict [dict get $result valid_through]]} {
             set secs [expr {wide([dict get $result valid_through]) / 1000}]
@@ -1321,7 +1336,9 @@ Requires a partner API key with log access enabled."
 
         puts "${GREEN}Valid${RESET}"
         puts "Public Key: $pk"
-        puts "Tier: $tier"
+        puts "Billing: $billing"
+        puts "Concurrency: $concurrency"
+        if {$billing eq "credit" && $credit ne ""} { puts "Credit: \$$credit" }
         puts "Status: $status"
         puts "Expires: $expires"
         puts "Time Remaining: $remaining"
@@ -1624,7 +1641,7 @@ Usage:
   tclsh un.tcl snapshot [options]
   tclsh un.tcl image [options]
   tclsh un.tcl languages [--json]
-  tclsh un.tcl key [--extend]
+  tclsh un.tcl key [--topup]    (top up credit; --extend: alias)
   tclsh un.tcl key --rotate [--otp CODE]
 
 Global options:

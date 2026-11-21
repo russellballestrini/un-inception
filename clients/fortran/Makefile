@@ -1,6 +1,6 @@
 # UN Fortran Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -26,6 +26,12 @@ test-integration:
 test-functional:
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@echo "  $(YELLOW)⊘$(NC) Not implemented"
+
+# Offline: un key output + --topup against a local mock API (ticket #155)
+test-key:
+	@tmp=$$(mktemp -d); \
+	gfortran -ffree-line-length-none -o $$tmp/un $(SYNC_DIR)/src/un.f90 && bash $(ROOT_DIR)/tests/key_output_cli.sh $$tmp/un; rc=$$?; \
+	rm -rf $$tmp; exit $$rc
 
 clean:
 	@rm -rf $(SYNC_DIR)/build 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"

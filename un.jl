@@ -843,7 +843,12 @@ function validate_key(api_key::String)
             # Print valid key info
             println("$(GREEN)Valid$(RESET)\n")
             println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
-            println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
+            t = get(data, "tier", nothing)
+            b = get(data, "billing", t isa Real ? (t == -1 ? "free" : t == 0 ? "demo" : "credit") : "N/A")
+            println(@sprintf("%-20s %s", "Billing:", b))
+            if b == "credit" && haskey(data, "credit_balance_usd")
+                println(@sprintf("%-20s \$%s", "Credit:", data["credit_balance_usd"]))
+            end
             println(@sprintf("%-20s %s", "Status:", get(data, "status", "N/A")))
             println(@sprintf("%-20s %s", "Expires:", get(data, "valid_through_datetime", "N/A")))
             println(@sprintf("%-20s %s", "Time Remaining:", get(data, "valid_for_human", "N/A")))
@@ -857,7 +862,6 @@ function validate_key(api_key::String)
             if reason == "expired"
                 println("$(RED)Expired$(RESET)\n")
                 println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
-                println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
                 expired_at = get(data, "expired_at_datetime", "N/A")
                 expired_ago = get(data, "expired_ago", "")
                 if !isempty(expired_ago)
@@ -886,7 +890,6 @@ function validate_key(api_key::String)
                 if reason == "expired"
                     println("$(RED)Expired$(RESET)\n")
                     println(@sprintf("%-20s %s", "Public Key:", get(data, "public_key", "N/A")))
-                    println(@sprintf("%-20s %s", "Tier:", get(data, "tier", "N/A")))
                     expired_at = get(data, "expired_at_datetime", "N/A")
                     expired_ago = get(data, "expired_ago", "")
                     if !isempty(expired_ago)
@@ -1158,9 +1161,9 @@ function cmd_key(args)
             end
 
             # Build extend URL
-            extend_url = "$(PORTAL_BASE)/keys/extend?pk=$(public_key)"
+            extend_url = "$(PORTAL_BASE)/topup?key=$(public_key)"
 
-            println("Opening extension page in browser...")
+            println("Opening top-up page in browser...")
             println("If browser doesn't open, visit: $extend_url")
 
             # Try to open browser
@@ -1401,8 +1404,8 @@ function main()
     end
 
     @add_arg_table! s["key"] begin
-        "--extend"
-            help = "Open browser to extend/renew key"
+        "--extend", "--topup"
+            help = "Open browser to top up credit (--topup: same)"
             action = :store_true
         "--rotate"
             help = "Rotate this key's secret (sudo OTP); updates accounts.csv in place"

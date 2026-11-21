@@ -1628,9 +1628,10 @@ sub cmd_key {
 
     if ($options->{extend}) {
         my ($pk) = Un::get_credentials();
-        my $url = "$Un::PORTAL_BASE/keys/extend?pk=$pk";
-        print "${BLUE}Opening browser to extend key...${RESET}\n";
-        system("xdg-open '$url' 2>/dev/null || open '$url' 2>/dev/null &");
+        my $url = "$Un::PORTAL_BASE/topup?key=$pk";
+        print "Opening top-up page in browser...\n";
+        print "If browser doesn't open, visit: $url\n";
+        system("{ xdg-open '$url' || open '$url'; } >/dev/null 2>&1");
         return;
     }
 
@@ -1658,7 +1659,7 @@ sub cmd_key {
         if ($state eq 'expired') {
             print "${RED}Expired${RESET}\n";
             print "Public Key: $pk\n";
-            print "${YELLOW}To renew: Visit $Un::PORTAL_BASE/keys/extend${RESET}\n";
+            print "${YELLOW}To top up: Visit $Un::PORTAL_BASE/topup?key=$pk${RESET}\n";
         } elsif ($state eq 'suspended') {
             print "${RED}Suspended${RESET}\n";
             print "Public Key: $pk\n";
@@ -1681,7 +1682,19 @@ sub cmd_key {
     }
     print "${GREEN}Valid${RESET}\n";
     print "Public Key: $pk\n";
-    print "Tier: " . ($result->{tier} // 'N/A') . "\n";
+    # Billing (ticket #155): billing, else derived from deprecated tier
+    # (-1 free, 0 demo, other credit). Tier itself is never printed.
+    my $billing = 'N/A';
+    my $tier = $result->{tier};
+    if (defined $result->{billing} && !ref $result->{billing} && $result->{billing} ne '') {
+        $billing = $result->{billing};
+    } elsif (defined $tier && !ref $tier && $tier =~ /^-?\d+$/) {
+        $billing = $tier == -1 ? 'free' : $tier == 0 ? 'demo' : 'credit';
+    }
+    print "Billing: $billing\n";
+    print "Concurrency: " . ($result->{concurrency} // 'N/A') . "\n";
+    print "Credit: \$$result->{credit_balance_usd}\n"
+        if $billing eq 'credit' && defined $result->{credit_balance_usd};
     print "Status: " . ($result->{status} // 'N/A') . "\n";
     print "Expires: $expires\n";
     print "Time Remaining: $remaining\n";
@@ -1827,7 +1840,7 @@ Usage:
   perl un.pl snapshot [options]
   perl un.pl image [options]
   perl un.pl languages [--json]
-  perl un.pl key [--extend]
+  perl un.pl key [--topup]    (top up credit; --extend: alias)
   perl un.pl key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:
@@ -2037,7 +2050,7 @@ sub main {
             $options{set_unfreeze_on_demand_value} = ($ARGV[++$i] =~ /^(true|1)$/i);
         } elsif ($arg eq '--json') {
             $options{json} = 1;
-        } elsif ($arg eq '--extend') {
+        } elsif ($arg eq '--topup' || $arg eq '--extend') {
             $options{extend} = 1;
         } elsif ($arg eq '--rotate') {
             $options{rotate} = 1;

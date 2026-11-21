@@ -1,6 +1,6 @@
 # UN Kotlin Client - Build and Test
 
-.PHONY: all build test test-cli test-library test-integration test-functional clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -17,6 +17,7 @@ help:
 	@echo ""
 	@echo "  make build            Compile Kotlin"
 	@echo "  make test             All 4 test modes"
+	@echo "  make test-key         un key output + --topup (offline, needs kotlinc)"
 	@echo ""
 
 build:
@@ -49,6 +50,10 @@ test-library:
 	@if [ -f "$(SYNC_DIR)/build.gradle.kts" ]; then \
 		cd $(SYNC_DIR) && gradle test -q 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Library: Tests incomplete"; \
 	else echo "  $(YELLOW)⊘$(NC) Library: No build config"; fi
+
+# un key output + --topup (offline, local mock API; ticket #155). Needs kotlinc.
+test-key:
+	@KEY_OUTPUT_TIMEOUT=$${KEY_OUTPUT_TIMEOUT:-300} bash $(ROOT_DIR)/tests/key_output_cli.sh kotlinc -script $(SYNC_DIR)/src/un.kt --
 
 test-integration:
 	@echo ""

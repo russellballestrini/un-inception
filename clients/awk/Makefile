@@ -1,6 +1,6 @@
 # UN AWK Client - Build and Test
 
-.PHONY: all test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -58,6 +58,9 @@ test-functional:
 # Offline: global --os flag request bodies against a local mock API (no credentials)
 test-os:
 	@bash ../../tests/os_flag_cli.sh gawk -f sync/src/un.awk --
+
+test-key:
+	@bash ../../tests/key_output_cli.sh gawk -f sync/src/un.awk --
 
 clean:
 	@echo "$(GREEN)✓$(NC) Nothing to clean for AWK"

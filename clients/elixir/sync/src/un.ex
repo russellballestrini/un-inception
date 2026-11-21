@@ -1439,7 +1439,7 @@ defmodule Un do
     IO.puts("       un.ex [--account N] service env <action> <service_id>")
     IO.puts("       un.ex [--account N] snapshot [options]")
     IO.puts("       un.ex [--account N] image [options]")
-    IO.puts("       un.ex [--account N] key [--extend]")
+    IO.puts("       un.ex [--account N] key [--topup]   (top up credit; alias --extend)")
     IO.puts("       un.ex languages [--json]")
     IO.puts("       un.ex [--account N] paas logs [options]")
     IO.puts("")
@@ -2111,7 +2111,7 @@ defmodule Un do
   defp key_command_validate(args) do
     api_key = get_api_key()
 
-    if "--extend" in args do
+    if "--topup" in args or "--extend" in args do
       validate_key(api_key, extend: true)
     else
       validate_key(api_key, extend: false)
@@ -2122,7 +2122,10 @@ defmodule Un do
     {public_key, secret_key} = get_api_keys()
 
     if extend do
-      open_browser("#{portal_base()}/keys/extend?pk=#{public_key}")
+      url = "#{portal_base()}/topup?key=#{public_key}"
+      IO.puts("Opening top-up page in browser...")
+      IO.puts("If browser doesn't open, visit: #{url}")
+      open_browser(url)
     else
       {code, resp} = key_validate_post(public_key, secret_key)
       display_key_result(code, resp, public_key)
@@ -2164,6 +2167,23 @@ defmodule Un do
     end
   end
 
+  # Billing (ticket #155): "billing" wins; else derived from deprecated "tier"
+  # (-1 free, 0 demo, other credit). Tier itself is never printed.
+  defp key_billing(resp) do
+    case extract_json_value(resp, "billing") do
+      b when is_binary(b) and b != "" ->
+        b
+
+      _ ->
+        case json_int(resp, "tier") do
+          nil -> "N/A"
+          -1 -> "free"
+          0 -> "demo"
+          _ -> "credit"
+        end
+    end
+  end
+
   defp display_key_result(code, resp, public_key) do
     {state, reason} =
       case code do
@@ -2188,7 +2208,9 @@ defmodule Un do
 
     case state do
       "active" ->
-        tier = json_int(resp, "tier")
+        billing = key_billing(resp)
+        concurrency = json_int(resp, "concurrency")
+        credit = if billing == "credit", do: extract_json_value(resp, "credit_balance_usd")
         status = extract_json_value(resp, "status")
         vt = json_int(resp, "valid_through")
 
@@ -2208,7 +2230,9 @@ defmodule Un do
 
         IO.puts("#{@green}Valid#{@reset}")
         IO.puts("Public Key: #{public_key}")
-        IO.puts("Tier: #{tier || "N/A"}")
+        IO.puts("Billing: #{billing}")
+        IO.puts("Concurrency: #{concurrency || "N/A"}")
+        if credit, do: IO.puts("Credit: $#{credit}")
         IO.puts("Status: #{status || "N/A"}")
         IO.puts("Expires: #{expires}")
         IO.puts("Time Remaining: #{remaining}")
@@ -2216,7 +2240,7 @@ defmodule Un do
       "expired" ->
         IO.puts("#{@red}Expired#{@reset}")
         IO.puts("Public Key: #{public_key}")
-        IO.puts("#{@yellow}To renew: Visit #{portal_base()}/keys/extend#{@reset}")
+        IO.puts("#{@yellow}To top up: Visit #{portal_base()}/topup?key=#{public_key}#{@reset}")
         System.halt(3)
 
       "suspended" ->

@@ -842,8 +842,11 @@ let cmdKey (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     if args.KeyExtend then
-        printfn "%sOpening browser to extend key...%s" blue reset
-        openBrowser (sprintf "%s/keys/extend?pk=%s" portalBase publicKey)
+        // key --topup (alias --extend): open our portal's credit top-up page
+        let url = sprintf "%s/topup?key=%s" portalBase publicKey
+        printfn "Opening top-up page in browser..."
+        printfn "If browser doesn't open, visit: %s" url
+        openBrowser url
     else
         ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls12 ||| SecurityProtocolType.Tls11 ||| SecurityProtocolType.Tls
         let (code, text) =
@@ -878,7 +881,7 @@ let cmdKey (args: Args) =
         | "expired" ->
             printfn "%sExpired%s" red reset
             printfn "Public Key: %s" publicKey
-            printfn "%sTo renew: Visit https://unsandbox.com/keys/extend%s" yellow reset
+            printfn "%sTo top up: Visit %s/topup?key=%s%s" yellow portalBase publicKey reset
             exit 3
         | "suspended" ->
             printfn "%sSuspended%s" red reset
@@ -900,7 +903,22 @@ let cmdKey (args: Args) =
         | None -> ()
         printfn "%sValid%s" green reset
         printfn "Public Key: %s" publicKey
-        printfn "Tier: %s" (defaultArg (field "tier") "N/A")
+        // Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+        // (-1 free, 0 demo, other credit). Tier itself is never printed.
+        let billing =
+            match field "billing" with
+            | Some b -> b
+            | None ->
+                match field "tier" |> Option.bind (fun v -> match Double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with | true, n -> Some n | _ -> None) with
+                | Some t when t = -1.0 -> "free"
+                | Some t when t = 0.0 -> "demo"
+                | Some _ -> "credit"
+                | None -> "N/A"
+        printfn "Billing: %s" billing
+        printfn "Concurrency: %s" (defaultArg (field "concurrency") "N/A")
+        match field "credit_balance_usd" with
+        | Some usd when billing = "credit" -> printfn "Credit: $%s" usd
+        | _ -> ()
         printfn "Status: %s" (defaultArg (field "status") "N/A")
         printfn "Expires: %s" expires
         printfn "Time Remaining: %s" remaining
@@ -1550,7 +1568,7 @@ let parseArgs (argv: string[]) =
         | "--command" -> i <- i + 1; args.ServiceCommand <- Some argv.[i]
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
         | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
-        | "--extend" -> args.KeyExtend <- true
+        | "--topup" | "--extend" -> args.KeyExtend <- true
         | "--rotate" -> args.KeyRotate <- true
         | "--otp" ->
             i <- i + 1
@@ -1676,7 +1694,7 @@ let printHelp () =
     printfn "  --ports PORTS         Ports for spawned service"
     printfn ""
     printfn "Key options:"
-    printfn "  --extend          Open browser to extend key"
+    printfn "  --topup           Open browser to top up credit (alias: --extend)"
     printfn "  --rotate          Rotate the key's secret (emailed one-time code)"
     printfn "  --otp CODE        Finish a rotation started without a terminal"
     printfn "  -k KEY            API key to validate"

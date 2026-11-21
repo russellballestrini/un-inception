@@ -2164,6 +2164,7 @@ USAGE:
   node un.js service [options]           Service management
   node un.js snapshot [options]          Snapshot management
   node un.js key                         Check API key validity
+  node un.js key --topup                 Open portal to top up credit (alias: --extend)
   node un.js key --rotate                Rotate this key's secret (sudo OTP); updates accounts.csv
   node un.js key --rotate --otp CODE     Finish a rotation started without a terminal
   node un.js languages [--json]          List available languages
@@ -2525,6 +2526,9 @@ function parseArgs(args) {
       i++;
     } else if (arg === '--rotate') {
       result.rotate = true;
+      i++;
+    } else if (arg === '--topup' || arg === '--extend') {
+      result.topup = true;  // --extend: alias kept from before tiers retired
       i++;
     } else if (arg === '--otp') {
       result.otp = args[++i];
@@ -3084,6 +3088,35 @@ async function handleImage(opts) {
 /**
  * Handle key command.
  */
+/**
+ * Billing from a /keys/validate payload: `billing` when set, else derived from the
+ * deprecated `tier` (-1 free, 0 demo, other credit), else 'N/A'.
+ */
+function keyBilling(data) {
+  if (typeof data.billing === 'string' && data.billing) return data.billing;
+  if (typeof data.tier === 'number') return data.tier === -1 ? 'free' : data.tier === 0 ? 'demo' : 'credit';
+  return 'N/A';
+}
+
+/**
+ * Handle key --topup (alias --extend): open our portal's credit top-up page.
+ */
+async function handleKeyTopup(opts) {
+  const [pk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
+  const url = `${PORTAL_BASE}/topup?key=${pk}`;
+  console.log('Opening top-up page in browser...');
+  console.log(`If browser doesn't open, visit: ${url}`);
+  try {
+    const { spawn } = await import('child_process');
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+    const child = spawn(opener, [url], { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
+  } catch (e) {
+    // no browser: the URL above is enough
+  }
+}
+
 async function handleKey(opts) {
   const [pk, sk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
   const urlPath = '/keys/validate';
@@ -3133,7 +3166,7 @@ function printKeyResult(status, data, pk) {
     if (state === 'expired') {
       console.log('Expired');
       console.log(`Public Key: ${pk}`);
-      console.log(`To renew: Visit ${PORTAL_BASE}/keys/extend`);
+      console.log(`To top up: Visit ${PORTAL_BASE}/topup?key=${pk}`);
     } else if (state === 'suspended') {
       console.log('Suspended');
       console.log(`Public Key: ${pk}`);
@@ -3155,7 +3188,12 @@ function printKeyResult(status, data, pk) {
   }
   console.log('Valid');
   console.log(`Public Key: ${pk}`);
-  console.log(`Tier: ${data.tier !== undefined && data.tier !== null ? data.tier : 'N/A'}`);
+  const billing = keyBilling(data);
+  console.log(`Billing: ${billing}`);
+  console.log(`Concurrency: ${data.concurrency !== undefined && data.concurrency !== null ? data.concurrency : 'N/A'}`);
+  if (billing === 'credit' && data.credit_balance_usd !== undefined && data.credit_balance_usd !== null) {
+    console.log(`Credit: $${data.credit_balance_usd}`);
+  }
   console.log(`Status: ${data.status || 'N/A'}`);
   console.log(`Expires: ${expires}`);
   console.log(`Time Remaining: ${remaining}`);
@@ -3613,6 +3651,8 @@ async function cliMain() {
       case 'key':
         if (opts.rotate) {
           await handleKeyRotate(opts);
+        } else if (opts.topup) {
+          await handleKeyTopup(opts);
         } else {
           await handleKey(opts);
         }

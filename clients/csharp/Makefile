@@ -1,6 +1,6 @@
 # UN C# Client - Build and Test (Mono/.NET Framework compatible)
 
-.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: all build test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync/src
@@ -20,6 +20,7 @@ help:
 	@echo "  make test-cli         Test CLI functionality"
 	@echo "  make test-functional  Test with real API (requires credentials)"
 	@echo "  make test-os          Offline --os flag check (tests/os_flag_cli.sh)"
+	@echo "  make test-key         Offline un key output + --topup check (tests/key_output_cli.sh)"
 	@echo "  make clean            Remove build artifacts"
 	@echo ""
 	@echo "Note: For modern .NET 10, use clients/dotnet/"
@@ -76,6 +77,9 @@ test-functional: build
 
 test-os: build
 	@bash ../../tests/os_flag_cli.sh mono $(SYNC_DIR)/un-mono.exe
+
+test-key: build
+	@bash ../../tests/key_output_cli.sh mono $(SYNC_DIR)/un-mono.exe
 
 clean:
 	@rm -f $(SYNC_DIR)/un-mono.exe $(ASYNC_DIR)/un-mono.exe 2>/dev/null || true

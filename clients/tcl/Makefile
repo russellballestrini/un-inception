@@ -1,6 +1,6 @@
 # UN Tcl Client
 
-.PHONY: test test-cli test-library test-integration test-functional test-os check-deps clean help
+.PHONY: test test-cli test-library test-integration test-functional test-os test-key check-deps clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -37,6 +37,9 @@ test-functional:
 # Offline: global --os flag request bodies against a local mock API (no credentials)
 test-os: check-deps
 	@bash ../../tests/os_flag_cli.sh tclsh sync/src/un.tcl
+
+test-key: check-deps
+	@bash ../../tests/key_output_cli.sh tclsh sync/src/un.tcl
 
 clean:
 	@echo "$(GREEN)✓$(NC) Cleaned"

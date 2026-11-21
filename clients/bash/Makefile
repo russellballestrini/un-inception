@@ -7,7 +7,7 @@
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
 
-.PHONY: all test test-cli test-library test-integration test-functional test-os clean help
+.PHONY: all test test-cli test-library test-integration test-functional test-os test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -87,6 +87,9 @@ lint:
 # Offline: global --os flag request bodies against a local mock API (no credentials)
 test-os:
 	@bash ../../tests/os_flag_cli.sh bash sync/src/un.sh
+
+test-key:
+	@bash ../../tests/key_output_cli.sh bash sync/src/un.sh
 
 clean:
 	@echo "$(GREEN)✓$(NC) Nothing to clean for Bash"

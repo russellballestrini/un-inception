@@ -2129,6 +2129,7 @@ module Un
           ruby un.rb service [options]            Manage services
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
+          ruby un.rb key --topup                  Top up credit in browser (alias: --extend)
           ruby un.rb key --rotate [--otp CODE]    Rotate key secret (sudo OTP)
           ruby un.rb paas logs [options]          Platform logs (partner keys; -h for options)
           ruby un.rb languages [--json]           List available languages
@@ -3314,14 +3315,53 @@ module Un
       HELP
     end
 
+    # Billing from a /keys/validate payload: "billing" when set, else derived
+    # from the deprecated "tier" (-1 free, 0 demo, other credit), else N/A.
+    def key_billing(result)
+      billing = result['billing']
+      return billing if billing.is_a?(String) && !billing.empty?
+
+      tier = result['tier']
+      return 'N/A' unless tier.is_a?(Numeric)
+
+      case tier
+      when -1 then 'free'
+      when 0 then 'demo'
+      else 'credit'
+      end
+    end
+
+    # key --topup (alias --extend): open our portal's credit top-up page
+    def cli_key_topup(options)
+      pk, = resolve_credentials(options[:public_key], options[:secret_key])
+      url = "#{PORTAL_BASE}/topup?key=#{pk}"
+      puts 'Opening top-up page in browser...'
+      puts "If browser doesn't open, visit: #{url}"
+      opener = if RUBY_PLATFORM =~ /darwin/ then 'open'
+               elsif RUBY_PLATFORM =~ /mswin|mingw|cygwin/ then 'start'
+               else 'xdg-open'
+               end
+      begin
+        pid = Process.spawn(opener, url, out: File::NULL, err: File::NULL)
+        Process.detach(pid)
+      rescue StandardError
+        nil
+      end
+      exit(EXIT_SUCCESS)
+    end
+
     # Key command
     def cli_key(options)
       parser = parse_global_options(options) do
-        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--rotate [--otp CODE]]'
+        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--topup] [--rotate [--otp CODE]]'
         puts
         puts 'Check API key validity and show account info'
+        puts '  --topup       Open our portal to top up credit (alias: --extend)'
         puts '  --rotate      Rotate this key\'s secret (sudo OTP); updates accounts.csv'
         puts '  --otp CODE    Finish a rotation started without a terminal'
+      end
+      parser.on('--topup', '--extend', 'Top up credit (alias: --extend)') do
+        options[:topup] = true
       end
       parser.on('--rotate', 'Rotate this key\'s secret') do
         options[:rotate] = true
@@ -3332,6 +3372,7 @@ module Un
       parser.parse!(ARGV)
 
       return cli_key_rotate(options) if options[:rotate]
+      return cli_key_topup(options) if options[:topup]
 
       # `un key` output per CLI_SPEC.md: no public key in the payload, so print
       # the one we signed with; expiry comes from valid_through (ms).
@@ -3370,7 +3411,7 @@ module Un
         when 'expired'
           puts 'Expired'
           puts "Public Key: #{pk}"
-          puts "To renew: Visit #{PORTAL_BASE}/keys/extend"
+          puts "To top up: Visit #{PORTAL_BASE}/topup?key=#{pk}"
         when 'suspended'
           puts 'Suspended'
           puts "Public Key: #{pk}"
@@ -3392,7 +3433,10 @@ module Un
       end
       puts 'Valid'
       puts "Public Key: #{pk}"
-      puts "Tier: #{result['tier'].nil? ? 'N/A' : result['tier']}"
+      billing = key_billing(result)
+      puts "Billing: #{billing}"
+      puts "Concurrency: #{result['concurrency'].nil? ? 'N/A' : result['concurrency']}"
+      puts "Credit: $#{result['credit_balance_usd']}" if billing == 'credit' && !result['credit_balance_usd'].nil?
       puts "Status: #{result['status'] || 'N/A'}"
       puts "Expires: #{expires}"
       puts "Time Remaining: #{remaining}"

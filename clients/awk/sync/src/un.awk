@@ -1110,14 +1110,16 @@ function service_create(name, ports, domains, service_type, bootstrap, bootstrap
     print response
 }
 
-function validate_key(do_extend    , timestamp, sig_headers, signature, sig_input, cmd, response, line, code, nl, arr, state, reason, pk, url, vt, secs, left, expires, remaining, tier, status) {
+function validate_key(do_extend    , timestamp, sig_headers, signature, sig_input, cmd, response, line, code, nl, arr, state, reason, pk, url, vt, secs, left, expires, remaining, billing, concurrency, credit, status) {
     get_api_keys()
     pk = GLOBAL_PUBLIC_KEY
 
     if (do_extend) {
-        url = PORTAL_BASE "/keys/extend?pk=" pk
-        print BLUE "Opening browser to: " url RESET
-        system("xdg-open '" url "' 2>/dev/null || open '" url "' 2>/dev/null &")
+        url = PORTAL_BASE "/topup?key=" pk
+        print "Opening top-up page in browser..."
+        print "If browser doesn't open, visit: " url
+        fflush()
+        system("{ xdg-open '" url "' || open '" url "'; } >/dev/null 2>&1")
         return
     }
 
@@ -1170,7 +1172,7 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
     if (state == "expired") {
         print RED "Expired" RESET
         print "Public Key: " pk
-        print YELLOW "To renew: Visit https://unsandbox.com/keys/extend" RESET
+        print YELLOW "To top up: Visit " PORTAL_BASE "/topup?key=" pk RESET
         exit 3
     }
     if (state == "suspended") {
@@ -1185,8 +1187,15 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
         exit 3
     }
 
-    tier = "N/A"; status = "N/A"; expires = "N/A"; remaining = "N/A"
-    if (match(response, /"tier" *: *"?([^", }]+)"?/, arr)) tier = arr[1]
+    # Billing (ticket #155): billing, else derived from deprecated tier
+    # (-1 free, 0 demo, other credit). Tier itself is never printed.
+    billing = "N/A"; concurrency = "N/A"; credit = ""
+    status = "N/A"; expires = "N/A"; remaining = "N/A"
+    if (match(response, /"billing" *: *"([^"]+)"/, arr)) billing = arr[1]
+    else if (match(response, /"tier" *: *(-?[0-9]+)/, arr))
+        billing = (arr[1] == "-1") ? "free" : (arr[1] == "0") ? "demo" : "credit"
+    if (match(response, /"concurrency" *: *(-?[0-9]+)/, arr)) concurrency = arr[1]
+    if (match(response, /"credit_balance_usd" *: *"([^"]*)"/, arr)) credit = arr[1]
     if (match(response, /"status" *: *"([^"]*)"/, arr)) status = arr[1]
     if (match(response, /"valid_through" *: *([0-9]+)/, arr)) {
         vt = arr[1]
@@ -1199,7 +1208,9 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
 
     print GREEN "Valid" RESET
     print "Public Key: " pk
-    print "Tier: " tier
+    print "Billing: " billing
+    print "Concurrency: " concurrency
+    if (billing == "credit" && credit != "") print "Credit: $" credit
     print "Status: " status
     print "Expires: " expires
     print "Time Remaining: " remaining
@@ -2757,7 +2768,7 @@ function show_help() {
     print "       awk -f un.awk session [-s SHELL] [-f FILE]..."
     print "       awk -f un.awk session --snapshot SESSION_ID [--snapshot-name NAME] [--hot]"
     print "       awk -f un.awk session --restore SNAPSHOT_ID"
-    print "       awk -f un.awk key [--extend]"
+    print "       awk -f un.awk key [--topup]    (top up credit; --extend: alias)"
     print "       awk -f un.awk key --rotate [--otp CODE]"
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-e KEY=VAL] [--env-file FILE] [-f FILE]..."
@@ -2971,7 +2982,7 @@ END {
     if (ARGV[1] == "key") {
         do_extend = 0; do_rotate = 0; otp_given = 0; otp = ""
         for (i = 2; i < ARGC; i++) {
-            if (ARGV[i] == "--extend") do_extend = 1
+            if (ARGV[i] == "--topup" || ARGV[i] == "--extend") do_extend = 1
             else if (ARGV[i] == "--rotate") do_rotate = 1
             else if (ARGV[i] == "--otp" && i + 1 < ARGC) { otp_given = 1; otp = ARGV[++i] }
         }

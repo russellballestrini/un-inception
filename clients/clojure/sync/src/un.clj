@@ -64,7 +64,7 @@
 (def reset "\u001b[0m")
 
 (def portal-base
-  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /keys/extend
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /topup?key= (credit top-up)
   (str/replace (let [u (System/getenv "UNSANDBOX_PORTAL_URL")] (if (str/blank? u) "https://unsandbox.com" u)) #"/+$" ""))
 
 ;; API base URL: UNSANDBOX_API_URL overrides (staging / local), no trailing slash
@@ -648,9 +648,10 @@
 (defn validate-key [api-key extend?]
   (let [[public-key secret-key] (get-api-keys)]
     (if extend?
-      (let [url (str portal-base "/keys/extend?pk=" public-key)]
-        (println (str blue "Opening browser to extend key..." reset))
-        (sh "xdg-open" url))
+      (let [url (str portal-base "/topup?key=" public-key)]
+        (println "Opening top-up page in browser...")
+        (println (str "If browser doesn't open, visit: " url))
+        (try (sh "xdg-open" url) (catch Exception _ nil)))
       (let [[code response] (try (signed-post-http public-key secret-key "/keys/validate" "")
                                  (catch java.io.IOException e
                                    (binding [*out* *err*] (println (str red "Error: " (.getMessage e) reset)))
@@ -674,14 +675,27 @@
           (let [[expires remaining] (fmt-expiry (extract-field "valid_through" response))]
             (println (str green "Valid" reset))
             (println (str "Public Key: " public-key))
-            (println (str "Tier: " (or (extract-field "tier" response) "N/A")))
+            ;; Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+            ;; (-1 free, 0 demo, other credit). Tier itself is never printed.
+            (let [b (extract-field "billing" response)
+                  tier (second (re-find #"\"tier\"\s*:\s*(-?\d+)" response))
+                  billing (cond (seq b) b
+                                (= tier "-1") "free"
+                                (= tier "0") "demo"
+                                tier "credit"
+                                :else "N/A")
+                  credit (when (= billing "credit")
+                           (second (re-find #"\"credit_balance_usd\"\s*:\s*\"([^\"]*)\"" response)))]
+              (println (str "Billing: " billing))
+              (println (str "Concurrency: " (or (extract-field "concurrency" response) "N/A")))
+              (when credit (println (str "Credit: $" credit))))
             (println (str "Status: " (or (extract-field "status" response) "N/A")))
             (println (str "Expires: " expires))
             (println (str "Time Remaining: " remaining)))
           "expired"
           (do (println (str red "Expired" reset))
               (println (str "Public Key: " public-key))
-              (println (str yellow "To renew: Visit " portal-base "/keys/extend" reset))
+              (println (str yellow "To top up: Visit " portal-base "/topup?key=" public-key reset))
               (System/exit 3))
           "suspended"
           (do (println (str red "Suspended" reset))
@@ -1439,6 +1453,7 @@
                        (println "       un.clj service env <action> <service_id>")
                        (println "       un.clj image [options]")
                        (println "       un.clj key [options]")
+                       (println "       un.clj key --topup         (top up credit; alias: --extend)")
                        (println "       un.clj paas logs [options]")
                        (System/exit 1))))
 
@@ -1528,7 +1543,7 @@
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name (second args) mode)
 
       ;; Key options
-      (and (= mode :key) (= (first args) "--extend"))
+      (and (= mode :key) (#{"--topup" "--extend"} (first args)))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand true image-action image-id image-source-type image-visibility image-name image-ports mode)
 

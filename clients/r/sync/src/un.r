@@ -2476,9 +2476,11 @@ cmd_key <- function(args) {
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
+    # --topup / --extend: open our portal's credit top-up page
     if (!is.null(args$extend) && args$extend) {
-        extend_url <- paste0(PORTAL_BASE, "/keys/extend?pk=", public_key)
-        cat(sprintf("Opening: %s\n", extend_url))
+        extend_url <- paste0(PORTAL_BASE, "/topup?key=", public_key)
+        cat("Opening top-up page in browser...\n")
+        cat(sprintf("If browser doesn't open, visit: %s\n", extend_url))
         system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", extend_url, extend_url, extend_url))
         return(invisible(NULL))
     }
@@ -2527,7 +2529,7 @@ cmd_key <- function(args) {
     if (state == "expired") {
         cat(sprintf("%sExpired%s\n", RED, RESET))
         cat(sprintf("Public Key: %s\n", public_key))
-        cat(sprintf("%sTo renew: Visit https://unsandbox.com/keys/extend%s\n", YELLOW, RESET))
+        cat(sprintf("%sTo top up: Visit %s/topup?key=%s%s\n", YELLOW, PORTAL_BASE, public_key, RESET))
         quit(status = 3)
     } else if (state == "suspended") {
         cat(sprintf("%sSuspended%s\n", RED, RESET))
@@ -2554,7 +2556,18 @@ cmd_key <- function(args) {
     }
     cat(sprintf("%sValid%s\n", GREEN, RESET))
     cat(sprintf("Public Key: %s\n", public_key))
-    cat(sprintf("Tier: %s\n", if (!is.null(result$tier)) format(result$tier) else "N/A"))
+    # Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+    billing <- "N/A"
+    if (is.character(result$billing) && length(result$billing) == 1 && nzchar(result$billing)) {
+        billing <- result$billing
+    } else if (is.numeric(result$tier) && length(result$tier) == 1) {
+        billing <- if (result$tier == -1) "free" else if (result$tier == 0) "demo" else "credit"
+    }
+    cat(sprintf("Billing: %s\n", billing))
+    cat(sprintf("Concurrency: %s\n", if (is.numeric(result$concurrency)) format(result$concurrency) else "N/A"))
+    if (billing == "credit" && is.character(result$credit_balance_usd)) {
+        cat(sprintf("Credit: $%s\n", result$credit_balance_usd))
+    }
     cat(sprintf("Status: %s\n", if (!is.null(result$status)) result$status else "N/A"))
     cat(sprintf("Expires: %s\n", expires))
     cat(sprintf("Time Remaining: %s\n", remaining))
@@ -3265,7 +3278,7 @@ parse_args <- function() {
             i <- i + 1
             result$shell <- args[i]
             i <- i + 1
-        } else if (arg == "--extend") {
+        } else if (arg == "--extend" || arg == "--topup") {
             result$extend <- TRUE
             i <- i + 1
         } else if (arg == "--rotate") {
@@ -3354,6 +3367,7 @@ main <- function() {
         cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r image [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
+        cat("       un.r key --topup              # top up credit (alias --extend)\n", file = stderr())
         cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
         cat("       un.r paas logs [options]\n", file = stderr())

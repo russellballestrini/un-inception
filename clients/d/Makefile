@@ -1,6 +1,6 @@
 # UN D Client
 
-.PHONY: test test-cli test-library test-integration test-functional clean help
+.PHONY: test test-cli test-library test-integration test-functional test-key clean help
 
 ROOT_DIR := $(shell cd ../.. && pwd)
 SYNC_DIR := sync
@@ -37,6 +37,11 @@ test-functional:
 	@echo ""
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) No credentials"; else echo "  $(YELLOW)⊘$(NC) Not implemented"; fi
+
+# Offline: un key output + --topup against a local mock API (ticket #155)
+test-key:
+	@mkdir -p build && dmd -of=build/un-d $(SYNC_DIR)/src/un.d
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./build/un-d
 
 clean:
 	@rm -rf $(SYNC_DIR)/.dub 2>/dev/null; echo "$(GREEN)✓$(NC) Cleaned"

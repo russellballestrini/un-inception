@@ -82,7 +82,7 @@ fn api_base() -> String {
 }
 
 /// Portal base URL: UNSANDBOX_PORTAL_URL, default https://unsandbox.com, trailing slash stripped.
-/// Serves /logs/{source} (partner log access) and /keys/extend.
+/// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 fn portal_base() -> String {
     env::var("UNSANDBOX_PORTAL_URL")
         .ok()
@@ -376,9 +376,18 @@ pub struct KeysValid {
     /// Key status ("active" when valid)
     #[serde(default)]
     pub status: Option<String>,
-    /// Key tier
+    /// Key tier (deprecated, ticket #155: read `billing`)
     #[serde(default)]
     pub tier: Option<i64>,
+    /// Billing: "free", "credit" (prepaid credit) or "demo"
+    #[serde(default)]
+    pub billing: Option<String>,
+    /// Slots this key may run at once (slot = 1 vCPU + 2 GiB)
+    #[serde(default)]
+    pub concurrency: Option<i64>,
+    /// Credit balance in USD, 2 decimals (credit keys, when the API sends it)
+    #[serde(default)]
+    pub credit_balance_usd: Option<String>,
     /// Expiry, milliseconds since the Unix epoch
     #[serde(default)]
     pub valid_through: Option<i64>,
@@ -3172,6 +3181,7 @@ struct CliOptions {
 
     // Key options
     key_rotate: bool,       // key --rotate
+    key_topup: bool,        // key --topup (alias --extend)
     key_otp: Option<String>, // key --otp CODE
 }
 
@@ -3186,6 +3196,7 @@ USAGE:
     un snapshot [OPTIONS]                Manage snapshots
     un image [OPTIONS]                   Manage images
     un key                               Check API key
+    un key --topup                       Top up credit in browser (alias: --extend)
     un key --rotate [--otp CODE]         Rotate API secret (sudo OTP)
     un languages [--json]                List supported languages
 
@@ -3358,6 +3369,10 @@ fn parse_args(args: &[String]) -> CliOptions {
             }
             "--rotate" => {
                 opts.key_rotate = true;
+                i += 1;
+            }
+            "--topup" | "--extend" => {
+                opts.key_topup = true;
                 i += 1;
             }
             "--otp" => {
@@ -4726,6 +4741,26 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         return cmd_key_rotate(opts, &creds);
     }
 
+    if opts.key_topup {
+        // key --topup (alias --extend): open our portal's credit top-up page
+        let url = format!("{}/topup?key={}", portal_base(), creds.public_key);
+        println!("Opening top-up page in browser...");
+        println!("If browser doesn't open, visit: {}", url);
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(target_os = "windows") {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        let _ = std::process::Command::new(opener)
+            .arg(&url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        return EXIT_SUCCESS;
+    }
+
     // Response handling per CLI_SPEC.md "`un key` output". The payload carries
     // no public key: print the one we signed with.
     let pk = &creds.public_key;
@@ -4768,7 +4803,7 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         "expired" => {
             println!("Expired");
             println!("Public Key: {}", pk);
-            println!("To renew: Visit {}/keys/extend", portal_base());
+            println!("To top up: Visit {}/topup?key={}", portal_base(), pk);
             return EXIT_AUTH_ERROR;
         }
         "suspended" => {
@@ -4785,7 +4820,17 @@ fn cmd_key(opts: &CliOptions) -> i32 {
     }
 
     let result = result.expect("200 result");
-    let tier = result.tier.map(|t| t.to_string()).unwrap_or_else(|| "N/A".into());
+    // Billing (ticket #155): "billing" wins; else derive from deprecated tier.
+    let billing = match result.billing.as_deref() {
+        Some(b) if !b.is_empty() => b.to_string(),
+        _ => match result.tier {
+            Some(-1) => "free".to_string(),
+            Some(0) => "demo".to_string(),
+            Some(_) => "credit".to_string(),
+            None => "N/A".to_string(),
+        },
+    };
+    let concurrency = result.concurrency.map(|c| c.to_string()).unwrap_or_else(|| "N/A".into());
     let status = result.status.clone().unwrap_or_else(|| "N/A".into());
     let (expires, remaining) = match result.valid_through {
         Some(ms) => {
@@ -4802,7 +4847,13 @@ fn cmd_key(opts: &CliOptions) -> i32 {
     };
     println!("Valid");
     println!("Public Key: {}", pk);
-    println!("Tier: {}", tier);
+    println!("Billing: {}", billing);
+    println!("Concurrency: {}", concurrency);
+    if billing == "credit" {
+        if let Some(usd) = &result.credit_balance_usd {
+            println!("Credit: ${}", usd);
+        }
+    }
     println!("Status: {}", status);
     println!("Expires: {}", expires);
     println!("Time Remaining: {}", remaining);

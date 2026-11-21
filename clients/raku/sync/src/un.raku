@@ -2107,14 +2107,17 @@ sub cmd-key(@args, Int :$account-index = -1) {
     my $extend = False;
 
     for @args -> $arg {
-        if $arg eq '--extend' {
+        if $arg eq '--extend' || $arg eq '--topup' {
             $extend = True;
         }
     }
 
+    # --topup / --extend: open our portal's credit top-up page
     if $extend {
-        say "{$BLUE}Opening browser to extend key...{$RESET}";
-        CORE::<&run>('xdg-open', "$PORTAL_BASE/keys/extend?pk=$public-key");
+        my $topup-url = "$PORTAL_BASE/topup?key=$public-key";
+        say "Opening top-up page in browser...";
+        say "If browser doesn't open, visit: $topup-url";
+        try { my $p = CORE::<&run>('xdg-open', $topup-url, :out, :err); $p.out.slurp(:close); $p.err.slurp(:close); }
         return;
     }
 
@@ -2161,7 +2164,7 @@ sub cmd-key(@args, Int :$account-index = -1) {
     if $state eq 'expired' {
         say "{$RED}Expired{$RESET}";
         say "Public Key: $public-key";
-        say "{$YELLOW}To renew: Visit https://unsandbox.com/keys/extend{$RESET}";
+        say "{$YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$public-key{$RESET}";
         exit 3;
     }
     if $state eq 'suspended' {
@@ -2187,7 +2190,16 @@ sub cmd-key(@args, Int :$account-index = -1) {
     }
     say "{$GREEN}Valid{$RESET}";
     say "Public Key: $public-key";
-    say "Tier: {%result<tier> // 'N/A'}";
+    # Billing (ticket #155): "billing" wins, else derive from deprecated "tier"
+    my $billing = 'N/A';
+    if %result<billing> ~~ Str && %result<billing> ne '' {
+        $billing = %result<billing>;
+    } elsif %result<tier> ~~ Real {
+        $billing = %result<tier> == -1 ?? 'free' !! %result<tier> == 0 ?? 'demo' !! 'credit';
+    }
+    say "Billing: $billing";
+    say "Concurrency: {%result<concurrency> ~~ Real ?? %result<concurrency> !! 'N/A'}";
+    say "Credit: \${%result<credit_balance_usd>}" if $billing eq 'credit' && %result<credit_balance_usd> ~~ Str;
     say "Status: {%result<status> // 'N/A'}";
     say "Expires: $expires";
     say "Time Remaining: $remaining";
@@ -2688,6 +2700,7 @@ sub MAIN(*@args is copy) is export {
         note "       un.raku snapshot [options]";
         note "       un.raku image [options]";
         note "       un.raku key [options]";
+        note "       un.raku key --topup             (top up credit; alias --extend)";
         note "       un.raku languages [--json]";
         note "       un.raku paas logs [options]";
         note "";
