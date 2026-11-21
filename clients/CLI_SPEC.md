@@ -282,6 +282,8 @@ rust
 
 ```bash
 un key                            # Check API key validity
+un key --topup                    # Open our portal to top up this key's credit
+un key --extend                   # Alias of --topup (tiers are retired, ticket #155)
 un key --rotate                   # Rotate this key's secret (sudo OTP), update accounts.csv
 un key --rotate --otp CODE        # Finish a rotation started without a terminal
 ```
@@ -292,13 +294,16 @@ un key --rotate --otp CODE        # Finish a rotation started without a terminal
 (`timestamp:POST:/keys/validate:`). Response handling:
 
 - **200** — our key validated. Payload (fields we display; others such as
-  `rate_per_minute`, `burst`, `concurrency`, `api_key_id` may follow and get ignored):
+  `rate_per_minute`, `burst`, `api_key_id` may follow and get ignored):
 
   | Field | Type | Meaning |
   |-------|------|---------|
   | `valid` | bool | `true` |
   | `status` | string | `"active"` (the API answers 401 for any other state today) |
-  | `tier` | int | key tier |
+  | `billing` | string | `"free"`, `"credit"` (prepaid credit, $0.09 per slot-hour) or `"demo"` |
+  | `tier` | int | **deprecated**, never printed; only used to derive `billing` when it is absent |
+  | `concurrency` | int | slots this key may run at once (slot = 1 vCPU + 2 GiB) |
+  | `credit_balance_usd` | string | optional, credit keys only: balance in USD, 2 decimals (`"12.35"`) |
   | `valid_through` | int | expiry, **milliseconds** since the Unix epoch |
 
   The payload carries **no public key and no `expires_at` / `time_remaining`** (those
@@ -308,22 +313,30 @@ un key --rotate --otp CODE        # Finish a rotation started without a terminal
   ```
   Valid
   Public Key: unsb-pk-xxxx-xxxx-xxxx-xxxx
-  Tier: 5
+  Billing: credit
+  Concurrency: 4
+  Credit: $12.35
   Status: active
   Expires: 2027-06-19T12:45:27Z
   Time Remaining: 236d 4h 12m
   ```
 
+  `Billing` = `billing` when it is a non-empty string; otherwise derive it from the
+  deprecated `tier`: `-1` → `free`, `0` → `demo`, any other number → `credit`; `N/A`
+  when both are absent. Never print a `Tier:` line.
+  `Concurrency` = `concurrency`, `N/A` when absent.
+  `Credit: $<credit_balance_usd>` (string as sent, no reformatting) only when Billing is
+  `credit` and the payload carries `credit_balance_usd`; otherwise print no `Credit` line.
   `Expires` = `valid_through` as UTC ISO-8601 (`YYYY-MM-DDTHH:MM:SSZ`, whole seconds).
   `Time Remaining` = `valid_through` minus now, floored: `<days>d <hours>h <minutes>m`;
-  `expired` when zero or negative. Print `N/A` for `Tier`, `Status`, `Expires` or `Time
+  `expired` when zero or negative. Print `N/A` for `Status`, `Expires` or `Time
   Remaining` only when the payload lacks its source field. Exit 0.
   A 200 whose `status` differs from `"active"` gets handled like the matching 401 below
   (`expired` → Expired, `suspended` → Suspended, anything else → Invalid with
   `Reason: status <status>`).
 - **401** `{"error": ..., "valid": false}` — our key failed. Map `error`:
   - `":expired"` (or `"expired"`) → print `Expired`, `Public Key: <pk>`,
-    `To renew: Visit https://unsandbox.com/keys/extend`.
+    `To top up: Visit <portal>/topup?key=<pk>`.
   - `":suspended"` (or `"suspended"`) → print `Suspended`, `Public Key: <pk>`.
   - anything else (`"Invalid API key"`, `":invalid_signature"`, missing headers, ...) →
     print `Invalid`, `Public Key: <pk>`, `Reason: <error>`.
@@ -331,6 +344,17 @@ un key --rotate --otp CODE        # Finish a rotation started without a terminal
   Exit 3 (authentication error) for all three.
 - Other non-2xx: `Error: <message>` to stderr, exit 4. No response: `Error: <message>`,
   exit 1.
+
+### `un key --topup` (alias `--extend`)
+
+Tiers are retired: every paid key is prepaid credit, so extending a key means topping
+it up. Needs only our public key (no request to the API). Print
+`Opening top-up page in browser...` and
+`If browser doesn't open, visit: <portal>/topup?key=<pk>`, try to open that URL
+(`xdg-open` / `open` / `start`, errors ignored), exit 0. `<portal>` is our portal base
+URL below. The old `/keys/extend?pk=` path only redirects to `/topup`; never emit it.
+
+Offline check for any client: `bash tests/key_output_cli.sh CMD [ARGS...]`.
 
 ### `un key --rotate`
 
@@ -382,7 +406,7 @@ endpoint.
 
 Every implementation reads `UNSANDBOX_PORTAL_URL` (default `https://unsandbox.com`,
 trailing slashes stripped) for portal requests: `un paas logs` and the
-`/keys/extend` renewal link.
+`/topup?key=` top-up link.
 
 ## PaaS Logs Command
 

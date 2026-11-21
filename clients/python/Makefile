@@ -10,12 +10,13 @@
 #   make test-library # Library mode only
 #   make test-sync    # Test sync SDK only
 #   make test-async   # Test async SDK only
+#   make test-key     # un key output + --topup, sync and async CLIs (offline, mock API)
 #   make clean        # Remove build artifacts + venv
 #
 # The Makefile manages a .venv automatically. No manual pip install needed.
 
 .PHONY: all test test-cli test-library test-integration test-functional
-.PHONY: test-sync test-async lint format clean help examples venv gen-async
+.PHONY: test-sync test-async test-key lint format clean help examples venv gen-async
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -87,7 +88,7 @@ venv: $(VENV)/.deps-installed
 # TEST: All 4 Modes
 # ============================================================================
 
-test: test-cli test-library test-integration test-functional
+test: test-cli test-library test-key test-integration test-functional
 	@echo ""
 	@echo "$(GREEN)✓ Python Client: All 4 test modes complete$(NC)"
 
@@ -138,6 +139,14 @@ test-library: $(VENV)/.deps-installed
 	@if [ -d "$(ASYNC_DIR)/tests" ]; then \
 		cd $(ASYNC_DIR) && PYTHONPATH=src ../$(PYTEST) tests/ -q --tb=short 2>&1 && echo "  $(GREEN)✓$(NC) Async SDK tests passed" || echo "  $(RED)✗$(NC) Async tests failed"; \
 	fi
+
+# ============================================================================
+# TEST: un key output + --topup (offline, mock API; ticket #155)
+# ============================================================================
+
+test-key: $(VENV)/.deps-installed
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh $(PYTHON) $(SYNC_DIR)/src/un.py
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh $(PYTHON) $(ASYNC_DIR)/src/un_async.py
 
 # ============================================================================
 # TEST: Integration Mode

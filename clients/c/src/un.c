@@ -56,7 +56,7 @@ static const char* api_base(void) {
 }
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
-// Serves /logs/{source} (partner log access) and /keys/extend.
+// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
 static const char* portal_base(void) {
     static char *base = NULL;
     if (!base) {
@@ -907,6 +907,24 @@ long long extract_json_number(const char *json, const char *key) {
     if (strncmp(start, "null", 4) == 0) return -1;
 
     return atoll(start);
+}
+
+// True when "key" holds a JSON number; stores it in *out. Unlike
+// extract_json_number, -1 (a free key's tier) stays distinguishable from absent.
+static int json_number_field(const char *json, const char *key, long long *out) {
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    for (const char *p = strstr(json, search); p; p = strstr(p + 1, search)) {
+        const char *q = p + strlen(search);
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        if (*q != ':') continue;
+        q++;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        if (*q != '-' && (*q < '0' || *q > '9')) return 0;
+        *out = atoll(q);
+        return 1;
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -7016,7 +7034,7 @@ static int validate_api_key(const UnsandboxCredentials *creds) {
         if (state && strcmp(state, "expired") == 0) {
             printf("\033[31mExpired\033[0m\n");
             printf("Public Key: %s\n", pk);
-            printf("\033[33mTo renew:\033[0m Visit https://unsandbox.com/keys/extend\n");
+            printf("\033[33mTo top up:\033[0m Visit %s/topup?key=%s\n", PORTAL_BASE, pk);
         } else if (state && strcmp(state, "suspended") == 0) {
             printf("\033[31mSuspended\033[0m\n");
             printf("Public Key: %s\n", pk);
@@ -7032,9 +7050,21 @@ static int validate_api_key(const UnsandboxCredentials *creds) {
     }
     free(reason);
 
-    char tier[32] = "N/A";
-    long long t = extract_json_number(body, "tier");
-    if (t >= 0) snprintf(tier, sizeof(tier), "%lld", t);
+    // Billing (ticket #155): "billing" wins; else derive from deprecated "tier"
+    // (-1 free, 0 demo, other credit). Tier itself is never printed.
+    char billing[32] = "N/A";
+    char *b = extract_json_string(body, "billing");
+    long long t;
+    if (b && *b) snprintf(billing, sizeof(billing), "%s", b);
+    else if (json_number_field(body, "tier", &t))
+        snprintf(billing, sizeof(billing), "%s", t == -1 ? "free" : t == 0 ? "demo" : "credit");
+    free(b);
+
+    char concurrency[32] = "N/A";
+    long long c;
+    if (json_number_field(body, "concurrency", &c)) snprintf(concurrency, sizeof(concurrency), "%lld", c);
+
+    char *credit_usd = strcmp(billing, "credit") == 0 ? extract_json_string(body, "credit_balance_usd") : NULL;
 
     char expires[32] = "N/A", remaining[64] = "N/A";
     long long vt = extract_json_number(body, "valid_through");
@@ -7053,11 +7083,14 @@ static int validate_api_key(const UnsandboxCredentials *creds) {
 
     printf("\033[32mValid\033[0m\n");
     printf("Public Key: %s\n", pk);
-    printf("Tier: %s\n", tier);
+    printf("Billing: %s\n", billing);
+    printf("Concurrency: %s\n", concurrency);
+    if (credit_usd) printf("Credit: $%s\n", credit_usd);
     printf("Status: %s\n", state);
     printf("Expires: %s\n", expires);
     printf("Time Remaining: %s\n", remaining);
 
+    free(credit_usd);
     free(state);
     free(response.data);
     return 0;
@@ -7253,7 +7286,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s paas logs --follow                    # follow all logs in real-time\n", prog);
     fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", prog);
     fprintf(stderr, "  %s key                             # check API key validity\n", prog);
-    fprintf(stderr, "  %s key --extend                    # open portal to extend key\n", prog);
+    fprintf(stderr, "  %s key --topup                     # open portal to top up credit (alias: --extend)\n", prog);
     fprintf(stderr, "  %s key --rotate                    # rotate secret (sudo OTP), update accounts.csv\n", prog);
     fprintf(stderr, "  %s key --rotate --otp CODE         # finish a rotation started without a terminal\n", prog);
     fprintf(stderr, "\nAuthentication:\n");
@@ -10049,8 +10082,8 @@ int main(int argc, char *argv[]) {
             } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
                 i++;
                 cli_account_index = atoi(argv[i]);
-            } else if (strcmp(argv[i], "--extend") == 0) {
-                do_extend = 1;
+            } else if (strcmp(argv[i], "--topup") == 0 || strcmp(argv[i], "--extend") == 0) {
+                do_extend = 1;  // --extend: alias kept from before tiers retired
             } else if (strcmp(argv[i], "--rotate") == 0) {
                 do_rotate = 1;
             } else if (strcmp(argv[i], "--otp") == 0 && i + 1 < argc) {
@@ -10071,13 +10104,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        // Handle --extend: validate key to get public key, then open portal
+        // Handle --topup / --extend: open our portal's credit top-up page
         if (do_extend) {
             // If we have public_key from credentials, use it directly
             if (creds->public_key) {
                 char extend_url[512];
-                snprintf(extend_url, sizeof(extend_url), "%s/keys/extend?pk=%s", PORTAL_BASE, creds->public_key);
-                printf("Opening extension page in browser...\n");
+                snprintf(extend_url, sizeof(extend_url), "%s/topup?key=%s", PORTAL_BASE, creds->public_key);
+                printf("Opening top-up page in browser...\n");
                 printf("If browser doesn't open, visit: %s\n", extend_url);
 
                 // Try to open URL in browser

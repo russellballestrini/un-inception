@@ -8,12 +8,13 @@
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
 #   make test-os      # --os flag request bodies (offline, mock API)
+#   make test-key     # un key output + --topup (offline, mock API)
 #   make clean        # Remove build artifacts
 #
 # Dependencies:
 #   apt install build-essential libcurl4-openssl-dev libwebsockets-dev libssl-dev
 
-.PHONY: all build test test-cli test-library test-integration test-functional test-os clean help examples
+.PHONY: all build test test-cli test-library test-integration test-functional test-os test-key clean help examples
 
 # Paths
 ROOT_DIR := $(shell cd ../.. && pwd)
@@ -54,6 +55,7 @@ help:
 	@echo "  make test         Run all tests"
 	@echo "  make test-library Test library functions"
 	@echo "  make test-os      Test --os flag request bodies (offline)"
+	@echo "  make test-key     Test un key output + --topup (offline)"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make clean        Remove build artifacts"
@@ -108,12 +110,16 @@ test: build $(TEST_DIR)/test_library
 	@echo ""
 	@./$(TEST_DIR)/test_library
 	@$(MAKE) --no-print-directory test-os
+	@$(MAKE) --no-print-directory test-key
 	@$(MAKE) --no-print-directory test-exit
 
 test-library: test
 
 test-os: cli
 	@bash $(TEST_DIR)/test_os_flag.sh
+
+test-key: cli
+	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./$(CLI)
 
 test-exit: cli
 	@bash $(TEST_DIR)/test_exit_status.sh

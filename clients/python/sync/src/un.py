@@ -3025,7 +3025,9 @@ Examples:
                               help="Ports for spawned service (comma-separated)")
 
     # Key subcommand
-    key_parser = subparsers.add_parser("key", help="Check API key validity, or rotate its secret")
+    key_parser = subparsers.add_parser("key", help="Check API key validity, top up credit, or rotate its secret")
+    key_parser.add_argument("--topup", "--extend", dest="topup", action="store_true",
+                            help="Open our portal to top up this key's credit (--extend: alias)")
     key_parser.add_argument("--rotate", action="store_true",
                             help="Rotate this key's secret (sudo OTP); updates accounts.csv in place")
     key_parser.add_argument("--otp", metavar="CODE",
@@ -3104,6 +3106,8 @@ def cli_main():
         elif args.command == "key":
             if getattr(args, "rotate", False):
                 _handle_key_rotate(args, public_key, secret_key)
+            elif getattr(args, "topup", False):
+                _handle_key_topup(public_key, secret_key)
             else:
                 _handle_key_command(public_key, secret_key)
         elif args.command == "languages":
@@ -3553,6 +3557,31 @@ def _handle_image_command(args, public_key: str, secret_key: str):
         sys.exit(2)
 
 
+def _key_billing(result: dict) -> str:
+    """Billing from a /keys/validate payload: "billing" when set, else derived from
+    the deprecated "tier" (-1 free, 0 demo, other credit), else "N/A"."""
+    billing = result.get("billing")
+    if isinstance(billing, str) and billing:
+        return billing
+    tier = result.get("tier")
+    if isinstance(tier, (int, float)) and not isinstance(tier, bool):
+        return "free" if tier == -1 else "demo" if tier == 0 else "credit"
+    return "N/A"
+
+
+def _handle_key_topup(public_key: str, secret_key: str):
+    """un key --topup (alias --extend): open our portal's credit top-up page."""
+    public_key, _ = _resolve_credentials(public_key, secret_key)
+    url = f"{PORTAL_BASE}/topup?key={public_key}"
+    print("Opening top-up page in browser...")
+    print(f"If browser doesn't open, visit: {url}")
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
 def _handle_key_command(public_key: str, secret_key: str):
     """Handle key validation command (CLI_SPEC.md: `un key` output)."""
     public_key, secret_key = _resolve_credentials(public_key, secret_key)
@@ -3591,7 +3620,7 @@ def _handle_key_command(public_key: str, secret_key: str):
         if state == "expired":
             print("Expired")
             print(f"Public Key: {public_key}")
-            print(f"To renew: Visit {PORTAL_BASE}/keys/extend")
+            print(f"To top up: Visit {PORTAL_BASE}/topup?key={public_key}")
         elif state == "suspended":
             print("Suspended")
             print(f"Public Key: {public_key}")
@@ -3611,10 +3640,15 @@ def _handle_key_command(public_key: str, secret_key: str):
             remaining = "expired"
         else:
             remaining = f"{left // 86400}d {left % 86400 // 3600}h {left % 3600 // 60}m"
-    tier = result.get("tier")
+    billing = _key_billing(result)
+    concurrency = result.get("concurrency")
     print("Valid")
     print(f"Public Key: {public_key}")
-    print(f"Tier: {tier if tier is not None else 'N/A'}")
+    print(f"Billing: {billing}")
+    print(f"Concurrency: {concurrency if concurrency is not None else 'N/A'}")
+    credit = result.get("credit_balance_usd")
+    if billing == "credit" and credit is not None:
+        print(f"Credit: ${credit}")
     print(f"Status: {result.get('status') or 'N/A'}")
     print(f"Expires: {expires}")
     print(f"Time Remaining: {remaining}")
