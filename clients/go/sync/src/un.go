@@ -1987,7 +1987,7 @@ Usage:
   un service [options]              Manage services
   un snapshot [options]             Manage snapshots
   un key                            Check API key
-  un key --buy-credit               Open portal to buy credit (alias: --extend)
+  un key --buy-credit               Open portal to buy credit
   un key --rotate [--otp CODE]      Rotate API secret (sudo OTP)
   un languages [--json]             List available languages
 
@@ -3426,7 +3426,7 @@ func runImage(creds *Credentials, args []string, opts *CLIOptions) int {
 	return ExitInvalidArgs
 }
 
-// runKeyBuyCredit handles `un key --buy-credit` (alias --extend): open our portal's
+// runKeyBuyCredit handles `un key --buy-credit`: open our portal's
 // buy credit page (CLI_SPEC.md "`un key --buy-credit`").
 func runKeyBuyCredit(creds *Credentials) int {
 	url := PortalBase + "/buy-credit?key=" + creds.PublicKey
@@ -3977,7 +3977,7 @@ func CliMain() {
 		rotate, buyCredit, otp := false, false, ""
 		for i := 0; i < len(cmdArgs); i++ {
 			switch cmdArgs[i] {
-			case "--buy-credit", "--extend": // --extend: alias kept from before tiers retired
+			case "--buy-credit":
 				buyCredit = true
 			case "--rotate":
 				rotate = true

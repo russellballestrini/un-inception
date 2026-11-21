@@ -61,7 +61,7 @@
 !   ./un script.py
 !   ./un session [options]
 !   ./un service [options]
-!   ./un key [--buy-credit]   (buy credit; alias --extend)
+!   ./un key [--buy-credit]   (buy credit)
 !
 ! Authentication (in priority order):
 !   1. --account N flag -> accounts.csv row N (bypasses env vars)
@@ -1262,7 +1262,7 @@ contains
         write(*, '(A)') '  --ports PORTS       Ports for spawn'
         write(*, '(A)') ''
         write(*, '(A)') 'Key options:'
-        write(*, '(A)') '  --buy-credit    Open portal to buy credit (alias: --extend)'
+        write(*, '(A)') '  --buy-credit    Open portal to buy credit'
         write(*, '(A)') ''
         write(*, '(A)') 'Languages options:'
         write(*, '(A)') '  --json          Output as JSON array'
@@ -2339,10 +2339,10 @@ contains
         rotate_mode = .false.
         otp_code = ''
 
-        ! Check for --buy-credit/--extend, --rotate, --otp CODE
+        ! Check for --buy-credit, --rotate, --otp CODE
         do i = 2, arg_count()
             call get_arg(i, arg)
-            if (trim(arg) == '--extend' .or. trim(arg) == '--buy-credit') then
+            if (trim(arg) == '--buy-credit') then
                 extend_mode = .true.
             else if (trim(arg) == '--rotate') then
                 rotate_mode = .true.
@@ -2366,7 +2366,7 @@ contains
         ! Key validation: signed POST $UN_API/keys/validate, empty body (get_credentials
         ! already exported UNSB_SK/UNSB_HMAC for the shell). Display per CLI_SPEC.md
         ! "`un key` output": the API returns no public key, so we print ours.
-        ! --buy-credit (alias --extend): open our portal's buy credit page (ticket #155)
+        ! --buy-credit: open our portal's buy credit page (ticket #155)
         if (extend_mode) then
             script = 'PK=''' // trim(public_key) // '''' // nl // &
                 'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done' // nl // &

@@ -2164,7 +2164,7 @@ USAGE:
   node un.js service [options]           Service management
   node un.js snapshot [options]          Snapshot management
   node un.js key                         Check API key validity
-  node un.js key --buy-credit            Open portal to buy credit (alias: --extend)
+  node un.js key --buy-credit            Open portal to buy credit
   node un.js key --rotate                Rotate this key's secret (sudo OTP); updates accounts.csv
   node un.js key --rotate --otp CODE     Finish a rotation started without a terminal
   node un.js languages [--json]          List available languages
@@ -2527,8 +2527,8 @@ function parseArgs(args) {
     } else if (arg === '--rotate') {
       result.rotate = true;
       i++;
-    } else if (arg === '--buy-credit' || arg === '--extend') {
-      result.buyCredit = true;  // --extend: alias kept from before tiers retired
+    } else if (arg === '--buy-credit') {
+      result.buyCredit = true;
       i++;
     } else if (arg === '--otp') {
       result.otp = args[++i];
@@ -3099,7 +3099,7 @@ function keyBilling(data) {
 }
 
 /**
- * Handle key --buy-credit (alias --extend): open our portal's buy credit page.
+ * Handle key --buy-credit: open our portal's buy credit page.
  */
 async function handleKeyBuyCredit(opts) {
   const [pk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);

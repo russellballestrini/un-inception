@@ -1439,7 +1439,7 @@ defmodule Un do
     IO.puts("       un.ex [--account N] service env <action> <service_id>")
     IO.puts("       un.ex [--account N] snapshot [options]")
     IO.puts("       un.ex [--account N] image [options]")
-    IO.puts("       un.ex [--account N] key [--buy-credit]   (buy credit; alias --extend)")
+    IO.puts("       un.ex [--account N] key [--buy-credit]   (buy credit)")
     IO.puts("       un.ex languages [--json]")
     IO.puts("       un.ex [--account N] paas logs [options]")
     IO.puts("")
@@ -2111,7 +2111,7 @@ defmodule Un do
   defp key_command_validate(args) do
     api_key = get_api_key()
 
-    if "--buy-credit" in args or "--extend" in args do
+    if "--buy-credit" in args do
       validate_key(api_key, extend: true)
     else
       validate_key(api_key, extend: false)

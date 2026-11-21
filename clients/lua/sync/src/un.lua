@@ -1382,7 +1382,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         print("       lua un.lua snapshot [options]")
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
-        print("       lua un.lua key [--buy-credit]          (buy credit; alias --extend)")
+        print("       lua un.lua key [--buy-credit]          (buy credit)")
         print("       lua un.lua key --rotate [--otp CODE]")
         print("       lua un.lua paas logs [options]")
         os.exit(1)
@@ -1418,7 +1418,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         while k <= #args do
             if args[k] == "--rotate" then
                 rotate = true
-            elseif args[k] == "--buy-credit" or args[k] == "--extend" then
+            elseif args[k] == "--buy-credit" then
                 buyCredit = true
             elseif args[k] == "--otp" then
                 k = k + 1
@@ -1432,7 +1432,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         end
         local pk = Un.get_credentials({})
         if buyCredit then
-            -- --buy-credit / --extend: open our portal's buy credit page
+            -- --buy-credit: open our portal's buy credit page
             local url = Un.PORTAL_BASE .. "/buy-credit?key=" .. pk
             print("Opening buy credit page in browser...")
             print("If browser doesn't open, visit: " .. url)
@@ -1819,7 +1819,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         print("       lua un.lua snapshot [options]")
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
-        print("       lua un.lua key [--buy-credit]          (buy credit; alias --extend)")
+        print("       lua un.lua key [--buy-credit]          (buy credit)")
         print("       lua un.lua key --rotate [--otp CODE]")
         print("")
         print("Global options:")

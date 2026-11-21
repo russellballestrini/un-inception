@@ -2610,7 +2610,7 @@ HELP;
                 }
             } elseif ($arg === '--rotate') {
                 $opts['rotate'] = true;
-            } elseif ($arg === '--buy-credit' || $arg === '--extend') {
+            } elseif ($arg === '--buy-credit') {
                 $opts['buy_credit'] = true;
             } elseif ($arg === '--otp') {
                 $i++;
@@ -3654,7 +3654,7 @@ HELP;
     }
 
     /**
-     * Handle key --buy-credit (alias --extend): open our portal's buy credit page.
+     * Handle key --buy-credit: open our portal's buy credit page.
      */
     private function cliHandleKeyBuyCredit(): void {
         [$pk, $sk] = $this->resolveCredentials(null, null);
@@ -4081,7 +4081,7 @@ USAGE:
     php un.php service [options]
     php un.php snapshot [options]
     php un.php key
-    php un.php key --buy-credit            Buy credit in browser (alias: --extend)
+    php un.php key --buy-credit            Buy credit in browser
     php un.php key --rotate [--otp CODE]   Rotate key secret (sudo OTP)
     php un.php paas logs [options]         Platform logs (partner keys; -h for options)
     php un.php languages [--json]

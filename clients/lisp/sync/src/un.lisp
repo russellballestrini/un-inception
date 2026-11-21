@@ -675,7 +675,7 @@
   "un key: POST /keys/validate (empty body, signed); display per CLI_SPEC.md."
   (destructuring-bind (public-key secret-key) (get-api-keys)
     (when extend-flag
-      ;; --buy-credit (alias --extend): open our portal's buy credit page
+      ;; --buy-credit: open our portal's buy credit page
       (let ((url (format nil "~a/buy-credit?key=~a" *portal-base* public-key)))
         (format t "Opening buy credit page in browser...~%")
         (format t "If browser doesn't open, visit: ~a~%" url)
@@ -1510,7 +1510,7 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
           (format t "       un.lisp image [options]~%")
           (format t "       un.lisp languages [--json]~%")
           (format t "       un.lisp paas logs [options]~%")
-          (format t "       un.lisp key [--buy-credit] (buy credit; alias: --extend) | key --rotate [--otp CODE]~%")
+          (format t "       un.lisp key [--buy-credit] (buy credit) | key --rotate [--otp CODE]~%")
           (format t "~%Global options:~%")
           (format t "  --os OS             Target OS: linux (default) or freebsd (execute, session, service)~%")
           (format t "~%Image options:~%")
@@ -1644,8 +1644,7 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
                (format t "Error: Invalid service command~%")
                (uiop:quit 1))))
           ((string= (first args) "key")
-           (let ((extend-flag (or (member "--buy-credit" (cdr args) :test #'string=)
-                                  (member "--extend" (cdr args) :test #'string=)))
+           (let ((extend-flag (member "--buy-credit" (cdr args) :test #'string=))
                  (rotate-flag (member "--rotate" (cdr args) :test #'string=))
                  (otp-tail (member "--otp" (cdr args) :test #'string=)))
              (when (and otp-tail (null (second otp-tail)))

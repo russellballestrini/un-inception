@@ -1738,7 +1738,7 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--dump-file' && i + 1 < argv.length) {
       args.dumpFile = argv[++i];
       i++;
-    } else if (arg === '--extend' || arg === '--buy-credit') {
+    } else if (arg === '--buy-credit') {
       args.extend = true;
       i++;
     } else if (arg === '--clone' && i + 1 < argv.length) {
@@ -1875,7 +1875,7 @@ Image options:
   --ports PORTS    Ports for spawned service
 
 Key options:
-  --buy-credit     Open portal to buy credit (alias: --extend)
+  --buy-credit     Open portal to buy credit
   --rotate         Rotate this key's secret (sudo OTP); updates accounts.csv
   --otp CODE       Finish a rotation started without a terminal (with --rotate)
 

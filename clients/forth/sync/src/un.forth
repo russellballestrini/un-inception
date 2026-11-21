@@ -40,7 +40,7 @@
 \        gforth un.forth session [options]
 \        gforth un.forth service [options]
 \        gforth un.forth key [options]
-\        gforth un.forth key --buy-credit (buy credit; alias --extend)
+\        gforth un.forth key --buy-credit (buy credit)
 \        gforth un.forth key --rotate [--otp CODE]
 \ Global: --os OS (linux or freebsd) before our subcommand or file
 
@@ -774,7 +774,7 @@ warnings !
     s\" PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ \"${PB%/}\" != \"$PB\" ]; do PB=${PB%/}; done" r@ write-line throw
     \ Display per CLI_SPEC.md "un key output": the API returns no public key
     \ (we print ours); expiry derives from valid_through (ms). Empty body.
-    \ --buy-credit (alias --extend): open our portal's buy credit page (ticket #155).
+    \ --buy-credit: open our portal's buy credit page (ticket #155).
     if
         s\" echo 'Opening buy credit page in browser...'; echo \"If browser doesn't open, visit: $PB/buy-credit?key=$PUBLIC_KEY\"; (xdg-open \"$PB/buy-credit?key=$PUBLIC_KEY\" || open \"$PB/buy-credit?key=$PUBLIC_KEY\") >/dev/null 2>&1; exit 0" r@ write-line throw
     then
@@ -898,7 +898,7 @@ variable rot-len
         0 (bye)
     then
 
-    2 sarg 2dup s\" --extend" compare 0= >r 2dup s\" --buy-credit" compare 0= r> or if
+    2 sarg 2dup s\" --buy-credit" compare 0= if
         2drop
         1 validate-key
         0 (bye)
@@ -1997,7 +1997,7 @@ variable rot-len
         s\"        gforth un.forth service [options]" type cr
         s\"        gforth un.forth image [options]" type cr
         s\"        gforth un.forth key [options]" type cr
-        s\"        gforth un.forth key --buy-credit (buy credit; alias --extend)" type cr
+        s\"        gforth un.forth key --buy-credit (buy credit)" type cr
         s\"        gforth un.forth key --rotate [--otp CODE]" type cr
         s\"        gforth un.forth languages [--json]" type cr
         s\" Global: --os OS   Target OS: linux (default) or freebsd (execute, session, service)" type cr

@@ -1858,7 +1858,7 @@ let display_key_result code response public_key =
     Printf.printf "Reason: %s\n" reason;
     exit 3
 
-(* Key command; extend = --buy-credit or its alias --extend (buy credit page) *)
+(* Key command; extend = --buy-credit (buy credit page) *)
 let key_command extend =
   let (public_key, secret_key) = get_api_keys () in
   if extend then begin
@@ -2431,7 +2431,7 @@ let () =
     Printf.printf "       un.ml [--account N] image [options]\n";
     Printf.printf "       un.ml [--account N] service env <action> <service_id>\n";
     Printf.printf "       un.ml languages [--json]\n";
-    Printf.printf "       un.ml key [--buy-credit]      (buy credit; alias: --extend)\n";
+    Printf.printf "       un.ml key [--buy-credit]      (buy credit)\n";
     Printf.printf "       un.ml key --rotate [--otp CODE]\n\n";
     Printf.printf "Global options:\n";
     Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n";
@@ -2449,7 +2449,7 @@ let () =
   | "image" :: rest ->
     image_command rest
   | "key" :: rest ->
-    let extend = List.mem "--buy-credit" rest || List.mem "--extend" rest in
+    let extend = List.mem "--buy-credit" rest in
     let rec find_otp = function
       | "--otp" :: code :: _ -> Some code
       | _ :: rest -> find_otp rest

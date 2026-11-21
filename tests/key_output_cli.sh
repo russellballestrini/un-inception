@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline CLI test: `un key` output and `un key --buy-credit/--extend` (portal ticket
+# Offline CLI test: `un key` output and `un key --buy-credit` (portal ticket
 # #155, tiers retired), for ANY client.
 #
 # Usage: bash tests/key_output_cli.sh CMD [ARGS...]
@@ -14,7 +14,7 @@
 #   - "Concurrency: N" ("N/A" when absent)
 #   - "Credit: $X.XX" from credit_balance_usd, credit keys only
 #   - expired keys point at <portal>/buy-credit?key=<pk>, never /keys/extend
-#   - key --buy-credit and key --extend print <portal>/buy-credit?key=<pk> and exit 0
+#   - key --buy-credit prints <portal>/buy-credit?key=<pk> and exits 0
 #
 # Browser openers (xdg-open, open, ...) are stubbed on PATH; BROWSER=true.
 # Needs python3 for our mock, no credentials, no network beyond 127.0.0.1.
@@ -223,10 +223,6 @@ expect "expired key points at /buy-credit?key=, not /keys/extend" \
 reply "{\"code\":200,\"body\":{\"valid\":true,\"status\":\"active\",\"billing\":\"credit\",\"concurrency\":4,\"valid_through\":$FUTURE_MS}}"
 run_un key --buy-credit
 expect "key --buy-credit prints $BASE/buy-credit?key=<pk>, exits 0" \
-    rc:0 "text:$BUY_CREDIT_URL" notext:/keys/extend
-
-run_un key --extend
-expect "key --extend (alias) prints $BASE/buy-credit?key=<pk>, exits 0" \
     rc:0 "text:$BUY_CREDIT_URL" notext:/keys/extend
 
 echo ""

@@ -934,7 +934,7 @@ def cmd_key(args)
 
   body = ""
 
-  # --buy-credit / --extend: open our portal's buy credit page
+  # --buy-credit: open our portal's buy credit page
   if args[:extend]?.as?(Bool)
     extend_url = "#{PORTAL_BASE}/buy-credit?key=#{public_key}"
     puts "Opening buy credit page in browser..."
@@ -2030,7 +2030,6 @@ def main
     opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
     opts.on("--env-file=FILE", "Load env vars from file (for vault)") { |f| args[:svc_env_file] = f }
     opts.on("--buy-credit", "Open browser to buy credit") { args[:extend] = true }
-    opts.on("--extend", "Alias of --buy-credit") { args[:extend] = true }
     opts.on("--json", "Output as JSON array (for languages command)") { args[:json] = true }
     opts.on("--shell=SHELL", "Shell for session (bash, python3, etc.)") { |s| args[:shell] = s }
     opts.on("--lock=ID", "Lock service/snapshot/image") { |id| args[:service_lock] = id }

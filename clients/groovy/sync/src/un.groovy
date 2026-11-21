@@ -3087,7 +3087,6 @@ def parseArgs(argv) {
             case '--dump-file':
                 args.serviceDumpFile = argv[++i]
                 break
-            case '--extend':
             case '--buy-credit':
                 args.keyExtend = true
                 break
@@ -3179,7 +3178,7 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --buy-credit        Open portal to buy credit (alias: --extend)
+  --buy-credit        Open portal to buy credit
   --rotate            Rotate the key's secret (emailed one-time code)
   --otp CODE          Finish a rotation started without a terminal
 

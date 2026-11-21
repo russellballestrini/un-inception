@@ -230,7 +230,7 @@ async Task CmdKeyAsync(Args args)
 
     if (args.KeyExtend)
     {
-        // key --buy-credit (alias --extend): open our portal's buy credit page
+        // key --buy-credit: open our portal's buy credit page
         var buyCreditUrl = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
         Console.WriteLine("Opening buy credit page in browser...");
         Console.WriteLine($"If browser doesn't open, visit: {buyCreditUrl}");
@@ -972,7 +972,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--unfreeze-on-demand") result.ServiceUnfreezeOnDemand = args[++i];
         else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--buy-credit" || arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--buy-credit") result.KeyExtend = true;
         // Snapshot options
         else if (arg == "--delete")
         {
@@ -1099,7 +1099,7 @@ Languages options:
   --json            Output as JSON array
 
 Key options:
-  --buy-credit      Open browser to buy credit (alias: --extend)
+  --buy-credit      Open browser to buy credit
 
 Environment:
   UNSANDBOX_PUBLIC_KEY   Your public API key

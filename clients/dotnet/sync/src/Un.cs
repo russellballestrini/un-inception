@@ -235,7 +235,7 @@ void CmdKey(Args args)
 
     if (args.KeyExtend)
     {
-        // key --buy-credit (alias --extend): open our portal's buy credit page
+        // key --buy-credit: open our portal's buy credit page
         var url = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
         Console.WriteLine("Opening buy credit page in browser...");
         Console.WriteLine($"If browser doesn't open, visit: {url}");
@@ -1335,7 +1335,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--show-freeze-page") result.ServiceShowFreezePage = args[++i];
         else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--buy-credit" || arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--buy-credit") result.KeyExtend = true;
         else if (arg == "--rotate") result.KeyRotate = true;
         else if (arg == "--otp") result.KeyOtp = args[++i];
         else if (arg == "--account") result.Account = int.Parse(args[++i]);
@@ -1659,7 +1659,7 @@ Languages options:
   --json            Output as JSON array
 
 Key options:
-  --buy-credit      Open browser to buy credit (alias: --extend)
+  --buy-credit      Open browser to buy credit
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 

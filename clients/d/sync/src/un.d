@@ -1873,7 +1873,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     import std.datetime;
 
     if (extend) {
-        // --buy-credit / --extend: open our portal's buy credit page
+        // --buy-credit: open our portal's buy credit page
         string extendURL = PORTAL_BASE ~ "/buy-credit?key=" ~ publicKey;
         writeln("Opening buy credit page in browser...");
         writefln("If browser doesn't open, visit: %s", extendURL);
@@ -2261,7 +2261,7 @@ int main(string[] args) {
         stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
         stderr.writefln("       %s image [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
-        stderr.writefln("       %s key --buy-credit        (buy credit; alias --extend)", args[0]);
+        stderr.writefln("       %s key --buy-credit        (buy credit)", args[0]);
         stderr.writeln("");
         stderr.writeln("Global options:");
         stderr.writeln("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)");
@@ -2378,7 +2378,7 @@ int main(string[] args) {
         string otp;
 
         for (size_t i = 2; i < args.length; i++) {
-            if (args[i] == "--extend" || args[i] == "--buy-credit") extend = true;
+            if (args[i] == "--buy-credit") extend = true;
             else if (args[i] == "--rotate") rotate = true;
             else if (args[i] == "--otp" && i+1 < args.length) otp = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) { publicKey = args[++i]; credsCsvPath = ""; }

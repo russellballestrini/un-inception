@@ -1176,7 +1176,7 @@ function cmd_key(args)
     (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
     api_key = public_key
 
-    # Handle --buy-credit / --extend: open our portal's buy credit page
+    # Handle --buy-credit: open our portal's buy credit page
     if args["buy-credit"]
         try
             extend_url = "$(PORTAL_BASE)/buy-credit?key=$(public_key)"
@@ -1456,8 +1456,8 @@ function main()
     end
 
     @add_arg_table! s["key"] begin
-        "--buy-credit", "--extend"
-            help = "Open browser to buy credit (--extend: alias)"
+        "--buy-credit"
+            help = "Open browser to buy credit"
             action = :store_true
         "--rotate"
             help = "Rotate this key's secret (sudo OTP); updates accounts.csv in place"

@@ -1335,7 +1335,7 @@ cmd_key() {
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --buy-credit|--extend) extend=1 ;;  # --extend: alias kept from before tiers retired
+            --buy-credit) extend=1 ;;
             --rotate) rotate=1 ;;
             --otp) otp="${2:-}"; shift ;;
         esac
@@ -1739,7 +1739,7 @@ Usage:
   bash un.sh snapshot [options]
   bash un.sh image [options]
   bash un.sh languages [--json]
-  bash un.sh key [--buy-credit]  (buy credit; --extend: alias)
+  bash un.sh key [--buy-credit]  (buy credit)
   bash un.sh key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:

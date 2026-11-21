@@ -1584,7 +1584,7 @@ fun parseArgs(args: Array<String>): Args {
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
-            "--extend", "--buy-credit" -> result.keyExtend = true
+            "--buy-credit" -> result.keyExtend = true
             "--rotate" -> result.keyRotate = true
             "--otp" -> result.keyOtp = args[++i]
             "--account" -> result.accountIndex = args[++i].toInt()
@@ -2378,7 +2378,7 @@ Service env commands:
   env delete ID     Delete vault
 
 Key options:
-  --buy-credit      Open portal to buy credit (alias: --extend)
+  --buy-credit      Open portal to buy credit
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 

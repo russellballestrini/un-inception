@@ -546,7 +546,7 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
 
 % Key validate: POST /keys/validate (empty body, signed), display per
 % CLI_SPEC.md "un key output". Public key and secret reach bash via env only.
-% key --buy-credit (alias --extend): open our portal's buy credit page
+% key --buy-credit: open our portal's buy credit page
 % (ticket #155); the portal base honors UNSANDBOX_PORTAL_URL.
 validate_key(true) :-
     get_public_key(PublicKey),
@@ -663,7 +663,6 @@ handle_languages(_) :- languages_command(false).
 
 % Handle key subcommand
 handle_key(Args) :- memberchk('--rotate', Args), !, rotate_key(Args).
-handle_key(['--extend'|_]) :- validate_key(true).
 handle_key(['--buy-credit'|_]) :- validate_key(true).
 handle_key(_) :- validate_key(false).
 
@@ -1043,7 +1042,7 @@ main(Argv) :-
         write(user_error, '       un.pro image [options]\n'),
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
-        write(user_error, '       un.pro key --buy-credit (buy credit; alias --extend)\n'),
+        write(user_error, '       un.pro key --buy-credit (buy credit)\n'),
         write(user_error, '       un.pro key --rotate [--otp CODE]\n'),
         write(user_error, '\n'),
         write(user_error, 'Global options:\n'),

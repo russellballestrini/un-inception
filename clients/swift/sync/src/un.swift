@@ -1748,7 +1748,7 @@ func printHelp() {
         un service --list                      List all services
         un snapshot --list                     List all snapshots
         un key                                 Check API key
-        un key --buy-credit                    Open portal to buy credit (alias: --extend)
+        un key --buy-credit                    Open portal to buy credit
         un key --rotate                        Rotate key secret (sudo OTP), update accounts.csv
         un key --rotate --otp CODE             Finish a rotation started without a terminal
     """
@@ -1840,7 +1840,7 @@ class CLIArgs {
     // Credential selection
     var accountIndex: Int? = nil
 
-    // Buy credit (--buy-credit, alias --extend) and rotation
+    // Buy credit (--buy-credit) and rotation
     var buyCredit: Bool = false
     var rotate: Bool = false
     var otp: String?
@@ -1882,7 +1882,7 @@ class CLIArgs {
             case "--account":
                 i += 1
                 if i < args.count { accountIndex = Int(args[i]) }
-            case "--buy-credit", "--extend":
+            case "--buy-credit":
                 buyCredit = true
             case "--rotate":
                 rotate = true
@@ -2947,7 +2947,7 @@ func handleKeyRotate(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
     }
 }
 
-/// un key --buy-credit (alias --extend): open our portal's buy credit page.
+/// un key --buy-credit: open our portal's buy credit page.
 func handleKeyBuyCredit(_ pk: String) {
     let url = "\(PORTAL_BASE)/buy-credit?key=\(pk)"
     print("Opening buy credit page in browser...")

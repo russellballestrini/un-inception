@@ -896,7 +896,7 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
 
 proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
   if extend:
-    # --buy-credit / --extend: open our portal's buy credit page
+    # --buy-credit: open our portal's buy credit page
     let extendUrl = PORTAL_BASE & "/buy-credit?key=" & publicKey
     echo "Opening buy credit page in browser..."
     echo "If browser doesn't open, visit: " & extendUrl
@@ -1874,7 +1874,7 @@ proc main() =
     stderr.writeLine("       un.nim service env <action> <service_id> [options]")
     stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
-    stderr.writeLine("       un.nim key --buy-credit        (buy credit; alias --extend)")
+    stderr.writeLine("       un.nim key --buy-credit        (buy credit)")
     stderr.writeLine("       un.nim key --rotate [--otp CODE]")
     stderr.writeLine("")
     stderr.writeLine("Global options:")
@@ -2015,7 +2015,7 @@ proc main() =
     var i = 1
     while i < args.len:
       case args[i]
-      of "--extend", "--buy-credit": extend = true
+      of "--buy-credit": extend = true
       of "--rotate": rotate = true
       of "--otp":
         if i + 1 < args.len:

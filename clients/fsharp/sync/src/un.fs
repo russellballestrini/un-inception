@@ -842,7 +842,7 @@ let cmdKey (args: Args) =
     let (publicKey, secretKey) = getApiKeys args.ApiKey args.AccountIndex
 
     if args.KeyExtend then
-        // key --buy-credit (alias --extend): open our portal's buy credit page
+        // key --buy-credit: open our portal's buy credit page
         let url = sprintf "%s/buy-credit?key=%s" portalBase publicKey
         printfn "Opening buy credit page in browser..."
         printfn "If browser doesn't open, visit: %s" url
@@ -1568,7 +1568,7 @@ let parseArgs (argv: string[]) =
         | "--command" -> i <- i + 1; args.ServiceCommand <- Some argv.[i]
         | "--dump-bootstrap" -> i <- i + 1; args.ServiceDumpBootstrap <- Some argv.[i]
         | "--dump-file" -> i <- i + 1; args.ServiceDumpFile <- Some argv.[i]
-        | "--buy-credit" | "--extend" -> args.KeyExtend <- true
+        | "--buy-credit" -> args.KeyExtend <- true
         | "--rotate" -> args.KeyRotate <- true
         | "--otp" ->
             i <- i + 1
@@ -1694,7 +1694,7 @@ let printHelp () =
     printfn "  --ports PORTS         Ports for spawned service"
     printfn ""
     printfn "Key options:"
-    printfn "  --buy-credit      Open browser to buy credit (alias: --extend)"
+    printfn "  --buy-credit      Open browser to buy credit"
     printfn "  --rotate          Rotate the key's secret (emailed one-time code)"
     printfn "  --otp CODE        Finish a rotation started without a terminal"
     printfn "  -k KEY            API key to validate"

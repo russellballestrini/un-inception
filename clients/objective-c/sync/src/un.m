@@ -1969,8 +1969,8 @@ void cmdKey(NSArray* args) {
     BOOL buyCredit = NO;
     NSString* otp = nil;
     for (NSUInteger i = 0; i < [args count]; i++) {
-        if ([args[i] isEqualToString:@"--buy-credit"] || [args[i] isEqualToString:@"--extend"]) {
-            buyCredit = YES;  // --extend: alias kept from before tiers retired
+        if ([args[i] isEqualToString:@"--buy-credit"]) {
+            buyCredit = YES;
         } else if ([args[i] isEqualToString:@"--rotate"]) {
             rotate = YES;
         } else if ([args[i] isEqualToString:@"--otp"] && i + 1 < [args count]) {
@@ -2873,7 +2873,7 @@ void showHelp(void) {
     printf("  un.m image [options]\n");
     printf("  un.m languages [--json]\n");
     printf("  un.m key [options]\n");
-    printf("  un.m key --buy-credit          Open portal to buy credit (alias: --extend)\n");
+    printf("  un.m key --buy-credit          Open portal to buy credit\n");
     printf("  un.m key --rotate              Rotate this key's secret (sudo OTP), update accounts.csv\n");
     printf("  un.m key --rotate --otp CODE   Finish a rotation started without a terminal\n");
     printf("  un.m paas logs [options]       Platform logs (partner keys; un.m paas logs -h)\n\n");

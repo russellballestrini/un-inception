@@ -1711,7 +1711,7 @@ pub fn main() !u8 {
         std.debug.print("       {s} service [options]\n", .{args[0]});
         std.debug.print("       {s} service env <action> <service_id> [options]\n", .{args[0]});
         std.debug.print("       {s} image [options]\n", .{args[0]});
-        std.debug.print("       {s} key [--buy-credit]   (buy credit; alias: --extend)\n", .{args[0]});
+        std.debug.print("       {s} key [--buy-credit]   (buy credit)\n", .{args[0]});
         std.debug.print("       {s} key --rotate [--otp CODE]\n", .{args[0]});
         std.debug.print("       {s} languages [--json]\n", .{args[0]});
         std.debug.print("\nVault commands:\n", .{});
@@ -2506,8 +2506,8 @@ pub fn main() !u8 {
         var otp_flag: ?[]const u8 = null;
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
-            if (mem.eql(u8, args[i], "--buy-credit") or mem.eql(u8, args[i], "--extend")) {
-                extend = true; // --extend: alias kept from before tiers retired
+            if (mem.eql(u8, args[i], "--buy-credit")) {
+                extend = true;
             } else if (mem.eql(u8, args[i], "--rotate")) {
                 rotate = true;
             } else if (mem.eql(u8, args[i], "--otp") and i + 1 < args.len) {

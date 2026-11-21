@@ -7286,7 +7286,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s paas logs --follow                    # follow all logs in real-time\n", prog);
     fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", prog);
     fprintf(stderr, "  %s key                             # check API key validity\n", prog);
-    fprintf(stderr, "  %s key --buy-credit                # open portal to buy credit (alias: --extend)\n", prog);
+    fprintf(stderr, "  %s key --buy-credit                # open portal to buy credit\n", prog);
     fprintf(stderr, "  %s key --rotate                    # rotate secret (sudo OTP), update accounts.csv\n", prog);
     fprintf(stderr, "  %s key --rotate --otp CODE         # finish a rotation started without a terminal\n", prog);
     fprintf(stderr, "\nAuthentication:\n");
@@ -10082,8 +10082,8 @@ int main(int argc, char *argv[]) {
             } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
                 i++;
                 cli_account_index = atoi(argv[i]);
-            } else if (strcmp(argv[i], "--buy-credit") == 0 || strcmp(argv[i], "--extend") == 0) {
-                do_extend = 1;  // --extend: alias kept from before tiers retired
+            } else if (strcmp(argv[i], "--buy-credit") == 0) {
+                do_extend = 1;
             } else if (strcmp(argv[i], "--rotate") == 0) {
                 do_rotate = 1;
             } else if (strcmp(argv[i], "--otp") == 0 && i + 1 < argc) {
@@ -10104,7 +10104,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        // Handle --buy-credit / --extend: open our portal's buy credit page
+        // Handle --buy-credit: open our portal's buy credit page
         if (do_extend) {
             // If we have public_key from credentials, use it directly
             if (creds->public_key) {

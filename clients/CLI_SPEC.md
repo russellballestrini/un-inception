@@ -283,7 +283,6 @@ rust
 ```bash
 un key                            # Check API key validity
 un key --buy-credit               # Open our portal to buy credit for this key
-un key --extend                   # Alias of --buy-credit (tiers are retired, ticket #155)
 un key --rotate                   # Rotate this key's secret (sudo OTP), update accounts.csv
 un key --rotate --otp CODE        # Finish a rotation started without a terminal
 ```
@@ -345,10 +344,10 @@ un key --rotate --otp CODE        # Finish a rotation started without a terminal
 - Other non-2xx: `Error: <message>` to stderr, exit 4. No response: `Error: <message>`,
   exit 1.
 
-### `un key --buy-credit` (alias `--extend`)
+### `un key --buy-credit`
 
-Tiers are retired: every paid key is prepaid credit, so extending a key means topping
-it up. Needs only our public key (no request to the API). Print
+Tiers are retired: every paid key is prepaid credit, so a key gets more use by buying
+credit. Needs only our public key (no request to the API). Print
 `Opening buy credit page in browser...` and
 `If browser doesn't open, visit: <portal>/buy-credit?key=<pk>`, try to open that URL
 (`xdg-open` / `open` / `start`, errors ignored), exit 0. `<portal>` is our portal base

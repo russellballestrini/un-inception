@@ -166,8 +166,8 @@ Each implementation supports:
 # Check API key status
 ./un.py key
 
-# Extend/renew API key (opens browser)
-./un.py key --extend
+# Buy credit for this API key (opens browser)
+./un.py key --buy-credit
 ```
 
 ## Testing

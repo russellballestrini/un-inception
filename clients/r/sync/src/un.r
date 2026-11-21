@@ -2476,7 +2476,7 @@ cmd_key <- function(args) {
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
-    # --buy-credit / --extend: open our portal's buy credit page
+    # --buy-credit: open our portal's buy credit page
     if (!is.null(args$extend) && args$extend) {
         extend_url <- paste0(PORTAL_BASE, "/buy-credit?key=", public_key)
         cat("Opening buy credit page in browser...\n")
@@ -3278,7 +3278,7 @@ parse_args <- function() {
             i <- i + 1
             result$shell <- args[i]
             i <- i + 1
-        } else if (arg == "--extend" || arg == "--buy-credit") {
+        } else if (arg == "--buy-credit") {
             result$extend <- TRUE
             i <- i + 1
         } else if (arg == "--rotate") {
@@ -3367,7 +3367,7 @@ main <- function() {
         cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r image [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
-        cat("       un.r key --buy-credit         # buy credit (alias --extend)\n", file = stderr())
+        cat("       un.r key --buy-credit         # buy credit\n", file = stderr())
         cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
         cat("       un.r paas logs [options]\n", file = stderr())

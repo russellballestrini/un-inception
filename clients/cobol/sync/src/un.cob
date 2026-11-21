@@ -184,7 +184,7 @@
                DISPLAY "       un.cob session [options]" UPON SYSERR
                DISPLAY "       un.cob service [options]" UPON SYSERR
                DISPLAY "       un.cob key [--buy-credit | --rotate [--otp CODE]]"
-               DISPLAY "         --buy-credit: open portal to buy credit (alias --extend)"
+               DISPLAY "         --buy-credit: open portal to buy credit"
                    UPON SYSERR
                DISPLAY "  --os OS   Target OS: linux (default) or freebsd "
                    "(execute, session, service)" UPON SYSERR
@@ -1155,7 +1155,7 @@
                MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
-      *> Parse key arguments: --buy-credit (alias --extend), --rotate, --otp CODE
+      *> Parse key arguments: --buy-credit, --rotate, --otp CODE
            MOVE SPACES TO WS-EXTEND-FLAG.
            MOVE SPACES TO WS-ROTATE-FLAG.
            MOVE SPACES TO WS-OTP.
@@ -1166,7 +1166,6 @@
                    ON EXCEPTION MOVE SPACES TO WS-ARG2
                END-ACCEPT
                EVALUATE WS-ARG2
-                   WHEN "--extend" MOVE "true" TO WS-EXTEND-FLAG
                    WHEN "--buy-credit" MOVE "true" TO WS-EXTEND-FLAG
                    WHEN "--rotate" MOVE "true" TO WS-ROTATE-FLAG
                    WHEN "--otp"
@@ -1321,7 +1320,7 @@
       *> come from GET-CREDENTIALS through the environment). Display per
       *> CLI_SPEC.md "un key output": the API returns no public key, so
       *> we print ours; expiry derives from valid_through (ms).
-      *> --buy-credit (alias --extend): open our portal's buy credit page
+      *> --buy-credit: open our portal's buy credit page
       *> (ticket #155); portal base honors UNSANDBOX_PORTAL_URL.
            IF WS-EXTEND-FLAG = "true"
                MOVE SPACES TO WS-ROT-CMD

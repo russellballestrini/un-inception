@@ -710,7 +710,7 @@
          (public-key (car keys))
          (secret-key (cadr keys)))
     (if extend
-        ;; --buy-credit (alias --extend): open our portal's buy credit page
+        ;; --buy-credit: open our portal's buy credit page
         (let ((url (format #f "~a/buy-credit?key=~a" portal-base public-key)))
           (format #t "Opening buy credit page in browser...\n")
           (format #t "If browser doesn't open, visit: ~a\n" url)
@@ -1635,7 +1635,7 @@
         (display "       un.scm session [options]\n")
         (display "       un.scm service [options]\n")
         (display "       un.scm image [options]\n")
-        (display "       un.scm key [--buy-credit]   (buy credit; alias: --extend)\n")
+        (display "       un.scm key [--buy-credit]   (buy credit)\n")
         (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
         (display "       un.scm paas logs [options]\n")
@@ -1665,7 +1665,7 @@
          (let ((json-output (and (> (length args) 1) (equal? (cadr args) "--json"))))
            (languages-cmd json-output)))
         ((equal? (car args) "key")
-         (let ((extend (or (member "--buy-credit" (cdr args)) (member "--extend" (cdr args))))
+         (let ((extend (member "--buy-credit" (cdr args)))
                (rotate (member "--rotate" (cdr args)))
                (otp (let ((m (member "--otp" (cdr args))))
                       (and m (pair? (cdr m)) (cadr m)))))

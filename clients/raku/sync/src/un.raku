@@ -2107,12 +2107,12 @@ sub cmd-key(@args, Int :$account-index = -1) {
     my $extend = False;
 
     for @args -> $arg {
-        if $arg eq '--extend' || $arg eq '--buy-credit' {
+        if $arg eq '--buy-credit' {
             $extend = True;
         }
     }
 
-    # --buy-credit / --extend: open our portal's buy credit page
+    # --buy-credit: open our portal's buy credit page
     if $extend {
         my $buy-credit-url = "$PORTAL_BASE/buy-credit?key=$public-key";
         say "Opening buy credit page in browser...";
@@ -2700,7 +2700,7 @@ sub MAIN(*@args is copy) is export {
         note "       un.raku snapshot [options]";
         note "       un.raku image [options]";
         note "       un.raku key [options]";
-        note "       un.raku key --buy-credit        (buy credit; alias --extend)";
+        note "       un.raku key --buy-credit        (buy credit)";
         note "       un.raku languages [--json]";
         note "       un.raku paas logs [options]";
         note "";

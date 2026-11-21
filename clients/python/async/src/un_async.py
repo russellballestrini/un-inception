@@ -3049,8 +3049,8 @@ Examples:
 
     # Key subcommand
     key_parser = subparsers.add_parser("key", help="Check API key validity, buy credit, or rotate its secret")
-    key_parser.add_argument("--buy-credit", "--extend", dest="buy_credit", action="store_true",
-                            help="Open our portal to buy credit for this key (--extend: alias)")
+    key_parser.add_argument("--buy-credit", dest="buy_credit", action="store_true",
+                            help="Open our portal to buy credit for this key")
     key_parser.add_argument("--rotate", action="store_true",
                             help="Rotate this key's secret (sudo OTP); updates accounts.csv in place")
     key_parser.add_argument("--otp", metavar="CODE",
@@ -3598,7 +3598,7 @@ def _key_billing(result: dict) -> str:
 
 
 def _handle_key_buy_credit(public_key: str, secret_key: str):
-    """un key --buy-credit (alias --extend): open our portal's buy credit page."""
+    """un key --buy-credit: open our portal's buy credit page."""
     public_key, _ = _resolve_credentials(public_key, secret_key)
     url = f"{PORTAL_BASE}/buy-credit?key={public_key}"
     print("Opening buy credit page in browser...")

@@ -1226,7 +1226,7 @@ Requires a partner API key with log access enabled."
         set otp ""
         for {set i 0} {$i < [llength $args]} {incr i} {
             set arg [lindex $args $i]
-            if {$arg eq "--buy-credit" || $arg eq "--extend"} { set extend 1 }
+            if {$arg eq "--buy-credit"} { set extend 1 }
             if {$arg eq "--rotate"} { set rotate 1 }
             if {$arg eq "--otp" && $i + 1 < [llength $args]} {
                 set otp_given 1
@@ -1641,7 +1641,7 @@ Usage:
   tclsh un.tcl snapshot [options]
   tclsh un.tcl image [options]
   tclsh un.tcl languages [--json]
-  tclsh un.tcl key [--buy-credit]    (buy credit; --extend: alias)
+  tclsh un.tcl key [--buy-credit]    (buy credit)
   tclsh un.tcl key --rotate [--otp CODE]
 
 Global options:

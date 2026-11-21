@@ -1141,8 +1141,8 @@ function cmd_key(args)
     # For portal validation, we still use public_key as bearer token
     api_key = public_key
 
-    # Handle --extend flag
-    if args["extend"]
+    # Handle --buy-credit flag
+    if args["buy-credit"]
         # Validate key to get public key
         url = PORTAL_BASE * "/keys/validate"
         headers = [
@@ -1404,7 +1404,7 @@ function main()
     end
 
     @add_arg_table! s["key"] begin
-        "--extend", "--buy-credit"
+        "--buy-credit"
             help = "Open browser to buy credit (--buy-credit: same)"
             action = :store_true
         "--rotate"

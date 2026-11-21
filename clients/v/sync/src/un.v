@@ -431,7 +431,7 @@ fn cmd_key(extend bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
-	// --buy-credit / --extend: open our portal's buy credit page
+	// --buy-credit: open our portal's buy credit page
 	if extend {
 		url := '${portal_base}/buy-credit?key=${pub_key}'
 		println('Opening buy credit page in browser...')
@@ -2066,7 +2066,7 @@ fn main() {
 		eprintln('       ${args[0]} service [options]')
 		eprintln('       ${args[0]} service env <action> <service_id> [options]')
 		eprintln('       ${args[0]} image [options]')
-		eprintln('       ${args[0]} key [--buy-credit]    (buy credit; alias --extend)')
+		eprintln('       ${args[0]} key [--buy-credit]    (buy credit)')
 		eprintln('       ${args[0]} key --rotate [--otp CODE]')
 		eprintln('       ${args[0]} languages [--json]')
 		eprintln('')
@@ -2322,7 +2322,7 @@ fn main() {
 		mut i := 2
 		for i < args.len {
 			match args[i] {
-				'--extend', '--buy-credit' { extend = true }
+				'--buy-credit' { extend = true }
 				'--rotate' { rotate = true }
 				'--otp' {
 					i++

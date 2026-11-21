@@ -1882,7 +1882,7 @@ Future<void> cmdKey(Args args) async {
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
-  // Handle --buy-credit / --extend: open our portal's buy credit page
+  // Handle --buy-credit: open our portal's buy credit page
   if (args.keyExtend) {
     final url = '$portalBase/buy-credit?key=$publicKey';
     print('Opening buy credit page in browser...');
@@ -2154,7 +2154,6 @@ Args parseArgs(List<String> argv) {
       case '--show-freeze-page-enabled':
         args.serviceShowFreezePageEnabled = argv[++i].toLowerCase() == 'true';
         break;
-      case '--extend':
       case '--buy-credit':
         args.keyExtend = true;
         break;
@@ -2368,7 +2367,7 @@ Snapshot options:
   --hot             Hot snapshot (without stopping)
 
 Key options:
-  --buy-credit      Open browser to buy credit (alias: --extend)
+  --buy-credit      Open browser to buy credit
 
 Languages options:
   --json            Output as JSON array

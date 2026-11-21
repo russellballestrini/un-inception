@@ -918,7 +918,7 @@ dispatch([]) ->
     io:format("       un.erl [--account N] snapshot [options]~n"),
     io:format("       un.erl [--account N] image [options]~n"),
     io:format("       un.erl [--account N] key [options]~n"),
-    io:format("         key --buy-credit open portal to buy credit (alias: --extend)~n"),
+    io:format("         key --buy-credit open portal to buy credit~n"),
     io:format("       un.erl languages [--json]~n"),
     io:format("       un.erl [--account N] paas logs [options]~n"),
     io:format("~nGlobal options:~n"),
@@ -1750,7 +1750,7 @@ key_billing(Resp) ->
         B -> B
     end.
 
-%% key --buy-credit (alias --extend): open our portal's buy credit page.
+%% key --buy-credit: open our portal's buy credit page.
 open_extend_page(PublicKey) ->
     Url = ?PORTAL_BASE ++ "/buy-credit?key=" ++ PublicKey,
     io:format("Opening buy credit page in browser...~n"),
@@ -2563,7 +2563,6 @@ get_input_files(["-f", File | Rest], Acc) -> get_input_files(Rest, [File | Acc])
 get_input_files([_ | Rest], Acc) -> get_input_files(Rest, Acc).
 
 has_extend_flag([]) -> false;
-has_extend_flag(["--extend" | _]) -> true;
 has_extend_flag(["--buy-credit" | _]) -> true;
 has_extend_flag([_ | Rest]) -> has_extend_flag(Rest).
 

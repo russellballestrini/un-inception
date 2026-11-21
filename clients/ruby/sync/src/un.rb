@@ -2129,7 +2129,7 @@ module Un
           ruby un.rb service [options]            Manage services
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
-          ruby un.rb key --buy-credit             Buy credit in browser (alias: --extend)
+          ruby un.rb key --buy-credit             Buy credit in browser
           ruby un.rb key --rotate [--otp CODE]    Rotate key secret (sudo OTP)
           ruby un.rb paas logs [options]          Platform logs (partner keys; -h for options)
           ruby un.rb languages [--json]           List available languages
@@ -3331,7 +3331,7 @@ module Un
       end
     end
 
-    # key --buy-credit (alias --extend): open our portal's buy credit page
+    # key --buy-credit: open our portal's buy credit page
     def cli_key_buy_credit(options)
       pk, = resolve_credentials(options[:public_key], options[:secret_key])
       url = "#{PORTAL_BASE}/buy-credit?key=#{pk}"
@@ -3356,11 +3356,11 @@ module Un
         puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--buy-credit] [--rotate [--otp CODE]]'
         puts
         puts 'Check API key validity and show account info'
-        puts '  --buy-credit  Open our portal to buy credit (alias: --extend)'
+        puts '  --buy-credit  Open our portal to buy credit'
         puts '  --rotate      Rotate this key\'s secret (sudo OTP); updates accounts.csv'
         puts '  --otp CODE    Finish a rotation started without a terminal'
       end
-      parser.on('--buy-credit', '--extend', 'Buy credit (alias: --extend)') do
+      parser.on('--buy-credit', 'Buy credit') do
         options[:buy_credit] = true
       end
       parser.on('--rotate', 'Rotate this key\'s secret') do

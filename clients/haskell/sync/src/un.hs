@@ -278,7 +278,6 @@ parseKey args = return $ parseKeyArgs args defaultKeyOpts
   where
     defaultKeyOpts = KeyOpts False False Nothing
     parseKeyArgs [] opts = opts
-    parseKeyArgs ("--extend":rest) opts = parseKeyArgs rest opts { keyExtend = True }
     parseKeyArgs ("--buy-credit":rest) opts = parseKeyArgs rest opts { keyExtend = True }
     parseKeyArgs ("--rotate":rest) opts = parseKeyArgs rest opts { keyRotate = True }
     parseKeyArgs ("--otp":code:rest) opts = parseKeyArgs rest opts { keyOtp = Just code }
@@ -1034,7 +1033,7 @@ printHelp = do
   putStrLn "  --ports PORTS        Ports for cloned service"
   putStrLn ""
   putStrLn "Key options:"
-  putStrLn "  --buy-credit    Open browser to buy credit (alias: --extend)"
+  putStrLn "  --buy-credit    Open browser to buy credit"
   putStrLn "  --rotate        Rotate this key's secret (sudo OTP), update accounts.csv"
   putStrLn "  --otp CODE      Finish a rotation started without a terminal"
   putStrLn ""
@@ -2014,7 +2013,7 @@ validateKey _ = do
       putStrLn $ "Reason: " ++ reason
       exitWith (ExitFailure 3)
 
--- un key --buy-credit (alias --extend): open our portal's buy credit page
+-- un key --buy-credit: open our portal's buy credit page
 extendKey :: String -> IO ()
 extendKey _ = do
   (publicKey, _) <- getApiKeys

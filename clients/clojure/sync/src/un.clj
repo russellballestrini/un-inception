@@ -1453,7 +1453,7 @@
                        (println "       un.clj service env <action> <service_id>")
                        (println "       un.clj image [options]")
                        (println "       un.clj key [options]")
-                       (println "       un.clj key --buy-credit    (buy credit; alias: --extend)")
+                       (println "       un.clj key --buy-credit    (buy credit)")
                        (println "       un.clj paas logs [options]")
                        (System/exit 1))))
 
@@ -1543,7 +1543,7 @@
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name (second args) mode)
 
       ;; Key options
-      (and (= mode :key) (#{"--buy-credit" "--extend"} (first args)))
+      (and (= mode :key) (#{"--buy-credit"} (first args)))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand true image-action image-id image-source-type image-visibility image-name image-ports mode)
 

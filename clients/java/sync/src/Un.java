@@ -3338,8 +3338,8 @@ public class Un {
             } else if (arg.equals("--rotate") && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
                 rotateKey = true;
                 i++;
-            } else if ((arg.equals("--buy-credit") || arg.equals("--extend")) && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
-                buyCreditKey = true;  // --extend: alias kept from before tiers retired
+            } else if (arg.equals("--buy-credit") && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
+                buyCreditKey = true;
                 i++;
             } else if (arg.startsWith("-")) {
                 System.err.println("Error: Unknown option: " + arg);
@@ -3412,7 +3412,7 @@ public class Un {
         System.out.println("  java Un snapshot [options]             Manage snapshots");
         System.out.println("  java Un image [options]                Manage images");
         System.out.println("  java Un key                            Check API key");
-        System.out.println("  java Un key --buy-credit               Open portal to buy credit (alias: --extend)");
+        System.out.println("  java Un key --buy-credit               Open portal to buy credit");
         System.out.println("  java Un key --rotate [--otp CODE]      Rotate API key secret (emailed OTP)");
         System.out.println("  java Un languages [--json]             List supported languages");
         System.out.println();
@@ -4268,7 +4268,7 @@ public class Un {
         }
     }
 
-    /** un key --buy-credit (alias --extend): open our portal's buy credit page. */
+    /** un key --buy-credit: open our portal's buy credit page. */
     private static void handleKeyBuyCredit(String publicKey) {
         String url = PORTAL_BASE + "/buy-credit?key=" + publicKey;
         System.out.println("Opening buy credit page in browser...");

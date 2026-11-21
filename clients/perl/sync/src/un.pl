@@ -1840,7 +1840,7 @@ Usage:
   perl un.pl snapshot [options]
   perl un.pl image [options]
   perl un.pl languages [--json]
-  perl un.pl key [--buy-credit]    (buy credit; --extend: alias)
+  perl un.pl key [--buy-credit]    (buy credit)
   perl un.pl key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:
@@ -2050,7 +2050,7 @@ sub main {
             $options{set_unfreeze_on_demand_value} = ($ARGV[++$i] =~ /^(true|1)$/i);
         } elsif ($arg eq '--json') {
             $options{json} = 1;
-        } elsif ($arg eq '--buy-credit' || $arg eq '--extend') {
+        } elsif ($arg eq '--buy-credit') {
             $options{extend} = 1;
         } elsif ($arg eq '--rotate') {
             $options{rotate} = 1;

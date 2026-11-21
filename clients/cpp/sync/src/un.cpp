@@ -2622,7 +2622,7 @@ int main(int argc, char* argv[]) {
         cerr << "       " << argv[0] << " service [options]" << endl;
         cerr << "       " << argv[0] << " image [options]" << endl;
         cerr << "       " << argv[0] << " key [options]" << endl;
-        cerr << "       " << argv[0] << " key --buy-credit (buy credit; alias --extend)" << endl;
+        cerr << "       " << argv[0] << " key --buy-credit (buy credit)" << endl;
         cerr << "  --os OS   Target OS: linux (default) or freebsd (execute, session, service)" << endl;
         return 1;
     }
@@ -2757,7 +2757,7 @@ int main(int argc, char* argv[]) {
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
-            if (arg == "--extend" || arg == "--buy-credit") extend = true;
+            if (arg == "--buy-credit") extend = true;
             else if (arg == "--rotate") rotate = true;
             else if (arg == "--otp" && i+1 < argc) otp = argv[++i];
             else if (arg == "-k" && i+1 < argc) { public_key = argv[++i]; creds_csv_path.clear(); }

@@ -3181,7 +3181,7 @@ struct CliOptions {
 
     // Key options
     key_rotate: bool,       // key --rotate
-    key_buy_credit: bool,        // key --buy-credit (alias --extend)
+    key_buy_credit: bool,        // key --buy-credit
     key_otp: Option<String>, // key --otp CODE
 }
 
@@ -3196,7 +3196,7 @@ USAGE:
     un snapshot [OPTIONS]                Manage snapshots
     un image [OPTIONS]                   Manage images
     un key                               Check API key
-    un key --buy-credit                  Buy credit in browser (alias: --extend)
+    un key --buy-credit                  Buy credit in browser
     un key --rotate [--otp CODE]         Rotate API secret (sudo OTP)
     un languages [--json]                List supported languages
 
@@ -3371,7 +3371,7 @@ fn parse_args(args: &[String]) -> CliOptions {
                 opts.key_rotate = true;
                 i += 1;
             }
-            "--buy-credit" | "--extend" => {
+            "--buy-credit" => {
                 opts.key_buy_credit = true;
                 i += 1;
             }
@@ -4742,7 +4742,7 @@ fn cmd_key(opts: &CliOptions) -> i32 {
     }
 
     if opts.key_buy_credit {
-        // key --buy-credit (alias --extend): open our portal's buy credit page
+        // key --buy-credit: open our portal's buy credit page
         let url = format!("{}/buy-credit?key={}", portal_base(), creds.public_key);
         println!("Opening buy credit page in browser...");
         println!("If browser doesn't open, visit: {}", url);

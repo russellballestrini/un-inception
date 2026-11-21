@@ -818,8 +818,8 @@ function Invoke-KeyRotate {
 function Invoke-Key {
     param($CmdArgs)
 
-    # --buy-credit (alias --extend, kept from before tiers retired): buy credit page
-    $extend = ($CmdArgs -contains "--buy-credit") -or ($CmdArgs -contains "--extend")
+    # --buy-credit: buy credit page
+    $extend = ($CmdArgs -contains "--buy-credit")
     $publicKey, $secretKey = Get-ApiKeys
 
     if ($extend) {
@@ -1477,7 +1477,7 @@ Snapshot options:
   --ports PORTS       Ports for cloned service
 
 Key options:
-  --buy-credit    Open browser to buy credit (alias: --extend)
+  --buy-credit    Open browser to buy credit
   --rotate        Rotate this key's secret (sudo OTP); updates accounts.csv
   --otp CODE      Finish a rotation started without a terminal
 "@
