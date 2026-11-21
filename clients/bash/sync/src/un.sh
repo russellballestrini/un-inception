@@ -1335,7 +1335,7 @@ cmd_key() {
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --topup|--extend) extend=1 ;;  # --extend: alias kept from before tiers retired
+            --buy-credit|--extend) extend=1 ;;  # --extend: alias kept from before tiers retired
             --rotate) rotate=1 ;;
             --otp) otp="${2:-}"; shift ;;
         esac
@@ -1352,8 +1352,8 @@ cmd_key() {
     pk="${creds%%:*}"
 
     if [ "$extend" -eq 1 ]; then
-        local url="$PORTAL_BASE/topup?key=$pk"
-        echo "Opening top-up page in browser..."
+        local url="$PORTAL_BASE/buy-credit?key=$pk"
+        echo "Opening buy credit page in browser..."
         echo "If browser doesn't open, visit: $url"
         { xdg-open "$url" || open "$url"; } >/dev/null 2>&1 || true
         return
@@ -1386,7 +1386,7 @@ cmd_key() {
         expired)
             echo -e "${RED}Expired${RESET}"
             echo "Public Key: $pk"
-            echo -e "${YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$pk${RESET}"
+            echo -e "${YELLOW}To buy credit: Visit $PORTAL_BASE/buy-credit?key=$pk${RESET}"
             exit 3 ;;
         suspended)
             echo -e "${RED}Suspended${RESET}"
@@ -1739,7 +1739,7 @@ Usage:
   bash un.sh snapshot [options]
   bash un.sh image [options]
   bash un.sh languages [--json]
-  bash un.sh key [--topup]  (buy credit; --extend: alias)
+  bash un.sh key [--buy-credit]  (buy credit; --extend: alias)
   bash un.sh key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:

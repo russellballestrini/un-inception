@@ -101,7 +101,7 @@ help:
 	@echo "  test-sync      Test sync version"
 	@echo "  test-async     Test async version"
 	@echo "  test-os        Offline --os flag check, sync version (tests/os_flag_cli.sh)"
-	@echo "  test-key       Offline un key output + --topup check, sync version (tests/key_output_cli.sh)"
+	@echo "  test-key       Offline un key output + --buy-credit check, sync version (tests/key_output_cli.sh)"
 	@echo "  test-cli       Run CLI tests (requires API keys)"
 	@echo "  test-functional Run functional tests (requires API keys)"
 	@echo "  help           Show this help"

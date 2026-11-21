@@ -17,7 +17,7 @@ help:
 	@echo "  make build            Compile with swift build"
 	@echo "  make test             All 4 test modes"
 	@echo "  make test-os          Offline --os flag check (tests/os_flag_cli.sh)"
-	@echo "  make test-key         Offline un key output + --topup check (tests/key_output_cli.sh)"
+	@echo "  make test-key         Offline un key output + --buy-credit check (tests/key_output_cli.sh)"
 	@echo ""
 
 build:

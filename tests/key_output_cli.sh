@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline CLI test: `un key` output and `un key --topup/--extend` (portal ticket
+# Offline CLI test: `un key` output and `un key --buy-credit/--extend` (portal ticket
 # #155, tiers retired), for ANY client.
 #
 # Usage: bash tests/key_output_cli.sh CMD [ARGS...]
@@ -13,8 +13,8 @@
 #     absent (-1 free, 0 demo, else credit); no "Tier:" line ever
 #   - "Concurrency: N" ("N/A" when absent)
 #   - "Credit: $X.XX" from credit_balance_usd, credit keys only
-#   - expired keys point at <portal>/topup?key=<pk>, never /keys/extend
-#   - key --topup and key --extend print <portal>/topup?key=<pk> and exit 0
+#   - expired keys point at <portal>/buy-credit?key=<pk>, never /keys/extend
+#   - key --buy-credit and key --extend print <portal>/buy-credit?key=<pk> and exit 0
 #
 # Browser openers (xdg-open, open, ...) are stubbed on PATH; BROWSER=true.
 # Needs python3 for our mock, no credentials, no network beyond 127.0.0.1.
@@ -120,7 +120,7 @@ fi
 PORT="$(cat "$PORT_FILE")"
 BASE="http://127.0.0.1:$PORT"
 PK=unsb-pk-test-0000-0000-0000
-TOPUP_URL="$BASE/topup?key=$PK"
+BUY_CREDIT_URL="$BASE/buy-credit?key=$PK"
 FUTURE_MS=$(( ($(date +%s) + 30 * 86400) * 1000 ))
 
 reply() { printf '%s' "$1" > "$REPLY_FILE"; }
@@ -180,7 +180,7 @@ expect() {
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "OFFLINE: key output + --topup: ${UN_CMD[*]}"
+echo "OFFLINE: key output + --buy-credit: ${UN_CMD[*]}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 reply "{\"code\":200,\"body\":{\"valid\":true,\"status\":\"active\",\"tier\":5,\"billing\":\"credit\",\"concurrency\":4,\"credit_balance_micros\":12345678,\"credit_balance_usd\":\"12.35\",\"rate_per_minute\":60,\"burst\":10,\"valid_through\":$FUTURE_MS}}"
@@ -216,18 +216,18 @@ expect "no concurrency field: Concurrency: N/A" \
 
 reply '{"code":401,"body":{"error":":expired","valid":false}}'
 run_un key
-expect "expired key points at /topup?key=, not /keys/extend" \
-    rc-nonzero "line:Public Key: $PK" "text:$TOPUP_URL" notext:/keys/extend
+expect "expired key points at /buy-credit?key=, not /keys/extend" \
+    rc-nonzero "line:Public Key: $PK" "text:$BUY_CREDIT_URL" notext:/keys/extend
 
-# --topup needs no request; a valid reply keeps clients that validate first honest.
+# --buy-credit needs no request; a valid reply keeps clients that validate first honest.
 reply "{\"code\":200,\"body\":{\"valid\":true,\"status\":\"active\",\"billing\":\"credit\",\"concurrency\":4,\"valid_through\":$FUTURE_MS}}"
-run_un key --topup
-expect "key --topup prints $BASE/topup?key=<pk>, exits 0" \
-    rc:0 "text:$TOPUP_URL" notext:/keys/extend
+run_un key --buy-credit
+expect "key --buy-credit prints $BASE/buy-credit?key=<pk>, exits 0" \
+    rc:0 "text:$BUY_CREDIT_URL" notext:/keys/extend
 
 run_un key --extend
-expect "key --extend (alias) prints $BASE/topup?key=<pk>, exits 0" \
-    rc:0 "text:$TOPUP_URL" notext:/keys/extend
+expect "key --extend (alias) prints $BASE/buy-credit?key=<pk>, exits 0" \
+    rc:0 "text:$BUY_CREDIT_URL" notext:/keys/extend
 
 echo ""
 echo "Passed: $pass  Failed: $fail"

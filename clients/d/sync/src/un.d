@@ -119,7 +119,7 @@ bool extractOsFlag(ref string[] args) {
 }
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
-// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+// Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 string PORTAL_BASE() {
     static string cached;
     if (cached is null) {
@@ -1873,9 +1873,9 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     import std.datetime;
 
     if (extend) {
-        // --topup / --extend: open our portal's credit top-up page
-        string extendURL = PORTAL_BASE ~ "/topup?key=" ~ publicKey;
-        writeln("Opening top-up page in browser...");
+        // --buy-credit / --extend: open our portal's buy credit page
+        string extendURL = PORTAL_BASE ~ "/buy-credit?key=" ~ publicKey;
+        writeln("Opening buy credit page in browser...");
         writefln("If browser doesn't open, visit: %s", extendURL);
         openBrowser(extendURL);
         return;
@@ -1932,7 +1932,7 @@ void validateKey(string publicKey, string secretKey, bool extend) {
     if (state == "expired") {
         writefln("%sExpired%s", RED, RESET);
         writefln("Public Key: %s", publicKey);
-        writefln("%sTo top up: Visit %s/topup?key=%s%s", YELLOW, PORTAL_BASE, publicKey, RESET);
+        writefln("%sTo buy credit: Visit %s/buy-credit?key=%s%s", YELLOW, PORTAL_BASE, publicKey, RESET);
         exit(3);
     } else if (state == "suspended") {
         writefln("%sSuspended%s", RED, RESET);
@@ -2261,7 +2261,7 @@ int main(string[] args) {
         stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
         stderr.writefln("       %s image [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
-        stderr.writefln("       %s key --topup             (buy credit; alias --extend)", args[0]);
+        stderr.writefln("       %s key --buy-credit        (buy credit; alias --extend)", args[0]);
         stderr.writeln("");
         stderr.writeln("Global options:");
         stderr.writeln("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)");
@@ -2378,7 +2378,7 @@ int main(string[] args) {
         string otp;
 
         for (size_t i = 2; i < args.length; i++) {
-            if (args[i] == "--extend" || args[i] == "--topup") extend = true;
+            if (args[i] == "--extend" || args[i] == "--buy-credit") extend = true;
             else if (args[i] == "--rotate") rotate = true;
             else if (args[i] == "--otp" && i+1 < args.length) otp = args[++i];
             else if (args[i] == "-k" && i+1 < args.length) { publicKey = args[++i]; credsCsvPath = ""; }

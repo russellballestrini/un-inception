@@ -24,7 +24,7 @@ help:
 	@echo "  make test             All 4 test modes"
 	@echo "  make test-cli         CLI mode"
 	@echo "  make test-library     Library mode"
-	@echo "  make test-key         Offline un key output + --topup check (tests/key_output_cli.sh)"
+	@echo "  make test-key         Offline un key output + --buy-credit check (tests/key_output_cli.sh)"
 	@echo ""
 
 all: build

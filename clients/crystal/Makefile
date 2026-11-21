@@ -38,7 +38,7 @@ test-functional:
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) No credentials"; else echo "  $(YELLOW)⊘$(NC) Not implemented"; fi
 
-# Offline: un key output + --topup against a local mock API (ticket #155)
+# Offline: un key output + --buy-credit against a local mock API (ticket #155)
 test-key:
 	@mkdir -p build && crystal build -o build/un-cr $(SYNC_DIR)/src/un.cr
 	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./build/un-cr

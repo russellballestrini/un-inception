@@ -172,7 +172,7 @@ test-library: check-go
 	fi
 
 # ============================================================================
-# TEST: un key output + --topup (offline, mock API; ticket #155)
+# TEST: un key output + --buy-credit (offline, mock API; ticket #155)
 # ============================================================================
 
 # Sync src/ is package un (library); build a throwaway main around CliMain.

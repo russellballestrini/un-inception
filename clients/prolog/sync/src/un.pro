@@ -546,14 +546,14 @@ service_create(Name, Ports, Bootstrap, BootstrapFile, ServiceType, InputFiles) :
 
 % Key validate: POST /keys/validate (empty body, signed), display per
 % CLI_SPEC.md "un key output". Public key and secret reach bash via env only.
-% key --topup (alias --extend): open our portal's credit top-up page
+% key --buy-credit (alias --extend): open our portal's buy credit page
 % (ticket #155); the portal base honors UNSANDBOX_PORTAL_URL.
 validate_key(true) :-
     get_public_key(PublicKey),
     setenv('UN_PK', PublicKey),
     atomic_list_concat([
     'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done',
-    'U="$PB/topup?key=$UN_PK"; echo "Opening top-up page in browser..."; echo "If browser doesn''t open, visit: $U"',
+    'U="$PB/buy-credit?key=$UN_PK"; echo "Opening buy credit page in browser..."; echo "If browser doesn''t open, visit: $U"',
     '(xdg-open "$U" || open "$U") >/dev/null 2>&1; exit 0'
     ], '\n', Script),
     process_create(path(bash), ['-c', Script],
@@ -586,7 +586,7 @@ key_script(Script) :-
     'esac',
     'case "$ST" in',
     '  active) ;;',
-    '  expired) echo "$E[31mExpired$E[0m"; echo "Public Key: $UN_PK"; echo "$E[33mTo top up: Visit $PB/topup?key=$UN_PK$E[0m"; exit 3 ;;',
+    '  expired) echo "$E[31mExpired$E[0m"; echo "Public Key: $UN_PK"; echo "$E[33mTo buy credit: Visit $PB/buy-credit?key=$UN_PK$E[0m"; exit 3 ;;',
     '  suspended) echo "$E[31mSuspended$E[0m"; echo "Public Key: $UN_PK"; exit 3 ;;',
     '  *) echo "$E[31mInvalid$E[0m"; echo "Public Key: $UN_PK"; echo "Reason: $RS"; exit 3 ;;',
     'esac',
@@ -664,7 +664,7 @@ handle_languages(_) :- languages_command(false).
 % Handle key subcommand
 handle_key(Args) :- memberchk('--rotate', Args), !, rotate_key(Args).
 handle_key(['--extend'|_]) :- validate_key(true).
-handle_key(['--topup'|_]) :- validate_key(true).
+handle_key(['--buy-credit'|_]) :- validate_key(true).
 handle_key(_) :- validate_key(false).
 
 % Image list
@@ -1043,7 +1043,7 @@ main(Argv) :-
         write(user_error, '       un.pro image [options]\n'),
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
-        write(user_error, '       un.pro key --topup   (buy credit; alias --extend)\n'),
+        write(user_error, '       un.pro key --buy-credit (buy credit; alias --extend)\n'),
         write(user_error, '       un.pro key --rotate [--otp CODE]\n'),
         write(user_error, '\n'),
         write(user_error, 'Global options:\n'),

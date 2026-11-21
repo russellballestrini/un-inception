@@ -1966,11 +1966,11 @@ void cmdKey(NSArray* args) {
     UNGetApiKeysCLI(&publicKey, &secretKey);
 
     BOOL rotate = NO;
-    BOOL topup = NO;
+    BOOL buyCredit = NO;
     NSString* otp = nil;
     for (NSUInteger i = 0; i < [args count]; i++) {
-        if ([args[i] isEqualToString:@"--topup"] || [args[i] isEqualToString:@"--extend"]) {
-            topup = YES;  // --extend: alias kept from before tiers retired
+        if ([args[i] isEqualToString:@"--buy-credit"] || [args[i] isEqualToString:@"--extend"]) {
+            buyCredit = YES;  // --extend: alias kept from before tiers retired
         } else if ([args[i] isEqualToString:@"--rotate"]) {
             rotate = YES;
         } else if ([args[i] isEqualToString:@"--otp"] && i + 1 < [args count]) {
@@ -1981,10 +1981,10 @@ void cmdKey(NSArray* args) {
         cmdKeyRotate(publicKey, secretKey, otp);
         return;
     }
-    if (topup) {
-        // Open our portal's credit top-up page (CLI_SPEC.md "un key --topup").
-        NSString* url = [NSString stringWithFormat:@"%@/topup?key=%@", UN_PORTAL_BASE, publicKey];
-        printf("Opening top-up page in browser...\n");
+    if (buyCredit) {
+        // Open our portal's buy credit page (CLI_SPEC.md "un key --buy-credit").
+        NSString* url = [NSString stringWithFormat:@"%@/buy-credit?key=%@", UN_PORTAL_BASE, publicKey];
+        printf("Opening buy credit page in browser...\n");
         printf("If browser doesn't open, visit: %s\n", [url UTF8String]);
         if ([url rangeOfString:@"'"].location == NSNotFound) {
 #ifdef __APPLE__
@@ -2048,7 +2048,7 @@ void cmdKey(NSArray* args) {
     if ([state isEqualToString:@"expired"]) {
         printf("%sExpired%s\n", [RED UTF8String], [RESET UTF8String]);
         printf("Public Key: %s\n", [publicKey UTF8String]);
-        printf("%sTo top up: Visit %s/topup?key=%s%s\n", [YELLOW UTF8String], [UN_PORTAL_BASE UTF8String], [publicKey UTF8String], [RESET UTF8String]);
+        printf("%sTo buy credit: Visit %s/buy-credit?key=%s%s\n", [YELLOW UTF8String], [UN_PORTAL_BASE UTF8String], [publicKey UTF8String], [RESET UTF8String]);
         exit(3);
     } else if ([state isEqualToString:@"suspended"]) {
         printf("%sSuspended%s\n", [RED UTF8String], [RESET UTF8String]);
@@ -2873,7 +2873,7 @@ void showHelp(void) {
     printf("  un.m image [options]\n");
     printf("  un.m languages [--json]\n");
     printf("  un.m key [options]\n");
-    printf("  un.m key --topup               Open portal to buy credit (alias: --extend)\n");
+    printf("  un.m key --buy-credit          Open portal to buy credit (alias: --extend)\n");
     printf("  un.m key --rotate              Rotate this key's secret (sudo OTP), update accounts.csv\n");
     printf("  un.m key --rotate --otp CODE   Finish a rotation started without a terminal\n");
     printf("  un.m paas logs [options]       Platform logs (partner keys; un.m paas logs -h)\n\n");

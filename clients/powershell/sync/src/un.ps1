@@ -44,7 +44,7 @@
 #   pwsh un.ps1 service [options]
 
 $API_BASE = $(if ($env:UNSANDBOX_API_URL) { $env:UNSANDBOX_API_URL } else { "https://api.unsandbox.com" }).TrimEnd("/")
-# Portal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), serves /topup?key= (credit top-up)
+# Portal: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), serves /buy-credit?key= (buy credit)
 $PORTAL_BASE = $(if ($env:UNSANDBOX_PORTAL_URL) { $env:UNSANDBOX_PORTAL_URL } else { "https://unsandbox.com" }).TrimEnd("/")
 $LANGUAGES_CACHE_TTL = 3600  # 1 hour in seconds
 
@@ -818,13 +818,13 @@ function Invoke-KeyRotate {
 function Invoke-Key {
     param($CmdArgs)
 
-    # --topup (alias --extend, kept from before tiers retired): credit top-up page
-    $extend = ($CmdArgs -contains "--topup") -or ($CmdArgs -contains "--extend")
+    # --buy-credit (alias --extend, kept from before tiers retired): buy credit page
+    $extend = ($CmdArgs -contains "--buy-credit") -or ($CmdArgs -contains "--extend")
     $publicKey, $secretKey = Get-ApiKeys
 
     if ($extend) {
-        $url = "$PORTAL_BASE/topup?key=$publicKey"
-        Write-Host "Opening top-up page in browser..."
+        $url = "$PORTAL_BASE/buy-credit?key=$publicKey"
+        Write-Host "Opening buy credit page in browser..."
         Write-Host "If browser doesn't open, visit: $url"
         try {
             if ($IsWindows) {
@@ -883,7 +883,7 @@ function Invoke-Key {
         "expired" {
             Write-Host "`e[31mExpired`e[0m"
             Write-Host "Public Key: $publicKey"
-            Write-Host "`e[33mTo top up: Visit $PORTAL_BASE/topup?key=$publicKey`e[0m"
+            Write-Host "`e[33mTo buy credit: Visit $PORTAL_BASE/buy-credit?key=$publicKey`e[0m"
             exit 3
         }
         "suspended" {
@@ -1477,7 +1477,7 @@ Snapshot options:
   --ports PORTS       Ports for cloned service
 
 Key options:
-  --topup         Open browser to buy credit (alias: --extend)
+  --buy-credit    Open browser to buy credit (alias: --extend)
   --rotate        Rotate this key's secret (sudo OTP); updates accounts.csv
   --otp CODE      Finish a rotation started without a terminal
 "@

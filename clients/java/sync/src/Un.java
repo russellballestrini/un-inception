@@ -84,7 +84,7 @@ public class Un {
         }
         return base;
     }
-    /** Portal base (/logs, /topup): UNSANDBOX_PORTAL_URL, default https://unsandbox.com. */
+    /** Portal base (/logs, /buy-credit): UNSANDBOX_PORTAL_URL, default https://unsandbox.com. */
     private static final String PORTAL_BASE = resolvePortalBase();
 
     private static String resolvePortalBase() {
@@ -3224,7 +3224,7 @@ public class Un {
         List<String> positionalArgs = new ArrayList<>();
         boolean showHelp = false;
         boolean rotateKey = false;
-        boolean topupKey = false;
+        boolean buyCreditKey = false;
         String otpCode = null;
 
         int i = 0;
@@ -3338,8 +3338,8 @@ public class Un {
             } else if (arg.equals("--rotate") && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
                 rotateKey = true;
                 i++;
-            } else if ((arg.equals("--topup") || arg.equals("--extend")) && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
-                topupKey = true;  // --extend: alias kept from before tiers retired
+            } else if ((arg.equals("--buy-credit") || arg.equals("--extend")) && !positionalArgs.isEmpty() && positionalArgs.get(0).equals("key")) {
+                buyCreditKey = true;  // --extend: alias kept from before tiers retired
                 i++;
             } else if (arg.startsWith("-")) {
                 System.err.println("Error: Unknown option: " + arg);
@@ -3385,8 +3385,8 @@ public class Un {
             case "key":
                 if (rotateKey) {
                     handleKeyRotate(publicKey, secretKey, otpCode, credentialsCsvPath(cliPublicKey, cliSecretKey, accountIndex));
-                } else if (topupKey) {
-                    handleKeyTopup(publicKey);
+                } else if (buyCreditKey) {
+                    handleKeyBuyCredit(publicKey);
                 } else {
                     handleKey(publicKey, secretKey);
                 }
@@ -3412,7 +3412,7 @@ public class Un {
         System.out.println("  java Un snapshot [options]             Manage snapshots");
         System.out.println("  java Un image [options]                Manage images");
         System.out.println("  java Un key                            Check API key");
-        System.out.println("  java Un key --topup                    Open portal to buy credit (alias: --extend)");
+        System.out.println("  java Un key --buy-credit               Open portal to buy credit (alias: --extend)");
         System.out.println("  java Un key --rotate [--otp CODE]      Rotate API key secret (emailed OTP)");
         System.out.println("  java Un languages [--json]             List supported languages");
         System.out.println();
@@ -4268,10 +4268,10 @@ public class Un {
         }
     }
 
-    /** un key --topup (alias --extend): open our portal's credit top-up page. */
-    private static void handleKeyTopup(String publicKey) {
-        String url = PORTAL_BASE + "/topup?key=" + publicKey;
-        System.out.println("Opening top-up page in browser...");
+    /** un key --buy-credit (alias --extend): open our portal's buy credit page. */
+    private static void handleKeyBuyCredit(String publicKey) {
+        String url = PORTAL_BASE + "/buy-credit?key=" + publicKey;
+        System.out.println("Opening buy credit page in browser...");
         System.out.println("If browser doesn't open, visit: " + url);
         String os = System.getProperty("os.name", "").toLowerCase();
         String[] cmd = os.contains("mac") ? new String[] {"open", url}
@@ -4322,7 +4322,7 @@ public class Un {
         if (state.equals("expired")) {
             System.out.println("Expired");
             System.out.println("Public Key: " + publicKey);
-            System.out.println("To top up: Visit " + PORTAL_BASE + "/topup?key=" + publicKey);
+            System.out.println("To buy credit: Visit " + PORTAL_BASE + "/buy-credit?key=" + publicKey);
             System.exit(3);
         } else if (state.equals("suspended")) {
             System.out.println("Suspended");

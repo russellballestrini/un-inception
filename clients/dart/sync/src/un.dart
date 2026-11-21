@@ -116,7 +116,7 @@ final String apiBase = (() {
   return url.isEmpty ? 'https://api.unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
 })();
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
-// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+// Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 final String portalBase = (() {
   final url = Platform.environment['UNSANDBOX_PORTAL_URL'] ?? '';
   return url.isEmpty ? 'https://unsandbox.com' : url.replaceAll(RegExp(r'/+$'), '');
@@ -1882,10 +1882,10 @@ Future<void> cmdKey(Args args) async {
   final publicKey = keys[0]!;
   final secretKey = keys[1];
 
-  // Handle --topup / --extend: open our portal's credit top-up page
+  // Handle --buy-credit / --extend: open our portal's buy credit page
   if (args.keyExtend) {
-    final url = '$portalBase/topup?key=$publicKey';
-    print('Opening top-up page in browser...');
+    final url = '$portalBase/buy-credit?key=$publicKey';
+    print('Opening buy credit page in browser...');
     print("If browser doesn't open, visit: $url");
     try {
       if (Platform.isMacOS) {
@@ -1936,7 +1936,7 @@ Future<void> cmdKey(Args args) async {
   if (state == 'expired') {
     print('${red}Expired$reset');
     print('Public Key: $publicKey');
-    print('${yellow}To top up: Visit $portalBase/topup?key=$publicKey$reset');
+    print('${yellow}To buy credit: Visit $portalBase/buy-credit?key=$publicKey$reset');
     exit(3);
   } else if (state == 'suspended') {
     print('${red}Suspended$reset');
@@ -2155,7 +2155,7 @@ Args parseArgs(List<String> argv) {
         args.serviceShowFreezePageEnabled = argv[++i].toLowerCase() == 'true';
         break;
       case '--extend':
-      case '--topup':
+      case '--buy-credit':
         args.keyExtend = true;
         break;
       case '--rotate':
@@ -2368,7 +2368,7 @@ Snapshot options:
   --hot             Hot snapshot (without stopping)
 
 Key options:
-  --topup           Open browser to buy credit (alias: --extend)
+  --buy-credit      Open browser to buy credit (alias: --extend)
 
 Languages options:
   --json            Output as JSON array

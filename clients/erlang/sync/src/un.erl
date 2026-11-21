@@ -918,7 +918,7 @@ dispatch([]) ->
     io:format("       un.erl [--account N] snapshot [options]~n"),
     io:format("       un.erl [--account N] image [options]~n"),
     io:format("       un.erl [--account N] key [options]~n"),
-    io:format("         key --topup    open portal to buy credit (alias: --extend)~n"),
+    io:format("         key --buy-credit open portal to buy credit (alias: --extend)~n"),
     io:format("       un.erl languages [--json]~n"),
     io:format("       un.erl [--account N] paas logs [options]~n"),
     io:format("~nGlobal options:~n"),
@@ -1723,7 +1723,7 @@ display_key_result(Code, Resp, PublicKey) ->
         "expired" ->
             io:format("\033[31mExpired\033[0m~n"),
             io:format("Public Key: ~s~n", [PublicKey]),
-            io:format("\033[33mTo top up: Visit ~s/topup?key=~s\033[0m~n", [?PORTAL_BASE, PublicKey]),
+            io:format("\033[33mTo buy credit: Visit ~s/buy-credit?key=~s\033[0m~n", [?PORTAL_BASE, PublicKey]),
             halt(3);
         "suspended" ->
             io:format("\033[31mSuspended\033[0m~n"),
@@ -1750,10 +1750,10 @@ key_billing(Resp) ->
         B -> B
     end.
 
-%% key --topup (alias --extend): open our portal's credit top-up page.
+%% key --buy-credit (alias --extend): open our portal's buy credit page.
 open_extend_page(PublicKey) ->
-    Url = ?PORTAL_BASE ++ "/topup?key=" ++ PublicKey,
-    io:format("Opening top-up page in browser...~n"),
+    Url = ?PORTAL_BASE ++ "/buy-credit?key=" ++ PublicKey,
+    io:format("Opening buy credit page in browser...~n"),
     io:format("If browser doesn't open, visit: ~s~n", [Url]),
     case os:type() of
         {unix, darwin} ->
@@ -2564,7 +2564,7 @@ get_input_files([_ | Rest], Acc) -> get_input_files(Rest, Acc).
 
 has_extend_flag([]) -> false;
 has_extend_flag(["--extend" | _]) -> true;
-has_extend_flag(["--topup" | _]) -> true;
+has_extend_flag(["--buy-credit" | _]) -> true;
 has_extend_flag([_ | Rest]) -> has_extend_flag(Rest).
 
 get_env_vars(Args) -> get_env_vars(Args, []).

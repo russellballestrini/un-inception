@@ -183,8 +183,8 @@
                DISPLAY "Usage: un.cob <source_file>" UPON SYSERR
                DISPLAY "       un.cob session [options]" UPON SYSERR
                DISPLAY "       un.cob service [options]" UPON SYSERR
-               DISPLAY "       un.cob key [--topup | --rotate [--otp CODE]]"
-               DISPLAY "         --topup: open portal to buy credit (alias --extend)"
+               DISPLAY "       un.cob key [--buy-credit | --rotate [--otp CODE]]"
+               DISPLAY "         --buy-credit: open portal to buy credit (alias --extend)"
                    UPON SYSERR
                DISPLAY "  --os OS   Target OS: linux (default) or freebsd "
                    "(execute, session, service)" UPON SYSERR
@@ -1155,7 +1155,7 @@
                MOVE WS-PUBLIC-KEY TO WS-API-KEY
            END-IF.
 
-      *> Parse key arguments: --topup (alias --extend), --rotate, --otp CODE
+      *> Parse key arguments: --buy-credit (alias --extend), --rotate, --otp CODE
            MOVE SPACES TO WS-EXTEND-FLAG.
            MOVE SPACES TO WS-ROTATE-FLAG.
            MOVE SPACES TO WS-OTP.
@@ -1167,7 +1167,7 @@
                END-ACCEPT
                EVALUATE WS-ARG2
                    WHEN "--extend" MOVE "true" TO WS-EXTEND-FLAG
-                   WHEN "--topup" MOVE "true" TO WS-EXTEND-FLAG
+                   WHEN "--buy-credit" MOVE "true" TO WS-EXTEND-FLAG
                    WHEN "--rotate" MOVE "true" TO WS-ROTATE-FLAG
                    WHEN "--otp"
                        ACCEPT WS-OTP FROM ARGUMENT-VALUE
@@ -1321,7 +1321,7 @@
       *> come from GET-CREDENTIALS through the environment). Display per
       *> CLI_SPEC.md "un key output": the API returns no public key, so
       *> we print ours; expiry derives from valid_through (ms).
-      *> --topup (alias --extend): open our portal's credit top-up page
+      *> --buy-credit (alias --extend): open our portal's buy credit page
       *> (ticket #155); portal base honors UNSANDBOX_PORTAL_URL.
            IF WS-EXTEND-FLAG = "true"
                MOVE SPACES TO WS-ROT-CMD
@@ -1330,10 +1330,10 @@
                "PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while"
                " [ ""${PB%/}"" != ""$PB"" ]; do PB=${PB%/}; done"
                X"0A"
-               "echo 'Opening top-up page in browser...'; echo ""If brow"
-               "ser doesn't open, visit: $PB/topup?key=$PK"""
+               "echo 'Opening buy credit page in browser...'; echo ""If brow"
+               "ser doesn't open, visit: $PB/buy-credit?key=$PK"""
                X"0A"
-               "(xdg-open ""$PB/topup?key=$PK"" || open ""$PB/topup?key="
+               "(xdg-open ""$PB/buy-credit?key=$PK"" || open ""$PB/buy-credit?key="
                "$PK"") >/dev/null 2>&1; exit 0"
                X"0A"
                    DELIMITED BY SIZE INTO WS-ROT-CMD
@@ -1367,8 +1367,9 @@
                " $code"" >&2; exit 4;; esac"
                X"0A"
                "case ""$st"" in active) ;; expired) printf '\033[31mExpire"
-               "d\033[0m\nPublic Key: %s\n\033[33mTo top up: Visit %s/to"
-               "pup?key=%s\033[0m\n' ""$PK"" ""$PB"" ""$PK""; exit 3;; su"
+               "d\033[0m\nPublic Key: %s\n\033[33mTo buy credit: Visit "
+               "%s/buy-credit?key=%s\033[0m\n' ""$PK"" ""$PB"" ""$PK""; e"
+               "xit 3;; su"
                "spended) printf '\033[31mSuspended\033[0m\nPublic Key: %"
                "s\n' ""$PK""; exit 3;; *) printf '\033[31mInvalid\033[0m\n"
                "Public Key: %s\nReason: %s\n' ""$PK"" ""$reason""; exit 3;; "

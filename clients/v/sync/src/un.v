@@ -67,7 +67,7 @@ fn resolve_api_base() string {
 }
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
-// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+// Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 fn resolve_portal_base() string {
 	v := os.getenv('UNSANDBOX_PORTAL_URL').trim_right('/')
 	return if v != '' { v } else { 'https://unsandbox.com' }
@@ -431,10 +431,10 @@ fn cmd_key(extend bool, api_key string) {
 	pub_key := get_public_key()
 	secret_key := get_secret_key()
 
-	// --topup / --extend: open our portal's credit top-up page
+	// --buy-credit / --extend: open our portal's buy credit page
 	if extend {
-		url := '${portal_base}/topup?key=${pub_key}'
-		println('Opening top-up page in browser...')
+		url := '${portal_base}/buy-credit?key=${pub_key}'
+		println('Opening buy credit page in browser...')
 		println("If browser doesn't open, visit: ${url}")
 		if os.execute('xdg-open "${url}" >/dev/null 2>&1').exit_code != 0 {
 			os.execute('open "${url}" >/dev/null 2>&1')
@@ -486,7 +486,7 @@ fn cmd_key(extend bool, api_key string) {
 		'expired' {
 			println('${red}Expired${reset}')
 			println('Public Key: ${pub_key}')
-			println('${yellow}To top up: Visit ${portal_base}/topup?key=${pub_key}${reset}')
+			println('${yellow}To buy credit: Visit ${portal_base}/buy-credit?key=${pub_key}${reset}')
 			exit(3)
 		}
 		'suspended' {
@@ -2066,7 +2066,7 @@ fn main() {
 		eprintln('       ${args[0]} service [options]')
 		eprintln('       ${args[0]} service env <action> <service_id> [options]')
 		eprintln('       ${args[0]} image [options]')
-		eprintln('       ${args[0]} key [--topup]    (buy credit; alias --extend)')
+		eprintln('       ${args[0]} key [--buy-credit]    (buy credit; alias --extend)')
 		eprintln('       ${args[0]} key --rotate [--otp CODE]')
 		eprintln('       ${args[0]} languages [--json]')
 		eprintln('')
@@ -2322,7 +2322,7 @@ fn main() {
 		mut i := 2
 		for i < args.len {
 			match args[i] {
-				'--extend', '--topup' { extend = true }
+				'--extend', '--buy-credit' { extend = true }
 				'--rotate' { rotate = true }
 				'--otp' {
 					i++

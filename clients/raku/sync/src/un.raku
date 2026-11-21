@@ -2107,17 +2107,17 @@ sub cmd-key(@args, Int :$account-index = -1) {
     my $extend = False;
 
     for @args -> $arg {
-        if $arg eq '--extend' || $arg eq '--topup' {
+        if $arg eq '--extend' || $arg eq '--buy-credit' {
             $extend = True;
         }
     }
 
-    # --topup / --extend: open our portal's credit top-up page
+    # --buy-credit / --extend: open our portal's buy credit page
     if $extend {
-        my $topup-url = "$PORTAL_BASE/topup?key=$public-key";
-        say "Opening top-up page in browser...";
-        say "If browser doesn't open, visit: $topup-url";
-        try { my $p = CORE::<&run>('xdg-open', $topup-url, :out, :err); $p.out.slurp(:close); $p.err.slurp(:close); }
+        my $buy-credit-url = "$PORTAL_BASE/buy-credit?key=$public-key";
+        say "Opening buy credit page in browser...";
+        say "If browser doesn't open, visit: $buy-credit-url";
+        try { my $p = CORE::<&run>('xdg-open', $buy-credit-url, :out, :err); $p.out.slurp(:close); $p.err.slurp(:close); }
         return;
     }
 
@@ -2164,7 +2164,7 @@ sub cmd-key(@args, Int :$account-index = -1) {
     if $state eq 'expired' {
         say "{$RED}Expired{$RESET}";
         say "Public Key: $public-key";
-        say "{$YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$public-key{$RESET}";
+        say "{$YELLOW}To buy credit: Visit $PORTAL_BASE/buy-credit?key=$public-key{$RESET}";
         exit 3;
     }
     if $state eq 'suspended' {
@@ -2700,7 +2700,7 @@ sub MAIN(*@args is copy) is export {
         note "       un.raku snapshot [options]";
         note "       un.raku image [options]";
         note "       un.raku key [options]";
-        note "       un.raku key --topup             (buy credit; alias --extend)";
+        note "       un.raku key --buy-credit        (buy credit; alias --extend)";
         note "       un.raku languages [--json]";
         note "       un.raku paas logs [options]";
         note "";

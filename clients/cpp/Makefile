@@ -82,7 +82,7 @@ test-unit:
 test-os: $(BIN)
 	@bash ../../tests/os_flag_cli.sh ./$(BIN)
 
-# Offline: un key output + --topup against a local mock API (ticket #155)
+# Offline: un key output + --buy-credit against a local mock API (ticket #155)
 test-key: $(BIN)
 	@bash ../../tests/key_output_cli.sh ./$(BIN)
 

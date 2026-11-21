@@ -2217,8 +2217,8 @@ static bool json_number_field(const string& json, const string& key, long long& 
 // un key — response handling per CLI_SPEC.md "`un key` output".
 void cmd_validate_key(bool extend, const string& public_key, const string& secret_key) {
     if (extend) {
-        string url = PORTAL_BASE + "/topup?key=" + public_key;
-        cout << "Opening top-up page in browser..." << endl;
+        string url = PORTAL_BASE + "/buy-credit?key=" + public_key;
+        cout << "Opening buy credit page in browser..." << endl;
         cout << "If browser doesn't open, visit: " << url << endl;
         string browser_cmd = "xdg-open '" + url + "' 2>/dev/null || open '" + url + "' 2>/dev/null";
         if (system(browser_cmd.c_str()) != 0) {}
@@ -2271,7 +2271,7 @@ void cmd_validate_key(bool extend, const string& public_key, const string& secre
     if (state == "expired") {
         cout << RED << "Expired" << RESET << endl;
         cout << "Public Key: " << public_key << endl;
-        cout << YELLOW << "To top up: Visit " << PORTAL_BASE << "/topup?key=" << public_key << RESET << endl;
+        cout << YELLOW << "To buy credit: Visit " << PORTAL_BASE << "/buy-credit?key=" << public_key << RESET << endl;
         exit(3);
     } else if (state == "suspended") {
         cout << RED << "Suspended" << RESET << endl;
@@ -2622,7 +2622,7 @@ int main(int argc, char* argv[]) {
         cerr << "       " << argv[0] << " service [options]" << endl;
         cerr << "       " << argv[0] << " image [options]" << endl;
         cerr << "       " << argv[0] << " key [options]" << endl;
-        cerr << "       " << argv[0] << " key --topup   (buy credit; alias --extend)" << endl;
+        cerr << "       " << argv[0] << " key --buy-credit (buy credit; alias --extend)" << endl;
         cerr << "  --os OS   Target OS: linux (default) or freebsd (execute, session, service)" << endl;
         return 1;
     }
@@ -2757,7 +2757,7 @@ int main(int argc, char* argv[]) {
 
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
-            if (arg == "--extend" || arg == "--topup") extend = true;
+            if (arg == "--extend" || arg == "--buy-credit") extend = true;
             else if (arg == "--rotate") rotate = true;
             else if (arg == "--otp" && i+1 < argc) otp = argv[++i];
             else if (arg == "-k" && i+1 < argc) { public_key = argv[++i]; creds_csv_path.clear(); }

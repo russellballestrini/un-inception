@@ -8,7 +8,7 @@
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
 #   make test-os      # --os flag request bodies (offline, mock API)
-#   make test-key     # un key output + --topup (offline, mock API)
+#   make test-key     # un key output + --buy-credit (offline, mock API)
 #   make clean        # Remove build artifacts
 #
 # Dependencies:
@@ -55,7 +55,7 @@ help:
 	@echo "  make test         Run all tests"
 	@echo "  make test-library Test library functions"
 	@echo "  make test-os      Test --os flag request bodies (offline)"
-	@echo "  make test-key     Test un key output + --topup (offline)"
+	@echo "  make test-key     Test un key output + --buy-credit (offline)"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make clean        Remove build artifacts"

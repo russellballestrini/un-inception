@@ -68,7 +68,7 @@ test-functional:
 test-os:
 	@OS_FLAG_TIMEOUT=300 bash ../../tests/os_flag_cli.sh elixir $(SYNC_DIR)/src/un.ex
 
-# Offline: un key output + --topup against a local mock API (ticket #155)
+# Offline: un key output + --buy-credit against a local mock API (ticket #155)
 test-key:
 	@KEY_OUTPUT_TIMEOUT=300 bash ../../tests/key_output_cli.sh elixir $(SYNC_DIR)/src/un.ex
 

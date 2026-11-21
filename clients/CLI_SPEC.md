@@ -282,8 +282,8 @@ rust
 
 ```bash
 un key                            # Check API key validity
-un key --topup                    # Open our portal to top up this key's credit
-un key --extend                   # Alias of --topup (tiers are retired, ticket #155)
+un key --buy-credit               # Open our portal to buy credit for this key
+un key --extend                   # Alias of --buy-credit (tiers are retired, ticket #155)
 un key --rotate                   # Rotate this key's secret (sudo OTP), update accounts.csv
 un key --rotate --otp CODE        # Finish a rotation started without a terminal
 ```
@@ -336,7 +336,7 @@ un key --rotate --otp CODE        # Finish a rotation started without a terminal
   `Reason: status <status>`).
 - **401** `{"error": ..., "valid": false}` — our key failed. Map `error`:
   - `":expired"` (or `"expired"`) → print `Expired`, `Public Key: <pk>`,
-    `To top up: Visit <portal>/topup?key=<pk>`.
+    `To buy credit: Visit <portal>/buy-credit?key=<pk>`.
   - `":suspended"` (or `"suspended"`) → print `Suspended`, `Public Key: <pk>`.
   - anything else (`"Invalid API key"`, `":invalid_signature"`, missing headers, ...) →
     print `Invalid`, `Public Key: <pk>`, `Reason: <error>`.
@@ -345,14 +345,14 @@ un key --rotate --otp CODE        # Finish a rotation started without a terminal
 - Other non-2xx: `Error: <message>` to stderr, exit 4. No response: `Error: <message>`,
   exit 1.
 
-### `un key --topup` (alias `--extend`)
+### `un key --buy-credit` (alias `--extend`)
 
 Tiers are retired: every paid key is prepaid credit, so extending a key means topping
 it up. Needs only our public key (no request to the API). Print
-`Opening top-up page in browser...` and
-`If browser doesn't open, visit: <portal>/topup?key=<pk>`, try to open that URL
+`Opening buy credit page in browser...` and
+`If browser doesn't open, visit: <portal>/buy-credit?key=<pk>`, try to open that URL
 (`xdg-open` / `open` / `start`, errors ignored), exit 0. `<portal>` is our portal base
-URL below. The old `/keys/extend?pk=` path only redirects to `/topup`; never emit it.
+URL below. The old `/keys/extend?pk=` path only redirects to `/buy-credit`; never emit it.
 
 Offline check for any client: `bash tests/key_output_cli.sh CMD [ARGS...]`.
 
@@ -406,7 +406,7 @@ endpoint.
 
 Every implementation reads `UNSANDBOX_PORTAL_URL` (default `https://unsandbox.com`,
 trailing slashes stripped) for portal requests: `un paas logs` and the
-`/topup?key=` top-up link.
+`/buy-credit?key=` buy credit link.
 
 ## PaaS Logs Command
 

@@ -1115,8 +1115,8 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
     pk = GLOBAL_PUBLIC_KEY
 
     if (do_extend) {
-        url = PORTAL_BASE "/topup?key=" pk
-        print "Opening top-up page in browser..."
+        url = PORTAL_BASE "/buy-credit?key=" pk
+        print "Opening buy credit page in browser..."
         print "If browser doesn't open, visit: " url
         fflush()
         system("{ xdg-open '" url "' || open '" url "'; } >/dev/null 2>&1")
@@ -1172,7 +1172,7 @@ function validate_key(do_extend    , timestamp, sig_headers, signature, sig_inpu
     if (state == "expired") {
         print RED "Expired" RESET
         print "Public Key: " pk
-        print YELLOW "To top up: Visit " PORTAL_BASE "/topup?key=" pk RESET
+        print YELLOW "To buy credit: Visit " PORTAL_BASE "/buy-credit?key=" pk RESET
         exit 3
     }
     if (state == "suspended") {
@@ -2768,7 +2768,7 @@ function show_help() {
     print "       awk -f un.awk session [-s SHELL] [-f FILE]..."
     print "       awk -f un.awk session --snapshot SESSION_ID [--snapshot-name NAME] [--hot]"
     print "       awk -f un.awk session --restore SNAPSHOT_ID"
-    print "       awk -f un.awk key [--topup]    (buy credit; --extend: alias)"
+    print "       awk -f un.awk key [--buy-credit]    (buy credit; --extend: alias)"
     print "       awk -f un.awk key --rotate [--otp CODE]"
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-e KEY=VAL] [--env-file FILE] [-f FILE]..."
@@ -2982,7 +2982,7 @@ END {
     if (ARGV[1] == "key") {
         do_extend = 0; do_rotate = 0; otp_given = 0; otp = ""
         for (i = 2; i < ARGC; i++) {
-            if (ARGV[i] == "--topup" || ARGV[i] == "--extend") do_extend = 1
+            if (ARGV[i] == "--buy-credit" || ARGV[i] == "--extend") do_extend = 1
             else if (ARGV[i] == "--rotate") do_rotate = 1
             else if (ARGV[i] == "--otp" && i + 1 < ARGC) { otp_given = 1; otp = ARGV[++i] }
         }

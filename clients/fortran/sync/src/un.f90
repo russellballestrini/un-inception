@@ -61,7 +61,7 @@
 !   ./un script.py
 !   ./un session [options]
 !   ./un service [options]
-!   ./un key [--topup]   (buy credit; alias --extend)
+!   ./un key [--buy-credit]   (buy credit; alias --extend)
 !
 ! Authentication (in priority order):
 !   1. --account N flag -> accounts.csv row N (bypasses env vars)
@@ -1204,7 +1204,7 @@ contains
         write(*, '(A)') '       ./un service [options]'
         write(*, '(A)') '       ./un snapshot [options]'
         write(*, '(A)') '       ./un image [options]'
-        write(*, '(A)') '       ./un key [--topup]'
+        write(*, '(A)') '       ./un key [--buy-credit]'
         write(*, '(A)') '       ./un key --rotate [--otp CODE]'
         write(*, '(A)') '       ./un languages [--json]'
         write(*, '(A)') ''
@@ -1262,7 +1262,7 @@ contains
         write(*, '(A)') '  --ports PORTS       Ports for spawn'
         write(*, '(A)') ''
         write(*, '(A)') 'Key options:'
-        write(*, '(A)') '  --topup         Open portal to buy credit (alias: --extend)'
+        write(*, '(A)') '  --buy-credit    Open portal to buy credit (alias: --extend)'
         write(*, '(A)') ''
         write(*, '(A)') 'Languages options:'
         write(*, '(A)') '  --json          Output as JSON array'
@@ -2339,10 +2339,10 @@ contains
         rotate_mode = .false.
         otp_code = ''
 
-        ! Check for --topup/--extend, --rotate, --otp CODE
+        ! Check for --buy-credit/--extend, --rotate, --otp CODE
         do i = 2, arg_count()
             call get_arg(i, arg)
-            if (trim(arg) == '--extend' .or. trim(arg) == '--topup') then
+            if (trim(arg) == '--extend' .or. trim(arg) == '--buy-credit') then
                 extend_mode = .true.
             else if (trim(arg) == '--rotate') then
                 rotate_mode = .true.
@@ -2366,12 +2366,12 @@ contains
         ! Key validation: signed POST $UN_API/keys/validate, empty body (get_credentials
         ! already exported UNSB_SK/UNSB_HMAC for the shell). Display per CLI_SPEC.md
         ! "`un key` output": the API returns no public key, so we print ours.
-        ! --topup (alias --extend): open our portal's credit top-up page (ticket #155)
+        ! --buy-credit (alias --extend): open our portal's buy credit page (ticket #155)
         if (extend_mode) then
             script = 'PK=''' // trim(public_key) // '''' // nl // &
                 'PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ "${PB%/}" != "$PB" ]; do PB=${PB%/}; done' // nl // &
-                'echo "Opening top-up page in browser..."; echo "If browser doesn''t open, visit: $PB/topup?key=$PK"' // nl // &
-                '(xdg-open "$PB/topup?key=$PK" || open "$PB/topup?key=$PK") >/dev/null 2>&1 || true' // nl
+                'echo "Opening buy credit page in browser..."; echo "If browser doesn''t open, visit: $PB/buy-credit?key=$PK"' // nl // &
+                '(xdg-open "$PB/buy-credit?key=$PK" || open "$PB/buy-credit?key=$PK") >/dev/null 2>&1 || true' // nl
             call execute_command_line(script, wait=.true., exitstat=stat)
             return
         end if
@@ -2389,7 +2389,7 @@ contains
             'nded|suspended) st=suspended;; *) st=invalid;; esac;; *) echo "Error: HTTP $code" >&2; exi' // &
             't 4;; esac' // nl // &
             'case "$st" in active) ;; expired) printf ''\033[31mExpired\033[0m\nPublic Key: %s\n\033[33' // &
-            'mTo top up: Visit %s/topup?key=%s\033[0m\n'' "$PK" "$PB" "$PK"; exit 3;; suspended) p' // &
+            'mTo buy credit: Visit %s/buy-credit?key=%s\033[0m\n'' "$PK" "$PB" "$PK"; exit 3;; suspended) p' // &
             'rintf ''\033[31mSuspended\033[0m\nPublic Key: %s\n'' "$PK"; exit 3;; *) printf ''\033[31mI' // &
             'nvalid\033[0m\nPublic Key: %s\nReason: %s\n'' "$PK" "$reason"; exit 3;; esac' // nl // &
             'billing=$(printf ''%s'' "$resp" | jq -r ''if (.billing|type)=="string" and .billing!="" th' // &

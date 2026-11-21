@@ -42,7 +42,7 @@ test-functional:
 test-os:
 	@bash ../../tests/os_flag_cli.sh Rscript sync/src/un.r
 
-# Offline: un key output + --topup against a local mock API (ticket #155)
+# Offline: un key output + --buy-credit against a local mock API (ticket #155)
 test-key:
 	@bash ../../tests/key_output_cli.sh Rscript sync/src/un.r
 

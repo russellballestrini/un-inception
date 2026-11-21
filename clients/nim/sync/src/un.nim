@@ -60,7 +60,7 @@ let API_BASE = block:
   if v.len > 0: v else: "https://api.unsandbox.com"
 
 # Portal base URL: UNSANDBOX_PORTAL_URL (trailing slash stripped), default https://unsandbox.com.
-# Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+# Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 let PORTAL_BASE = block:
   let v = getEnv("UNSANDBOX_PORTAL_URL", "").strip(leading = false, chars = {'/'})
   if v.len > 0: v else: "https://unsandbox.com"
@@ -896,9 +896,9 @@ proc cmdService(name, ports, bootstrap, bootstrapFile, serviceType: string, list
 
 proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
   if extend:
-    # --topup / --extend: open our portal's credit top-up page
-    let extendUrl = PORTAL_BASE & "/topup?key=" & publicKey
-    echo "Opening top-up page in browser..."
+    # --buy-credit / --extend: open our portal's buy credit page
+    let extendUrl = PORTAL_BASE & "/buy-credit?key=" & publicKey
+    echo "Opening buy credit page in browser..."
     echo "If browser doesn't open, visit: " & extendUrl
     discard execProcess(fmt"xdg-open '{extendUrl}'")
     return
@@ -938,7 +938,7 @@ proc cmdKey(extend: bool, publicKey: string, secretKey: string) =
   of "expired":
     echo RED & "Expired" & RESET
     echo "Public Key: " & publicKey
-    echo YELLOW & "To top up: Visit " & PORTAL_BASE & "/topup?key=" & publicKey & RESET
+    echo YELLOW & "To buy credit: Visit " & PORTAL_BASE & "/buy-credit?key=" & publicKey & RESET
     quit(3)
   of "suspended":
     echo RED & "Suspended" & RESET
@@ -1874,7 +1874,7 @@ proc main() =
     stderr.writeLine("       un.nim service env <action> <service_id> [options]")
     stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
-    stderr.writeLine("       un.nim key --topup             (buy credit; alias --extend)")
+    stderr.writeLine("       un.nim key --buy-credit        (buy credit; alias --extend)")
     stderr.writeLine("       un.nim key --rotate [--otp CODE]")
     stderr.writeLine("")
     stderr.writeLine("Global options:")
@@ -2015,7 +2015,7 @@ proc main() =
     var i = 1
     while i < args.len:
       case args[i]
-      of "--extend", "--topup": extend = true
+      of "--extend", "--buy-credit": extend = true
       of "--rotate": rotate = true
       of "--otp":
         if i + 1 < args.len:

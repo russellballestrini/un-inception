@@ -20,7 +20,7 @@ help:
 	@echo "  make test-cli         Test CLI functionality"
 	@echo "  make test-functional  Test with real API (requires credentials)"
 	@echo "  make test-os          Offline --os flag check (tests/os_flag_cli.sh)"
-	@echo "  make test-key         Offline un key output + --topup check (tests/key_output_cli.sh)"
+	@echo "  make test-key         Offline un key output + --buy-credit check (tests/key_output_cli.sh)"
 	@echo "  make clean            Remove build artifacts"
 	@echo ""
 	@echo "Note: For modern .NET 10, use clients/dotnet/"

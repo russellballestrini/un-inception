@@ -62,7 +62,7 @@
     (string-trim-right url #\/)))
 
 (define portal-base
-  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /topup?key= (credit top-up)
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /buy-credit?key= (buy credit)
   (let ((url (getenv "UNSANDBOX_PORTAL_URL")))
     (string-trim-right (if (and url (> (string-length url) 0)) url "https://unsandbox.com") #\/)))
 
@@ -710,9 +710,9 @@
          (public-key (car keys))
          (secret-key (cadr keys)))
     (if extend
-        ;; --topup (alias --extend): open our portal's credit top-up page
-        (let ((url (format #f "~a/topup?key=~a" portal-base public-key)))
-          (format #t "Opening top-up page in browser...\n")
+        ;; --buy-credit (alias --extend): open our portal's buy credit page
+        (let ((url (format #f "~a/buy-credit?key=~a" portal-base public-key)))
+          (format #t "Opening buy credit page in browser...\n")
           (format #t "If browser doesn't open, visit: ~a\n" url)
           (force-output)
           (open-browser url))
@@ -774,7 +774,7 @@
            ((string=? state "expired")
             (format #t "~aExpired~a\n" red reset)
             (format #t "Public Key: ~a\n" public-key)
-            (format #t "~aTo top up: Visit ~a/topup?key=~a~a\n" yellow portal-base public-key reset)
+            (format #t "~aTo buy credit: Visit ~a/buy-credit?key=~a~a\n" yellow portal-base public-key reset)
             (exit 3))
            ((string=? state "suspended")
             (format #t "~aSuspended~a\n" red reset)
@@ -1635,7 +1635,7 @@
         (display "       un.scm session [options]\n")
         (display "       un.scm service [options]\n")
         (display "       un.scm image [options]\n")
-        (display "       un.scm key [--topup]   (buy credit; alias: --extend)\n")
+        (display "       un.scm key [--buy-credit]   (buy credit; alias: --extend)\n")
         (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
         (display "       un.scm paas logs [options]\n")
@@ -1665,7 +1665,7 @@
          (let ((json-output (and (> (length args) 1) (equal? (cadr args) "--json"))))
            (languages-cmd json-output)))
         ((equal? (car args) "key")
-         (let ((extend (or (member "--topup" (cdr args)) (member "--extend" (cdr args))))
+         (let ((extend (or (member "--buy-credit" (cdr args)) (member "--extend" (cdr args))))
                (rotate (member "--rotate" (cdr args)))
                (otp (let ((m (member "--otp" (cdr args))))
                       (and m (pair? (cdr m)) (cadr m)))))

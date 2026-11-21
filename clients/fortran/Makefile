@@ -27,7 +27,7 @@ test-functional:
 	@echo "━━━ FUNCTIONAL MODE ━━━"
 	@echo "  $(YELLOW)⊘$(NC) Not implemented"
 
-# Offline: un key output + --topup against a local mock API (ticket #155)
+# Offline: un key output + --buy-credit against a local mock API (ticket #155)
 test-key:
 	@tmp=$$(mktemp -d); \
 	gfortran -ffree-line-length-none -o $$tmp/un $(SYNC_DIR)/src/un.f90 && bash $(ROOT_DIR)/tests/key_output_cli.sh $$tmp/un; rc=$$?; \

@@ -40,7 +40,7 @@
 \        gforth un.forth session [options]
 \        gforth un.forth service [options]
 \        gforth un.forth key [options]
-\        gforth un.forth key --topup   (buy credit; alias --extend)
+\        gforth un.forth key --buy-credit (buy credit; alias --extend)
 \        gforth un.forth key --rotate [--otp CODE]
 \ Global: --os OS (linux or freebsd) before our subcommand or file
 
@@ -774,15 +774,15 @@ warnings !
     s\" PB=${UNSANDBOX_PORTAL_URL:-https://unsandbox.com}; while [ \"${PB%/}\" != \"$PB\" ]; do PB=${PB%/}; done" r@ write-line throw
     \ Display per CLI_SPEC.md "un key output": the API returns no public key
     \ (we print ours); expiry derives from valid_through (ms). Empty body.
-    \ --topup (alias --extend): open our portal's credit top-up page (ticket #155).
+    \ --buy-credit (alias --extend): open our portal's buy credit page (ticket #155).
     if
-        s\" echo 'Opening top-up page in browser...'; echo \"If browser doesn't open, visit: $PB/topup?key=$PUBLIC_KEY\"; (xdg-open \"$PB/topup?key=$PUBLIC_KEY\" || open \"$PB/topup?key=$PUBLIC_KEY\") >/dev/null 2>&1; exit 0" r@ write-line throw
+        s\" echo 'Opening buy credit page in browser...'; echo \"If browser doesn't open, visit: $PB/buy-credit?key=$PUBLIC_KEY\"; (xdg-open \"$PB/buy-credit?key=$PUBLIC_KEY\" || open \"$PB/buy-credit?key=$PUBLIC_KEY\") >/dev/null 2>&1; exit 0" r@ write-line throw
     then
     s\" TS=$(date +%s); SIG=$(printf %s \"$TS:POST:/keys/validate:\" | unsb_hmac); PK=$PUBLIC_KEY" r@ write-line throw
     s\" raw=$(curl -s -w '\\n%{http_code}' -X POST \"$UN_API/keys/validate\" -H \"Authorization: Bearer $PK\" -H \"X-Timestamp: $TS\" -H \"X-Signature: $SIG\") || { echo 'Error: request to /keys/validate failed' >&2; exit 1; }" r@ write-line throw
     s\" code=$(printf '%s\\n' \"$raw\" | tail -n 1); resp=$(printf '%s\\n' \"$raw\" | sed '$d')" r@ write-line throw
     s\" case \"$code\" in 200) st=$(printf '%s' \"$resp\" | jq -r '.status // (if .valid then \"active\" else \"invalid\" end)'); reason=\"status $st\";; 401) reason=$(printf '%s' \"$resp\" | jq -r '.error // \"unauthorized\"'); case \"$reason\" in :expired|expired) st=expired;; :suspended|suspended) st=suspended;; *) st=invalid;; esac;; *) echo \"Error: HTTP $code\" >&2; exit 4;; esac" r@ write-line throw
-    s\" case \"$st\" in active) ;; expired) printf '\\033[31mExpired\\033[0m\\nPublic Key: %s\\n\\033[33mTo top up: Visit %s/topup?key=%s\\033[0m\\n' \"$PK\" \"$PB\" \"$PK\"; exit 3;; suspended) printf '\\033[31mSuspended\\033[0m\\nPublic Key: %s\\n' \"$PK\"; exit 3;; *) printf '\\033[31mInvalid\\033[0m\\nPublic Key: %s\\nReason: %s\\n' \"$PK\" \"$reason\"; exit 3;; esac" r@ write-line throw
+    s\" case \"$st\" in active) ;; expired) printf '\\033[31mExpired\\033[0m\\nPublic Key: %s\\n\\033[33mTo buy credit: Visit %s/buy-credit?key=%s\\033[0m\\n' \"$PK\" \"$PB\" \"$PK\"; exit 3;; suspended) printf '\\033[31mSuspended\\033[0m\\nPublic Key: %s\\n' \"$PK\"; exit 3;; *) printf '\\033[31mInvalid\\033[0m\\nPublic Key: %s\\nReason: %s\\n' \"$PK\" \"$reason\"; exit 3;; esac" r@ write-line throw
     s\" billing=$(printf '%s' \"$resp\" | jq -r 'if (.billing|type)==\"string\" and .billing!=\"\" then .billing elif (.tier|type)==\"number\" then (if .tier==-1 then \"free\" elif .tier==0 then \"demo\" else \"credit\" end) else \"N/A\" end')" r@ write-line throw
     s\" conc=$(printf '%s' \"$resp\" | jq -r '.concurrency // \"N/A\"'); credit=$(printf '%s' \"$resp\" | jq -r '.credit_balance_usd // empty')" r@ write-line throw
     s\" status=$(printf '%s' \"$resp\" | jq -r '.status // \"N/A\"'); vt=$(printf '%s' \"$resp\" | jq -r '.valid_through // empty | floor'); exp=N/A; rem=N/A" r@ write-line throw
@@ -898,7 +898,7 @@ variable rot-len
         0 (bye)
     then
 
-    2 sarg 2dup s\" --extend" compare 0= >r 2dup s\" --topup" compare 0= r> or if
+    2 sarg 2dup s\" --extend" compare 0= >r 2dup s\" --buy-credit" compare 0= r> or if
         2drop
         1 validate-key
         0 (bye)
@@ -1997,7 +1997,7 @@ variable rot-len
         s\"        gforth un.forth service [options]" type cr
         s\"        gforth un.forth image [options]" type cr
         s\"        gforth un.forth key [options]" type cr
-        s\"        gforth un.forth key --topup   (buy credit; alias --extend)" type cr
+        s\"        gforth un.forth key --buy-credit (buy credit; alias --extend)" type cr
         s\"        gforth un.forth key --rotate [--otp CODE]" type cr
         s\"        gforth un.forth languages [--json]" type cr
         s\" Global: --os OS   Target OS: linux (default) or freebsd (execute, session, service)" type cr

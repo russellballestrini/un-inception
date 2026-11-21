@@ -13,7 +13,7 @@
 #   make test-functional  # Functional mode only
 #   make test-sync    # Test sync SDK only
 #   make test-async   # Test async SDK only
-#   make test-key     # un key output + --topup (offline, mock API)
+#   make test-key     # un key output + --buy-credit (offline, mock API)
 #   make clean        # Remove build artifacts
 #
 # Dependencies:
@@ -78,7 +78,7 @@ test: test-cli test-library test-key test-integration test-functional
 	@echo "$(GREEN)✓ PHP Client: All 4 test modes complete$(NC)"
 
 # ============================================================================
-# TEST: un key output + --topup (offline, mock API; ticket #155)
+# TEST: un key output + --buy-credit (offline, mock API; ticket #155)
 # ============================================================================
 
 test-key:

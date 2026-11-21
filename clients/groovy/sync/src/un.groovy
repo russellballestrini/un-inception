@@ -2616,10 +2616,10 @@ def cmdKey(args) {
     def (publicKey, secretKey) = getApiKeys(args.apiKey, args.accountIndex ?: -1)
 
     if (args.keyExtend) {
-        def topupUrl = "${PORTAL_BASE}/topup?key=${publicKey}"
-        println("Opening top-up page in browser...")
-        println("If browser doesn't open, visit: ${topupUrl}")
-        openBrowser(topupUrl)
+        def buyCreditUrl = "${PORTAL_BASE}/buy-credit?key=${publicKey}"
+        println("Opening buy credit page in browser...")
+        println("If browser doesn't open, visit: ${buyCreditUrl}")
+        openBrowser(buyCreditUrl)
         return
     }
 
@@ -2649,7 +2649,7 @@ def cmdKey(args) {
     if (state == 'expired') {
         println("${RED}Expired${RESET}")
         println("Public Key: ${publicKey}")
-        println("${YELLOW}To top up: Visit ${PORTAL_BASE}/topup?key=${publicKey}${RESET}")
+        println("${YELLOW}To buy credit: Visit ${PORTAL_BASE}/buy-credit?key=${publicKey}${RESET}")
         System.exit(3)
     } else if (state == 'suspended') {
         println("${RED}Suspended${RESET}")
@@ -3088,7 +3088,7 @@ def parseArgs(argv) {
                 args.serviceDumpFile = argv[++i]
                 break
             case '--extend':
-            case '--topup':
+            case '--buy-credit':
                 args.keyExtend = true
                 break
             case '--rotate':
@@ -3179,7 +3179,7 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --topup             Open portal to buy credit (alias: --extend)
+  --buy-credit        Open portal to buy credit (alias: --extend)
   --rotate            Rotate the key's secret (emailed one-time code)
   --otp CODE          Finish a rotation started without a terminal
 

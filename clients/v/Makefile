@@ -70,7 +70,7 @@ test-functional:
 	@if [ -z "$$UNSANDBOX_PUBLIC_KEY" ]; then echo "  $(YELLOW)⊘$(NC) Skipping (no API credentials)"; \
 	else echo "  $(YELLOW)⊘$(NC) Functional: Not yet implemented"; fi
 
-# Offline: un key output + --topup against a local mock API (ticket #155)
+# Offline: un key output + --buy-credit against a local mock API (ticket #155)
 test-key: $(BIN)
 	@bash $(ROOT_DIR)/tests/key_output_cli.sh ./$(BIN)
 

@@ -64,7 +64,7 @@
 (def reset "\u001b[0m")
 
 (def portal-base
-  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /topup?key= (credit top-up)
+  ;; UNSANDBOX_PORTAL_URL: portal for /logs/{source} and /buy-credit?key= (buy credit)
   (str/replace (let [u (System/getenv "UNSANDBOX_PORTAL_URL")] (if (str/blank? u) "https://unsandbox.com" u)) #"/+$" ""))
 
 ;; API base URL: UNSANDBOX_API_URL overrides (staging / local), no trailing slash
@@ -648,8 +648,8 @@
 (defn validate-key [api-key extend?]
   (let [[public-key secret-key] (get-api-keys)]
     (if extend?
-      (let [url (str portal-base "/topup?key=" public-key)]
-        (println "Opening top-up page in browser...")
+      (let [url (str portal-base "/buy-credit?key=" public-key)]
+        (println "Opening buy credit page in browser...")
         (println (str "If browser doesn't open, visit: " url))
         (try (sh "xdg-open" url) (catch Exception _ nil)))
       (let [[code response] (try (signed-post-http public-key secret-key "/keys/validate" "")
@@ -695,7 +695,7 @@
           "expired"
           (do (println (str red "Expired" reset))
               (println (str "Public Key: " public-key))
-              (println (str yellow "To top up: Visit " portal-base "/topup?key=" public-key reset))
+              (println (str yellow "To buy credit: Visit " portal-base "/buy-credit?key=" public-key reset))
               (System/exit 3))
           "suspended"
           (do (println (str red "Suspended" reset))
@@ -1453,7 +1453,7 @@
                        (println "       un.clj service env <action> <service_id>")
                        (println "       un.clj image [options]")
                        (println "       un.clj key [options]")
-                       (println "       un.clj key --topup         (buy credit; alias: --extend)")
+                       (println "       un.clj key --buy-credit    (buy credit; alias: --extend)")
                        (println "       un.clj paas logs [options]")
                        (System/exit 1))))
 
@@ -1543,7 +1543,7 @@
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand key-extend image-action image-id image-source-type image-visibility image-name (second args) mode)
 
       ;; Key options
-      (and (= mode :key) (#{"--topup" "--extend"} (first args)))
+      (and (= mode :key) (#{"--buy-credit" "--extend"} (first args)))
       (recur (rest args) file env-vars artifacts out-dir network vcpu session-action session-id session-shell session-input-files
              service-action service-id service-name service-ports service-bootstrap service-bootstrap-file service-type service-input-files service-envs service-env-file service-unfreeze-on-demand true image-action image-id image-source-type image-visibility image-name image-ports mode)
 

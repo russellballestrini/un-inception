@@ -235,9 +235,9 @@ void CmdKey(Args args)
 
     if (args.KeyExtend)
     {
-        // key --topup (alias --extend): open our portal's credit top-up page
-        var url = $"{PORTAL_BASE}/topup?key={publicKey}";
-        Console.WriteLine("Opening top-up page in browser...");
+        // key --buy-credit (alias --extend): open our portal's buy credit page
+        var url = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
+        Console.WriteLine("Opening buy credit page in browser...");
         Console.WriteLine($"If browser doesn't open, visit: {url}");
         try { OpenBrowser(url); } catch (Exception) { }
         return;
@@ -279,7 +279,7 @@ void CmdKey(Args args)
     {
         Console.WriteLine($"{RED}Expired{RESET}");
         Console.WriteLine($"Public Key: {publicKey}");
-        Console.WriteLine($"{YELLOW}To top up: Visit {PORTAL_BASE}/topup?key={publicKey}{RESET}");
+        Console.WriteLine($"{YELLOW}To buy credit: Visit {PORTAL_BASE}/buy-credit?key={publicKey}{RESET}");
         Environment.Exit(3);
     }
     else if (state == "suspended")
@@ -1335,7 +1335,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--show-freeze-page") result.ServiceShowFreezePage = args[++i];
         else if (arg == "--show-freeze-page-enabled") result.ServiceShowFreezePageEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--topup" || arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--buy-credit" || arg == "--extend") result.KeyExtend = true;
         else if (arg == "--rotate") result.KeyRotate = true;
         else if (arg == "--otp") result.KeyOtp = args[++i];
         else if (arg == "--account") result.Account = int.Parse(args[++i]);
@@ -1659,7 +1659,7 @@ Languages options:
   --json            Output as JSON array
 
 Key options:
-  --topup           Open browser to buy credit (alias: --extend)
+  --buy-credit      Open browser to buy credit (alias: --extend)
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 

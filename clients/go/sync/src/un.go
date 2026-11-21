@@ -1495,7 +1495,7 @@ func CloneImage(creds *Credentials, imageID string, opts *CloneImageOptions) (ma
 // PaaS Logs API
 // ============================================================================
 
-// PortalBase is the portal endpoint (/logs, /topup), overridable via
+// PortalBase is the portal endpoint (/logs, /buy-credit), overridable via
 // UNSANDBOX_PORTAL_URL (trailing slash stripped).
 var PortalBase = func() string {
 	if v := os.Getenv("UNSANDBOX_PORTAL_URL"); v != "" {
@@ -1987,7 +1987,7 @@ Usage:
   un service [options]              Manage services
   un snapshot [options]             Manage snapshots
   un key                            Check API key
-  un key --topup                    Open portal to buy credit (alias: --extend)
+  un key --buy-credit               Open portal to buy credit (alias: --extend)
   un key --rotate [--otp CODE]      Rotate API secret (sudo OTP)
   un languages [--json]             List available languages
 
@@ -3426,11 +3426,11 @@ func runImage(creds *Credentials, args []string, opts *CLIOptions) int {
 	return ExitInvalidArgs
 }
 
-// runKeyTopup handles `un key --topup` (alias --extend): open our portal's
-// credit top-up page (CLI_SPEC.md "`un key --topup`").
-func runKeyTopup(creds *Credentials) int {
-	url := PortalBase + "/topup?key=" + creds.PublicKey
-	fmt.Println("Opening top-up page in browser...")
+// runKeyBuyCredit handles `un key --buy-credit` (alias --extend): open our portal's
+// buy credit page (CLI_SPEC.md "`un key --buy-credit`").
+func runKeyBuyCredit(creds *Credentials) int {
+	url := PortalBase + "/buy-credit?key=" + creds.PublicKey
+	fmt.Println("Opening buy credit page in browser...")
 	fmt.Printf("If browser doesn't open, visit: %s\n", url)
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -3499,7 +3499,7 @@ func runKey(creds *Credentials) int {
 	case "expired":
 		fmt.Println("Expired")
 		fmt.Printf("Public Key: %s\n", pk)
-		fmt.Println("To top up: Visit " + PortalBase + "/topup?key=" + pk)
+		fmt.Println("To buy credit: Visit " + PortalBase + "/buy-credit?key=" + pk)
 		return ExitAuthError
 	case "suspended":
 		fmt.Println("Suspended")
@@ -3974,11 +3974,11 @@ func CliMain() {
 	case "image":
 		exitCode = runImage(creds, cmdArgs, opts)
 	case "key":
-		rotate, topup, otp := false, false, ""
+		rotate, buyCredit, otp := false, false, ""
 		for i := 0; i < len(cmdArgs); i++ {
 			switch cmdArgs[i] {
-			case "--topup", "--extend": // --extend: alias kept from before tiers retired
-				topup = true
+			case "--buy-credit", "--extend": // --extend: alias kept from before tiers retired
+				buyCredit = true
 			case "--rotate":
 				rotate = true
 			case "--otp":
@@ -3990,8 +3990,8 @@ func CliMain() {
 		}
 		if rotate {
 			exitCode = runKeyRotate(creds, opts, otp)
-		} else if topup {
-			exitCode = runKeyTopup(creds)
+		} else if buyCredit {
+			exitCode = runKeyBuyCredit(creds)
 		} else {
 			exitCode = runKey(creds)
 		}

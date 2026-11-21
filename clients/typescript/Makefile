@@ -20,7 +20,7 @@ help:
 	@echo "  make test-cli         CLI mode"
 	@echo "  make test-library     Library mode"
 	@echo "  make test-os          Offline --os flag check (local mock API)"
-	@echo "  make test-key         Offline un key output + --topup check (local mock API)"
+	@echo "  make test-key         Offline un key output + --buy-credit check (local mock API)"
 	@echo ""
 
 build:

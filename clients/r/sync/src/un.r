@@ -2476,10 +2476,10 @@ cmd_key <- function(args) {
     public_key <- keys$public_key
     secret_key <- keys$secret_key
 
-    # --topup / --extend: open our portal's credit top-up page
+    # --buy-credit / --extend: open our portal's buy credit page
     if (!is.null(args$extend) && args$extend) {
-        extend_url <- paste0(PORTAL_BASE, "/topup?key=", public_key)
-        cat("Opening top-up page in browser...\n")
+        extend_url <- paste0(PORTAL_BASE, "/buy-credit?key=", public_key)
+        cat("Opening buy credit page in browser...\n")
         cat(sprintf("If browser doesn't open, visit: %s\n", extend_url))
         system(sprintf("xdg-open '%s' 2>/dev/null || open '%s' 2>/dev/null || start '%s'", extend_url, extend_url, extend_url))
         return(invisible(NULL))
@@ -2529,7 +2529,7 @@ cmd_key <- function(args) {
     if (state == "expired") {
         cat(sprintf("%sExpired%s\n", RED, RESET))
         cat(sprintf("Public Key: %s\n", public_key))
-        cat(sprintf("%sTo top up: Visit %s/topup?key=%s%s\n", YELLOW, PORTAL_BASE, public_key, RESET))
+        cat(sprintf("%sTo buy credit: Visit %s/buy-credit?key=%s%s\n", YELLOW, PORTAL_BASE, public_key, RESET))
         quit(status = 3)
     } else if (state == "suspended") {
         cat(sprintf("%sSuspended%s\n", RED, RESET))
@@ -3278,7 +3278,7 @@ parse_args <- function() {
             i <- i + 1
             result$shell <- args[i]
             i <- i + 1
-        } else if (arg == "--extend" || arg == "--topup") {
+        } else if (arg == "--extend" || arg == "--buy-credit") {
             result$extend <- TRUE
             i <- i + 1
         } else if (arg == "--rotate") {
@@ -3367,7 +3367,7 @@ main <- function() {
         cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r image [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
-        cat("       un.r key --topup              # buy credit (alias --extend)\n", file = stderr())
+        cat("       un.r key --buy-credit         # buy credit (alias --extend)\n", file = stderr())
         cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
         cat("       un.r paas logs [options]\n", file = stderr())

@@ -1748,7 +1748,7 @@ func printHelp() {
         un service --list                      List all services
         un snapshot --list                     List all snapshots
         un key                                 Check API key
-        un key --topup                         Open portal to buy credit (alias: --extend)
+        un key --buy-credit                    Open portal to buy credit (alias: --extend)
         un key --rotate                        Rotate key secret (sudo OTP), update accounts.csv
         un key --rotate --otp CODE             Finish a rotation started without a terminal
     """
@@ -1840,8 +1840,8 @@ class CLIArgs {
     // Credential selection
     var accountIndex: Int? = nil
 
-    // Key top-up (--topup, alias --extend) and rotation
-    var topup: Bool = false
+    // Buy credit (--buy-credit, alias --extend) and rotation
+    var buyCredit: Bool = false
     var rotate: Bool = false
     var otp: String?
 
@@ -1882,8 +1882,8 @@ class CLIArgs {
             case "--account":
                 i += 1
                 if i < args.count { accountIndex = Int(args[i]) }
-            case "--topup", "--extend":
-                topup = true
+            case "--buy-credit", "--extend":
+                buyCredit = true
             case "--rotate":
                 rotate = true
             case "--otp":
@@ -2947,10 +2947,10 @@ func handleKeyRotate(_ args: CLIArgs, _ pk: String, _ sk: String) throws {
     }
 }
 
-/// un key --topup (alias --extend): open our portal's credit top-up page.
-func handleKeyTopup(_ pk: String) {
-    let url = "\(PORTAL_BASE)/topup?key=\(pk)"
-    print("Opening top-up page in browser...")
+/// un key --buy-credit (alias --extend): open our portal's buy credit page.
+func handleKeyBuyCredit(_ pk: String) {
+    let url = "\(PORTAL_BASE)/buy-credit?key=\(pk)"
+    print("Opening buy credit page in browser...")
     print("If browser doesn't open, visit: \(url)")
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -3003,7 +3003,7 @@ func handleKeyCommand(_ pk: String, _ sk: String) throws {
     case "expired":
         print("Expired")
         print("Public Key: \(pk)")
-        print("To top up: Visit \(PORTAL_BASE)/topup?key=\(pk)")
+        print("To buy credit: Visit \(PORTAL_BASE)/buy-credit?key=\(pk)")
         exit(3)
     case "suspended":
         print("Suspended")
@@ -3133,8 +3133,8 @@ struct UnCLI {
             case "key":
                 if args.rotate {
                     try handleKeyRotate(args, pk, sk)
-                } else if args.topup {
-                    handleKeyTopup(pk)
+                } else if args.buyCredit {
+                    handleKeyBuyCredit(pk)
                 } else {
                     try handleKeyCommand(pk, sk)
                 }

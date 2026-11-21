@@ -95,7 +95,7 @@ apiBase = unsafePerformIO $ do
   return $ if null base then defaultApiBase else reverse (dropWhile (== '/') (reverse base))
 
 -- | Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
--- Serves /logs/{source} and the /topup?key= credit top-up page.
+-- Serves /logs/{source} and the /buy-credit?key= buy credit page.
 {-# NOINLINE portalBase #-}
 portalBase :: String
 portalBase = unsafePerformIO $ do
@@ -279,7 +279,7 @@ parseKey args = return $ parseKeyArgs args defaultKeyOpts
     defaultKeyOpts = KeyOpts False False Nothing
     parseKeyArgs [] opts = opts
     parseKeyArgs ("--extend":rest) opts = parseKeyArgs rest opts { keyExtend = True }
-    parseKeyArgs ("--topup":rest) opts = parseKeyArgs rest opts { keyExtend = True }
+    parseKeyArgs ("--buy-credit":rest) opts = parseKeyArgs rest opts { keyExtend = True }
     parseKeyArgs ("--rotate":rest) opts = parseKeyArgs rest opts { keyRotate = True }
     parseKeyArgs ("--otp":code:rest) opts = parseKeyArgs rest opts { keyOtp = Just code }
     parseKeyArgs (_:rest) opts = parseKeyArgs rest opts
@@ -1034,7 +1034,7 @@ printHelp = do
   putStrLn "  --ports PORTS        Ports for cloned service"
   putStrLn ""
   putStrLn "Key options:"
-  putStrLn "  --topup         Open browser to buy credit (alias: --extend)"
+  putStrLn "  --buy-credit    Open browser to buy credit (alias: --extend)"
   putStrLn "  --rotate        Rotate this key's secret (sudo OTP), update accounts.csv"
   putStrLn "  --otp CODE      Finish a rotation started without a terminal"
   putStrLn ""
@@ -2002,7 +2002,7 @@ validateKey _ = do
     "expired" -> do
       putStrLn $ red ++ "Expired" ++ reset
       putStrLn $ "Public Key: " ++ publicKey
-      putStrLn $ yellow ++ "To top up: Visit " ++ portalBase ++ "/topup?key=" ++ publicKey ++ reset
+      putStrLn $ yellow ++ "To buy credit: Visit " ++ portalBase ++ "/buy-credit?key=" ++ publicKey ++ reset
       exitWith (ExitFailure 3)
     "suspended" -> do
       putStrLn $ red ++ "Suspended" ++ reset
@@ -2014,12 +2014,12 @@ validateKey _ = do
       putStrLn $ "Reason: " ++ reason
       exitWith (ExitFailure 3)
 
--- un key --topup (alias --extend): open our portal's credit top-up page
+-- un key --buy-credit (alias --extend): open our portal's buy credit page
 extendKey :: String -> IO ()
 extendKey _ = do
   (publicKey, _) <- getApiKeys
-  let extendUrl = portalBase ++ "/topup?key=" ++ publicKey
-  putStrLn "Opening top-up page in browser..."
+  let extendUrl = portalBase ++ "/buy-credit?key=" ++ publicKey
+  putStrLn "Opening buy credit page in browser..."
   putStrLn $ "If browser doesn't open, visit: " ++ extendUrl
   _ <- readProcessWithExitCode "sh"
     ["-c", "xdg-open '" ++ extendUrl ++ "' 2>/dev/null || sensible-browser '" ++ extendUrl ++ "' 2>/dev/null || true"]

@@ -934,10 +934,10 @@ def cmd_key(args)
 
   body = ""
 
-  # --topup / --extend: open our portal's credit top-up page
+  # --buy-credit / --extend: open our portal's buy credit page
   if args[:extend]?.as?(Bool)
-    extend_url = "#{PORTAL_BASE}/topup?key=#{public_key}"
-    puts "Opening top-up page in browser..."
+    extend_url = "#{PORTAL_BASE}/buy-credit?key=#{public_key}"
+    puts "Opening buy credit page in browser..."
     puts "If browser doesn't open, visit: #{extend_url}"
     ["xdg-open", "open"].each do |browser|
       if system("which #{browser} > /dev/null 2>&1")
@@ -999,7 +999,7 @@ def cmd_key(args)
   when "expired"
     puts "#{RED}Expired#{RESET}"
     puts "Public Key: #{public_key}"
-    puts "#{YELLOW}To top up: Visit #{PORTAL_BASE}/topup?key=#{public_key}#{RESET}"
+    puts "#{YELLOW}To buy credit: Visit #{PORTAL_BASE}/buy-credit?key=#{public_key}#{RESET}"
     exit 3
   when "suspended"
     puts "#{RED}Suspended#{RESET}"
@@ -2029,8 +2029,8 @@ def main
     opts.on("--bootstrap=CMD", "Bootstrap command or URI") { |b| args[:bootstrap] = b }
     opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
     opts.on("--env-file=FILE", "Load env vars from file (for vault)") { |f| args[:svc_env_file] = f }
-    opts.on("--topup", "Open browser to buy credit") { args[:extend] = true }
-    opts.on("--extend", "Alias of --topup") { args[:extend] = true }
+    opts.on("--buy-credit", "Open browser to buy credit") { args[:extend] = true }
+    opts.on("--extend", "Alias of --buy-credit") { args[:extend] = true }
     opts.on("--json", "Output as JSON array (for languages command)") { args[:json] = true }
     opts.on("--shell=SHELL", "Shell for session (bash, python3, etc.)") { |s| args[:shell] = s }
     opts.on("--lock=ID", "Lock service/snapshot/image") { |id| args[:service_lock] = id }

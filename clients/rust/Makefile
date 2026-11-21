@@ -11,7 +11,7 @@
 #   make test-library # Library mode only
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
-#   make test-key     # un key output + --topup (offline, mock API)
+#   make test-key     # un key output + --buy-credit (offline, mock API)
 #   make build        # Build binaries
 #   make clean        # Remove build artifacts
 #
@@ -109,7 +109,7 @@ test: test-cli test-library test-key test-integration test-functional
 	@echo "$(GREEN)✓ Rust Client: All 4 test modes complete$(NC)"
 
 # ============================================================================
-# TEST: un key output + --topup (offline, mock API; ticket #155)
+# TEST: un key output + --buy-credit (offline, mock API; ticket #155)
 # ============================================================================
 
 test-key:

@@ -2164,7 +2164,7 @@ USAGE:
   node un.js service [options]           Service management
   node un.js snapshot [options]          Snapshot management
   node un.js key                         Check API key validity
-  node un.js key --topup                 Open portal to buy credit (alias: --extend)
+  node un.js key --buy-credit            Open portal to buy credit (alias: --extend)
   node un.js key --rotate                Rotate this key's secret (sudo OTP); updates accounts.csv
   node un.js key --rotate --otp CODE     Finish a rotation started without a terminal
   node un.js languages [--json]          List available languages
@@ -2527,8 +2527,8 @@ function parseArgs(args) {
     } else if (arg === '--rotate') {
       result.rotate = true;
       i++;
-    } else if (arg === '--topup' || arg === '--extend') {
-      result.topup = true;  // --extend: alias kept from before tiers retired
+    } else if (arg === '--buy-credit' || arg === '--extend') {
+      result.buyCredit = true;  // --extend: alias kept from before tiers retired
       i++;
     } else if (arg === '--otp') {
       result.otp = args[++i];
@@ -3099,12 +3099,12 @@ function keyBilling(data) {
 }
 
 /**
- * Handle key --topup (alias --extend): open our portal's credit top-up page.
+ * Handle key --buy-credit (alias --extend): open our portal's buy credit page.
  */
-async function handleKeyTopup(opts) {
+async function handleKeyBuyCredit(opts) {
   const [pk] = resolveCredentials(opts.publicKey, opts.secretKey, opts.accountIndex);
-  const url = `${PORTAL_BASE}/topup?key=${pk}`;
-  console.log('Opening top-up page in browser...');
+  const url = `${PORTAL_BASE}/buy-credit?key=${pk}`;
+  console.log('Opening buy credit page in browser...');
   console.log(`If browser doesn't open, visit: ${url}`);
   try {
     const { spawn } = await import('child_process');
@@ -3166,7 +3166,7 @@ function printKeyResult(status, data, pk) {
     if (state === 'expired') {
       console.log('Expired');
       console.log(`Public Key: ${pk}`);
-      console.log(`To top up: Visit ${PORTAL_BASE}/topup?key=${pk}`);
+      console.log(`To buy credit: Visit ${PORTAL_BASE}/buy-credit?key=${pk}`);
     } else if (state === 'suspended') {
       console.log('Suspended');
       console.log(`Public Key: ${pk}`);
@@ -3651,8 +3651,8 @@ async function cliMain() {
       case 'key':
         if (opts.rotate) {
           await handleKeyRotate(opts);
-        } else if (opts.topup) {
-          await handleKeyTopup(opts);
+        } else if (opts.buyCredit) {
+          await handleKeyBuyCredit(opts);
         } else {
           await handleKey(opts);
         }

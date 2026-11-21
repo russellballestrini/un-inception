@@ -1161,10 +1161,10 @@ function keyValidatePost(keys: ApiKeys): Promise<{ status: number; data: any }> 
 async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> {
   const pk = keys.publicKey;
   if (shouldExtend) {
-    const topupUrl = `${PORTAL_BASE}/topup?key=${encodeURIComponent(pk)}`;
-    console.log('Opening top-up page in browser...');
-    console.log(`If browser doesn't open, visit: ${topupUrl}`);
-    openBrowser(topupUrl);
+    const buyCreditUrl = `${PORTAL_BASE}/buy-credit?key=${encodeURIComponent(pk)}`;
+    console.log('Opening buy credit page in browser...');
+    console.log(`If browser doesn't open, visit: ${buyCreditUrl}`);
+    openBrowser(buyCreditUrl);
     return;
   }
 
@@ -1187,7 +1187,7 @@ async function validateKey(keys: ApiKeys, shouldExtend: boolean): Promise<void> 
     if (state === 'expired') {
       console.log(`${RED}Expired${RESET}`);
       console.log(`Public Key: ${pk}`);
-      console.log(`${YELLOW}To top up: Visit ${PORTAL_BASE}/topup?key=${pk}${RESET}`);
+      console.log(`${YELLOW}To buy credit: Visit ${PORTAL_BASE}/buy-credit?key=${pk}${RESET}`);
     } else if (state === 'suspended') {
       console.log(`${RED}Suspended${RESET}`);
       console.log(`Public Key: ${pk}`);
@@ -1738,7 +1738,7 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--dump-file' && i + 1 < argv.length) {
       args.dumpFile = argv[++i];
       i++;
-    } else if (arg === '--extend' || arg === '--topup') {
+    } else if (arg === '--extend' || arg === '--buy-credit') {
       args.extend = true;
       i++;
     } else if (arg === '--clone' && i + 1 < argv.length) {
@@ -1875,7 +1875,7 @@ Image options:
   --ports PORTS    Ports for spawned service
 
 Key options:
-  --topup          Open portal to buy credit (alias: --extend)
+  --buy-credit     Open portal to buy credit (alias: --extend)
   --rotate         Rotate this key's secret (sudo OTP); updates accounts.csv
   --otp CODE       Finish a rotation started without a terminal (with --rotate)
 

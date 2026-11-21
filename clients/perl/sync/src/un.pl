@@ -1628,8 +1628,8 @@ sub cmd_key {
 
     if ($options->{extend}) {
         my ($pk) = Un::get_credentials();
-        my $url = "$Un::PORTAL_BASE/topup?key=$pk";
-        print "Opening top-up page in browser...\n";
+        my $url = "$Un::PORTAL_BASE/buy-credit?key=$pk";
+        print "Opening buy credit page in browser...\n";
         print "If browser doesn't open, visit: $url\n";
         system("{ xdg-open '$url' || open '$url'; } >/dev/null 2>&1");
         return;
@@ -1659,7 +1659,7 @@ sub cmd_key {
         if ($state eq 'expired') {
             print "${RED}Expired${RESET}\n";
             print "Public Key: $pk\n";
-            print "${YELLOW}To top up: Visit $Un::PORTAL_BASE/topup?key=$pk${RESET}\n";
+            print "${YELLOW}To buy credit: Visit $Un::PORTAL_BASE/buy-credit?key=$pk${RESET}\n";
         } elsif ($state eq 'suspended') {
             print "${RED}Suspended${RESET}\n";
             print "Public Key: $pk\n";
@@ -1840,7 +1840,7 @@ Usage:
   perl un.pl snapshot [options]
   perl un.pl image [options]
   perl un.pl languages [--json]
-  perl un.pl key [--topup]    (buy credit; --extend: alias)
+  perl un.pl key [--buy-credit]    (buy credit; --extend: alias)
   perl un.pl key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:
@@ -2050,7 +2050,7 @@ sub main {
             $options{set_unfreeze_on_demand_value} = ($ARGV[++$i] =~ /^(true|1)$/i);
         } elsif ($arg eq '--json') {
             $options{json} = 1;
-        } elsif ($arg eq '--topup' || $arg eq '--extend') {
+        } elsif ($arg eq '--buy-credit' || $arg eq '--extend') {
             $options{extend} = 1;
         } elsif ($arg eq '--rotate') {
             $options{rotate} = 1;

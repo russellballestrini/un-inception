@@ -39,7 +39,7 @@ test-library:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  $(YELLOW)⊘$(NC) Library: Use ASDF/Quicklisp for package management"
 
-# Offline un key output + --topup contract check (local mock API, no credentials)
+# Offline un key output + --buy-credit contract check (local mock API, no credentials)
 test-key:
 	@bash $(ROOT_DIR)/tests/key_output_cli.sh sbcl --script $(SYNC_DIR)/src/un.lisp
 

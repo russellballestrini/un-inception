@@ -1382,7 +1382,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         print("       lua un.lua snapshot [options]")
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
-        print("       lua un.lua key [--topup]          (buy credit; alias --extend)")
+        print("       lua un.lua key [--buy-credit]          (buy credit; alias --extend)")
         print("       lua un.lua key --rotate [--otp CODE]")
         print("       lua un.lua paas logs [options]")
         os.exit(1)
@@ -1413,13 +1413,13 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
             end
         end
     elseif cmd == "key" then
-        local rotate, otp, topup = false, nil, false
+        local rotate, otp, buyCredit = false, nil, false
         local k = 2
         while k <= #args do
             if args[k] == "--rotate" then
                 rotate = true
-            elseif args[k] == "--topup" or args[k] == "--extend" then
-                topup = true
+            elseif args[k] == "--buy-credit" or args[k] == "--extend" then
+                buyCredit = true
             elseif args[k] == "--otp" then
                 k = k + 1
                 otp = args[k]
@@ -1431,10 +1431,10 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
             os.exit(0)
         end
         local pk = Un.get_credentials({})
-        if topup then
-            -- --topup / --extend: open our portal's credit top-up page
-            local url = Un.PORTAL_BASE .. "/topup?key=" .. pk
-            print("Opening top-up page in browser...")
+        if buyCredit then
+            -- --buy-credit / --extend: open our portal's buy credit page
+            local url = Un.PORTAL_BASE .. "/buy-credit?key=" .. pk
+            print("Opening buy credit page in browser...")
             print("If browser doesn't open, visit: " .. url)
             os.execute("xdg-open '" .. url .. "' >/dev/null 2>&1 || open '" .. url .. "' >/dev/null 2>&1")
             os.exit(0)
@@ -1467,7 +1467,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         if state == "expired" then
             print(RED .. "Expired" .. RESET)
             print("Public Key: " .. pk)
-            print(YELLOW .. "To top up: Visit " .. Un.PORTAL_BASE .. "/topup?key=" .. pk .. RESET)
+            print(YELLOW .. "To buy credit: Visit " .. Un.PORTAL_BASE .. "/buy-credit?key=" .. pk .. RESET)
             os.exit(3)
         elseif state == "suspended" then
             print(RED .. "Suspended" .. RESET)
@@ -1819,7 +1819,7 @@ if arg and arg[0] and debug.getinfo(1, "S").source == "@" .. arg[0] then
         print("       lua un.lua snapshot [options]")
         print("       lua un.lua image [options]")
         print("       lua un.lua languages [--json]")
-        print("       lua un.lua key [--topup]          (buy credit; alias --extend)")
+        print("       lua un.lua key [--buy-credit]          (buy credit; alias --extend)")
         print("       lua un.lua key --rotate [--otp CODE]")
         print("")
         print("Global options:")

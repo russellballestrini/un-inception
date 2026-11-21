@@ -1161,9 +1161,9 @@ function cmd_key(args)
             end
 
             # Build extend URL
-            extend_url = "$(PORTAL_BASE)/topup?key=$(public_key)"
+            extend_url = "$(PORTAL_BASE)/buy-credit?key=$(public_key)"
 
-            println("Opening top-up page in browser...")
+            println("Opening buy credit page in browser...")
             println("If browser doesn't open, visit: $extend_url")
 
             # Try to open browser
@@ -1404,8 +1404,8 @@ function main()
     end
 
     @add_arg_table! s["key"] begin
-        "--extend", "--topup"
-            help = "Open browser to buy credit (--topup: same)"
+        "--extend", "--buy-credit"
+            help = "Open browser to buy credit (--buy-credit: same)"
             action = :store_true
         "--rotate"
             help = "Rotate this key's secret (sudo OTP); updates accounts.csv in place"

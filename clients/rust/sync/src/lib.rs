@@ -82,7 +82,7 @@ fn api_base() -> String {
 }
 
 /// Portal base URL: UNSANDBOX_PORTAL_URL, default https://unsandbox.com, trailing slash stripped.
-/// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+/// Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 fn portal_base() -> String {
     env::var("UNSANDBOX_PORTAL_URL")
         .ok()
@@ -3181,7 +3181,7 @@ struct CliOptions {
 
     // Key options
     key_rotate: bool,       // key --rotate
-    key_topup: bool,        // key --topup (alias --extend)
+    key_buy_credit: bool,        // key --buy-credit (alias --extend)
     key_otp: Option<String>, // key --otp CODE
 }
 
@@ -3196,7 +3196,7 @@ USAGE:
     un snapshot [OPTIONS]                Manage snapshots
     un image [OPTIONS]                   Manage images
     un key                               Check API key
-    un key --topup                       Buy credit in browser (alias: --extend)
+    un key --buy-credit                  Buy credit in browser (alias: --extend)
     un key --rotate [--otp CODE]         Rotate API secret (sudo OTP)
     un languages [--json]                List supported languages
 
@@ -3371,8 +3371,8 @@ fn parse_args(args: &[String]) -> CliOptions {
                 opts.key_rotate = true;
                 i += 1;
             }
-            "--topup" | "--extend" => {
-                opts.key_topup = true;
+            "--buy-credit" | "--extend" => {
+                opts.key_buy_credit = true;
                 i += 1;
             }
             "--otp" => {
@@ -4741,10 +4741,10 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         return cmd_key_rotate(opts, &creds);
     }
 
-    if opts.key_topup {
-        // key --topup (alias --extend): open our portal's credit top-up page
-        let url = format!("{}/topup?key={}", portal_base(), creds.public_key);
-        println!("Opening top-up page in browser...");
+    if opts.key_buy_credit {
+        // key --buy-credit (alias --extend): open our portal's buy credit page
+        let url = format!("{}/buy-credit?key={}", portal_base(), creds.public_key);
+        println!("Opening buy credit page in browser...");
         println!("If browser doesn't open, visit: {}", url);
         let opener = if cfg!(target_os = "macos") {
             "open"
@@ -4803,7 +4803,7 @@ fn cmd_key(opts: &CliOptions) -> i32 {
         "expired" => {
             println!("Expired");
             println!("Public Key: {}", pk);
-            println!("To top up: Visit {}/topup?key={}", portal_base(), pk);
+            println!("To buy credit: Visit {}/buy-credit?key={}", portal_base(), pk);
             return EXIT_AUTH_ERROR;
         }
         "suspended" => {

@@ -2484,8 +2484,8 @@ HELP;
                 case 'key':
                     if ($opts['rotate']) {
                         $this->cliHandleKeyRotate($opts);
-                    } elseif ($opts['topup']) {
-                        $this->cliHandleKeyTopup();
+                    } elseif ($opts['buy_credit']) {
+                        $this->cliHandleKeyBuyCredit();
                     } else {
                         $this->cliHandleKey($opts);
                     }
@@ -2538,7 +2538,7 @@ HELP;
             'help' => false,
             'account' => null,
             'rotate' => false,
-            'topup' => false,
+            'buy_credit' => false,
             'otp' => null,
         ];
         $args = [];
@@ -2610,8 +2610,8 @@ HELP;
                 }
             } elseif ($arg === '--rotate') {
                 $opts['rotate'] = true;
-            } elseif ($arg === '--topup' || $arg === '--extend') {
-                $opts['topup'] = true;
+            } elseif ($arg === '--buy-credit' || $arg === '--extend') {
+                $opts['buy_credit'] = true;
             } elseif ($arg === '--otp') {
                 $i++;
                 $opts['otp'] = $argv[$i] ?? null;
@@ -3654,12 +3654,12 @@ HELP;
     }
 
     /**
-     * Handle key --topup (alias --extend): open our portal's credit top-up page.
+     * Handle key --buy-credit (alias --extend): open our portal's buy credit page.
      */
-    private function cliHandleKeyTopup(): void {
+    private function cliHandleKeyBuyCredit(): void {
         [$pk, $sk] = $this->resolveCredentials(null, null);
-        $url = self::portalBase() . "/topup?key={$pk}";
-        echo "Opening top-up page in browser...\n";
+        $url = self::portalBase() . "/buy-credit?key={$pk}";
+        echo "Opening buy credit page in browser...\n";
         echo "If browser doesn't open, visit: {$url}\n";
         if (PHP_OS_FAMILY === 'Darwin') {
             $cmd = 'open ' . escapeshellarg($url);
@@ -3712,7 +3712,7 @@ HELP;
             if ($state === 'expired') {
                 echo "Expired\n";
                 echo "Public Key: {$pk}\n";
-                echo "To top up: Visit " . self::portalBase() . "/topup?key={$pk}\n";
+                echo "To buy credit: Visit " . self::portalBase() . "/buy-credit?key={$pk}\n";
             } elseif ($state === 'suspended') {
                 echo "Suspended\n";
                 echo "Public Key: {$pk}\n";
@@ -4081,7 +4081,7 @@ USAGE:
     php un.php service [options]
     php un.php snapshot [options]
     php un.php key
-    php un.php key --topup                 Buy credit in browser (alias: --extend)
+    php un.php key --buy-credit            Buy credit in browser (alias: --extend)
     php un.php key --rotate [--otp CODE]   Rotate key secret (sudo OTP)
     php un.php paas logs [options]         Platform logs (partner keys; -h for options)
     php un.php languages [--json]

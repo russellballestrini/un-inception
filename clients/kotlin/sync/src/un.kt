@@ -694,8 +694,8 @@ fun cmdKey(args: Args) {
     val publicKey = publicKeyOpt ?: ""
 
     if (args.keyExtend) {
-        val extendUrl = "$PORTAL_BASE/topup?key=$publicKey"
-        println("Opening top-up page in browser...")
+        val extendUrl = "$PORTAL_BASE/buy-credit?key=$publicKey"
+        println("Opening buy credit page in browser...")
         println("If browser doesn't open, visit: $extendUrl")
 
         // Try to open browser using common commands
@@ -749,7 +749,7 @@ fun cmdKey(args: Args) {
         "expired" -> {
             println("${RED}Expired${RESET}")
             println("Public Key: $publicKey")
-            println("${YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$publicKey${RESET}")
+            println("${YELLOW}To buy credit: Visit $PORTAL_BASE/buy-credit?key=$publicKey${RESET}")
             exitProcess(3)
         }
         "suspended" -> {
@@ -1584,7 +1584,7 @@ fun parseArgs(args: Array<String>): Args {
             "--command" -> result.serviceCommand = args[++i]
             "--dump-bootstrap" -> result.serviceDumpBootstrap = args[++i]
             "--dump-file" -> result.serviceDumpFile = args[++i]
-            "--extend", "--topup" -> result.keyExtend = true
+            "--extend", "--buy-credit" -> result.keyExtend = true
             "--rotate" -> result.keyRotate = true
             "--otp" -> result.keyOtp = args[++i]
             "--account" -> result.accountIndex = args[++i].toInt()
@@ -2378,7 +2378,7 @@ Service env commands:
   env delete ID     Delete vault
 
 Key options:
-  --topup           Open portal to buy credit (alias: --extend)
+  --buy-credit      Open portal to buy credit (alias: --extend)
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 

@@ -11,7 +11,7 @@
 #   make test-library # Library mode only
 #   make test-integration # Integration mode only
 #   make test-functional  # Functional mode only
-#   make test-key     # un key output + --topup, sync CLI (offline, mock API)
+#   make test-key     # un key output + --buy-credit, sync CLI (offline, mock API)
 #   make build        # Build JAR files
 #   make clean        # Remove build artifacts
 #
@@ -252,7 +252,7 @@ test-os:
 	@bash $(ROOT_DIR)/tests/os_flag_cli.sh $(JAVA) -cp build/os-async UnsandboxAsync
 
 # ============================================================================
-# TEST: un key output + --topup (offline, local mock API; ticket #155)
+# TEST: un key output + --buy-credit (offline, local mock API; ticket #155)
 # The async CLI prints the raw validate map, so only sync follows CLI_SPEC here.
 # ============================================================================
 

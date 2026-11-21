@@ -32,7 +32,7 @@ test-functional:
 test-os:
 	@bash ../../tests/os_flag_cli.sh pwsh -NoProfile -File sync/src/un.ps1
 
-# Offline un key output + --topup contract check (local mock API, no credentials)
+# Offline un key output + --buy-credit contract check (local mock API, no credentials)
 test-key:
 	@bash ../../tests/key_output_cli.sh pwsh -NoProfile -File sync/src/un.ps1
 

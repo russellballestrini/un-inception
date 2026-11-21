@@ -1439,7 +1439,7 @@ defmodule Un do
     IO.puts("       un.ex [--account N] service env <action> <service_id>")
     IO.puts("       un.ex [--account N] snapshot [options]")
     IO.puts("       un.ex [--account N] image [options]")
-    IO.puts("       un.ex [--account N] key [--topup]   (buy credit; alias --extend)")
+    IO.puts("       un.ex [--account N] key [--buy-credit]   (buy credit; alias --extend)")
     IO.puts("       un.ex languages [--json]")
     IO.puts("       un.ex [--account N] paas logs [options]")
     IO.puts("")
@@ -2111,7 +2111,7 @@ defmodule Un do
   defp key_command_validate(args) do
     api_key = get_api_key()
 
-    if "--topup" in args or "--extend" in args do
+    if "--buy-credit" in args or "--extend" in args do
       validate_key(api_key, extend: true)
     else
       validate_key(api_key, extend: false)
@@ -2122,8 +2122,8 @@ defmodule Un do
     {public_key, secret_key} = get_api_keys()
 
     if extend do
-      url = "#{portal_base()}/topup?key=#{public_key}"
-      IO.puts("Opening top-up page in browser...")
+      url = "#{portal_base()}/buy-credit?key=#{public_key}"
+      IO.puts("Opening buy credit page in browser...")
       IO.puts("If browser doesn't open, visit: #{url}")
       open_browser(url)
     else
@@ -2240,7 +2240,7 @@ defmodule Un do
       "expired" ->
         IO.puts("#{@red}Expired#{@reset}")
         IO.puts("Public Key: #{public_key}")
-        IO.puts("#{@yellow}To top up: Visit #{portal_base()}/topup?key=#{public_key}#{@reset}")
+        IO.puts("#{@yellow}To buy credit: Visit #{portal_base()}/buy-credit?key=#{public_key}#{@reset}")
         System.halt(3)
 
       "suspended" ->

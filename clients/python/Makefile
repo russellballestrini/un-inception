@@ -10,7 +10,7 @@
 #   make test-library # Library mode only
 #   make test-sync    # Test sync SDK only
 #   make test-async   # Test async SDK only
-#   make test-key     # un key output + --topup, sync and async CLIs (offline, mock API)
+#   make test-key     # un key output + --buy-credit, sync and async CLIs (offline, mock API)
 #   make clean        # Remove build artifacts + venv
 #
 # The Makefile manages a .venv automatically. No manual pip install needed.
@@ -141,7 +141,7 @@ test-library: $(VENV)/.deps-installed
 	fi
 
 # ============================================================================
-# TEST: un key output + --topup (offline, mock API; ticket #155)
+# TEST: un key output + --buy-credit (offline, mock API; ticket #155)
 # ============================================================================
 
 test-key: $(VENV)/.deps-installed

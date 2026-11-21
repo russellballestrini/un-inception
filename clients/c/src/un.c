@@ -56,7 +56,7 @@ static const char* api_base(void) {
 }
 
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
-// Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+// Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 static const char* portal_base(void) {
     static char *base = NULL;
     if (!base) {
@@ -7034,7 +7034,7 @@ static int validate_api_key(const UnsandboxCredentials *creds) {
         if (state && strcmp(state, "expired") == 0) {
             printf("\033[31mExpired\033[0m\n");
             printf("Public Key: %s\n", pk);
-            printf("\033[33mTo top up:\033[0m Visit %s/topup?key=%s\n", PORTAL_BASE, pk);
+            printf("\033[33mTo buy credit:\033[0m Visit %s/buy-credit?key=%s\n", PORTAL_BASE, pk);
         } else if (state && strcmp(state, "suspended") == 0) {
             printf("\033[31mSuspended\033[0m\n");
             printf("Public Key: %s\n", pk);
@@ -7286,7 +7286,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s paas logs --follow                    # follow all logs in real-time\n", prog);
     fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", prog);
     fprintf(stderr, "  %s key                             # check API key validity\n", prog);
-    fprintf(stderr, "  %s key --topup                     # open portal to buy credit (alias: --extend)\n", prog);
+    fprintf(stderr, "  %s key --buy-credit                # open portal to buy credit (alias: --extend)\n", prog);
     fprintf(stderr, "  %s key --rotate                    # rotate secret (sudo OTP), update accounts.csv\n", prog);
     fprintf(stderr, "  %s key --rotate --otp CODE         # finish a rotation started without a terminal\n", prog);
     fprintf(stderr, "\nAuthentication:\n");
@@ -10082,7 +10082,7 @@ int main(int argc, char *argv[]) {
             } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
                 i++;
                 cli_account_index = atoi(argv[i]);
-            } else if (strcmp(argv[i], "--topup") == 0 || strcmp(argv[i], "--extend") == 0) {
+            } else if (strcmp(argv[i], "--buy-credit") == 0 || strcmp(argv[i], "--extend") == 0) {
                 do_extend = 1;  // --extend: alias kept from before tiers retired
             } else if (strcmp(argv[i], "--rotate") == 0) {
                 do_rotate = 1;
@@ -10104,13 +10104,13 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        // Handle --topup / --extend: open our portal's credit top-up page
+        // Handle --buy-credit / --extend: open our portal's buy credit page
         if (do_extend) {
             // If we have public_key from credentials, use it directly
             if (creds->public_key) {
                 char extend_url[512];
-                snprintf(extend_url, sizeof(extend_url), "%s/topup?key=%s", PORTAL_BASE, creds->public_key);
-                printf("Opening top-up page in browser...\n");
+                snprintf(extend_url, sizeof(extend_url), "%s/buy-credit?key=%s", PORTAL_BASE, creds->public_key);
+                printf("Opening buy credit page in browser...\n");
                 printf("If browser doesn't open, visit: %s\n", extend_url);
 
                 // Try to open URL in browser

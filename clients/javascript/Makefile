@@ -83,7 +83,7 @@ test: test-cli test-library test-key test-integration test-functional
 # ============================================================================
 
 
-# un key output + --topup (offline, local mock API; ticket #155).
+# un key output + --buy-credit (offline, local mock API; ticket #155).
 # The async CLI prints the raw validate JSON, so only sync follows CLI_SPEC here.
 test-key:
 	@bash $(ROOT_DIR)/tests/key_output_cli.sh node $(SYNC_DIR)/src/un.js

@@ -2436,8 +2436,8 @@ def cmdKey(args) {
     def expired = result.expired ?: false
 
     if (args.keyExtend && fetchedPublicKey != 'N/A') {
-        def extendUrl = "${PORTAL_BASE}/topup?key=${fetchedPublicKey}"
-        println("Opening top-up page in browser...")
+        def extendUrl = "${PORTAL_BASE}/buy-credit?key=${fetchedPublicKey}"
+        println("Opening buy credit page in browser...")
         println("If browser doesn't open, visit: ${extendUrl}")
         openBrowser(extendUrl)
         return
@@ -2447,7 +2447,7 @@ def cmdKey(args) {
         println("${RED}Expired${RESET}")
         println("Public Key: ${fetchedPublicKey}")
         println("Expired: ${expiresAt}")
-        println("${YELLOW}To top up: Visit ${PORTAL_BASE}/topup?key=${fetchedPublicKey}${RESET}")
+        println("${YELLOW}To buy credit: Visit ${PORTAL_BASE}/buy-credit?key=${fetchedPublicKey}${RESET}")
         System.exit(1)
     }
 
@@ -2846,7 +2846,7 @@ def parseArgs(argv) {
                 args.serviceDumpFile = argv[++i]
                 break
             case '--extend':
-            case '--topup':
+            case '--buy-credit':
                 args.keyExtend = true
                 break
             case '--rotate':
@@ -2931,7 +2931,7 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --topup             Open portal to buy credit (alias: --extend)
+  --buy-credit        Open portal to buy credit (alias: --extend)
   --rotate            Rotate the key's secret (emailed one-time code)
   --otp CODE          Finish a rotation started without a terminal
 

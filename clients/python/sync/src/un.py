@@ -3026,8 +3026,8 @@ Examples:
 
     # Key subcommand
     key_parser = subparsers.add_parser("key", help="Check API key validity, buy credit, or rotate its secret")
-    key_parser.add_argument("--topup", "--extend", dest="topup", action="store_true",
-                            help="Open our portal to top up this key's credit (--extend: alias)")
+    key_parser.add_argument("--buy-credit", "--extend", dest="buy_credit", action="store_true",
+                            help="Open our portal to buy credit for this key (--extend: alias)")
     key_parser.add_argument("--rotate", action="store_true",
                             help="Rotate this key's secret (sudo OTP); updates accounts.csv in place")
     key_parser.add_argument("--otp", metavar="CODE",
@@ -3106,8 +3106,8 @@ def cli_main():
         elif args.command == "key":
             if getattr(args, "rotate", False):
                 _handle_key_rotate(args, public_key, secret_key)
-            elif getattr(args, "topup", False):
-                _handle_key_topup(public_key, secret_key)
+            elif getattr(args, "buy_credit", False):
+                _handle_key_buy_credit(public_key, secret_key)
             else:
                 _handle_key_command(public_key, secret_key)
         elif args.command == "languages":
@@ -3569,11 +3569,11 @@ def _key_billing(result: dict) -> str:
     return "N/A"
 
 
-def _handle_key_topup(public_key: str, secret_key: str):
-    """un key --topup (alias --extend): open our portal's credit top-up page."""
+def _handle_key_buy_credit(public_key: str, secret_key: str):
+    """un key --buy-credit (alias --extend): open our portal's buy credit page."""
     public_key, _ = _resolve_credentials(public_key, secret_key)
-    url = f"{PORTAL_BASE}/topup?key={public_key}"
-    print("Opening top-up page in browser...")
+    url = f"{PORTAL_BASE}/buy-credit?key={public_key}"
+    print("Opening buy credit page in browser...")
     print(f"If browser doesn't open, visit: {url}")
     try:
         import webbrowser
@@ -3620,7 +3620,7 @@ def _handle_key_command(public_key: str, secret_key: str):
         if state == "expired":
             print("Expired")
             print(f"Public Key: {public_key}")
-            print(f"To top up: Visit {PORTAL_BASE}/topup?key={public_key}")
+            print(f"To buy credit: Visit {PORTAL_BASE}/buy-credit?key={public_key}")
         elif state == "suspended":
             print("Suspended")
             print(f"Public Key: {public_key}")

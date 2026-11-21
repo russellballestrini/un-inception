@@ -230,11 +230,11 @@ async Task CmdKeyAsync(Args args)
 
     if (args.KeyExtend)
     {
-        // key --topup (alias --extend): open our portal's credit top-up page
-        var topupUrl = $"{PORTAL_BASE}/topup?key={publicKey}";
-        Console.WriteLine("Opening top-up page in browser...");
-        Console.WriteLine($"If browser doesn't open, visit: {topupUrl}");
-        try { OpenBrowser(topupUrl); } catch (Exception) { }
+        // key --buy-credit (alias --extend): open our portal's buy credit page
+        var buyCreditUrl = $"{PORTAL_BASE}/buy-credit?key={publicKey}";
+        Console.WriteLine("Opening buy credit page in browser...");
+        Console.WriteLine($"If browser doesn't open, visit: {buyCreditUrl}");
+        try { OpenBrowser(buyCreditUrl); } catch (Exception) { }
         return;
     }
 
@@ -271,7 +271,7 @@ async Task CmdKeyAsync(Args args)
         Console.WriteLine($"{RED}Expired{RESET}");
         Console.WriteLine($"Public Key: {publicKey}");
         if (result.TryGetValue("expired_at", out var expAt) && expAt is JsonElement expAtEl) Console.WriteLine($"Expired: {expAtEl.GetString()}");
-        Console.WriteLine($"{YELLOW}To top up: Visit {PORTAL_BASE}/topup?key={publicKey}{RESET}");
+        Console.WriteLine($"{YELLOW}To buy credit: Visit {PORTAL_BASE}/buy-credit?key={publicKey}{RESET}");
     }
     else
     {
@@ -972,7 +972,7 @@ Args ParseArgs(string[] args)
         else if (arg == "--unfreeze-on-demand") result.ServiceUnfreezeOnDemand = args[++i];
         else if (arg == "--unfreeze-on-demand-enabled") result.ServiceUnfreezeOnDemandEnabled = args[++i].ToLower() == "true";
         else if (arg == "--with-unfreeze-on-demand") result.ServiceCreateUnfreezeOnDemand = true;
-        else if (arg == "--topup" || arg == "--extend") result.KeyExtend = true;
+        else if (arg == "--buy-credit" || arg == "--extend") result.KeyExtend = true;
         // Snapshot options
         else if (arg == "--delete")
         {
@@ -1099,7 +1099,7 @@ Languages options:
   --json            Output as JSON array
 
 Key options:
-  --topup           Open browser to buy credit (alias: --extend)
+  --buy-credit      Open browser to buy credit (alias: --extend)
 
 Environment:
   UNSANDBOX_PUBLIC_KEY   Your public API key

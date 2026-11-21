@@ -90,7 +90,7 @@ let api_base =
   strip url
 
 (** Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash).
-    Serves the /topup?key= credit top-up page. *)
+    Serves the /buy-credit?key= buy credit page. *)
 let portal_base =
   let url = try Sys.getenv "UNSANDBOX_PORTAL_URL" with Not_found -> "" in
   let url = if url = "" then "https://unsandbox.com" else url in
@@ -1846,7 +1846,7 @@ let display_key_result code response public_key =
   | "expired" ->
     Printf.printf "%sExpired%s\n" red reset;
     Printf.printf "Public Key: %s\n" public_key;
-    Printf.printf "%sTo top up: Visit %s/topup?key=%s%s\n" yellow portal_base public_key reset;
+    Printf.printf "%sTo buy credit: Visit %s/buy-credit?key=%s%s\n" yellow portal_base public_key reset;
     exit 3
   | "suspended" ->
     Printf.printf "%sSuspended%s\n" red reset;
@@ -1858,12 +1858,12 @@ let display_key_result code response public_key =
     Printf.printf "Reason: %s\n" reason;
     exit 3
 
-(* Key command; extend = --topup or its alias --extend (credit top-up page) *)
+(* Key command; extend = --buy-credit or its alias --extend (buy credit page) *)
 let key_command extend =
   let (public_key, secret_key) = get_api_keys () in
   if extend then begin
-    let url = Printf.sprintf "%s/topup?key=%s" portal_base public_key in
-    Printf.printf "Opening top-up page in browser...\n";
+    let url = Printf.sprintf "%s/buy-credit?key=%s" portal_base public_key in
+    Printf.printf "Opening buy credit page in browser...\n";
     Printf.printf "If browser doesn't open, visit: %s\n%!" url;
     open_browser url
   end else begin
@@ -2431,7 +2431,7 @@ let () =
     Printf.printf "       un.ml [--account N] image [options]\n";
     Printf.printf "       un.ml [--account N] service env <action> <service_id>\n";
     Printf.printf "       un.ml languages [--json]\n";
-    Printf.printf "       un.ml key [--topup]      (buy credit; alias: --extend)\n";
+    Printf.printf "       un.ml key [--buy-credit]      (buy credit; alias: --extend)\n";
     Printf.printf "       un.ml key --rotate [--otp CODE]\n\n";
     Printf.printf "Global options:\n";
     Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n";
@@ -2449,7 +2449,7 @@ let () =
   | "image" :: rest ->
     image_command rest
   | "key" :: rest ->
-    let extend = List.mem "--topup" rest || List.mem "--extend" rest in
+    let extend = List.mem "--buy-credit" rest || List.mem "--extend" rest in
     let rec find_otp = function
       | "--otp" :: code :: _ -> Some code
       | _ :: rest -> find_otp rest

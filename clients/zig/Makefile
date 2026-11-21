@@ -13,7 +13,7 @@ NC := \033[0m
 help:
 	@echo "UN Zig Client"
 	@echo "  make test    All 4 test modes"
-	@echo "  make test-key  Offline un key output + --topup check (tests/key_output_cli.sh)"
+	@echo "  make test-key  Offline un key output + --buy-credit check (tests/key_output_cli.sh)"
 
 test: test-cli test-library test-integration test-functional
 	@echo "$(GREEN)✓ Zig Client: All 4 test modes complete$(NC)"

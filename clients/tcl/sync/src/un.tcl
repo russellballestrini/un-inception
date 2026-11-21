@@ -1226,7 +1226,7 @@ Requires a partner API key with log access enabled."
         set otp ""
         for {set i 0} {$i < [llength $args]} {incr i} {
             set arg [lindex $args $i]
-            if {$arg eq "--topup" || $arg eq "--extend"} { set extend 1 }
+            if {$arg eq "--buy-credit" || $arg eq "--extend"} { set extend 1 }
             if {$arg eq "--rotate"} { set rotate 1 }
             if {$arg eq "--otp" && $i + 1 < [llength $args]} {
                 set otp_given 1
@@ -1246,8 +1246,8 @@ Requires a partner API key with log access enabled."
         set pk [lindex $creds 0]
 
         if {$extend} {
-            set url "$PORTAL_BASE/topup?key=$pk"
-            puts "Opening top-up page in browser..."
+            set url "$PORTAL_BASE/buy-credit?key=$pk"
+            puts "Opening buy credit page in browser..."
             puts "If browser doesn't open, visit: $url"
             catch {exec xdg-open $url >/dev/null 2>/dev/null}
             return
@@ -1290,7 +1290,7 @@ Requires a partner API key with log access enabled."
             expired {
                 puts "${RED}Expired${RESET}"
                 puts "Public Key: $pk"
-                puts "${YELLOW}To top up: Visit $PORTAL_BASE/topup?key=$pk${RESET}"
+                puts "${YELLOW}To buy credit: Visit $PORTAL_BASE/buy-credit?key=$pk${RESET}"
                 exit 3
             }
             suspended {
@@ -1641,7 +1641,7 @@ Usage:
   tclsh un.tcl snapshot [options]
   tclsh un.tcl image [options]
   tclsh un.tcl languages [--json]
-  tclsh un.tcl key [--topup]    (buy credit; --extend: alias)
+  tclsh un.tcl key [--buy-credit]    (buy credit; --extend: alias)
   tclsh un.tcl key --rotate [--otp CODE]
 
 Global options:

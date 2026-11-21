@@ -2129,7 +2129,7 @@ module Un
           ruby un.rb service [options]            Manage services
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
-          ruby un.rb key --topup                  Buy credit in browser (alias: --extend)
+          ruby un.rb key --buy-credit             Buy credit in browser (alias: --extend)
           ruby un.rb key --rotate [--otp CODE]    Rotate key secret (sudo OTP)
           ruby un.rb paas logs [options]          Platform logs (partner keys; -h for options)
           ruby un.rb languages [--json]           List available languages
@@ -3331,11 +3331,11 @@ module Un
       end
     end
 
-    # key --topup (alias --extend): open our portal's credit top-up page
-    def cli_key_topup(options)
+    # key --buy-credit (alias --extend): open our portal's buy credit page
+    def cli_key_buy_credit(options)
       pk, = resolve_credentials(options[:public_key], options[:secret_key])
-      url = "#{PORTAL_BASE}/topup?key=#{pk}"
-      puts 'Opening top-up page in browser...'
+      url = "#{PORTAL_BASE}/buy-credit?key=#{pk}"
+      puts 'Opening buy credit page in browser...'
       puts "If browser doesn't open, visit: #{url}"
       opener = if RUBY_PLATFORM =~ /darwin/ then 'open'
                elsif RUBY_PLATFORM =~ /mswin|mingw|cygwin/ then 'start'
@@ -3353,15 +3353,15 @@ module Un
     # Key command
     def cli_key(options)
       parser = parse_global_options(options) do
-        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--topup] [--rotate [--otp CODE]]'
+        puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--buy-credit] [--rotate [--otp CODE]]'
         puts
         puts 'Check API key validity and show account info'
-        puts '  --topup       Open our portal to buy credit (alias: --extend)'
+        puts '  --buy-credit  Open our portal to buy credit (alias: --extend)'
         puts '  --rotate      Rotate this key\'s secret (sudo OTP); updates accounts.csv'
         puts '  --otp CODE    Finish a rotation started without a terminal'
       end
-      parser.on('--topup', '--extend', 'Buy credit (alias: --extend)') do
-        options[:topup] = true
+      parser.on('--buy-credit', '--extend', 'Buy credit (alias: --extend)') do
+        options[:buy_credit] = true
       end
       parser.on('--rotate', 'Rotate this key\'s secret') do
         options[:rotate] = true
@@ -3372,7 +3372,7 @@ module Un
       parser.parse!(ARGV)
 
       return cli_key_rotate(options) if options[:rotate]
-      return cli_key_topup(options) if options[:topup]
+      return cli_key_buy_credit(options) if options[:buy_credit]
 
       # `un key` output per CLI_SPEC.md: no public key in the payload, so print
       # the one we signed with; expiry comes from valid_through (ms).
@@ -3411,7 +3411,7 @@ module Un
         when 'expired'
           puts 'Expired'
           puts "Public Key: #{pk}"
-          puts "To top up: Visit #{PORTAL_BASE}/topup?key=#{pk}"
+          puts "To buy credit: Visit #{PORTAL_BASE}/buy-credit?key=#{pk}"
         when 'suspended'
           puts 'Suspended'
           puts "Public Key: #{pk}"

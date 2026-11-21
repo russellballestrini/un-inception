@@ -29,7 +29,7 @@ test-library:
 	@if [ -f "$(SYNC_DIR)/project.clj" ]; then cd $(SYNC_DIR) && lein test 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Run lein deps"; \
 	elif [ -f "$(SYNC_DIR)/deps.edn" ]; then cd $(SYNC_DIR) && clj -M:test 2>/dev/null || echo "  $(YELLOW)⊘$(NC) Check deps.edn"; fi
 
-# Offline un key output + --topup contract check (local mock API, no credentials)
+# Offline un key output + --buy-credit contract check (local mock API, no credentials)
 test-key:
 	@bash $(ROOT_DIR)/tests/key_output_cli.sh clojure -M $(SYNC_DIR)/src/un.clj
 

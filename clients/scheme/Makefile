@@ -19,7 +19,7 @@ test-library:
 	@echo "━━━ LIBRARY MODE ━━━"
 	@if [ -f "$(SYNC_DIR)/unsandbox.scm" ]; then guile -c "(load \"$(SYNC_DIR)/unsandbox.scm\")" 2>/dev/null && echo "  $(GREEN)✓$(NC) Module loads" || echo "  $(YELLOW)⊘$(NC) Check module"; fi
 
-# Offline un key output + --topup contract check (local mock API, no credentials)
+# Offline un key output + --buy-credit contract check (local mock API, no credentials)
 test-key:
 	@bash $(ROOT_DIR)/tests/key_output_cli.sh guile --no-auto-compile $(SYNC_DIR)/src/un.scm
 

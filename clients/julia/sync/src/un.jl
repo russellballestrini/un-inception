@@ -75,7 +75,7 @@ const API_BASE = let u = get(ENV, "UNSANDBOX_API_URL", "")
     isempty(u) ? "https://api.unsandbox.com" : String(rstrip(u, '/'))
 end
 # Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com), no trailing slash.
-# Serves /logs/{source} (partner log access) and /topup?key= (credit top-up).
+# Serves /logs/{source} (partner log access) and /buy-credit?key= (buy credit).
 const PORTAL_BASE = let u = get(ENV, "UNSANDBOX_PORTAL_URL", "")
     isempty(u) ? "https://unsandbox.com" : String(rstrip(u, '/'))
 end
@@ -909,7 +909,7 @@ function validate_key(api_key::String, secret_key=nothing)
     if state == "expired"
         println("$(RED)Expired$(RESET)")
         println("Public Key: $api_key")
-        println("$(YELLOW)To top up: Visit $(PORTAL_BASE)/topup?key=$(api_key)$(RESET)")
+        println("$(YELLOW)To buy credit: Visit $(PORTAL_BASE)/buy-credit?key=$(api_key)$(RESET)")
         return 3
     elseif state == "suspended"
         println("$(RED)Suspended$(RESET)")
@@ -1176,12 +1176,12 @@ function cmd_key(args)
     (public_key, secret_key) = get_api_keys(args["api-key"]; account_index=something(get(args, "account", nothing), -1))
     api_key = public_key
 
-    # Handle --topup / --extend: open our portal's credit top-up page
-    if args["topup"]
+    # Handle --buy-credit / --extend: open our portal's buy credit page
+    if args["buy-credit"]
         try
-            extend_url = "$(PORTAL_BASE)/topup?key=$(public_key)"
+            extend_url = "$(PORTAL_BASE)/buy-credit?key=$(public_key)"
 
-            println("Opening top-up page in browser...")
+            println("Opening buy credit page in browser...")
             println("If browser doesn't open, visit: $extend_url")
 
             # Try to open browser
@@ -1456,7 +1456,7 @@ function main()
     end
 
     @add_arg_table! s["key"] begin
-        "--topup", "--extend"
+        "--buy-credit", "--extend"
             help = "Open browser to buy credit (--extend: alias)"
             action = :store_true
         "--rotate"
