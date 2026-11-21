@@ -1987,7 +1987,7 @@ Usage:
   un service [options]              Manage services
   un snapshot [options]             Manage snapshots
   un key                            Check API key
-  un key --topup                    Open portal to top up credit (alias: --extend)
+  un key --topup                    Open portal to buy credit (alias: --extend)
   un key --rotate [--otp CODE]      Rotate API secret (sudo OTP)
   un languages [--json]             List available languages
 

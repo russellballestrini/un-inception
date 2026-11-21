@@ -1840,7 +1840,7 @@ Service env commands:
   env delete ID     Delete vault
 
 Key options:
-  --topup           Open browser to top up credit (alias: --extend)
+  --topup           Open browser to buy credit (alias: --extend)
   --rotate          Rotate the key's secret (emailed one-time code)
   --otp CODE        Finish a rotation started without a terminal
 

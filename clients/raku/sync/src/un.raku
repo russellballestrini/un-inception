@@ -2700,7 +2700,7 @@ sub MAIN(*@args is copy) is export {
         note "       un.raku snapshot [options]";
         note "       un.raku image [options]";
         note "       un.raku key [options]";
-        note "       un.raku key --topup             (top up credit; alias --extend)";
+        note "       un.raku key --topup             (buy credit; alias --extend)";
         note "       un.raku languages [--json]";
         note "       un.raku paas logs [options]";
         note "";

@@ -1439,7 +1439,7 @@ defmodule Un do
     IO.puts("       un.ex [--account N] service env <action> <service_id>")
     IO.puts("       un.ex [--account N] snapshot [options]")
     IO.puts("       un.ex [--account N] image [options]")
-    IO.puts("       un.ex [--account N] key [--topup]   (top up credit; alias --extend)")
+    IO.puts("       un.ex [--account N] key [--topup]   (buy credit; alias --extend)")
     IO.puts("       un.ex languages [--json]")
     IO.puts("       un.ex [--account N] paas logs [options]")
     IO.puts("")

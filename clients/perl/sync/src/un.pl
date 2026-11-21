@@ -1840,7 +1840,7 @@ Usage:
   perl un.pl snapshot [options]
   perl un.pl image [options]
   perl un.pl languages [--json]
-  perl un.pl key [--topup]    (top up credit; --extend: alias)
+  perl un.pl key [--topup]    (buy credit; --extend: alias)
   perl un.pl key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:

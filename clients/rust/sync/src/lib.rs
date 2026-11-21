@@ -3196,7 +3196,7 @@ USAGE:
     un snapshot [OPTIONS]                Manage snapshots
     un image [OPTIONS]                   Manage images
     un key                               Check API key
-    un key --topup                       Top up credit in browser (alias: --extend)
+    un key --topup                       Buy credit in browser (alias: --extend)
     un key --rotate [--otp CODE]         Rotate API secret (sudo OTP)
     un languages [--json]                List supported languages
 

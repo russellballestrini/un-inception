@@ -1711,7 +1711,7 @@ pub fn main() !u8 {
         std.debug.print("       {s} service [options]\n", .{args[0]});
         std.debug.print("       {s} service env <action> <service_id> [options]\n", .{args[0]});
         std.debug.print("       {s} image [options]\n", .{args[0]});
-        std.debug.print("       {s} key [--topup]   (top up credit; alias: --extend)\n", .{args[0]});
+        std.debug.print("       {s} key [--topup]   (buy credit; alias: --extend)\n", .{args[0]});
         std.debug.print("       {s} key --rotate [--otp CODE]\n", .{args[0]});
         std.debug.print("       {s} languages [--json]\n", .{args[0]});
         std.debug.print("\nVault commands:\n", .{});

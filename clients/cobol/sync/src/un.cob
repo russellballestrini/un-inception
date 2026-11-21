@@ -184,7 +184,7 @@
                DISPLAY "       un.cob session [options]" UPON SYSERR
                DISPLAY "       un.cob service [options]" UPON SYSERR
                DISPLAY "       un.cob key [--topup | --rotate [--otp CODE]]"
-               DISPLAY "         --topup: open portal to top up credit (alias --extend)"
+               DISPLAY "         --topup: open portal to buy credit (alias --extend)"
                    UPON SYSERR
                DISPLAY "  --os OS   Target OS: linux (default) or freebsd "
                    "(execute, session, service)" UPON SYSERR

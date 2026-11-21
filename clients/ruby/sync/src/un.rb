@@ -2129,7 +2129,7 @@ module Un
           ruby un.rb service [options]            Manage services
           ruby un.rb snapshot [options]           Manage snapshots
           ruby un.rb key                          Check API key
-          ruby un.rb key --topup                  Top up credit in browser (alias: --extend)
+          ruby un.rb key --topup                  Buy credit in browser (alias: --extend)
           ruby un.rb key --rotate [--otp CODE]    Rotate key secret (sudo OTP)
           ruby un.rb paas logs [options]          Platform logs (partner keys; -h for options)
           ruby un.rb languages [--json]           List available languages
@@ -3356,11 +3356,11 @@ module Un
         puts 'Usage: ruby un.rb key [-p PUBLIC_KEY] [-k SECRET_KEY] [--topup] [--rotate [--otp CODE]]'
         puts
         puts 'Check API key validity and show account info'
-        puts '  --topup       Open our portal to top up credit (alias: --extend)'
+        puts '  --topup       Open our portal to buy credit (alias: --extend)'
         puts '  --rotate      Rotate this key\'s secret (sudo OTP); updates accounts.csv'
         puts '  --otp CODE    Finish a rotation started without a terminal'
       end
-      parser.on('--topup', '--extend', 'Top up credit (alias: --extend)') do
+      parser.on('--topup', '--extend', 'Buy credit (alias: --extend)') do
         options[:topup] = true
       end
       parser.on('--rotate', 'Rotate this key\'s secret') do

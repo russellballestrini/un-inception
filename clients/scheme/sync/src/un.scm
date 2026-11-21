@@ -1635,7 +1635,7 @@
         (display "       un.scm session [options]\n")
         (display "       un.scm service [options]\n")
         (display "       un.scm image [options]\n")
-        (display "       un.scm key [--topup]   (top up credit; alias: --extend)\n")
+        (display "       un.scm key [--topup]   (buy credit; alias: --extend)\n")
         (display "       un.scm key --rotate [--otp CODE]\n")
         (display "       un.scm languages [--json]\n")
         (display "       un.scm paas logs [options]\n")

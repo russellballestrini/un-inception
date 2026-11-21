@@ -1099,7 +1099,7 @@ Languages options:
   --json            Output as JSON array
 
 Key options:
-  --topup           Open browser to top up credit (alias: --extend)
+  --topup           Open browser to buy credit (alias: --extend)
 
 Environment:
   UNSANDBOX_PUBLIC_KEY   Your public API key

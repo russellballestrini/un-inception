@@ -1748,7 +1748,7 @@ func printHelp() {
         un service --list                      List all services
         un snapshot --list                     List all snapshots
         un key                                 Check API key
-        un key --topup                         Open portal to top up credit (alias: --extend)
+        un key --topup                         Open portal to buy credit (alias: --extend)
         un key --rotate                        Rotate key secret (sudo OTP), update accounts.csv
         un key --rotate --otp CODE             Finish a rotation started without a terminal
     """

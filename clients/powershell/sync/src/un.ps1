@@ -1477,7 +1477,7 @@ Snapshot options:
   --ports PORTS       Ports for cloned service
 
 Key options:
-  --topup         Open browser to top up credit (alias: --extend)
+  --topup         Open browser to buy credit (alias: --extend)
   --rotate        Rotate this key's secret (sudo OTP); updates accounts.csv
   --otp CODE      Finish a rotation started without a terminal
 "@

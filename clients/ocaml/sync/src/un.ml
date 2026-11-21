@@ -2431,7 +2431,7 @@ let () =
     Printf.printf "       un.ml [--account N] image [options]\n";
     Printf.printf "       un.ml [--account N] service env <action> <service_id>\n";
     Printf.printf "       un.ml languages [--json]\n";
-    Printf.printf "       un.ml key [--topup]      (top up credit; alias: --extend)\n";
+    Printf.printf "       un.ml key [--topup]      (buy credit; alias: --extend)\n";
     Printf.printf "       un.ml key --rotate [--otp CODE]\n\n";
     Printf.printf "Global options:\n";
     Printf.printf "  --account N    Use accounts.csv row N (bypasses env vars)\n";

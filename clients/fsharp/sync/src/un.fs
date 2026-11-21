@@ -1694,7 +1694,7 @@ let printHelp () =
     printfn "  --ports PORTS         Ports for spawned service"
     printfn ""
     printfn "Key options:"
-    printfn "  --topup           Open browser to top up credit (alias: --extend)"
+    printfn "  --topup           Open browser to buy credit (alias: --extend)"
     printfn "  --rotate          Rotate the key's secret (emailed one-time code)"
     printfn "  --otp CODE        Finish a rotation started without a terminal"
     printfn "  -k KEY            API key to validate"

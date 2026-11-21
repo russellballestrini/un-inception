@@ -40,7 +40,7 @@
 \        gforth un.forth session [options]
 \        gforth un.forth service [options]
 \        gforth un.forth key [options]
-\        gforth un.forth key --topup   (top up credit; alias --extend)
+\        gforth un.forth key --topup   (buy credit; alias --extend)
 \        gforth un.forth key --rotate [--otp CODE]
 \ Global: --os OS (linux or freebsd) before our subcommand or file
 
@@ -1997,7 +1997,7 @@ variable rot-len
         s\"        gforth un.forth service [options]" type cr
         s\"        gforth un.forth image [options]" type cr
         s\"        gforth un.forth key [options]" type cr
-        s\"        gforth un.forth key --topup   (top up credit; alias --extend)" type cr
+        s\"        gforth un.forth key --topup   (buy credit; alias --extend)" type cr
         s\"        gforth un.forth key --rotate [--otp CODE]" type cr
         s\"        gforth un.forth languages [--json]" type cr
         s\" Global: --os OS   Target OS: linux (default) or freebsd (execute, session, service)" type cr

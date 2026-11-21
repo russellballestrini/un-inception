@@ -3048,7 +3048,7 @@ Examples:
                               help="Ports for spawned service (comma-separated)")
 
     # Key subcommand
-    key_parser = subparsers.add_parser("key", help="Check API key validity, top up credit, or rotate its secret")
+    key_parser = subparsers.add_parser("key", help="Check API key validity, buy credit, or rotate its secret")
     key_parser.add_argument("--topup", "--extend", dest="topup", action="store_true",
                             help="Open our portal to top up this key's credit (--extend: alias)")
     key_parser.add_argument("--rotate", action="store_true",

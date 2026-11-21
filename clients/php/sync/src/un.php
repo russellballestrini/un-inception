@@ -4081,7 +4081,7 @@ USAGE:
     php un.php service [options]
     php un.php snapshot [options]
     php un.php key
-    php un.php key --topup                 Top up credit in browser (alias: --extend)
+    php un.php key --topup                 Buy credit in browser (alias: --extend)
     php un.php key --rotate [--otp CODE]   Rotate key secret (sudo OTP)
     php un.php paas logs [options]         Platform logs (partner keys; -h for options)
     php un.php languages [--json]

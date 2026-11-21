@@ -3367,7 +3367,7 @@ main <- function() {
         cat("       un.r snapshot [options]\n", file = stderr())
         cat("       un.r image [options]\n", file = stderr())
         cat("       un.r key [options]\n", file = stderr())
-        cat("       un.r key --topup              # top up credit (alias --extend)\n", file = stderr())
+        cat("       un.r key --topup              # buy credit (alias --extend)\n", file = stderr())
         cat("       un.r key --rotate [--otp CODE]\n", file = stderr())
         cat("       un.r languages [--json]\n", file = stderr())
         cat("       un.r paas logs [options]\n", file = stderr())

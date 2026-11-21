@@ -61,7 +61,7 @@
 !   ./un script.py
 !   ./un session [options]
 !   ./un service [options]
-!   ./un key [--topup]   (top up credit; alias --extend)
+!   ./un key [--topup]   (buy credit; alias --extend)
 !
 ! Authentication (in priority order):
 !   1. --account N flag -> accounts.csv row N (bypasses env vars)
@@ -1262,7 +1262,7 @@ contains
         write(*, '(A)') '  --ports PORTS       Ports for spawn'
         write(*, '(A)') ''
         write(*, '(A)') 'Key options:'
-        write(*, '(A)') '  --topup         Open portal to top up credit (alias: --extend)'
+        write(*, '(A)') '  --topup         Open portal to buy credit (alias: --extend)'
         write(*, '(A)') ''
         write(*, '(A)') 'Languages options:'
         write(*, '(A)') '  --json          Output as JSON array'

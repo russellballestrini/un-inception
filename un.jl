@@ -1405,7 +1405,7 @@ function main()
 
     @add_arg_table! s["key"] begin
         "--extend", "--topup"
-            help = "Open browser to top up credit (--topup: same)"
+            help = "Open browser to buy credit (--topup: same)"
             action = :store_true
         "--rotate"
             help = "Rotate this key's secret (sudo OTP); updates accounts.csv in place"

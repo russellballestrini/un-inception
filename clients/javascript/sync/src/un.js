@@ -2164,7 +2164,7 @@ USAGE:
   node un.js service [options]           Service management
   node un.js snapshot [options]          Snapshot management
   node un.js key                         Check API key validity
-  node un.js key --topup                 Open portal to top up credit (alias: --extend)
+  node un.js key --topup                 Open portal to buy credit (alias: --extend)
   node un.js key --rotate                Rotate this key's secret (sudo OTP); updates accounts.csv
   node un.js key --rotate --otp CODE     Finish a rotation started without a terminal
   node un.js languages [--json]          List available languages

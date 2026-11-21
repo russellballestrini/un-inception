@@ -1641,7 +1641,7 @@ Usage:
   tclsh un.tcl snapshot [options]
   tclsh un.tcl image [options]
   tclsh un.tcl languages [--json]
-  tclsh un.tcl key [--topup]    (top up credit; --extend: alias)
+  tclsh un.tcl key [--topup]    (buy credit; --extend: alias)
   tclsh un.tcl key --rotate [--otp CODE]
 
 Global options:

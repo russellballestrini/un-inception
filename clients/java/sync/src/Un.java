@@ -3412,7 +3412,7 @@ public class Un {
         System.out.println("  java Un snapshot [options]             Manage snapshots");
         System.out.println("  java Un image [options]                Manage images");
         System.out.println("  java Un key                            Check API key");
-        System.out.println("  java Un key --topup                    Open portal to top up credit (alias: --extend)");
+        System.out.println("  java Un key --topup                    Open portal to buy credit (alias: --extend)");
         System.out.println("  java Un key --rotate [--otp CODE]      Rotate API key secret (emailed OTP)");
         System.out.println("  java Un languages [--json]             List supported languages");
         System.out.println();

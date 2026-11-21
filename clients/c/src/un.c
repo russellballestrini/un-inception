@@ -7286,7 +7286,7 @@ void print_usage(const char *prog) {
     fprintf(stderr, "  %s paas logs --follow                    # follow all logs in real-time\n", prog);
     fprintf(stderr, "  %s paas logs --follow -l warning         # follow warnings+ in real-time\n", prog);
     fprintf(stderr, "  %s key                             # check API key validity\n", prog);
-    fprintf(stderr, "  %s key --topup                     # open portal to top up credit (alias: --extend)\n", prog);
+    fprintf(stderr, "  %s key --topup                     # open portal to buy credit (alias: --extend)\n", prog);
     fprintf(stderr, "  %s key --rotate                    # rotate secret (sudo OTP), update accounts.csv\n", prog);
     fprintf(stderr, "  %s key --rotate --otp CODE         # finish a rotation started without a terminal\n", prog);
     fprintf(stderr, "\nAuthentication:\n");

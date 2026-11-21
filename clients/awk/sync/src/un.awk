@@ -2768,7 +2768,7 @@ function show_help() {
     print "       awk -f un.awk session [-s SHELL] [-f FILE]..."
     print "       awk -f un.awk session --snapshot SESSION_ID [--snapshot-name NAME] [--hot]"
     print "       awk -f un.awk session --restore SNAPSHOT_ID"
-    print "       awk -f un.awk key [--topup]    (top up credit; --extend: alias)"
+    print "       awk -f un.awk key [--topup]    (buy credit; --extend: alias)"
     print "       awk -f un.awk key --rotate [--otp CODE]"
     print "       awk -f un.awk service --list"
     print "       awk -f un.awk service --create --name NAME [--ports PORTS] [--domains DOMAINS] [--type TYPE] [--bootstrap CMD] [-e KEY=VAL] [--env-file FILE] [-f FILE]..."

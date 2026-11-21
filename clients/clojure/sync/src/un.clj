@@ -1453,7 +1453,7 @@
                        (println "       un.clj service env <action> <service_id>")
                        (println "       un.clj image [options]")
                        (println "       un.clj key [options]")
-                       (println "       un.clj key --topup         (top up credit; alias: --extend)")
+                       (println "       un.clj key --topup         (buy credit; alias: --extend)")
                        (println "       un.clj paas logs [options]")
                        (System/exit 1))))
 

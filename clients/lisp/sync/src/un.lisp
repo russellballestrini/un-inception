@@ -1510,7 +1510,7 @@ Exits non-zero on a missing or invalid value, before any credential or HTTP use.
           (format t "       un.lisp image [options]~%")
           (format t "       un.lisp languages [--json]~%")
           (format t "       un.lisp paas logs [options]~%")
-          (format t "       un.lisp key [--topup] (top up credit; alias: --extend) | key --rotate [--otp CODE]~%")
+          (format t "       un.lisp key [--topup] (buy credit; alias: --extend) | key --rotate [--otp CODE]~%")
           (format t "~%Global options:~%")
           (format t "  --os OS             Target OS: linux (default) or freebsd (execute, session, service)~%")
           (format t "~%Image options:~%")

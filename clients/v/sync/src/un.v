@@ -2066,7 +2066,7 @@ fn main() {
 		eprintln('       ${args[0]} service [options]')
 		eprintln('       ${args[0]} service env <action> <service_id> [options]')
 		eprintln('       ${args[0]} image [options]')
-		eprintln('       ${args[0]} key [--topup]    (top up credit; alias --extend)')
+		eprintln('       ${args[0]} key [--topup]    (buy credit; alias --extend)')
 		eprintln('       ${args[0]} key --rotate [--otp CODE]')
 		eprintln('       ${args[0]} languages [--json]')
 		eprintln('')

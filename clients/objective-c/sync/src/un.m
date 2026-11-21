@@ -2873,7 +2873,7 @@ void showHelp(void) {
     printf("  un.m image [options]\n");
     printf("  un.m languages [--json]\n");
     printf("  un.m key [options]\n");
-    printf("  un.m key --topup               Open portal to top up credit (alias: --extend)\n");
+    printf("  un.m key --topup               Open portal to buy credit (alias: --extend)\n");
     printf("  un.m key --rotate              Rotate this key's secret (sudo OTP), update accounts.csv\n");
     printf("  un.m key --rotate --otp CODE   Finish a rotation started without a terminal\n");
     printf("  un.m paas logs [options]       Platform logs (partner keys; un.m paas logs -h)\n\n");

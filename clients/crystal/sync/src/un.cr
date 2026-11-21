@@ -2029,7 +2029,7 @@ def main
     opts.on("--bootstrap=CMD", "Bootstrap command or URI") { |b| args[:bootstrap] = b }
     opts.on("--bootstrap-file=FILE", "Upload local file as bootstrap script") { |f| args[:bootstrap_file] = f }
     opts.on("--env-file=FILE", "Load env vars from file (for vault)") { |f| args[:svc_env_file] = f }
-    opts.on("--topup", "Open browser to top up credit") { args[:extend] = true }
+    opts.on("--topup", "Open browser to buy credit") { args[:extend] = true }
     opts.on("--extend", "Alias of --topup") { args[:extend] = true }
     opts.on("--json", "Output as JSON array (for languages command)") { args[:json] = true }
     opts.on("--shell=SHELL", "Shell for session (bash, python3, etc.)") { |s| args[:shell] = s }

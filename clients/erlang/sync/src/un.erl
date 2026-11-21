@@ -918,7 +918,7 @@ dispatch([]) ->
     io:format("       un.erl [--account N] snapshot [options]~n"),
     io:format("       un.erl [--account N] image [options]~n"),
     io:format("       un.erl [--account N] key [options]~n"),
-    io:format("         key --topup    open portal to top up credit (alias: --extend)~n"),
+    io:format("         key --topup    open portal to buy credit (alias: --extend)~n"),
     io:format("       un.erl languages [--json]~n"),
     io:format("       un.erl [--account N] paas logs [options]~n"),
     io:format("~nGlobal options:~n"),

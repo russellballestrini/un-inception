@@ -1739,7 +1739,7 @@ Usage:
   bash un.sh snapshot [options]
   bash un.sh image [options]
   bash un.sh languages [--json]
-  bash un.sh key [--topup]  (top up credit; --extend: alias)
+  bash un.sh key [--topup]  (buy credit; --extend: alias)
   bash un.sh key --rotate [--otp CODE]   Rotate this key's secret (sudo OTP)
 
 Global options:

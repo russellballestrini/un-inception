@@ -1874,7 +1874,7 @@ proc main() =
     stderr.writeLine("       un.nim service env <action> <service_id> [options]")
     stderr.writeLine("       un.nim languages [--json]")
     stderr.writeLine("       un.nim key [options]")
-    stderr.writeLine("       un.nim key --topup             (top up credit; alias --extend)")
+    stderr.writeLine("       un.nim key --topup             (buy credit; alias --extend)")
     stderr.writeLine("       un.nim key --rotate [--otp CODE]")
     stderr.writeLine("")
     stderr.writeLine("Global options:")

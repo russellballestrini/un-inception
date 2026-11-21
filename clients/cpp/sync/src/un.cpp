@@ -2622,7 +2622,7 @@ int main(int argc, char* argv[]) {
         cerr << "       " << argv[0] << " service [options]" << endl;
         cerr << "       " << argv[0] << " image [options]" << endl;
         cerr << "       " << argv[0] << " key [options]" << endl;
-        cerr << "       " << argv[0] << " key --topup   (top up credit; alias --extend)" << endl;
+        cerr << "       " << argv[0] << " key --topup   (buy credit; alias --extend)" << endl;
         cerr << "  --os OS   Target OS: linux (default) or freebsd (execute, session, service)" << endl;
         return 1;
     }

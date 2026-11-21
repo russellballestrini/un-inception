@@ -1043,7 +1043,7 @@ main(Argv) :-
         write(user_error, '       un.pro image [options]\n'),
         write(user_error, '       un.pro languages [--json]\n'),
         write(user_error, '       un.pro key [options]\n'),
-        write(user_error, '       un.pro key --topup   (top up credit; alias --extend)\n'),
+        write(user_error, '       un.pro key --topup   (buy credit; alias --extend)\n'),
         write(user_error, '       un.pro key --rotate [--otp CODE]\n'),
         write(user_error, '\n'),
         write(user_error, 'Global options:\n'),

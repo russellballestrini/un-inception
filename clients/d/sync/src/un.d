@@ -2261,7 +2261,7 @@ int main(string[] args) {
         stderr.writefln("       %s service env <action> <service_id> [options]", args[0]);
         stderr.writefln("       %s image [options]", args[0]);
         stderr.writefln("       %s key [options]", args[0]);
-        stderr.writefln("       %s key --topup             (top up credit; alias --extend)", args[0]);
+        stderr.writefln("       %s key --topup             (buy credit; alias --extend)", args[0]);
         stderr.writeln("");
         stderr.writeln("Global options:");
         stderr.writeln("  --os OS             Target OS: linux (default) or freebsd (execute, session, service)");

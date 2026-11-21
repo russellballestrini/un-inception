@@ -2368,7 +2368,7 @@ Snapshot options:
   --hot             Hot snapshot (without stopping)
 
 Key options:
-  --topup           Open browser to top up credit (alias: --extend)
+  --topup           Open browser to buy credit (alias: --extend)
 
 Languages options:
   --json            Output as JSON array

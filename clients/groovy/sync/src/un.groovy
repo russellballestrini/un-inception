@@ -3179,7 +3179,7 @@ Vault commands:
   service env delete <id>   Delete vault
 
 Key options:
-  --topup             Open portal to top up credit (alias: --extend)
+  --topup             Open portal to buy credit (alias: --extend)
   --rotate            Rotate the key's secret (emailed one-time code)
   --otp CODE          Finish a rotation started without a terminal
 
