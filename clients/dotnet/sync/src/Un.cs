@@ -13,7 +13,7 @@ using System.Text.Json.Serialization;
 var API_BASE = (Environment.GetEnvironmentVariable("UNSANDBOX_API_URL") is { Length: > 0 } apiUrlEnv ? apiUrlEnv : "https://api.unsandbox.com").TrimEnd('/');
 // Portal base URL: UNSANDBOX_PORTAL_URL (default https://unsandbox.com, no trailing slash)
 var PORTAL_BASE = Unsandbox.PortalBase;
-const string VERSION = "4.3.4";
+const string VERSION = "4.4.0";
 
 // ANSI colors
 const string BLUE = "\x1B[34m";

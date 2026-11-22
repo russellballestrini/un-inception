@@ -30,7 +30,7 @@ Un.API_BASE = (_api_url:gsub("/+$", ""))
 local _portal_url = os.getenv("UNSANDBOX_PORTAL_URL")
 if not _portal_url or _portal_url == "" then _portal_url = "https://unsandbox.com" end
 Un.PORTAL_BASE = (_portal_url:gsub("/+$", ""))
-Un.VERSION = "4.3.4"
+Un.VERSION = "4.4.0"
 Un.LAST_ERROR = ""
 Un.ACCOUNT_INDEX = -1  -- -1 means not set; set to N to use accounts.csv row N
 

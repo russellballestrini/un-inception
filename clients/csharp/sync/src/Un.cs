@@ -1859,7 +1859,7 @@ Languages options:
 public static class Unsandbox
 {
     private static readonly string API_BASE = Un.ResolveApiBase();
-    private const string VERSION = "4.3.4";
+    private const string VERSION = "4.4.0";
     private static string _lastError;
 
     /// <summary>Extension map for language detection</summary>

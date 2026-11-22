@@ -1898,7 +1898,7 @@ func runPaasLogs(args []string) int {
 // ============================================================================
 
 // SDKVersion is the version of this SDK.
-const SDKVersion = "4.3.4"
+const SDKVersion = "4.4.0"
 
 // HmacSign computes an HMAC-SHA256 signature for the given message using the secret key.
 // Returns the signature as a lowercase hex string.

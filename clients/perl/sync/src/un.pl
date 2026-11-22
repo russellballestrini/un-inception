@@ -45,7 +45,7 @@ use File::Basename;
 use File::Path qw(make_path);
 use Time::HiRes qw(time sleep);
 
-our $VERSION = "4.3.4";
+our $VERSION = "4.4.0";
 our $API_BASE = ($ENV{UNSANDBOX_API_URL} || 'https://api.unsandbox.com') =~ s{/+$}{}r;
 our $PORTAL_BASE = ($ENV{UNSANDBOX_PORTAL_URL} || 'https://unsandbox.com') =~ s{/+$}{}r;
 
